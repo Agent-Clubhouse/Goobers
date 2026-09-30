@@ -478,13 +478,11 @@ func premiseInfraRepassCounterSeparation(obs parityObservation) error {
 		// per-gate counter starting at 1.
 		{Gate: "verify-gate", Outcome: gate.OutcomeFail, Target: "implement",
 			RepassAttempt: 3, GateAttempt: 1, RepassTarget: "implement"},
-		// A PASSING gate re-entering a completed stage charges verify's own
-		// budget — the budget is about re-entry, not about failure — while the
-		// gate's per-gate counter is cleared by the pass. Two numbers moving in
-		// opposite directions on one event, which is the separation this row is
-		// named for.
-		{Gate: "local-gate", Outcome: gate.OutcomePass, Target: "verify",
-			RepassAttempt: 1, RepassTarget: "verify"},
+		// A PASSING gate re-entering a completed stage is a forward step, not
+		// a repass (#5942): it charges no target budget, and the pass clears
+		// the gate's per-gate counter. implement's shared budget, charged only
+		// by the failures, is what exhausts next.
+		{Gate: "local-gate", Outcome: gate.OutcomePass, Target: "verify"},
 		{Gate: "verify-gate", Outcome: gate.OutcomeFail, Target: "park-escalated", Escalated: true,
 			RepassAttempt: 4, GateAttempt: 2, RepassTarget: "implement",
 			Reason: gate.ReasonRepassBudgetExhausted},

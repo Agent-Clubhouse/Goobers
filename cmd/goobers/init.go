@@ -83,7 +83,8 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
 	"--template=standard non-interactively seeds backlog-curation and implementation\n" +
 	"with their three canonical personas by default. Use --workflows to select\n" +
-	"implementation, backlog-curation, merge-review, and/or work-nomination.\n" +
+	"implementation, backlog-curation, merge-review (Azure DevOps only), and/or\n" +
+	"work-nomination.\n" +
 	"--repo accepts a GitHub owner/name or Azure DevOps identity; --branch\n" +
 	"defaults to main.\n" +
 	"Implementation requires either --pr-ci or an explicit --ci-command JSON argv\n" +
@@ -93,7 +94,8 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"github. On Azure DevOps the default modules also include merge-review,\n" +
 	"work-nomination is refused (file-issues is GitHub-only), and\n" +
 	"--repo-auth-kind defaults to azure-cli (also workload-identity,\n" +
-	"managed-identity, or pat, which reads GOOBERS_ADO_TOKEN). See\n" +
+	"managed-identity, or pat, which reads GOOBERS_ADO_TOKEN). --repo-token-env\n" +
+	"without --repo-auth-kind selects pat; with another kind it is refused. See\n" +
 	"docs/guides/ado-authentication.md and docs/guides/ado-limitations.md.\n" +
 	"It creates placeholders: configure repository identity and credential refs\n" +
 	"before running. It does not start workflows and refuses configured targets.\n" +

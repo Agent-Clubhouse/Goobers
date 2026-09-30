@@ -381,6 +381,16 @@ type FailedOutcome struct {
 	// terminal (#3361) must not feed work-quality signals like the
 	// failure-streak circuit breaker (#3364).
 	Code string
+	// FaultClass is the runner's own classification of the terminal, set
+	// only where the runner KNOWS who owns the fault rather than having to
+	// re-derive it from Code (#5638): today, telemetry.ErrorClassInfra for a
+	// dispatch that exhausted its infrastructure retry budget — the same
+	// failure the runner already journaled as retryFailureClass "infra".
+	// Empty means "not classified here": consumers fall back to
+	// telemetry.ClassifyError(Code). A session timeout is never classified
+	// infra here (invoke.Timeout is not an infrastructure marker), so the
+	// #1054 timeout case still reaches consumers by its code.
+	FaultClass telemetry.ErrorClass
 }
 
 // FailedHandler is Config.Failed's shape. Implementations are instance-level
@@ -3226,7 +3236,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// walk), the exact case that was silently returning the issue to ready.
 	// SIGTERM must not skip the trace, but a stalled-run watchdog can interrupt
 	// a hung provider call. The full origErr is what the item's comment records.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error(), Code: failureCode})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error(), Code: failureCode, FaultClass: terminalFaultClass(origErr)})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -4840,6 +4850,17 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	// once, and every path inside either returns or continues.
 	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 	return apiv1.ResultEnvelope{}, nil, err
+}
+
+// terminalFaultClass is FailedOutcome.FaultClass for a walk-level terminal:
+// infra exactly when origErr still carries the invoke infrastructure marker —
+// the marker dispatchRetryFailureClass journaled as retryFailureClass "infra"
+// while the attempts were being spent — else unclassified.
+func terminalFaultClass(origErr error) telemetry.ErrorClass {
+	if dispatchRetryFailureClass(origErr) == journal.AttemptInfra {
+		return telemetry.ErrorClassInfra
+	}
+	return ""
 }
 
 func dispatchRetryFailureClass(err error) journal.AttemptClass {

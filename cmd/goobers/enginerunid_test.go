@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // enginerunid_test.go is decision 005 D2 (#3877) at the daemon and CLI seams:
@@ -352,7 +353,7 @@ func newEngineCLIFixture(t *testing.T, open map[string]string) *engineCLIFixture
 		fixture.engine.workflowIDs[workflowID] = workflowID
 	}
 	previousDial := dialDaemonEngine
-	dialDaemonEngine = func(string, string) (client.Client, error) {
+	dialDaemonEngine = func(string, string, *temporaldial.TLS) (client.Client, error) {
 		return &fakeTemporalClient{workflows: fixture.engine, lister: fixture.lister}, nil
 	}
 	t.Cleanup(func() { dialDaemonEngine = previousDial })

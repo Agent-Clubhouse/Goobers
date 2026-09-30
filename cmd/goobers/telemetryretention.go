@@ -556,9 +556,16 @@ func reconcilePendingTelemetryRetentionPass(
 		return pass, true, err
 	}
 	if pass.Phase == telemetryRetentionPassPrepared {
-		results, err := pruneTelemetryRetentionCandidates(layout, db, pass.Candidates, pass.At)
-		if err != nil {
-			return pass, true, err
+		results, pruneErr := pruneTelemetryRetentionCandidates(layout, db, pass.Candidates, pass.At)
+		// A custody refusal is the guard working, not the pass failing: the
+		// blocked journals are still on disk and the ordinary post-readiness
+		// scan re-derives them once the owning snapshot retires. Returning
+		// here without advancing the phase would leave PendingTelemetryPass
+		// prepared forever, so the next startup replays the same refusal and
+		// exits non-zero — a deterministic restart loop (#5505). Advance and
+		// record what did complete; the refusal is reported by the caller.
+		if pruneErr != nil && !errors.Is(pruneErr, retention.ErrCustodyHeld) {
+			return pass, true, pruneErr
 		}
 		pass.Phase = telemetryRetentionPassCompleted
 		state.PendingTelemetryPass = &pass
@@ -572,6 +579,16 @@ func reconcilePendingTelemetryRetentionPass(
 		state.LargeFirstEnforceBlocked = false
 		if err := writeState(layout, state); err != nil {
 			return pass, true, err
+		}
+		if pruneErr != nil {
+			// A custody refusal becomes non-fatal only after the completed
+			// summary has been durably published and acknowledged. Returning a
+			// joined error here would let the startup caller's errors.Is check
+			// hide a real journal or state-write failure.
+			if err := publishTelemetryRetentionPass(log, layout, state, pass, true, writeState); err != nil {
+				return pass, true, err
+			}
+			return pass, true, pruneErr
 		}
 	}
 	return pass, true, publishTelemetryRetentionPass(log, layout, state, pass, true, writeState)
@@ -612,6 +629,7 @@ func reconcileStartupTelemetryRetention(
 ) error {
 	var pass telemetryRetentionPass
 	var reconciled bool
+	var held error
 	err := runStartupPhase(stdout, tracker, "telemetry-retention-reconcile", "", func() error {
 		var reconcileErr error
 		pass, reconciled, reconcileErr = reconcilePendingTelemetryRetentionPass(
@@ -620,8 +638,20 @@ func reconcileStartupTelemetryRetention(
 			setup.RollupDB,
 			writeTelemetryRetentionState,
 		)
+		// The pass itself reconciled: it completed every candidate custody
+		// allowed and durably advanced past its prepared phase. Reporting the
+		// refusal as a phase failure would exit the daemon over housekeeping
+		// that is already scheduled to retry (#5505).
+		if errors.Is(reconcileErr, retention.ErrCustodyHeld) {
+			held = reconcileErr
+			return nil
+		}
 		return reconcileErr
 	})
+	if err == nil && held != nil {
+		pf(stdout, "%s startup phase=telemetry-retention-reconcile status=custody-held detail=%q\n",
+			startupTimestamp(), held.Error())
+	}
 	if err == nil && reconciled {
 		reportTelemetryPruned(stdout, pass.CandidateCount, pass.DryRun, true)
 	}

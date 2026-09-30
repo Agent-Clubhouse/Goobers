@@ -25,8 +25,8 @@ import (
 // usage/IO error.
 const preflightRepoWriteHelp = "Usage: goobers preflight-repo-write [path]\n\n" +
 	"Check, without mutating any repository state, whether the configured\n" +
-	"repository credential can push this run's branch namespace. Reads two\n" +
-	"provider endpoints (repository permissions, branch ruleset policy) and\n" +
+	"repository credential can push this run's branch namespace. Reads repository\n" +
+	"roles and branch rules, with Git push-service discovery when needed, and\n" +
 	"reports one of four distinct outcomes: unreachable/unauthorized,\n" +
 	"authenticated without push permission, a branch ruleset denying the\n" +
 	"namespace, or ruleset introspection unavailable for this credential —\n" +

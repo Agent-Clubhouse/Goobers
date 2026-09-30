@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -284,7 +285,12 @@ func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	}
 }
 
-func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
+// TestOpenPRADOWorkItemLinkUsesDedicatedCapabilityBestEffort pins #5925's
+// best-effort rule: without a delivered ado:work-items:write credential the
+// linker resolves to the text-only stand-in (the pull-request credential is
+// never used for the work-item write), and with one it resolves a native
+// linker from that credential.
+func TestOpenPRADOWorkItemLinkUsesDedicatedCapabilityBestEffort(t *testing.T) {
 	root := initDemo(t)
 	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
 	if err != nil {
@@ -305,18 +311,32 @@ func TestOpenPRADOWorkItemLinkRequiresDedicatedCapability(t *testing.T) {
 	t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "pr-only-token")
 	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
 
-	if _, err := openPRWorkItemLinker(root, repo, true, "42"); err == nil ||
-		!strings.Contains(err.Error(), string(capability.ADOWorkItemsWrite)) {
-		t.Fatalf("openPRWorkItemLinker error = %v, want missing dedicated work-item capability", err)
+	var stderr strings.Builder
+	linker, err := openPRWorkItemLinker(root, repo, true, "42", &stderr)
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker without dedicated capability: %v", err)
+	}
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); !textOnly {
+		t.Fatalf("openPRWorkItemLinker without dedicated capability = %T, want the text-only stand-in", linker)
+	}
+	if !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), string(capability.ADOWorkItemsWrite)) {
+		t.Fatalf("stderr = %q, want a warning naming %s", stderr.String(), capability.ADOWorkItemsWrite)
 	}
 
 	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "work-item-token")
-	linker, err := openPRWorkItemLinker(root, repo, true, "42")
+	stderr.Reset()
+	linker, err = openPRWorkItemLinker(root, repo, true, "42", &stderr)
 	if err != nil {
 		t.Fatalf("openPRWorkItemLinker with dedicated capability: %v", err)
 	}
 	if linker == nil {
 		t.Fatal("openPRWorkItemLinker returned nil linker")
+	}
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
+		t.Fatal("openPRWorkItemLinker with a delivered credential returned the text-only stand-in")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no warning when the credential is delivered", stderr.String())
 	}
 }
 
@@ -408,7 +428,7 @@ func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
 	}
 	t.Cleanup(func() { newADOProviderForStage = previous })
 
-	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42")
+	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42", io.Discard)
 	if err != nil {
 		t.Fatalf("openPRWorkItemLinker for GitHub: %v", err)
 	}

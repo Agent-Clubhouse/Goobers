@@ -37,6 +37,7 @@ type backlogMetadataCorrection struct {
 	reasons             []string
 	checkClaim          bool
 	orphanedClaim       bool
+	claimEpochRunID     string
 	trackingComplete    bool
 	closeTrackingParent bool
 }
@@ -121,18 +122,9 @@ func reconcileBacklogMetadata(
 		}
 		var reservation *backlogReconcileReservation
 		if correction.checkClaim {
-			var acquired bool
-			reservation, acquired, err = reserveBacklogClaimReconciliation(l, repo, current.ID, now)
+			reservation, err = reserveOwnedOrphanedClaim(ctx, l, provider, repo, current.ID, now, &correction)
 			if err != nil {
-				return reconciled, fmt.Errorf("reserve claim reconciliation for issue #%s: %w", current.ID, err)
-			}
-			if acquired {
-				correction.orphanedClaim = true
-				correction.removeLabels = append(correction.removeLabels, providers.LabelClaimed)
-				correction.reasons = append(correction.reasons,
-					"removed `goobers:claimed` because no live claim-ledger lease backs it")
-			} else {
-				reservation = nil
+				return reconciled, err
 			}
 		}
 		correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
@@ -164,6 +156,7 @@ func reconcileBacklogMetadata(
 					current.ID,
 					correction.removeLabels,
 					comment,
+					correction.claimEpochRunID,
 				)
 			}
 		} else {
@@ -176,7 +169,11 @@ func reconcileBacklogMetadata(
 				Comment:      comment,
 			})
 		}
-		if correctionErr == nil {
+		if errors.Is(correctionErr, providers.ErrClaimEpochNotOwned) {
+			// A claim this instance does not own appeared after the ownership
+			// check; leaving the item untouched is the correct outcome (#5311).
+			correctionErr = nil
+		} else if correctionErr == nil {
 			reconciled++
 		}
 		if reservation != nil {
@@ -189,6 +186,86 @@ func reconcileBacklogMetadata(
 		}
 	}
 	return reconciled, nil
+}
+
+// reserveOwnedOrphanedClaim decides whether item's goobers:claimed label is an
+// orphan this instance may clear, and if so reserves the item and records the
+// correction. It returns nil, holding no reservation, when the claim is left
+// alone.
+//
+// Absence from the local ledger only proves that no claim of THIS instance is
+// live. Several instances can share one repository, so the provider claim
+// epoch behind the label must also be one this instance owns (#5311); a
+// foreign epoch is left for its owner, at worst lingering as an orphan.
+func reserveOwnedOrphanedClaim(
+	ctx context.Context,
+	l instance.Layout,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	itemID string,
+	now func() time.Time,
+	correction *backlogMetadataCorrection,
+) (*backlogReconcileReservation, error) {
+	reservation, acquired, err := reserveBacklogClaimReconciliation(l, repo, itemID, now)
+	if err != nil {
+		return nil, fmt.Errorf("reserve claim reconciliation for issue #%s: %w", itemID, err)
+	}
+	if !acquired {
+		return nil, nil
+	}
+	epochRunID, owned, err := ownedProviderClaimEpoch(ctx, l, provider, repo, itemID)
+	if err != nil || !owned {
+		if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("release claim-reconciliation reservation: %w", releaseErr))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect provider claim epoch for issue #%s: %w", itemID, err)
+		}
+		return nil, nil
+	}
+	correction.orphanedClaim = true
+	correction.claimEpochRunID = epochRunID
+	correction.removeLabels = append(correction.removeLabels, providers.LabelClaimed)
+	correction.reasons = append(correction.reasons,
+		"removed `goobers:claimed` because no live claim-ledger lease backs it")
+	return reservation, nil
+}
+
+// ownedProviderClaimEpoch reports whether every open provider claim epoch on
+// the item belongs to this instance, returning the owned epoch's run (empty
+// when none is open). An epoch is this instance's when its breadcrumb's
+// attribution names this instance's identity or, for an unattributed legacy
+// breadcrumb, when the run it names was admitted by this instance root. Any
+// epoch by another login is never ours to end. An epoch's age is not
+// evidence here: this only ever narrows what reconciliation may remove.
+func ownedProviderClaimEpoch(
+	ctx context.Context,
+	l instance.Layout,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	itemID string,
+) (string, bool, error) {
+	epochs, err := provider.OpenClaimEpochs(ctx, repo, itemID)
+	if err != nil {
+		return "", false, err
+	}
+	self := stageInstanceIdentity()
+	runID := ""
+	for _, epoch := range epochs {
+		if !epoch.Trusted {
+			return "", false, nil
+		}
+		if epoch.InstanceID != "" && epoch.InstanceID != self {
+			return "", false, nil
+		}
+		if epoch.InstanceID == "" {
+			if _, err := l.FindRunDir(epoch.RunID); err != nil {
+				return "", false, nil
+			}
+		}
+		runID = epoch.RunID
+	}
+	return runID, true, nil
 }
 
 // backlogReconcileRunIDComponent is the fixed literal between the owning

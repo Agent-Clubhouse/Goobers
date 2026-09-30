@@ -380,6 +380,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},
 	"runs list": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
@@ -390,6 +391,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"status": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "agents", desc: "List in-flight agentic stages by role"},
 		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
@@ -456,6 +458,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "force", desc: "Release a claim held by a non-terminal run"},
 	},
 	"trace": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "follow", desc: "Stream events until the run reaches a terminal phase"},
 		{name: "summary", desc: "Show run metadata and review verdicts"},
@@ -479,9 +482,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "out", takesArg: true, desc: "Write the injection record here instead of stdout"},
 	},
 	"escalations": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 	},
 	"escalations show": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "include-verdict", desc: "Include review verdict content"},
 	},

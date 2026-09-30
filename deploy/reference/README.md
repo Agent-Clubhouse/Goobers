@@ -649,6 +649,37 @@ process exit. Increase the pod grace period when increasing `--drain-timeout`.
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
 
+### Temporal worker versioning is opt-in
+
+By default the worker polls **unversioned**, which is what this reference's
+Temporal values expect (they enable none of the worker-versioning dynamic
+config). `engine.workerVersioning: true` in `instance.yaml` makes the worker
+register as worker deployment `goobers`, version `goobers.<build>`, and pin each
+new workflow to that build (#5950). Nothing in Goobers sets the deployment's
+current version (#5407), so an opted-in instance must, after every rollout that
+changes the build, run
+`temporal worker deployment set-current-version --deployment-name goobers --build-id <build>`.
+Until it does, the new worker's polls succeed and receive nothing, and runs
+pinned to the previous build wait for a worker of that build.
+
+The worker checks the deployment's routing 30 seconds after start and every 5
+minutes after that. It logs `goobers worker: error: worker deployment "goobers" current version is ...`
+while the current version does not route to it, in either mode. It never exits
+over it.
+
+**Upgrading an instance that already ran versioned** (anything built from main
+between #4083 and #5950, including v0.5.0 betas): the worker now starts
+unversioned unless you opt in, and the deployment's current version still names
+the old build, so the unversioned worker receives no new tasks. Choose one:
+
+- Keep versioning: set `engine.workerVersioning: true` before upgrading, then set
+  the current version to the new build as above.
+- Drop versioning: let in-flight engine runs finish first (a run pinned to the
+  old build is only ever served by that build), then point the deployment at
+  unversioned workers with
+  `temporal worker deployment set-current-version --deployment-name goobers --unversioned`
+  (older CLIs: `--version __unversioned__`).
+
 ### Scoped cloud preflight checks
 
 `goobers doctor --k8s --checks apiserver-ipblock-drift` runs only the

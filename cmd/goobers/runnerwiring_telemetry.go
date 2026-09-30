@@ -43,11 +43,7 @@ func buildTelemetryClient(
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
 	// Carry it on every signal as a resource attribute so operators can correlate
 	// process restarts with the same customer-managed instance and its journals.
-	if instanceID, err := l.ReadIdentity(); err == nil {
-		cfg.JournalInstanceID = instanceID
-		cfg.ResourceAttributes = append(cfg.ResourceAttributes,
-			attribute.String("goobers.instance.id", instanceID))
-	}
+	cfg.JournalInstanceID, cfg.ResourceAttributes = telemetryInstanceIdentities(l.Root)
 	if telemetryConfig.OTLP != nil {
 		if err := configureOTLP(ctx, &cfg, *telemetryConfig.OTLP, registry, stores); err != nil {
 			return nil, err
@@ -92,7 +88,16 @@ func configureAzureMonitor(
 	cfg.AzureMonitorJournalLogs = profile.IncludesJournal()
 	cfg.AzureMonitorHostIdentity = profile.IncludesHostIdentity()
 	if azure.Replay.EnabledEffective() && instanceRoot != "" {
-		cfg.AzureMonitorReplayRoot = filepath.Join(instanceRoot, "telemetry-export", "azure-monitor")
+		// #6058: the replay spool and journal-export cursor store open SQLite
+		// through sqliteuri.File, whose contract is an absolute path. A
+		// relative instance root (`goobers up .`) became "file:///telemetry-
+		// export/…" at the filesystem root, so journal catch-up could never
+		// open its cursor store and no run journal was exported.
+		spoolRoot, err := filepath.Abs(filepath.Join(instanceRoot, "telemetry-export", "azure-monitor"))
+		if err != nil {
+			return fmt.Errorf("resolve Azure Monitor replay root: %w", err)
+		}
+		cfg.AzureMonitorReplayRoot = spoolRoot
 		cfg.AzureMonitorReplayMaxAge = azure.Replay.MaxAgeDuration()
 		cfg.AzureMonitorReplayMaxBytes = azure.Replay.MaxBytesEffective()
 	}

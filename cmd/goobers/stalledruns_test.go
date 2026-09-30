@@ -501,6 +501,89 @@ func TestSweepStalledRunsUsesPinnedPerRunTimeout(t *testing.T) {
 	assertWatchdogPhase(t, layout.RunsDir(), "long-timeout-run", journal.PhaseRunning)
 }
 
+// #5601: a run drained by a graceful `goobers down` must not be escalated as
+// stalled because the daemon then stayed down longer than the stall timeout.
+// Only time the daemon was up counts; a run that was already silent that long
+// while the daemon was up still escalates.
+func TestSweepStalledRunsCreditsGracefulDrainDowntime(t *testing.T) {
+	now := time.Date(2026, 9, 24, 4, 34, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRunner, err := runner.New(runner.Config{Worktrees: manager, RunsDir: layout.RunsDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := &apiv1.RunControls{MaxRepasses: 3, StalledRunTimeout: "45m"}
+	// Drained at the push-branch boundary one minute before the clean
+	// shutdown; the daemon then stayed down 1h31m.
+	eventTime := now.Add(-93 * time.Minute)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "drained-run", "implementation", "", &eventTime, time.Time{}, controls)
+	// Silent for 2h of daemon uptime before the same drain.
+	eventTime = now.Add(-212 * time.Minute)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "stalled-before-drain", "implementation", "", &eventTime, time.Time{}, controls)
+
+	deps := &stalledSweepDeps{DrainedDowntime: cleanDaemonDowntime([]journal.Event{
+		{Type: journal.EventDaemonStarted, Time: now.Add(-5 * time.Hour)},
+		{Type: journal.EventDaemonCleanShutdown, Time: now.Add(-92 * time.Minute)},
+		{Type: journal.EventDaemonStarted, Time: now.Add(-time.Minute)},
+	})}
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, deps, nil, nil, now, 45*time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "drained-run", journal.PhaseRunning)
+	assertWatchdogPhase(t, layout.RunsDir(), "stalled-before-drain", journal.PhaseEscalated)
+
+	// Without the credit (no clean shutdown on record) the drained run is
+	// escalated exactly as before.
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "drained-run", journal.PhaseEscalated)
+}
+
+func TestCleanDaemonDowntimeCreditsOnlyGracefulGaps(t *testing.T) {
+	base := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
+	at := func(minutes int) time.Time { return base.Add(time.Duration(minutes) * time.Minute) }
+	windows := cleanDaemonDowntime([]journal.Event{
+		{Type: journal.EventDaemonStarted, Time: at(0)},
+		{Type: journal.EventDaemonCleanShutdown, Time: at(10)},
+		{Type: journal.EventDaemonStarted, Time: at(40)}, // clean gap: 30m
+		{Type: journal.EventDaemonDirtyRestart, Time: at(100)},
+		{Type: journal.EventDaemonStarted, Time: at(100)}, // crash gap: none
+		{Type: journal.EventDaemonCleanShutdown, Time: at(110)},
+		{Type: journal.EventDaemonStarted, Time: at(130)}, // clean gap: 20m
+	})
+	want := []daemonDowntime{{from: at(10), to: at(40)}, {from: at(110), to: at(130)}}
+	if len(windows) != len(want) {
+		t.Fatalf("windows = %+v, want %+v", windows, want)
+	}
+	for i := range want {
+		if !windows[i].from.Equal(want[i].from) || !windows[i].to.Equal(want[i].to) {
+			t.Fatalf("windows = %+v, want %+v", windows, want)
+		}
+	}
+	deps := &stalledSweepDeps{DrainedDowntime: windows}
+	for _, tc := range []struct {
+		lastActivity time.Time
+		want         time.Duration
+	}{
+		{at(5), 50 * time.Minute},
+		{at(20), 40 * time.Minute},
+		{at(115), 15 * time.Minute},
+		{at(130), 0},
+	} {
+		if got := deps.drainedDowntimeSince(tc.lastActivity); got != tc.want {
+			t.Fatalf("drainedDowntimeSince(%s) = %s, want %s", tc.lastActivity, got, tc.want)
+		}
+	}
+	if got := (*stalledSweepDeps)(nil).drainedDowntimeSince(at(0)); got != 0 {
+		t.Fatalf("nil deps credit = %s, want 0", got)
+	}
+}
+
 func TestSweepStalledRunsAbortsOverAgeRunWithFreshHeartbeat(t *testing.T) {
 	now := time.Date(2026, 8, 2, 20, 0, 0, 0, time.UTC)
 	layout := instance.NewLayout(t.TempDir())

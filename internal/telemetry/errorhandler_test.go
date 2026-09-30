@@ -2,12 +2,57 @@ package telemetry
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestExportErrorHandlerGroupsReplayTemporaryPaths(t *testing.T) {
+	now := time.Date(2026, 9, 28, 4, 0, 0, 0, time.UTC)
+	h, logged := newTestExportErrorHandler(&now)
+	failure := func(index int, stream string, cause error) error {
+		return fmt.Errorf("journal logs export: write Azure Monitor replay header: %w", &os.PathError{
+			Op: "write", Path: filepath.Join("fixture", stream, fmt.Sprintf(".pending-%d", index)), Err: cause,
+		})
+	}
+	const count = exportErrorDistinctLimit * 3
+	for i := range count {
+		h.Handle(failure(i, "journal", syscall.ENOSPC))
+	}
+	if len(*logged) != 1 || len(h.seen) != 1 {
+		t.Fatalf("temporary filenames bypassed rate limiting: logs=%d signatures=%d", len(*logged), len(h.seen))
+	}
+	now = now.Add(exportErrorRepeatWindow)
+	last := failure(count, "journal", syscall.ENOSPC)
+	h.Handle(last)
+	if len(*logged) != 2 {
+		t.Fatalf("missing recurrence summary: %d", len(*logged))
+	}
+	if repeats, ok := argValue(t, (*logged)[1].args, "repeats"); !ok || repeats != count {
+		t.Fatalf("suppressed occurrences lost: %v %v", repeats, ok)
+	}
+	if detail, ok := argValue(t, (*logged)[1].args, "error"); !ok || detail != last.Error() {
+		t.Fatalf("raw diagnostic detail changed: %v", detail)
+	}
+	// Different stream and errno are independently actionable failures.
+	h.Handle(failure(count+1, "traces", syscall.ENOSPC))
+	h.Handle(failure(count+2, "journal", os.ErrPermission))
+	if len(*logged) != 4 {
+		t.Fatalf("distinct failures were hidden: %d", len(*logged))
+	}
+	for _, name := range []string{"events-1.jsonl", "events-2.jsonl"} {
+		h.Handle(&os.PathError{Op: "write", Path: filepath.Join("fixture", name), Err: syscall.ENOSPC})
+	}
+	if len(*logged) != 6 {
+		t.Fatalf("non-temporary paths were conflated: %d", len(*logged))
+	}
+}
 
 type loggedError struct {
 	msg  string

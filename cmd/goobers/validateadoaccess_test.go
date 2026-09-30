@@ -135,7 +135,7 @@ func TestCheckADORepositoryAccessDiagnostics(t *testing.T) {
 			name:     "missing force push is a warning",
 			mutate:   func(a *adoRepositoryAccess) { a.permissions[providers.ADOGitForcePush] = false },
 			wantOK:   true,
-			wantCode: adoAccessForcePushCode, wantSev: "warning", wantText: `lacks "Force push"`,
+			wantCode: adoAccessForcePushCode, wantSev: "warning", wantText: `lacks "Force push" at repository level; Azure DevOps lets a branch's creator force-push its own branches, but rewriting or deleting branches it did not create`,
 		},
 		{
 			name:     "held bypass is a warning",
@@ -322,6 +322,22 @@ func TestCheckADOBacklogStatesWarnsOnUnknownDoneStates(t *testing.T) {
 		if d.Code != adoBacklogStatesCode || d.Severity != "warning" || !strings.Contains(d.Message, want) {
 			t.Errorf("diagnostic %d = %+v, want a %s warning containing %q", i, d, adoBacklogStatesCode, want)
 		}
+	}
+}
+
+func TestCheckADOBacklogStatesWarnsOnCaseDuplicateTypes(t *testing.T) {
+	states := fullADOBacklogStates()
+	states.byType = map[string][]providers.ADOWorkItemState{
+		"Bug": {{Name: "Closed", Category: "Completed"}},
+		"bug": {{Name: "Closed", Category: "Completed"}},
+	}
+	stubADOAccessReads(t, fullADORepositoryAccess(), states)
+	var out strings.Builder
+	collector := &diagnosticCollector{}
+	checkADOBacklogStates("alpha", map[string][]string{"Bug": {"Closed"}, "bug": {"Closed"}},
+		instance.RepoRef{Provider: "ado"}, "work", nil, &out, "gaggle.yaml", collector)
+	if len(collector.findings) != 1 || !strings.Contains(collector.findings[0].Message, `keys "Bug" and "bug" name the same work item type`) {
+		t.Fatalf("diagnostics = %+v, want one duplicate-key warning", collector.findings)
 	}
 }
 

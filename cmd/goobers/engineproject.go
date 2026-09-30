@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 const engineProjectHelp = "Usage: goobers engine-project [flags] <run-id> [path]\n\n" +
@@ -78,7 +79,12 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	c, err := dialEngineProject(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	c, err := dialEngineProject(ctx, opts)
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1

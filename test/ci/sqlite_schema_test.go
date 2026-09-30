@@ -26,6 +26,11 @@ var auditedSQLOpeners = []string{
 	"internal/readmodel/rebuild.go:reopenLocked:Open",
 	"internal/readmodel/store.go:Open:Open",
 	"internal/readmodel/store.go:openReaderPool:Open",
+	// Both telemetry stores use versioned sqliteschema migrations and reject
+	// newer versions. The read-only manifest inspector requires version 1.
+	"internal/telemetry/azuremonitor_index.go:inspectReplayIndex:Open",
+	"internal/telemetry/azuremonitor_index.go:open:Open",
+	"internal/telemetry/journalcatchup_store.go:openJournalCursorStore:Open",
 	"internal/telemetry/rollup/db.go:Open:Open",
 	"internal/telemetry/rollup/db.go:OpenExistingReader:Open",
 	"internal/telemetry/rollup/db.go:openReaderPool:Open",

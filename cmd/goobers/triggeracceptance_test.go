@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -27,6 +29,21 @@ type acceptedRunIDStarter struct{ ids chan string }
 func (s *acceptedRunIDStarter) Start(_ context.Context, request localscheduler.StartRequest) (localscheduler.StartResult, error) {
 	s.ids <- request.RunID
 	return localscheduler.StartResult{Phase: "completed"}, nil
+}
+
+type capacityHoldingStarter struct {
+	started chan string
+	release chan struct{}
+}
+
+func (s *capacityHoldingStarter) Start(ctx context.Context, request localscheduler.StartRequest) (localscheduler.StartResult, error) {
+	s.started <- request.RunID
+	select {
+	case <-s.release:
+		return localscheduler.StartResult{Phase: journal.PhaseCompleted}, nil
+	case <-ctx.Done():
+		return localscheduler.StartResult{}, ctx.Err()
+	}
 }
 
 func TestDurableTriggerPinsIdentityThroughActualScheduler(t *testing.T) {
@@ -71,6 +88,70 @@ func TestDurableTriggerPinsIdentityThroughActualScheduler(t *testing.T) {
 				t.Fatal("scheduler did not start accepted run")
 			}
 		})
+	}
+}
+
+func TestDurableTriggerRequeuesTransientCapacityRefusal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accepted.db")
+	dispatch := newDaemonTriggerService()
+	s := acceptedService(t, path, dispatch)
+	release := make(chan struct{})
+	starter := &capacityHoldingStarter{started: make(chan string, 3), release: release}
+	scheduler := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow:  "impl",
+		Gaggle:    "own",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 2},
+		Starter:   starter,
+	}}, nil)
+	dispatch.AttachScheduler(scheduler)
+	dispatch.AttachDispatchContext(t.Context())
+	identity := localscheduler.WorkflowIdentity{Workflow: "impl", Gaggle: "own"}
+	now := time.Now()
+	for i := range 2 {
+		if _, err := scheduler.TriggerExactWithOptions(t.Context(), identity, now.Add(time.Duration(i)*time.Second), localscheduler.ManualTriggerOptions{BypassCadenceBudgets: true}); err != nil {
+			t.Fatalf("occupy slot %d: %v", i, err)
+		}
+		select {
+		case <-starter.started:
+		case <-time.After(time.Second):
+			t.Fatalf("slot %d was not occupied", i)
+		}
+	}
+	accepted, err := s.Trigger(t.Context(), httpapi.TriggerRequest{
+		Workflow: "impl", Gaggle: "own", RequestID: "delivery", Actor: "operator", Force: true,
+	})
+	if err != nil || accepted.State != "accepted" {
+		t.Fatalf("acceptance = %+v, %v", accepted, err)
+	}
+	if err := s.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.TriggerStatus(t.Context(), httpapi.TriggerStatusRequest{AcceptanceID: accepted.AcceptanceID, Actor: "operator"})
+	if err != nil || status.State != "accepted" || status.Reason != localscheduler.ReasonMaxParallel {
+		t.Fatalf("capacity status = %+v, %v", status, err)
+	}
+	select {
+	case id := <-starter.started:
+		t.Fatalf("capacity-refused trigger started early as %q", id)
+	default:
+	}
+	close(release)
+	scheduler.Wait()
+	if err := s.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Wait()
+	select {
+	case id := <-starter.started:
+		if id != strings.TrimPrefix(accepted.AcceptanceID, "trigger-") {
+			t.Fatalf("accepted trigger run ID = %q, want suffix of %q", id, accepted.AcceptanceID)
+		}
+	default:
+		t.Fatal("accepted trigger was not retried after capacity freed")
+	}
+	status, err = s.TriggerStatus(t.Context(), httpapi.TriggerStatusRequest{AcceptanceID: accepted.AcceptanceID, Actor: "operator"})
+	if err != nil || status.State != "dispatching" || status.RunID != strings.TrimPrefix(accepted.AcceptanceID, "trigger-") {
+		t.Fatalf("dispatched status = %+v, %v", status, err)
 	}
 }
 

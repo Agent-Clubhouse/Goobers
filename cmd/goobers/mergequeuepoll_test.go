@@ -970,7 +970,9 @@ func adoMergeQueuePollEnvWithAuth(t *testing.T, serverURL, owner, project, name 
 	t.Setenv("GOOBERS_RUN_ID", "run-merge-ado-1")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	if grantComplete {
-		// The ADO counterpart to github:pr:merge — completion authority.
+		// The optional ado:pr:complete grant: when declared, completion uses
+		// its credential instead of github:pr:merge's (ado-parity-dsl-2-0.md
+		// §3.3). github:pr:merge alone is also a landing authority on ADO.
 		t.Setenv("GOOBERS_CRED_ADO_PR_COMPLETE", "test-token")
 	}
 	t.Setenv(executor.RepoProviderEnvVar, "ado")

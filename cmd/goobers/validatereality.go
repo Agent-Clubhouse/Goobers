@@ -156,6 +156,7 @@ func appendStaticRealityWarnings(
 	instanceFile := diagnosticFile(root, configFile)
 	appendWindowsAVExclusionWarnings(instanceFile, cfg, add)
 	appendDaemonIdentitySlugWarning(instanceFile, cfg, add)
+	appendCrossProviderCredentialOverrideWarnings(instanceFile, cfg, set, add)
 	appendCobrandAssetWarnings(filepath.Dir(configFile), instanceFile, cfg, add)
 	return warnings
 }

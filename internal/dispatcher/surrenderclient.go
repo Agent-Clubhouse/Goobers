@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/daemonclient"
 )
 
 // surrenderclient.go is the pod-side half of the surrender plane's network
@@ -77,7 +79,7 @@ func (c *SurrenderPutClient) Put(ctx context.Context, runID, stage string, attem
 	endpoint := base + "/api/v1/runs/" + url.PathEscape(runID) + "/stages/" + url.PathEscape(stage) + "/attempts/" + strconv.Itoa(attempt) + "/surrender"
 	client := c.Client
 	if client == nil {
-		client = &http.Client{Timeout: defaultSurrenderTimeout}
+		client = daemonclient.NewHTTP(defaultSurrenderTimeout)
 	}
 	deadline := c.RetryDeadline
 	if deadline <= 0 {

@@ -7,6 +7,8 @@ import (
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // temporalNamespaceDescriber is the narrow slice of client.Client this
@@ -30,12 +32,17 @@ func (d dialedTemporalClient) DescribeNamespace(ctx context.Context, in *workflo
 
 func (d dialedTemporalClient) Close() { d.c.Close() }
 
-func defaultDialTemporal(_ context.Context, hostPort string) (temporalNamespaceDescriber, error) {
-	c, err := client.Dial(client.Options{HostPort: hostPort})
-	if err != nil {
-		return nil, err
+// defaultDialTemporal dials through the shared temporaldial constructor
+// (#5289) with the check's TLS options; nil tls is the plaintext dial. The
+// namespace is left empty, as before: DescribeNamespace names it explicitly.
+func defaultDialTemporal(tls *temporaldial.TLS) func(context.Context, string) (temporalNamespaceDescriber, error) {
+	return func(_ context.Context, hostPort string) (temporalNamespaceDescriber, error) {
+		c, err := temporaldial.Dial(context.Background(), hostPort, "", tls)
+		if err != nil {
+			return nil, err
+		}
+		return dialedTemporalClient{c: c}, nil
 	}
-	return dialedTemporalClient{c: c}, nil
 }
 
 // checkTemporalNamespace verifies the Temporal namespace the worker/engine
@@ -65,14 +72,14 @@ func checkTemporalNamespace(ctx context.Context, _ kubernetes.Interface, opts Op
 	}
 	dial := opts.DialTemporal
 	if dial == nil {
-		dial = defaultDialTemporal
+		dial = defaultDialTemporal(opts.TemporalTLS)
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()
 	c, err := dial(ctx, opts.TemporalHostPort)
 	if err != nil {
 		result.Status = StatusFail
-		result.Detail = fmt.Sprintf("could not reach Temporal frontend %s: %v", opts.TemporalHostPort, err)
+		result.Detail = fmt.Sprintf("could not reach Temporal frontend %s over %s: %v", opts.TemporalHostPort, opts.TemporalTLS.Transport(), err)
 		return result
 	}
 	defer c.Close()
@@ -83,6 +90,6 @@ func checkTemporalNamespace(ctx context.Context, _ kubernetes.Interface, opts Op
 		return result
 	}
 	result.Status = StatusPass
-	result.Detail = fmt.Sprintf("namespace %q is registered", namespace)
+	result.Detail = fmt.Sprintf("namespace %q is registered (transport: %s)", namespace, opts.TemporalTLS.Transport())
 	return result
 }

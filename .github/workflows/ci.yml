@@ -50,8 +50,11 @@ name: CI
 # green for the required `make ci` check (the required-ci aggregator, whose NAME
 # is pinned by the branch ruleset) to pass.
 #
-# Pull requests and merge groups run that complete matrix. A push to main also
-# validates the exact landed SHA with checks, lint, the Linux race shards, the
+# Pull requests, merge groups, and manual dispatches run that complete matrix.
+# For a frozen candidate, dispatch on a dedicated, never-updated validation
+# branch; its ref-scoped concurrency cannot be cancelled by pushes to main.
+# A push to main also validates the exact landed SHA with checks, lint, the Linux
+# race shards, the
 # darwin cross-compile gate, shipped-workflow contracts, and the Windows gate.
 # Failures on the landed tree are automatically escalated as critical issues.
 #
@@ -60,6 +63,7 @@ name: CI
 # inventoried in docs/reference/workflow-inventory.md.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -1418,7 +1422,7 @@ jobs:
       - name: Windows platform runtime
         env:
           GOOBERS_RUN_WSL_INTEGRATION_TEST: "1"
-        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock
+        run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile ./internal/platform/lock ./internal/platform/activetime
 
       - name: Windows service transitions
         run: go test ./internal/winsvc
@@ -1466,13 +1470,13 @@ jobs:
         run: go test ./internal/harness ./internal/agentkit
 
       - name: Windows containment and journals
-        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/secretpattern
 
       # Exercise native Logs delivery and real journal-writing CLI lifetimes.
       # Keep the large CLI/engine suites filtered; test/ci checks this selection
       # against every test in the journal export regression files.
       - name: Windows journal OTLP export
-        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./cmd/goobers -run '^(TestCommitted.*|TestJournalLogs.*|TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
+        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./internal/runner ./cmd/goobers -run '^(TestCommitted.*|TestExportReader.*|TestJournalCatchup.*|TestJournalCoalescing.*|TestJournalLogs.*|TestAzureReplay.*|TestAzureMonitorJournalReplay.*|TestAzureMonitorHostIdentity.*|TestAzureMonitorCompression.*|TestRunnerTelemetryDispatchProbe.*|TestTelemetryInstanceIdentities|TestServiceHealthExportProductionWiring|TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
 
       # The whole package, not one named test. #3064 added this step scoped to
       # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the

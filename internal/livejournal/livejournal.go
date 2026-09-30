@@ -210,9 +210,16 @@ type EmitResponse struct {
 // Option configures a Writer.
 type Option func(*Writer)
 
-// WithSpanSource lets the writer adopt span ops by digest.
+// WithSpanSource lets the writer adopt span ops by digest. A source that can
+// also Put — the daemon's blob store — additionally becomes the sink every
+// committed artifact is written through to (#5550; see artifactSink).
 func WithSpanSource(src SpanSource) Option {
-	return func(w *Writer) { w.spans = src }
+	return func(w *Writer) {
+		w.spans = src
+		if sink, ok := src.(artifactSink); ok {
+			w.sink = sink
+		}
+	}
 }
 
 // WithObserver reports each durable append (journal.WithAppendObserver's
@@ -291,6 +298,7 @@ type Writer struct {
 	runsDir       func(gaggle string) (string, bool)
 	spans         SpanSource
 	artifacts     ArtifactSource
+	sink          artifactSink
 	observer      func(runID string, seq uint64)
 	eventObserver func(runID string, ev journal.Event)
 	scrubber      journal.Scrubber
@@ -337,6 +345,9 @@ type liveRun struct {
 	artifactRefs       map[string]journal.Ref
 	transcriptCaptures map[string]*remoteTranscriptCapture
 	lastEmit           time.Time
+	// artifactKeyRefs maps an applied artifact op's key to the ref it
+	// committed, so a deduplicated retry can re-publish it (republishArtifact).
+	artifactKeyRefs map[string]journal.Ref
 }
 
 // terminal reports whether the run's journal has reached its terminal event.
@@ -712,6 +723,9 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 		}
 		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
 			run.artifactRefs[ev.Name] = *ev.Ref
+			if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok {
+				run.rememberArtifactKey(key, *ev.Ref)
+			}
 		}
 		if ev.Type == journal.EventRunFinished {
 			terminal = true
@@ -1046,7 +1060,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 // also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
 	if _, applied := run.keys[op.Key]; applied {
-		return false, nil
+		return false, w.republishArtifact(ctx, run, op)
 	}
 	if op.Kind == OpAppend && op.Event != nil && op.Event.Type == journal.EventRunStarted && run.jr != nil && run.jr.Seq() >= 1 {
 		// journal.Create appended run.started as part of creation; the op is

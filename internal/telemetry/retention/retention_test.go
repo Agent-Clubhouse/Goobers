@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,40 @@ import (
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
+
+func TestPruneOneDoesNotClassifyReservationRollbackFailureAsCustodyHeld(t *testing.T) {
+	now := time.Now().UTC()
+	layout := instance.NewLayout(t.TempDir())
+	runLayout := layout.ForGaggle("example")
+	if err := layout.EnsureGaggleRuntime("example"); err != nil {
+		t.Fatal(err)
+	}
+	runDir := createRetentionRun(t, runLayout, "held-with-broken-rollback", now, "terminal")
+	candidate := Result{RunID: "held-with-broken-rollback", RunDir: runDir, StartedAt: now}
+
+	_, err := pruneOne(candidate, nil, func(Result) error {
+		reservation := filepath.Join(runDir, ".telemetry-pruning")
+		if err := os.Remove(reservation); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(reservation, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(reservation, "blocks-remove"), []byte("fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Errorf("recovery snapshot still owns journal: %w", ErrCustodyHeld)
+	})
+	if err == nil {
+		t.Fatal("prune succeeded despite reservation rollback failure")
+	}
+	if errors.Is(err, ErrCustodyHeld) {
+		t.Fatalf("prune error = %v, custody marker would hide reservation rollback failure", err)
+	}
+	if !strings.Contains(err.Error(), "clear reservation for custody-held run") {
+		t.Fatalf("prune error = %v, want reservation rollback context", err)
+	}
+}
 
 func TestPruneAppliesBothBoundsProtectsLiveRunsAndRebuilds(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)

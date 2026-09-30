@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,11 +50,28 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 	setup := &schedulerSetup{Config: cfg, SharedRegistry: journal.NewRegistryScrubber(), InstanceLog: log}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := startServiceHealth(ctx, t.TempDir(), &daemonIdentity{StartedAt: time.Now()}, setup, nil)
+	root := t.TempDir()
+	journalID, rootID := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	for name, id := range map[string]string{"instance-id": journalID, instance.RootIdentityFileName: rootID} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(id+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := startServiceHealth(ctx, root, &daemonIdentity{StartedAt: time.Now()}, setup, nil)
 	select {
 	case req := <-collector.requests:
 		if !strings.Contains(req.String(), "goobers.service.health") {
 			t.Fatalf("wrong export: %s", req)
+		}
+		if len(req.ResourceLogs) != 1 || req.ResourceLogs[0].Resource == nil {
+			t.Fatal("diagnostic resource missing")
+		}
+		attrs := map[string]string{}
+		for _, attr := range req.ResourceLogs[0].Resource.Attributes {
+			attrs[attr.Key] = attr.Value.GetStringValue()
+		}
+		if attrs["goobers.instance.id"] != journalID || attrs["goobers.root.id"] != rootID {
+			t.Fatalf("diagnostics cannot join journal/root identities: %v", attrs)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no startup export through production wiring")

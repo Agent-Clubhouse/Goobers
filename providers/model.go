@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -174,6 +175,12 @@ func IntegrityForLabels(labels []string, trustLabel string) apiintegrity.Grade {
 	}
 	return apiintegrity.Unapproved
 }
+
+// ErrLabelHistoryIncomplete reports that one work item's label history cannot
+// be read completely or consistently (for example, an Azure DevOps item past
+// the revision cap, or a tag change without a change date). It concerns that
+// item only: a caller walking several items can skip it and continue.
+var ErrLabelHistoryIncomplete = errors.New("work item label history is incomplete")
 
 // WorkItemLabelTransition is one provider-issued label add/remove event.
 type WorkItemLabelTransition struct {
@@ -508,6 +515,9 @@ type CancelPendingChecksResult struct {
 type PullRequestHeadMovedError struct {
 	Expected string
 	Actual   string
+	// Detail carries the forge's own diagnosis when it refused the mutation
+	// server-side (on ADO: the HTTP status, typeKey and message).
+	Detail string
 }
 
 func (e PullRequestHeadMovedError) Error() string {
@@ -517,7 +527,11 @@ func (e PullRequestHeadMovedError) Error() string {
 		// naming the new head.
 		actual = "a newer commit"
 	}
-	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, actual)
+	msg := fmt.Sprintf("pull request head moved from %s to %s", e.Expected, actual)
+	if e.Detail != "" {
+		msg += " (" + e.Detail + ")"
+	}
+	return msg
 }
 
 // PullRequestPolicyNotMetError reports that the forge refused to complete a
@@ -528,12 +542,18 @@ func (e PullRequestHeadMovedError) Error() string {
 type PullRequestPolicyNotMetError struct {
 	PullID  string
 	Message string
+	// Detail carries the forge's HTTP status and error type (on ADO, the
+	// typeKey) so an operator can tell which refusal this was.
+	Detail string
 }
 
 func (e PullRequestPolicyNotMetError) Error() string {
 	msg := fmt.Sprintf("pull request %s completion refused: branch policy not met", e.PullID)
 	if e.Message != "" {
 		msg += ": " + e.Message
+	}
+	if e.Detail != "" {
+		msg += " (" + e.Detail + ")"
 	}
 	return msg
 }
@@ -600,8 +620,12 @@ type PullRequestPollRequest struct {
 	// (which would loop forever on a policy only a human can satisfy). The
 	// values are provider-interpreted opaque identities: the Azure DevOps
 	// provider matches them against branch-policy *configuration* ids. Empty
-	// means every required blocking policy gates (fail-closed default); loops
-	// with human-only policies declare them here as configuration.
+	// means every required blocking build, status or unclassified policy
+	// gates (fail-closed default). Azure DevOps minimum- and required-reviewer
+	// policies never gate CI, listed or not: an unmet one is reported as a
+	// human wait. Comment-resolution and work-item-linking policies never gate
+	// CI either. Loops with other human-only policies declare them here as
+	// configuration.
 	HumanPolicyConfigurationIDs []string `json:"humanPolicyConfigurationIds,omitempty"`
 }
 
@@ -688,6 +712,14 @@ type PullRequestStatusRequest struct {
 	State       CheckState    `json:"state"`
 	Description string        `json:"description,omitempty"`
 	TargetURL   string        `json:"targetUrl,omitempty"`
+	// HeadSHA, when set, pins the status to the commit the evidence was
+	// computed against: the provider refuses with PullRequestHeadMovedError
+	// rather than attach it to a newer head. On Azure DevOps a status on the
+	// latest iteration satisfies a reset-on-push status policy for whatever
+	// that iteration contains, so an unpinned post can vouch for a commit
+	// nobody reviewed. Empty keeps the unpinned behaviour (the head current
+	// at post time).
+	HeadSHA string `json:"headSha,omitempty"`
 }
 
 // PullRequestStatusResult reports the published status's provider-assigned id.

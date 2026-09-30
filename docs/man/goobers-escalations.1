@@ -6,8 +6,8 @@ goobers escalations \- list escalated runs newest first
 \fBgoobers escalations\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers escalations [--json] [path]
-       goobers escalations show [--json] [--include-verdict] <run-id> [path]
+Usage: goobers escalations [--json] [--api=<url>] [path]
+       goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
        goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an

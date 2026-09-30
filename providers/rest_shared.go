@@ -155,34 +155,95 @@ func allIssueComments(ctx context.Context, c restPager, baseURL string, repo Rep
 // breadcrumb ends an epoch, so stale winner and losing-racer breadcrumbs cannot
 // block the next owner.
 func claimWinner(ctx context.Context, c restClaimReader, baseURL string, repo RepositoryRef, id string) (string, bool, error) {
-	markerAuthor, err := c.AuthenticatedLogin(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("resolve claim marker author: %w", err)
-	}
-	raw, err := allIssueComments(ctx, c, baseURL, repo, id)
+	epochs, err := openClaimEpochs(ctx, c, baseURL, repo, id)
 	if err != nil {
 		return "", false, err
 	}
-	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
-	winner := ""
-	for _, comment := range raw {
-		if !strings.EqualFold(comment.User.Login, markerAuthor) {
-			continue
+	for _, epoch := range epochs {
+		if epoch.Trusted {
+			return epoch.RunID, true, nil
 		}
+	}
+	return "", false, nil
+}
+
+// ClaimEpoch is one open provider claim epoch: a claim breadcrumb that no
+// matching release breadcrumb from the same author has ended yet.
+type ClaimEpoch struct {
+	// Author is the provider login that posted the claim breadcrumb.
+	Author string
+	// Trusted reports whether Author is the authenticated provider identity,
+	// the only author whose epoch the claim election (claimWinner) honors.
+	Trusted bool
+	// RunID is the run the claim breadcrumb names.
+	RunID string
+	// InstanceID is the durable instance identity carried by the breadcrumb's
+	// attribution marker. Empty means the breadcrumb is unattributed (legacy)
+	// or its marker does not parse; it never identifies a particular instance.
+	InstanceID string
+}
+
+// openClaimEpochs returns every open claim epoch on an issue, at most one per
+// comment author. The trusted author's entry is exactly the epoch claimWinner
+// elects; the others are breadcrumbs the election ignores but which still show
+// that another identity holds a claim on the item (#5311).
+func openClaimEpochs(ctx context.Context, c restClaimReader, baseURL string, repo RepositoryRef, id string) ([]ClaimEpoch, error) {
+	markerAuthor, err := c.AuthenticatedLogin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve claim marker author: %w", err)
+	}
+	raw, err := allIssueComments(ctx, c, baseURL, repo, id)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
+	return scanClaimEpochs(raw, markerAuthor), nil
+}
+
+// scanClaimEpochs replays each author's breadcrumbs independently, in the
+// given (comment-id) order, with the election's rule: the first claim opens an
+// epoch and only a release naming that run closes it. One author's release
+// never ends another author's epoch. Epochs are returned in the order their
+// opening comments appear.
+func scanClaimEpochs(raw []restComment, markerAuthor string) []ClaimEpoch {
+	type openEpoch struct {
+		epoch  ClaimEpoch
+		opened int
+	}
+	open := map[string]openEpoch{}
+	for i, comment := range raw {
+		author := strings.ToLower(comment.User.Login)
+		current, hasOpen := open[author]
 		if releasedBy := claimReleaseRunID(comment.Body); releasedBy != "" {
-			if winner == releasedBy {
-				winner = ""
+			if hasOpen && current.epoch.RunID == releasedBy {
+				delete(open, author)
 			}
 			continue
 		}
-		if winner == "" {
-			winner = claimRunID(comment.Body)
+		runID := claimRunID(comment.Body)
+		if hasOpen || runID == "" {
+			continue
 		}
+		epoch := ClaimEpoch{
+			Author:  comment.User.Login,
+			Trusted: strings.EqualFold(comment.User.Login, markerAuthor),
+			RunID:   runID,
+		}
+		if attribution, ok, err := ParseAttribution(comment.Body); err == nil && ok {
+			epoch.InstanceID = attribution.InstanceID
+		}
+		open[author] = openEpoch{epoch: epoch, opened: i}
 	}
-	if winner == "" {
-		return "", false, nil
+	ordered := make([]openEpoch, 0, len(open))
+	for _, entry := range open {
+		ordered = append(ordered, entry)
 	}
-	return winner, true, nil
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].opened < ordered[j].opened })
+	epochs := make([]ClaimEpoch, 0, len(ordered))
+	for _, entry := range ordered {
+		epochs = append(epochs, entry.epoch)
+	}
+	return epochs
 }
 
 // postAttributedComment appends an issue comment carrying the run's

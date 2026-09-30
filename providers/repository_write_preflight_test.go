@@ -66,9 +66,13 @@ func TestPreflightRepositoryWriteReportsUnauthorizedOnRepoFetchFailure(t *testin
 // TestPreflightRepositoryWriteReportsNoPushPermission proves the
 // authenticated-but-lacking-push-permission state is distinguished from an
 // unauthorized credential: the repo is reachable and the credential is
-// valid, but permissions.push is false.
+// valid, but permissions.push is false and Git denies receive-pack discovery.
 func TestPreflightRepositoryWriteReportsNoPushPermission(t *testing.T) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/acme/app.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodGet)
+		w.WriteHeader(http.StatusForbidden)
+	})
 	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
 			"permissions": map[string]interface{}{"push": false},
@@ -90,10 +94,13 @@ func TestPreflightRepositoryWriteReportsNoPushPermission(t *testing.T) {
 
 // TestPreflightRepositoryWriteReportsPermissionIntrospectionUnavailable
 // proves the fourth, distinct state: GitHub answered but did not report
-// `permissions` at all — this must be reported as introspection-unavailable,
-// never silently inferred as either a pass or a push-permission denial.
+// `permissions` at all and Git discovery is inconclusive — never silently
+// infer either a pass or a push-permission denial.
 func TestPreflightRepositoryWriteReportsPermissionIntrospectionUnavailable(t *testing.T) {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/acme/app.git/info/refs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
 	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{})
 	})
