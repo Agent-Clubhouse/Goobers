@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -510,6 +511,29 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 			want: ErrInvalidBundle,
 		},
 		{
+			name: "yaml instruction companion smuggles a definition",
+			mutate: func(bundle *apiv1.GaggleBundle) {
+				goober := &bundle.Definition.Goobers[0]
+				previous := "goobers/" + goober.Name + "/" + goober.Spec.Instructions
+				goober.Spec.Instructions = "injected.yaml"
+				injected := *bundle.Definition.Workflows[0].DeepCopy()
+				injected.Name = "injected"
+				injected.Spec.Gaggle = "copied-example"
+				content, err := yaml.Marshal(injected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := range bundle.Definition.Files {
+					if bundle.Definition.Files[i].Path == previous {
+						bundle.Definition.Files[i].Path = "goobers/" + goober.Name + "/injected.yaml"
+						setFileContent(&bundle.Definition.Files[i], content)
+					}
+				}
+				refreshBundleDigest(t, bundle)
+			},
+			want: ErrInvalidBundle,
+		},
+		{
 			name: "unreferenced companion file",
 			mutate: func(bundle *apiv1.GaggleBundle) {
 				bundle.Definition.Files[0].Path = "gaggle.yaml"
@@ -592,6 +616,95 @@ func TestPrepareImportValidatesBeforeMutation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVerifyStagedDefinitionsRejectsUndeclaredDefinitions(t *testing.T) {
+	before := &instance.ConfigSet{}
+	definition := apiv1.GaggleBundleDefinition{
+		Workflows: []apiv1.Workflow{{ObjectMeta: metav1.ObjectMeta{Name: "flow"}}},
+		Goobers:   []apiv1.Goober{{ObjectMeta: metav1.ObjectMeta{Name: "coder"}}},
+	}
+	exact := &instance.ConfigSet{
+		Gaggles:   []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "copy"}}},
+		Workflows: definition.Workflows,
+		Goobers:   definition.Goobers,
+	}
+	if err := verifyStagedDefinitions(before, exact, "copy", definition); err != nil {
+		t.Fatalf("exact staged set rejected: %v", err)
+	}
+	extra := *exact
+	extra.Workflows = append(append([]apiv1.Workflow(nil), exact.Workflows...), apiv1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "injected"}})
+	if err := verifyStagedDefinitions(before, &extra, "copy", definition); err == nil {
+		t.Fatal("staged set with an undeclared workflow was accepted")
+	}
+}
+
+func TestPrepareImportValidatesAgainstDestinationSharedGoobers(t *testing.T) {
+	source := newBundleSource(t)
+	bundle, err := Export(source.ConfigDir(), "example", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := newBundleSource(t)
+	gaggleGooberDir := filepath.Join(destination.ConfigDir(), "gaggles", "example", "goobers", "coder")
+	sharedGooberDir := filepath.Join(filepath.Dir(destination.ConfigDir()), "goobers", "coder")
+	if err := os.MkdirAll(filepath.Dir(sharedGooberDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(gaggleGooberDir, sharedGooberDir); err != nil {
+		t.Fatal(err)
+	}
+	sharedPath := filepath.Join(sharedGooberDir, "goober.yaml")
+	var shared apiv1.Goober
+	if err := yaml.UnmarshalStrict(readFile(t, sharedPath), &shared); err != nil {
+		t.Fatal(err)
+	}
+	shared.Spec.Gaggle = ""
+	sharedData, err := yaml.Marshal(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sharedPath, sharedData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := instance.LoadConfigDir(destination.ConfigDir()); err != nil {
+		t.Fatalf("destination with shared goober invalid: %v report=%+v", err, report)
+	}
+	// Rename the bundle's goober so it does not collide with the destination's shared coder.
+	renamed := cloneBundle(t, bundle)
+	renamedGoober := "copied-coder"
+	oldGoober := renamed.Definition.Goobers[0].Name
+	renamed.Definition.Goobers[0].Name = renamedGoober
+	for i := range renamed.Definition.Workflows {
+		for j := range renamed.Definition.Workflows[i].Spec.Tasks {
+			if renamed.Definition.Workflows[i].Spec.Tasks[j].Goober == oldGoober {
+				renamed.Definition.Workflows[i].Spec.Tasks[j].Goober = renamedGoober
+			}
+		}
+		for j := range renamed.Definition.Workflows[i].Spec.Gates {
+			if gate := renamed.Definition.Workflows[i].Spec.Gates[j].Agentic; gate != nil && gate.Goober == oldGoober {
+				gate.Goober = renamedGoober
+			}
+		}
+		renamed.Definition.Workflows[i].Name = "copied-" + renamed.Definition.Workflows[i].Name
+	}
+	for i := range renamed.Definition.Goobers[0].Spec.Workflows {
+		renamed.Definition.Goobers[0].Spec.Workflows[i] = "copied-" + renamed.Definition.Goobers[0].Spec.Workflows[i]
+	}
+	for i := range renamed.Definition.Files {
+		renamed.Definition.Files[i].Path = strings.Replace(renamed.Definition.Files[i].Path, "goobers/"+oldGoober+"/", "goobers/"+renamedGoober+"/", 1)
+	}
+	refreshBundleDigest(t, &renamed)
+	swap, err := PrepareImport(destination, "copied-example", renamed)
+	if err != nil {
+		t.Fatalf("import into destination with shared goobers: %v", err)
+	}
+	if err := swap.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := instance.LoadConfigDir(destination.ConfigDir()); err != nil {
+		t.Fatalf("imported destination invalid: %v report=%+v", err, report)
 	}
 }
 

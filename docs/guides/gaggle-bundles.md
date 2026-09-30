@@ -57,6 +57,13 @@ Bundles allow at most 256 companion files, 1 MiB decoded per file, and 8 MiB
 decoded across all companion files. These limits are checked before export and
 again after base64 decoding during import.
 
+Goober instruction files must not use a `.yaml` or `.yml` extension: the config
+loader parses YAML under a gaggle's `goobers/` tree as definition documents, so
+a YAML companion could otherwise add an unvalidated definition. Import also
+refuses to overwrite any path it generates, and confirms the staged
+configuration loads exactly the destination's existing definitions plus the
+bundle's declared ones before installing it.
+
 Export fails explicitly instead of silently dropping task `run.env` values or
 opaque Goober `harnessOptions`, because their contents cannot be proven
 portable and credential-free.

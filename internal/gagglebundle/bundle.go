@@ -302,11 +302,18 @@ func PrepareImport(layout instance.Layout, target string, bundle apiv1.GaggleBun
 	if err := copyTree(layout.ConfigDir(), stagedConfig); err != nil {
 		return nil, fmt.Errorf("stage destination configuration: %w", err)
 	}
+	if err := stageSharedGoobers(layout, stagingRoot); err != nil {
+		return nil, fmt.Errorf("stage destination shared goobers: %w", err)
+	}
 	if err := materialize(stagedConfig, target, bundle); err != nil {
 		return nil, err
 	}
-	if _, stagedReport, err := instance.LoadConfigDir(stagedConfig); err != nil {
+	staged, stagedReport, err := instance.LoadConfigDir(stagedConfig)
+	if err != nil {
 		return nil, fmt.Errorf("%w: imported configuration failed validation: %w (%s)", ErrInvalidBundle, err, reportSummary(stagedReport))
+	}
+	if err := verifyStagedDefinitions(set, staged, target, bundle.Definition); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidBundle, err)
 	}
 	swap, err := prepareConfigDirSwap(layout, stagedConfig)
 	if err != nil {
@@ -433,6 +440,9 @@ func validateReferences(definition apiv1.GaggleBundleDefinition) error {
 		}
 		if goober.Spec.Instructions != "" && !portableRelativePath(goober.Spec.Instructions) {
 			return fmt.Errorf("goober %q instructions path %q must be a canonical relative slash-separated path", goober.Name, goober.Spec.Instructions)
+		}
+		if definitionDocumentPath(goober.Spec.Instructions) {
+			return fmt.Errorf("goober %q instructions path %q must not be a YAML file; the config loader would read it as a definition document", goober.Name, goober.Spec.Instructions)
 		}
 		if goober.Spec.Gaggle != gaggle {
 			return fmt.Errorf("goober %q references gaggle %q, want %q", goober.Name, goober.Spec.Gaggle, gaggle)
@@ -918,7 +928,7 @@ func materialize(configDir, target string, bundle apiv1.GaggleBundle) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return fmt.Errorf("create imported file directory: %w", err)
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
+		if err := writeNewFile(path, data); err != nil {
 			return fmt.Errorf("write imported file %s: %w", file.Path, err)
 		}
 	}
@@ -950,6 +960,78 @@ func materialize(configDir, target string, bundle apiv1.GaggleBundle) error {
 	}
 	manifest.Spec.Gaggles = append(manifest.Spec.Gaggles, target)
 	return writeYAML(manifestPath, manifest)
+}
+
+// stageSharedGoobers mirrors the instance-level shared goober tree beside the
+// staged config dir. The loader resolves shared goobers relative to the config
+// dir's parent, so without this copy a staged destination that uses shared
+// goobers would validate differently from the live tree. The copy is used for
+// validation only; the config swap installs just the staged config dir.
+func stageSharedGoobers(layout instance.Layout, stagingRoot string) error {
+	shared := filepath.Join(filepath.Dir(layout.ConfigDir()), "goobers")
+	info, err := os.Lstat(shared)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("shared goober root %s must be a directory", shared)
+	}
+	return copyTree(shared, filepath.Join(stagingRoot, "goobers"))
+}
+
+// writeNewFile refuses to replace an existing path, so a companion file can
+// never overwrite a generated definition or another companion (including
+// through case folding on case-insensitive filesystems).
+func writeNewFile(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// verifyStagedDefinitions proves the staged tree loads exactly the prior
+// definitions plus the bundle's validated ones, so no companion file or
+// generated path introduced a definition the bundle did not declare.
+func verifyStagedDefinitions(before, staged *instance.ConfigSet, target string, definition apiv1.GaggleBundleDefinition) error {
+	wantGaggles := append(definitionNames(before.Gaggles, gaggleName), target)
+	wantWorkflows := append(definitionNames(before.Workflows, workflowName), definitionNames(definition.Workflows, workflowName)...)
+	wantGoobers := append(definitionNames(before.Goobers, gooberName), definitionNames(definition.Goobers, gooberName)...)
+	checks := []struct {
+		kind      string
+		want, got []string
+	}{
+		{"gaggles", wantGaggles, definitionNames(staged.Gaggles, gaggleName)},
+		{"workflows", wantWorkflows, definitionNames(staged.Workflows, workflowName)},
+		{"goobers", wantGoobers, definitionNames(staged.Goobers, gooberName)},
+	}
+	for _, check := range checks {
+		sort.Strings(check.want)
+		sort.Strings(check.got)
+		if !reflect.DeepEqual(check.want, check.got) {
+			return fmt.Errorf("imported configuration loaded %s %v, want exactly %v", check.kind, check.got, check.want)
+		}
+	}
+	return nil
+}
+
+func gaggleName(g apiv1.Gaggle) string     { return g.Name }
+func workflowName(w apiv1.Workflow) string { return w.Name }
+func gooberName(g apiv1.Goober) string     { return g.Name }
+
+func definitionNames[T any](items []T, name func(T) string) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, name(item))
+	}
+	return names
 }
 
 func writeYAML(path string, value any) error {
@@ -1007,6 +1089,15 @@ func portableName(name string) bool {
 		}
 	}
 	return true
+}
+
+// definitionDocumentPath reports whether the config loader would parse a
+// companion file at path as a declarative definition document. Companion
+// content is only credential- and path-checked, so it must never be able to
+// smuggle an unvalidated Workflow, Goober, or Gaggle into the destination.
+func definitionDocumentPath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".yaml" || ext == ".yml"
 }
 
 func portableRelativePath(path string) bool {
