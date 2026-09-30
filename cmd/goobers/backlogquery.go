@@ -144,7 +144,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
 	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
 	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
-	"and uses only the github:issues:read capability. When inputs.resultFile\n" +
+	"and uses only the github:issues:read capability routed to the configured\n" +
+	"backlog provider (GitHub, Azure DevOps, or Gitea). When inputs.resultFile\n" +
 	"is declared, it also writes a read-only candidate report with scan coverage;\n" +
 	"candidates are for inspection, not claims or permission to re-ready work.\n\n" +
 	"The --resweep modifier requires --claim and selects only re-sweep work;\n" +
