@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,59 @@ func TestStartupReceiverDoesNotRetainPayloadIdentities(t *testing.T) {
 	consumeStartupReplay(w, startupBrokenReader{}, 0)
 	if w.Code != http.StatusBadRequest {
 		t.Fatal("truncated payload acknowledged")
+	}
+}
+
+func TestStartupRecoveryReceiverReconcilesOnlyAcknowledgedRecords(t *testing.T) {
+	startupRecoveryActive.Store(true)
+	defer startupRecoveryActive.Store(false)
+	id := strings.Repeat("a", 32)
+	ids.Delete(id)
+	defer ids.Delete(id)
+	startupRecoveryDuplicates.Store(0)
+	body := fmt.Sprintf(`{"data":{"baseData":{"properties":{"goobers.telemetry.record_id":%q}}}}`, id)
+	w := httptest.NewRecorder()
+	consumeStartupReplay(w, strings.NewReader(body+"\n"), 0)
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovery status=%d", w.Code)
+	}
+	if _, ok := ids.Load(id); !ok {
+		t.Fatal("acknowledged recovery identity was not retained")
+	}
+	w = httptest.NewRecorder()
+	consumeStartupReplay(w, strings.NewReader(body+"\n"), 0)
+	if w.Code != http.StatusOK || startupRecoveryDuplicates.Load() != 1 {
+		t.Fatal("duplicate acknowledged recovery identity was not counted")
+	}
+	w = httptest.NewRecorder()
+	consumeStartupReplay(w, strings.NewReader(`{"data":`), 0)
+	if w.Code != http.StatusBadRequest {
+		t.Fatal("malformed recovery payload was acknowledged")
+	}
+}
+
+func TestStartupPendingRecordIDs(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(spool(root), ".replay-bootstrap", "journal")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 64)
+	path := filepath.Join(dir, "pending.ndjson")
+	body := `{"schema":"goobers.dev/telemetry/azure-replay/v1"}` + "\n" +
+		fmt.Sprintf(`{"data":{"baseData":{"properties":{"goobers.telemetry.record_id":%q}}}}`, id) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := startupPendingRecordIDs(root)
+	if err != nil || len(got) != 1 || got[0] != id {
+		t.Fatalf("pending IDs=%v error=%v", got, err)
+	}
+	if err := os.WriteFile(path, []byte(body+strings.Split(body, "\n")[1]+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startupPendingRecordIDs(root); err == nil {
+		t.Fatal("duplicate pending identity passed")
 	}
 }
 
@@ -117,12 +171,19 @@ func TestStartupConfiguration(t *testing.T) {
 		func(c *startupConfig) { c.Settle = 61 * time.Second },
 		func(c *startupConfig) { c.PostReady = -time.Second },
 		func(c *startupConfig) { c.PostReady = 61 * time.Second },
+		func(c *startupConfig) { c.VerifyDeferred = true },
 	} {
 		c := base
 		change(&c)
 		if c.validate("startup") == nil {
 			t.Fatalf("invalid configuration accepted: %+v", c)
 		}
+	}
+	deferred := base
+	deferred.Prefill = "tiny-files"
+	deferred.VerifyDeferred = true
+	if err := deferred.validate("startup"); err != nil {
+		t.Fatalf("valid deferred startup configuration rejected: %v", err)
 	}
 }
 

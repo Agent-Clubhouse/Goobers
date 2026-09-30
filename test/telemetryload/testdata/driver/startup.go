@@ -18,6 +18,7 @@ type startupConfig struct {
 	Endpoint       string
 	Settle         time.Duration
 	PostReady      time.Duration
+	VerifyDeferred bool
 }
 
 var startupOptions = startupConfig{Rounds: 20, Prefill: "empty", Index: "cold", Endpoint: "healthy", Settle: 5 * time.Second}
@@ -29,6 +30,7 @@ func registerStartupFlags() {
 	flag.StringVar(&startupOptions.Endpoint, "startup-endpoint", "healthy", "startup only: healthy or stalled (seven-second response delay)")
 	flag.DurationVar(&startupOptions.Settle, "startup-settle", 5*time.Second, "idle time after fixture preparation, before each startup measurement")
 	flag.DurationVar(&startupOptions.PostReady, "startup-post-ready", 0, "optional post-ready API sampling window (up to 1m), with one real workflow; zero preserves idle startup measurements")
+	flag.BoolVar(&startupOptions.VerifyDeferred, "startup-verify-deferred", false, "after cold timing, restart each enabled fixture and reconcile durable record IDs with ingestion")
 }
 
 func (c startupConfig) validate(selected string) error {
@@ -48,6 +50,9 @@ func (c startupConfig) validate(selected string) error {
 	}
 	if c.Endpoint != "healthy" && c.Endpoint != "stalled" {
 		return fmt.Errorf("startup endpoint must be healthy or stalled")
+	}
+	if c.VerifyDeferred && (c.Index != "cold" || c.Prefill != "tiny-files" || c.Endpoint != "healthy") {
+		return fmt.Errorf("deferred startup verification requires tiny-files, cold index and healthy ingestion")
 	}
 	_, _, _, err := startupPrefill(c.Prefill)
 	return err
@@ -116,7 +121,8 @@ type startupSample struct {
 	Name                         string
 	Before, After                startupOccupancy
 	Measurement                  startupTiming
-	Prime                        *startupTiming `json:",omitempty"`
+	Prime                        *startupTiming          `json:",omitempty"`
+	Recovery                     *startupRecoveryReceipt `json:",omitempty"`
 	SeedPayloadsRemovedAfterward bool
 }
 
@@ -143,8 +149,11 @@ func runStartupPairs(url string) {
 			must(err)
 			write(filepath.Join(out, "startup-results.json"), string(data))
 			fmt.Printf("STARTUP round=%d enabled=%v ready_ms=%.3f stop_ms=%.3f files=%d bytes=%d\n", round, enabled, sample.Measurement.StartupMS, sample.Measurement.ShutdownMS, sample.Before.Files, sample.Before.Bytes)
-			if enabled && sample.Measurement.Requests == 0 {
+			if enabled && sample.Measurement.Requests == 0 && !(startupOptions.VerifyDeferred && sample.Recovery != nil && sample.Recovery.Successful()) {
 				panic("startup fixture did not exercise the configured ingestion endpoint; inspect raw sample")
+			}
+			if enabled && startupOptions.VerifyDeferred && (sample.Recovery == nil || !sample.Recovery.Successful()) {
+				panic("deferred startup records were not fully reconciled after restart; inspect raw receipt")
 			}
 			if post := sample.Measurement.PostReady; post != nil && !post.Successful() {
 				panic("post-ready response/workflow failure; raw startup sample retained")
@@ -199,6 +208,18 @@ func runStartupSample(url string, round int, enabled bool) startupSample {
 	// these post-cleanup fixtures cannot certify replay delivery completeness.
 	must(visitStartupSeeds(root, true))
 	sample.SeedPayloadsRemovedAfterward = true
+	if enabled && startupOptions.VerifyDeferred {
+		pending, err := startupPendingRecordIDs(root)
+		must(err)
+		if len(pending) == 0 && sample.Measurement.Requests == 0 {
+			panic("cold startup produced neither an ingestion request nor a durable pending identity")
+		}
+		if len(pending) > 0 {
+			sample.Recovery = recoverStartupRecords(name, root, api, pending)
+		} else {
+			sample.Recovery = &startupRecoveryReceipt{NoPending: true, Requests: sample.Measurement.Requests}
+		}
+	}
 	return sample
 }
 

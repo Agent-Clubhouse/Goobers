@@ -118,6 +118,10 @@ func auditStartupHealth(path string) (startupHealthAudit, error) {
 // identity ever received. Stream decoding to discard bounds receiver memory;
 // the separate workflow scenarios keep their full reconciliation collector.
 func consumeStartupReplay(w http.ResponseWriter, decoded io.Reader, responseMode int32) {
+	if startupRecoveryActive.Load() {
+		consumeStartupRecovery(w, decoded, responseMode)
+		return
+	}
 	if _, err := io.Copy(io.Discard, decoded); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
