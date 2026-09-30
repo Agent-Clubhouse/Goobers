@@ -81,3 +81,58 @@ func TestPRSelectLeavesRunAbortedPRWithCommentsParked(t *testing.T) {
 	assertNoWorkProviderStageResult(t, resultFile)
 	assertFakeIssueLabels(t, server, 5438, []string{abortedRunLabel}, nil)
 }
+
+func TestPRSelectLeavesRunAbortedPRWithChangesRequestedReviewParked(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5439)
+	server.addPRReview(5439, "CHANGES_REQUESTED")
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5439)
+}
+
+func TestPRSelectLeavesRunAbortedPRWithInlineReviewCommentParked(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5440)
+	server.addPRInlineReviewComment(5440)
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5440)
+}
+
+func TestPRSelectLeavesRunAbortedPRWithApprovedReviewParked(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5441)
+	server.addPRReview(5441, "APPROVED")
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5441)
+}
+
+func TestPRSelectLeavesRunAbortedPRParkedWhenReviewAttentionReadFails(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5442)
+	server.setPullRequestReviewThreadsFailure(5442, 500)
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5442)
+}
+
+func newReviewedRunAbortedPRFixture(t *testing.T, number int) *fakeGitHubServer {
+	t.Helper()
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(number, "reviewed parked PR", abortedRunLabel)
+	server.addOpenPR(number, "goobers/implementation/run-reviewed", "main", "green-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(number, true)
+	return server
+}
+
+func runPRSelectExpectingRunAbortedPark(t *testing.T, server *fakeGitHubServer, number int) {
+	t.Helper()
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "no work") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work for reviewed run-aborted PR", code, stdout, stderr)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+	assertFakeIssueLabels(t, server, number, []string{abortedRunLabel}, nil)
+}

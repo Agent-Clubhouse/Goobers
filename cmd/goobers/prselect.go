@@ -1213,16 +1213,19 @@ func clearStaleRunAbortedPR(
 	pullID := strconv.Itoa(pr.Number)
 	mergeable, err := provider.PullRequestMergeable(ctx, repo, pullID)
 	if err != nil {
-		return pr, false, fmt.Errorf("read mergeability: %w", err)
+		return pr, false, nil
 	}
 	if mergeable == nil || !*mergeable {
 		return pr, false, nil
 	}
 	comments, err := provider.ListComments(ctx, repo, pullID)
 	if err != nil {
-		return pr, false, fmt.Errorf("list comments: %w", err)
+		return pr, false, nil
 	}
 	if len(comments) != 0 {
+		return pr, false, nil
+	}
+	if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID); err != nil || reviewed {
 		return pr, false, nil
 	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
@@ -1234,6 +1237,32 @@ func clearStaleRunAbortedPR(
 	}
 	pr.Labels = removeLabel(pr.Labels, abortedRunLabel)
 	return pr, true, nil
+}
+
+func runAbortedPRHasReviewAttention(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+) (bool, error) {
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return true, err
+	}
+	if poll.ReviewDecision != "" && poll.ReviewDecision != providers.ReviewDecisionPending {
+		return true, nil
+	}
+	if poll.RequestedChanges > 0 {
+		return true, nil
+	}
+	threads, err := provider.ListPullRequestReviewThreads(ctx, repo, pullID)
+	if err != nil {
+		return true, err
+	}
+	return len(threads.Reviews) > 0 || len(threads.InlineComments) > 0, nil
 }
 
 func removeLabel(labels []string, remove string) []string {

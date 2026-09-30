@@ -69,6 +69,7 @@ type fakePR struct {
 	mergeable          *bool
 	files              []fakePRFile
 	reviews            []fakeReview
+	inlineComments     []fakeInlineReviewComment
 	author             string
 	assignees          []string
 	requestedReviewers []string
@@ -88,6 +89,14 @@ type fakeReview struct {
 	body      string
 	commitSHA string
 	state     string
+}
+
+type fakeInlineReviewComment struct {
+	id     int64
+	body   string
+	path   string
+	line   int
+	thread string
 }
 
 // fakePRFile is one file a fakePR touches, for the /pulls/{id}/files endpoint
@@ -195,6 +204,7 @@ type fakeGitHubServer struct {
 	// past rather than abort the whole scan on.
 	commentsFailureStatus map[int]int
 	commentsFailureBody   map[int]string
+	reviewThreadsFailure  map[int]int
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -209,6 +219,15 @@ func (s *fakeGitHubServer) setIssueCommentsFailure(number, status int, body stri
 	}
 	s.commentsFailureStatus[number] = status
 	s.commentsFailureBody[number] = body
+}
+
+func (s *fakeGitHubServer) setPullRequestReviewThreadsFailure(number, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reviewThreadsFailure == nil {
+		s.reviewThreadsFailure = map[int]int{}
+	}
+	s.reviewThreadsFailure[number] = status
 }
 
 // setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
@@ -397,6 +416,43 @@ func (s *fakeGitHubServer) handleGraphQL(w http.ResponseWriter, r *http.Request)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	repository := make(map[string]interface{})
+	if rawNumber, ok := request.Variables["number"]; ok {
+		number, _ := strconv.Atoi(fmt.Sprint(rawNumber))
+		if status := s.reviewThreadsFailure[number]; status != 0 {
+			http.Error(w, "injected review-thread failure", status)
+			return
+		}
+		pr := s.prs[number]
+		if pr == nil {
+			repository["pullRequest"] = nil
+		} else {
+			nodes := make([]map[string]interface{}, 0, len(pr.inlineComments))
+			for _, comment := range pr.inlineComments {
+				line := comment.line
+				nodes = append(nodes, map[string]interface{}{
+					"id":           comment.thread,
+					"isResolved":   false,
+					"isOutdated":   false,
+					"path":         comment.path,
+					"line":         line,
+					"originalLine": line,
+					"diffSide":     "RIGHT",
+					"comments": map[string]interface{}{
+						"nodes": []map[string]interface{}{{"databaseId": comment.id}},
+					},
+				})
+			}
+			repository["pullRequest"] = map[string]interface{}{
+				"reviewThreads": map[string]interface{}{
+					"nodes": nodes,
+					"pageInfo": map[string]interface{}{
+						"hasNextPage": false,
+						"endCursor":   "",
+					},
+				},
+			}
+		}
+	}
 	for variable, value := range request.Variables {
 		if !strings.HasPrefix(variable, "ref") {
 			continue
@@ -1282,6 +1338,23 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
+	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
+		out := make([]map[string]interface{}, 0, len(pr.inlineComments))
+		for _, comment := range pr.inlineComments {
+			line := comment.line
+			out = append(out, map[string]interface{}{
+				"id":            comment.id,
+				"body":          comment.body,
+				"path":          comment.path,
+				"line":          line,
+				"original_line": line,
+				"side":          "RIGHT",
+				"diff_hunk":     "@@ -1 +1 @@",
+				"html_url":      fmt.Sprintf("https://example/pull/%d#discussion_r%d", num, comment.id),
+				"user":          map[string]string{"login": "reviewer"},
+			})
+		}
+		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
 		if status, injected := s.filesFailureStatus[num]; injected {
 			http.Error(w, s.filesFailureBody[num], status)
@@ -1554,6 +1627,32 @@ func (s *fakeGitHubServer) setPRMergeable(number int, mergeable bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].mergeable = &mergeable
+}
+
+func (s *fakeGitHubServer) addPRReview(number int, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	pr.reviews = append(pr.reviews, fakeReview{
+		id:        int64(len(pr.reviews) + 1),
+		body:      "review body",
+		commitSHA: pr.headSHA,
+		state:     state,
+	})
+}
+
+func (s *fakeGitHubServer) addPRInlineReviewComment(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	id := int64(len(pr.inlineComments) + 1)
+	pr.inlineComments = append(pr.inlineComments, fakeInlineReviewComment{
+		id:     id,
+		body:   "inline finding",
+		path:   "file.go",
+		line:   1,
+		thread: fmt.Sprintf("thread-%d-%d", number, id),
+	})
 }
 
 // setPRClosed models a fixture PR closing without merging between runs.
