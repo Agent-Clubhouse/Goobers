@@ -126,6 +126,59 @@ type RemediationSibling struct {
 // gather-issue-context.
 type RemediationIssueContext struct {
 	Issues []RemediationIssue `json:"issues"`
+	// Ancestry is the bounded parent traversal of Issues (#6125). It is
+	// present only when the stage enables parent traversal, so a brief
+	// written with traversal disabled is unchanged.
+	Ancestry *RemediationAncestry `json:"ancestry,omitempty"`
+}
+
+// RemediationAncestry is the bounded, provider-neutral parent ancestry of the
+// originating issues. Status is "complete", "incomplete" (Omissions says what
+// is missing and why) or "unsupported" (the provider has no native parent
+// relation reader).
+type RemediationAncestry struct {
+	Status       string                        `json:"status"`
+	Provider     string                        `json:"provider"`
+	MaxDepth     int                           `json:"maxDepth"`
+	MaxItems     int                           `json:"maxItems"`
+	CrossProject string                        `json:"crossProject"`
+	IncludeTypes []string                      `json:"includeTypes,omitempty"`
+	Items        []RemediationAncestor         `json:"items"`
+	Omissions    []RemediationAncestryOmission `json:"omissions"`
+}
+
+// RemediationAncestor is one parent work item. QualifiedID is
+// provider:project:id; ParentOf lists the qualified ids of the children it
+// parents; Depth is 1 for an originating issue's immediate parent.
+type RemediationAncestor struct {
+	QualifiedID string                     `json:"qualifiedId"`
+	Provider    string                     `json:"provider"`
+	Project     string                     `json:"project"`
+	ID          string                     `json:"id"`
+	Depth       int                        `json:"depth"`
+	ParentOf    []string                   `json:"parentOf"`
+	Type        string                     `json:"type,omitempty"`
+	Title       string                     `json:"title,omitempty"`
+	State       string                     `json:"state,omitempty"`
+	URL         string                     `json:"url,omitempty"`
+	Fields      []RemediationAncestorField `json:"fields"`
+	Integrity   Integrity                  `json:"integrity"`
+}
+
+// RemediationAncestorField is one selected, size-bounded parent field.
+type RemediationAncestorField struct {
+	Name      string `json:"name"`
+	Value     string `json:"value"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// RemediationAncestryOmission records a parent the traversal did not include.
+type RemediationAncestryOmission struct {
+	Child  string `json:"child"`
+	Parent string `json:"parent,omitempty"`
+	Depth  int    `json:"depth"`
+	Reason string `json:"reason"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // RemediationIssue is one originating issue referenced by the PR.
