@@ -238,8 +238,8 @@ func writePriorityTriggerRequest(schedulerDir, gaggle, workflow, sourceRun strin
 
 func triggerRequestLifetime(ctx context.Context, timeout time.Duration) (time.Time, time.Time) {
 	createdAt := delegationNow().UTC()
-	deadline := createdAt.Add(timeout)
-	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+	var deadline time.Time
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(createdAt.Add(timeout)) {
 		deadline = contextDeadline.UTC()
 	}
 	return createdAt, deadline
@@ -401,6 +401,29 @@ func triggerRequestDeadline(req triggerRequest) time.Time {
 	return maxDeadline
 }
 
+func triggerRequestQueueDeadline(req triggerRequest) (time.Time, bool) {
+	if req.Priority {
+		return triggerRequestDeadline(req), true
+	}
+	if req.Deadline.IsZero() {
+		return time.Time{}, false
+	}
+	maxDeadline := req.CreatedAt.Add(triggerRequestTimeout(req))
+	if req.Deadline.Before(maxDeadline) {
+		return req.Deadline, true
+	}
+	return time.Time{}, false
+}
+
+func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt time.Time) (context.Context, context.CancelFunc, time.Time) {
+	deadline := startedAt.UTC().Add(triggerRequestTimeout(req))
+	if queueDeadline, ok := triggerRequestQueueDeadline(req); ok && queueDeadline.Before(deadline) {
+		deadline = queueDeadline
+	}
+	requestCtx, cancel := context.WithDeadline(ctx, deadline)
+	return requestCtx, cancel, deadline
+}
+
 // sweepPendingTriggers is the daemon-side half of #343's delegation
 // protocol, called at startup and periodically from runUpContext's sweep
 // goroutine
@@ -511,16 +534,15 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal
 			)
 		default:
 			sweepTime := now()
-			requestDeadline := triggerRequestDeadline(req)
-			requestLifetime := requestDeadline.Sub(req.CreatedAt)
-			if !sweepTime.Before(requestDeadline) {
+			if requestDeadline, ok := triggerRequestQueueDeadline(req); ok && !sweepTime.Before(requestDeadline) {
+				requestLifetime := requestDeadline.Sub(req.CreatedAt)
 				resp.Error = fmt.Sprintf(
 					"delegate: stale trigger request %s reached its %s deadline (created at %s, lifetime %s); refusing to dispatch",
 					requestID, requestDeadline.Format(time.RFC3339Nano), req.CreatedAt.Format(time.RFC3339Nano), requestLifetime,
 				)
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
-				requestCtx, cancelRequest := context.WithDeadline(ctx, requestDeadline)
+				requestCtx, cancelRequest, _ := triggerAttemptContext(ctx, req, sweepTime)
 				var runID string
 				var terr error
 				if req.Priority {
@@ -556,9 +578,9 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, log *journal
 					// finishing, so answering the client with a hard error
 					// turns a moment of contention into a failed command. Put
 					// the request back, untouched, and let the next sweep try
-					// again: CreatedAt is preserved, so the staleness check
-					// above still bounds the wait, and the client's own
-					// pollTriggerResponse deadline bounds it independently.
+					// again. The next attempt receives its own validation and
+					// dispatch budget; a busy daemon's queue wait must not
+					// spend the provider call's deadline.
 					// Requeued atomically (hidden temp + rename) so a
 					// concurrent sweep/inspection can never observe a
 					// truncated live request file mid-rewrite.

@@ -317,8 +317,8 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 	if err := json.Unmarshal(requestData, &req); err != nil {
 		t.Fatal(err)
 	}
-	if req.Deadline.IsZero() || !req.Deadline.After(req.CreatedAt) {
-		t.Fatalf("request lifetime = created %s deadline %s, want a serialized client deadline", req.CreatedAt, req.Deadline)
+	if !req.Deadline.IsZero() {
+		t.Fatalf("request deadline = %s, want no serialized default deadline for daemon-owned validation", req.Deadline)
 	}
 
 	sweepDone := make(chan error, 1)
@@ -521,6 +521,7 @@ func TestSweepRefusesStaleRequestAndJournalsNote(t *testing.T) {
 	writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
 		Workflow:  "implement",
 		CreatedAt: now.Add(-triggerDelegationTimeout - time.Second),
+		Deadline:  now.Add(-2 * time.Second),
 	})
 
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }); err != nil {
@@ -552,6 +553,103 @@ func TestSweepRefusesStaleRequestAndJournalsNote(t *testing.T) {
 		}
 	}
 	t.Fatalf("stale-request refusal was not journaled: %+v", events)
+}
+
+func TestSweepGivesQueuedTargetedValidationAFreshAttemptBudget(t *testing.T) {
+	oldTimeout := triggerDelegationTimeout
+	triggerDelegationTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { triggerDelegationTimeout = oldTimeout })
+
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	queuedAt := time.Now().Add(-450 * time.Millisecond).UTC()
+	sweepAt := time.Now().UTC()
+	validationDeadline := make(chan time.Time, 1)
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log, localscheduler.WithTargetedPRValidator(func(ctx context.Context, _ localscheduler.WorkflowEntry, _ int) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("validation context has no deadline")
+		}
+		validationDeadline <- deadline
+		return ctx.Err()
+	}))
+
+	const requestID = "queued-target"
+	writeTriggerRequestFixture(t, l.SchedulerDir(), requestID, triggerRequest{
+		Workflow:  "merge-review",
+		PR:        3261,
+		CreatedAt: queuedAt,
+		Deadline:  queuedAt.Add(triggerDelegationTimeout),
+	})
+
+	if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), nil, sched, func() time.Time { return sweepAt }); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	gotDeadline := <-validationDeadline
+	if gotDeadline.Before(sweepAt.Add(triggerDelegationTimeout)) {
+		t.Fatalf("validation deadline = %s, want a fresh attempt budget from sweep time %s", gotDeadline, sweepAt)
+	}
+	if starter.count() != 1 {
+		t.Fatalf("starter calls = %d, want dispatch after fresh validation budget", starter.count())
+	}
+}
+
+func TestSweepCapsTargetedValidationAtExplicitRequestDeadline(t *testing.T) {
+	oldTimeout := triggerDelegationTimeout
+	triggerDelegationTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { triggerDelegationTimeout = oldTimeout })
+
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	createdAt := time.Now().UTC()
+	sweepAt := createdAt.Add(100 * time.Millisecond)
+	explicitDeadline := sweepAt.Add(50 * time.Millisecond)
+	validationDeadline := make(chan time.Time, 1)
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log, localscheduler.WithTargetedPRValidator(func(ctx context.Context, _ localscheduler.WorkflowEntry, _ int) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("validation context has no deadline")
+		}
+		validationDeadline <- deadline
+		return ctx.Err()
+	}))
+
+	const requestID = "explicit-deadline-target"
+	writeTriggerRequestFixture(t, l.SchedulerDir(), requestID, triggerRequest{
+		Workflow:  "merge-review",
+		PR:        3261,
+		CreatedAt: createdAt,
+		Deadline:  explicitDeadline,
+	})
+
+	if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), nil, sched, func() time.Time { return sweepAt }); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	if got := <-validationDeadline; !got.Equal(explicitDeadline) {
+		t.Fatalf("validation deadline = %s, want explicit request deadline %s", got, explicitDeadline)
+	}
 }
 
 func TestSweepCollectsExpiredOrphanResponse(t *testing.T) {
@@ -1060,6 +1158,10 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	}
 	reqPath := filepath.Join(schedulerDir, pendingTriggersDir, contendedID+requestSuffix)
 	respPath := filepath.Join(schedulerDir, pendingTriggersDir, contendedID+responseSuffix)
+	originalContendedData, err := os.ReadFile(reqPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
 		t.Fatalf("contended sweepPendingTriggers: %v", err)
 	}
@@ -1069,6 +1171,21 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	}
 	if _, err := os.Stat(reqPath); err != nil {
 		t.Fatalf("contended request was consumed rather than requeued: %v", err)
+	}
+	requeuedData, err := os.ReadFile(reqPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requeued triggerRequest
+	if err := json.Unmarshal(requeuedData, &requeued); err != nil {
+		t.Fatal(err)
+	}
+	var originalContended triggerRequest
+	if err := json.Unmarshal(originalContendedData, &originalContended); err != nil {
+		t.Fatal(err)
+	}
+	if !requeued.CreatedAt.Equal(originalContended.CreatedAt) {
+		t.Fatalf("requeued CreatedAt = %s, want original queue order timestamp %s preserved", requeued.CreatedAt, originalContended.CreatedAt)
 	}
 
 	// Freeing the slot lets an ordinary later sweep dispatch the very same
