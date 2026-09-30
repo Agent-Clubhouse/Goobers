@@ -174,8 +174,10 @@ type StartSpec struct {
 	// since #1901: a starter that leaves them empty dispatches a
 	// backlog-query stage with no partition at all, which on a shared backlog
 	// claims the sibling instance's goobers:local items (#3873).
-	BacklogQueryAssignedTo    string
-	BacklogQueryRequireLabels string
+	BacklogQueryAssignedTo     string
+	BacklogQueryRequireLabels  string
+	BacklogQueryBacklogLabels  string
+	BacklogQueryLabelPredicate string
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// must execute (localscheduler.WorkflowEntry.GooberDigest — what
 	// gooberDigestStarter stamps onto a runner-driven run's StartRequest).
@@ -280,7 +282,9 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 
 		RoleRoutedBacklogProvider: s.RoleRoutedBacklogProvider,
 
-		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
-		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
+		BacklogQueryAssignedTo:     s.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels:  s.BacklogQueryRequireLabels,
+		BacklogQueryBacklogLabels:  s.BacklogQueryBacklogLabels,
+		BacklogQueryLabelPredicate: s.BacklogQueryLabelPredicate,
 	}, nil
 }

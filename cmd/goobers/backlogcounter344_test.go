@@ -66,6 +66,8 @@ func TestBuildBacklogCounter(t *testing.T) {
 
 	t.Run("wired with the target repo and selector labels", func(t *testing.T) {
 		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{Backlog: apiv1.BacklogRef{
+			Labels:         []string{"area:web"},
+			LabelPredicate: `"team:web" in labels`,
 			FieldPredicate: `fields["state"] == "open"`,
 		}}}
 		wf := &apiv1.Workflow{Spec: apiv1.WorkflowSpec{
@@ -98,7 +100,7 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if bc.repo.Owner != "acme" || bc.repo.Name != "web" {
 			t.Fatalf("repo = %+v, want acme/web", bc.repo)
 		}
-		if got, want := bc.labels, []string{"goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
+		if got, want := bc.labels, []string{"area:web", "goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
 			t.Fatalf("labels = %v, want canonical order %v", got, want)
 		}
 		if bc.schedulerDir != "/instance/scheduler" {
@@ -107,9 +109,18 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if bc.quota == nil {
 			t.Fatal("provider quota observer was not wired")
 		}
-		matched, err := bc.labelPredicate.Matches([]string{"goobers:ready", "goobers:approved", "size:m"})
+		matched, err := bc.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:ready", "goobers:approved", "size:m"})
 		if err != nil || !matched {
 			t.Fatalf("compiled predicate match = %v, err = %v, want true", matched, err)
+		}
+		for _, labels := range [][]string{
+			{"team:web", "goobers:ready", "goobers:approved", "size:m"},
+			{"area:web", "goobers:ready", "goobers:approved", "size:m"},
+		} {
+			matched, err = bc.labelPredicate.Matches(labels)
+			if err != nil || matched {
+				t.Fatalf("compiled predicate match for labels %v = %v, err = %v, want false", labels, matched, err)
+			}
 		}
 		matched, err = bc.fieldPredicate.Matches(fieldpredicate.Fields{"state": "open", "number": int64(10)})
 		if err != nil || !matched {
@@ -154,7 +165,13 @@ func TestBuildBacklogCounter(t *testing.T) {
 	})
 
 	t.Run("desired refill derives schedule workflow backlog eligibility", func(t *testing.T) {
-		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{RequireLabels: []string{"gaggle-default"}}}
+		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+			RequireLabels: []string{"gaggle-default"},
+			Backlog: apiv1.BacklogRef{
+				Labels:         []string{"area:web"},
+				LabelPredicate: `"team:web" in labels`,
+			},
+		}}
 		wf := &apiv1.Workflow{
 			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
 			Spec: apiv1.WorkflowSpec{
@@ -184,17 +201,25 @@ func TestBuildBacklogCounter(t *testing.T) {
 		if !ok {
 			t.Fatalf("counter type = %T, want *backlogCounter", counter)
 		}
-		if got, want := refill.labels, []string{"goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
+		if got, want := refill.labels, []string{"area:web", "goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
 			t.Fatalf("labels = %v, want %v", got, want)
 		}
 		if !refill.respectAssignee || refill.assignedTo != "goobersbot" {
 			t.Fatalf("assignee scope = enabled:%v value:%q, want goobersbot", refill.respectAssignee, refill.assignedTo)
 		}
-		matched, err := refill.labelPredicate.Matches([]string{"goobers:approved", "goobers:ready"})
+		matched, err := refill.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:approved", "goobers:ready"})
 		if err != nil || !matched {
 			t.Fatalf("eligible labels match = %v, err = %v, want true", matched, err)
 		}
-		matched, err = refill.labelPredicate.Matches([]string{"goobers:approved", "goobers:ready", providers.LabelClaimed})
+		matched, err = refill.labelPredicate.Matches([]string{"team:web", "goobers:approved", "goobers:ready"})
+		if err != nil || matched {
+			t.Fatalf("missing gaggle backlog label match = %v, err = %v, want false", matched, err)
+		}
+		matched, err = refill.labelPredicate.Matches([]string{"area:web", "goobers:approved", "goobers:ready"})
+		if err != nil || matched {
+			t.Fatalf("missing gaggle labelPredicate label match = %v, err = %v, want false", matched, err)
+		}
+		matched, err = refill.labelPredicate.Matches([]string{"area:web", "team:web", "goobers:approved", "goobers:ready", providers.LabelClaimed})
 		if err != nil || matched {
 			t.Fatalf("claimed labels match = %v, err = %v, want false", matched, err)
 		}

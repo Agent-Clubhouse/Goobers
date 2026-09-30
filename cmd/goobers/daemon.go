@@ -799,6 +799,8 @@ func buildSchedulerDefinitions(
 	branchNamespaces := branchNamespacesByGaggle(set)
 	selfIdentities := selfIdentitiesByGaggle(cfg, set)
 	requireLabelsDefaults := requireLabelsByGaggle(set)
+	backlogLabelsDefaults := backlogLabelsByGaggle(set)
+	backlogLabelPredicateDefaults := backlogLabelPredicatesByGaggle(set)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
@@ -837,7 +839,7 @@ func buildSchedulerDefinitions(
 		rn, manager, hooks, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleBacklogRef(set, gaggle), gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], generation,
+			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], backlogLabelsDefaults[gaggle], backlogLabelPredicateDefaults[gaggle], generation,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
@@ -1300,7 +1302,7 @@ func buildRetainedLegacyRunner(
 		instance.EffectiveAgenticSandbox(cfg, nil),
 		instance.EffectiveSelfIdentity(cfg, nil),
 		// Same reasoning: no gaggle to consult for a RequireLabels default.
-		"",
+		"", "", "",
 	)
 	return rn, manager, err
 }
@@ -1342,6 +1344,8 @@ func buildRuntimeRunner(
 	sandboxPosture instance.SandboxPosture,
 	selfIdentity string,
 	requireLabelsDefault string,
+	backlogLabelsDefault string,
+	backlogLabelPredicateDefault string,
 	generations ...string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
 	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir(), l.Gaggle())
@@ -1382,6 +1386,8 @@ func buildRuntimeRunner(
 		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
 	}
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
+	runnerCfg.BacklogQueryBacklogLabels = backlogLabelsDefault
+	runnerCfg.BacklogQueryLabelPredicate = backlogLabelPredicateDefault
 	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
