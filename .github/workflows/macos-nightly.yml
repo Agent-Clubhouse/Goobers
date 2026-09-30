@@ -149,3 +149,96 @@ jobs:
           name: test-timings-macOS-nightly
           path: test-timings/unit-macOS.json
           if-no-files-found: warn
+
+  # Disposable diagnostic branch only. This intentionally does not add a long
+  # load run to scheduled nightly or to the telemetry PR's required checks.
+  telemetry-matched:
+    name: Native macOS telemetry matched load (manual diagnostic)
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/telemetry-macos-perf-diagnostic' }}
+    runs-on: macos-latest
+    timeout-minutes: 100
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build and identify native fixture
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GOOBERS_DISABLE_FSYNC+x}" != x
+          mkdir -p "$RUNNER_TEMP/telemetry-matched"
+          {
+            date -u +%Y-%m-%dT%H:%M:%SZ
+            uname -a
+            sw_vers
+            sysctl -n hw.ncpu
+            sysctl -n hw.memsize
+            go version
+            git rev-parse HEAD
+            df -h "$RUNNER_TEMP"
+          } > "$RUNNER_TEMP/telemetry-matched/host.txt"
+          go build -o "$RUNNER_TEMP/telemetry-matched/goobers" ./cmd/goobers
+          go build -o "$RUNNER_TEMP/telemetry-matched/telemetry-load" ./test/telemetryload/testdata/driver
+          "$RUNNER_TEMP/telemetry-matched/goobers" version --json > "$RUNNER_TEMP/telemetry-matched/version.json"
+          shasum -a 256 "$RUNNER_TEMP/telemetry-matched/goobers" "$RUNNER_TEMP/telemetry-matched/telemetry-load" > "$RUNNER_TEMP/telemetry-matched/binaries.sha256"
+
+      - name: Matched baseline (35 minutes)
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/telemetry-matched/telemetry-load" \
+            -bin "$RUNNER_TEMP/telemetry-matched/goobers" \
+            -out "$RUNNER_TEMP/telemetry-matched/1-baseline" \
+            -scenario baseline -duration 35m -workers 10 -poll-interval 3m \
+            -sample-interval 10s -profile standard \
+            > "$RUNNER_TEMP/telemetry-matched/1-baseline-driver.log" \
+            2> "$RUNNER_TEMP/telemetry-matched/1-baseline-driver.err"
+
+      - name: Matched standard telemetry (35 minutes)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/telemetry-matched/telemetry-load" \
+            -bin "$RUNNER_TEMP/telemetry-matched/goobers" \
+            -out "$RUNNER_TEMP/telemetry-matched/1-enabled" \
+            -scenario enabled -duration 35m -workers 10 -poll-interval 3m \
+            -sample-interval 10s -profile standard \
+            > "$RUNNER_TEMP/telemetry-matched/1-enabled-driver.log" \
+            2> "$RUNNER_TEMP/telemetry-matched/1-enabled-driver.err"
+
+      - name: Archive synthetic evidence
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$RUNNER_TEMP/telemetry-matched"
+          paths=()
+          for path in host.txt version.json binaries.sha256 \
+            1-baseline 1-baseline-driver.log 1-baseline-driver.err \
+            1-enabled 1-enabled-driver.log 1-enabled-driver.err; do
+            if test -e "$RUNNER_TEMP/telemetry-matched/$path"; then
+              paths+=("$path")
+            fi
+          done
+          test "${#paths[@]}" -gt 0
+          tar -czf "$RUNNER_TEMP/telemetry-matched-evidence.tar.gz" \
+            -C "$RUNNER_TEMP/telemetry-matched" "${paths[@]}"
+          shasum -a 256 "$RUNNER_TEMP/telemetry-matched-evidence.tar.gz"
+
+      - name: Upload synthetic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: telemetry-macos-matched-diagnostic
+          path: ${{ runner.temp }}/telemetry-matched-evidence.tar.gz
+          if-no-files-found: error
