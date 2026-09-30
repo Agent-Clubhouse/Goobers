@@ -174,6 +174,56 @@ func TestAzureReplayBootstrapBoundRejectsAndCountsOverflow(t *testing.T) {
 	}
 }
 
+func TestAzureReplayBootstrapBoundSharedAcrossIndependentHandles(t *testing.T) {
+	root := t.TempDir()
+	payload := []byte("{\"value\":\"" + strings.Repeat("x", 600<<10) + "\"}\n")
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, name := range []string{"first.ndjson", "second.ndjson"} {
+		x := &azureReplayIndex{root: root}
+		x.bootstrapOpen.Store(true)
+		s := &azureReplaySpool{index: x, stream: "journal", cfg: azureReplayConfig{maxBytes: 1 << 20}}
+		go func(name string) {
+			<-start
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			results <- s.submitBootstrap(ctx, name, time.Now(), payload)
+		}(name)
+	}
+	close(start)
+	var admitted, rejected int
+	for range 2 {
+		select {
+		case err := <-results:
+			if err == nil {
+				admitted++
+			} else if strings.Contains(err.Error(), "bootstrap bound reached") {
+				rejected++
+			} else {
+				t.Fatalf("independent bootstrap writer failed unexpectedly: %v", err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("independent bootstrap writers did not release the root lock")
+		}
+	}
+	if admitted != 1 || rejected != 1 {
+		t.Fatalf("shared bootstrap bound admitted=%d rejected=%d", admitted, rejected)
+	}
+	entries, err := os.ReadDir(bootstrapDir(root, "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files int
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
+			files++
+		}
+	}
+	if files != 1 {
+		t.Fatalf("independent writers published %d files despite the shared bound", files)
+	}
+}
+
 func TestAzureReplayBootstrapGateClosesUnderMigrationLock(t *testing.T) {
 	root := t.TempDir()
 	x := &azureReplayIndex{root: root}
