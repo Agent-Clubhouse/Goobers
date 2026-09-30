@@ -22,6 +22,8 @@ type wireFixtures struct {
 	TriggerStatus            TriggerStatusResponse                      `json:"triggerStatus"`
 	CancelRequest            CancelRunRequest                           `json:"cancelRequest"`
 	CancelResult             CancelRunResult                            `json:"cancelResult"`
+	OperatorMessageRequest   OperatorMessageSubmitRequest               `json:"operatorMessageRequest"`
+	OperatorMessageResponse  OperatorMessageSubmitResponse              `json:"operatorMessageResponse"`
 	QueueEligibility         readservice.QueueEligibilityView           `json:"queueEligibility"`
 	Health                   readservice.Health                         `json:"health"`
 	Instance                 readservice.Instance                       `json:"instance"`
@@ -60,6 +62,8 @@ var wireFixtureTypes = []struct {
 	{name: "triggerStatus", scriptType: "TriggerStatusResponse"},
 	{name: "cancelRequest", scriptType: "CancelRunRequest"},
 	{name: "cancelResult", scriptType: "CancelRunResult"},
+	{name: "operatorMessageRequest", scriptType: "OperatorMessageSubmitRequest"},
+	{name: "operatorMessageResponse", scriptType: "OperatorMessageSubmitResponse"},
 	{name: "queueEligibility", scriptType: "QueueEligibilityView"},
 	{name: "health", scriptType: "Health"},
 	{name: "instance", scriptType: "Instance"},
@@ -383,13 +387,17 @@ func newWireFixtures() wireFixtures {
 		},
 	}
 
+	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
+
 	return wireFixtures{
-		TriggerRequest:   TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
-		TriggerResponse:  TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
-		TriggerStatus:    TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
-		CancelRequest:    CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
-		CancelResult:     CancelRunResult{Code: "cancellation_requested"},
-		QueueEligibility: queueEligibilityWireFixture(timestamp),
+		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
+		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
+		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},
+		CancelRequest:           CancelRunRequest{Workflow: "implement", Gaggle: "goobers", Actor: "operator"},
+		CancelResult:            CancelRunResult{Code: "cancellation_requested"},
+		OperatorMessageRequest:  operatorMessageRequest,
+		OperatorMessageResponse: operatorMessageResponse,
+		QueueEligibility:        queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
 			APIVersion:       readservice.APIVersion,
@@ -974,4 +982,32 @@ func int64Pointer(value int64) *int64 {
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+func operatorMessageWireFixtures(timestamp time.Time) (OperatorMessageSubmitRequest, OperatorMessageSubmitResponse) {
+	request := OperatorMessageSubmitRequest{
+		Gaggle:        "goobers",
+		TargetAddress: "terminal:operator",
+		Purpose:       "approval-required",
+		Content:       apiv1.OperatorMessageContent{Text: "Please review the run."},
+		DeliveryMode:  "terminal",
+	}
+	response := OperatorMessageSubmitResponse{
+		Accepted: true,
+		Record: apiv1.OperatorMessageRecord{
+			Request: apiv1.OperatorMessageRequest{
+				Schema:         apiv1.OperatorMessageRequestSchema,
+				RequestID:      "message-1",
+				IdempotencyKey: "key-1",
+				TargetAddress:  "terminal:operator",
+				PrincipalRef:   "user:operator",
+				RequestedAt:    timestamp,
+				Purpose:        "approval-required",
+				Content:        apiv1.OperatorMessageContent{Text: "Please review the run."},
+				DeliveryMode:   "terminal",
+			},
+			State: apiv1.OperatorMessageAccepted,
+		},
+	}
+	return request, response
 }

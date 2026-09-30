@@ -168,7 +168,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun:
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit:
 		return true
 	default:
 		return false
@@ -195,6 +195,8 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
 		schema = schemaRef("CancelRunRequest")
+	case RouteOperatorMessageSubmit:
+		schema = schemaRef("OperatorMessageSubmitRequest")
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage:
 		schema = schemaRef("InterventionRequest")
 	case RouteResolveEscalation:
@@ -260,6 +262,8 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("TriggerStatusResponse")
 	case RouteCancelRun:
 		successSchema = schemaRef("CancelRunResult")
+	case RouteOperatorMessageSubmit:
+		successSchema = schemaRef("OperatorMessageSubmitResponse")
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
 		successSchema = schemaRef("InterventionResult")
 	case RouteWorkflowEnabled:
@@ -549,6 +553,30 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 				"phase": map[string]any{"type": "string"},
 				"code":  map[string]any{"type": "string"},
 				"error": map[string]any{"type": "string"},
+			},
+		},
+		"OperatorMessageSubmitRequest": map[string]any{
+			"type": "object", "required": []string{"gaggle", "targetAddress", "purpose", "content", "deliveryMode"}, "additionalProperties": false,
+			"properties": map[string]any{
+				"gaggle":        map[string]any{"type": "string", "minLength": 1},
+				"targetAddress": map[string]any{"type": "string", "minLength": 1},
+				"expiresAt":     map[string]any{"type": "string", "format": "date-time"},
+				"purpose":       map[string]any{"type": "string", "minLength": 1},
+				"content": map[string]any{
+					"type": "object", "additionalProperties": false,
+					"properties": map[string]any{
+						"text":     map[string]any{"type": "string"},
+						"artifact": map[string]any{"type": "object", "additionalProperties": true},
+					},
+				},
+				"deliveryMode": map[string]any{"type": "string", "minLength": 1},
+			},
+		},
+		"OperatorMessageSubmitResponse": map[string]any{
+			"type": "object", "required": []string{"accepted", "record"},
+			"properties": map[string]any{
+				"accepted": map[string]any{"type": "boolean"},
+				"record":   map[string]any{"type": "object", "additionalProperties": true},
 			},
 		},
 		"InterventionRequest": map[string]any{

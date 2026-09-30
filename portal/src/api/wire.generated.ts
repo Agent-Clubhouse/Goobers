@@ -6,6 +6,8 @@ import type {
   TriggerStatusResponse,
   CancelRunRequest,
   CancelRunResult,
+  OperatorMessageSubmitRequest,
+  OperatorMessageSubmitResponse,
   QueueEligibilityView,
   Health,
   Instance,
@@ -41,6 +43,8 @@ export interface GoWireFixtures {
   triggerStatus: TriggerStatusResponse;
   cancelRequest: CancelRunRequest;
   cancelResult: CancelRunResult;
+  operatorMessageRequest: OperatorMessageSubmitRequest;
+  operatorMessageResponse: OperatorMessageSubmitResponse;
   queueEligibility: QueueEligibilityView;
   health: Health;
   instance: Instance;
@@ -95,6 +99,34 @@ export const goWireFixtures = {
   },
   "cancelResult": {
     "code": "cancellation_requested"
+  },
+  "operatorMessageRequest": {
+    "gaggle": "goobers",
+    "targetAddress": "terminal:operator",
+    "purpose": "approval-required",
+    "content": {
+      "text": "Please review the run."
+    },
+    "deliveryMode": "terminal"
+  },
+  "operatorMessageResponse": {
+    "accepted": true,
+    "record": {
+      "request": {
+        "schema": "goobers.dev/operator-message/request/v1",
+        "requestId": "message-1",
+        "idempotencyKey": "key-1",
+        "targetAddress": "terminal:operator",
+        "principalRef": "user:operator",
+        "requestedAt": "2026-07-18T12:34:56Z",
+        "purpose": "approval-required",
+        "content": {
+          "text": "Please review the run."
+        },
+        "deliveryMode": "terminal"
+      },
+      "state": "accepted"
+    }
   },
   "queueEligibility": {
     "gaggle": "goobers",

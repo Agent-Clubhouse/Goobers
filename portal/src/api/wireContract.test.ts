@@ -18,6 +18,8 @@ describe("Go daemon wire contract", () => {
       "triggerStatus",
       "cancelRequest",
       "cancelResult",
+      "operatorMessageRequest",
+      "operatorMessageResponse",
       "queueEligibility",
       "health",
       "instance",

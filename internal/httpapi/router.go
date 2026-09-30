@@ -72,6 +72,15 @@ type Authorizer interface {
 	Authorize(*http.Request) error
 }
 
+func operatorMessagePlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	run, ok := strings.CutSuffix(rest, "/operator-messages")
+	return ok && run != "" && !strings.Contains(run, "/")
+}
+
 // Principal is the identity established by an Authenticator.
 type Principal struct {
 	Subject string
@@ -407,6 +416,9 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("worker principal may only read config digest or report config divergence")
 		}
+		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
+			return nil
+		}
 		if IsPodPrincipal(principal) {
 			scope, admitted := podRouteScope(request)
 			if !admitted {
@@ -444,6 +456,9 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 		return scope, true
 	}
 	if journalPlanePath(path) && method == http.MethodPost {
+		return ScopeJournal, true
+	}
+	if operatorMessagePlanePath(path) && method == http.MethodPost {
 		return ScopeJournal, true
 	}
 	if surrenderPlanePath(path) && method == http.MethodPost {
@@ -570,6 +585,7 @@ type handlerConfig struct {
 	cancels                 CancelService
 	journal                 JournalService
 	runJournal              RunJournalService
+	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
 	recovery                RecoveryService

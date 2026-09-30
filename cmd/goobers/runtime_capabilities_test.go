@@ -104,6 +104,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		"journalEscalationCandidates": true, "journalBranchOwnership": true,
 		// An admitted stage rechecks current authorization immediately before land.
 		"journalMergeAuthority": true,
+		// Human operators and same-run pods submit attributed operator input
+		// into an active run; accepted and rejected attempts are durable writes.
+		"operatorMessageSubmit": true,
 	}
 	for _, action := range apiActions {
 		if apiMetadataRoutes[action.ID] {

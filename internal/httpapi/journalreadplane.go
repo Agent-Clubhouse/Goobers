@@ -60,6 +60,11 @@ type RunJournalService interface {
 	BranchOwnership(ctx context.Context, req journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error)
 }
 
+// OperatorMessageService submits operator messages after service-level authorization.
+type OperatorMessageService interface {
+	SubmitOperatorMessage(context.Context, OperatorMessageSubmissionRequest) (OperatorMessageSubmissionResponse, error)
+}
+
 // WithRunJournalService enables the cross-run journal-plane routes.
 func WithRunJournalService(service RunJournalService) HandlerOption {
 	return func(config *handlerConfig) error {
@@ -67,6 +72,17 @@ func WithRunJournalService(service RunJournalService) HandlerOption {
 			return errors.New("http API run journal service is required")
 		}
 		config.runJournal = service
+		return nil
+	}
+}
+
+// WithOperatorMessageService enables run-scoped operator-message submission routes.
+func WithOperatorMessageService(service OperatorMessageService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("http API operator message service is required")
+		}
+		config.operatorMessages = service
 		return nil
 	}
 }
@@ -103,6 +119,7 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 	router.Handle(apicontract.RouteJournalUnpushedWork, journalUnpushedWorkHandler(service, errorLog))
 	router.Handle(apicontract.RouteJournalEscalationCandidates, journalEscalationCandidatesHandler(service, errorLog))
 	router.Handle(apicontract.RouteJournalBranchOwnership, journalBranchOwnershipHandler(service, errorLog))
+	router.Handle(apicontract.RouteOperatorMessageSubmit, operatorMessageSubmitHandler(config.operatorMessages, errorLog))
 }
 
 // journalPlaneUnavailable reports (and answers) whether service is nil — the
