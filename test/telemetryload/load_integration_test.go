@@ -53,9 +53,7 @@ func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 	}
 	outputRoot := filepath.Join(artifact, "results")
 	args := []string{"-bin", daemon, "-out", outputRoot, "-scenario", "enabled", "-duration", "15s", "-workers", "2"}
-	if runtime.GOOS == "windows" {
-		args = append(args, "-windows-insecure-demo")
-	}
+	args = allowInsecureDemo(args)
 	command := exec.CommandContext(ctx, driver, args...)
 	command.Dir = root
 	output, err := command.CombinedOutput()
@@ -118,9 +116,7 @@ func TestIntegrationTelemetryLowerCollectionProfiles(t *testing.T) {
 			outputRoot := filepath.Join(artifact, profile)
 			args := []string{"-bin", daemon, "-out", outputRoot, "-scenario", "enabled",
 				"-duration", "15s", "-workers", "2", "-profile", profile}
-			if runtime.GOOS == "windows" {
-				args = append(args, "-windows-insecure-demo")
-			}
+			args = allowInsecureDemo(args)
 			command := exec.CommandContext(ctx, driver, args...)
 			command.Dir = repo
 			output, err := command.CombinedOutput()
@@ -177,9 +173,7 @@ func checkStartupProbe(t *testing.T, ctx context.Context, repo, artifact, daemon
 			if index == "cold" {
 				args = append(args, "-startup-post-ready", "1s")
 			}
-			if runtime.GOOS == "windows" {
-				args = append(args, "-windows-insecure-demo")
-			}
+			args = allowInsecureDemo(args)
 			command := exec.CommandContext(ctx, driver, args...)
 			command.Dir = repo
 			for _, entry := range os.Environ() {
@@ -193,6 +187,13 @@ func checkStartupProbe(t *testing.T, ctx context.Context, repo, artifact, daemon
 			verifyStartupSmoke(t, dir, index)
 		})
 	}
+}
+
+func allowInsecureDemo(args []string) []string {
+	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
+		return append(args, "-insecure-demo")
+	}
+	return args
 }
 
 func verifyStartupSmoke(t *testing.T, dir, index string) {

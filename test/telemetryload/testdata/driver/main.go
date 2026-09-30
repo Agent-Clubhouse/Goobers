@@ -41,7 +41,8 @@ var pollInterval time.Duration
 var azureConnectionEnv string
 var collectionProfile string
 var sampleInterval time.Duration
-var windowsInsecureDemo bool
+var insecureDemo bool
+var unisolatedDemo bool
 var settleTimeout time.Duration
 var diskFullVolume string
 var journalKeys sync.Map
@@ -69,7 +70,7 @@ func env() []string {
 func cmd(ctx context.Context, args ...string) *exec.Cmd {
 	c := exec.CommandContext(ctx, bin, args...)
 	c.Env = env()
-	if runtime.GOOS == "windows" && windowsInsecureDemo {
+	if unisolatedDemo {
 		// The explicit fixture flag covers both scaffolding and execution.
 		// Never inherit this opt-out from the caller's ambient environment.
 		c.Env = append(c.Env, "GOOBERS_ALLOW_UNISOLATED_NETWORK_NONE=1")
@@ -131,6 +132,11 @@ func classifyRunFailure(output string, timedOut bool) string {
 
 func spool(root string) string { return filepath.Join(root, "telemetry-export", "azure-monitor") }
 
+func needsInsecureDemoFallback(goos string, allowed bool, err error, output []byte) bool {
+	return goos == "linux" && allowed && err != nil &&
+		strings.Contains(string(output), "requires unprivileged user namespaces for enforced network isolation")
+}
+
 func prefill(root string, mb, tiny int, legacy bool) {
 	dir := filepath.Join(spool(root), "journal")
 	must(os.MkdirAll(dir, 0700))
@@ -163,16 +169,27 @@ func setup(name, url string, enabled bool) (string, string) {
 	root := filepath.Join(out, name)
 	args := []string{"init", "--demo", "--allow-ephemeral"}
 	if runtime.GOOS == "windows" {
-		if !windowsInsecureDemo {
-			panic("Windows synthetic demo requires explicit -windows-insecure-demo; it runs without network isolation")
+		if !insecureDemo {
+			panic("Windows synthetic demo requires explicit -insecure-demo; it runs without network isolation")
 		}
 		args = append(args, "--insecure")
 	}
 	args = append(args, root)
 	b, err := cmd(context.Background(), args...).CombinedOutput()
+	if needsInsecureDemoFallback(runtime.GOOS, insecureDemo, err, b) {
+		insecureArgs := append([]string(nil), args[:len(args)-1]...)
+		insecureArgs = append(insecureArgs, "--insecure", root)
+		b, err = cmd(context.Background(), insecureArgs...).CombinedOutput()
+		if err == nil {
+			unisolatedDemo = true
+		}
+	}
 	write(filepath.Join(out, name+"-init.log"), string(b))
 	if err != nil {
 		panic(string(b))
+	}
+	if runtime.GOOS == "windows" {
+		unisolatedDemo = true
 	}
 	cfg, err := instance.LoadConfig(filepath.Join(root, "instance.yaml"))
 	must(err)
@@ -252,7 +269,7 @@ func main() {
 	flag.DurationVar(&pollInterval, "poll-interval", 0, "pause per worker between workflows; use 3m with 10 workers for representative polling")
 	flag.DurationVar(&sampleInterval, "sample-interval", time.Second, "process and health sampling interval; use 10s for long soaks")
 	flag.StringVar(&collectionProfile, "profile", "standard", "health, journal, standard or diagnostic collection profile")
-	flag.BoolVar(&windowsInsecureDemo, "windows-insecure-demo", false, "explicitly allow the bundled credential-free demo without network isolation on Windows")
+	flag.BoolVar(&insecureDemo, "insecure-demo", false, "explicitly allow the bundled credential-free demo without network isolation on Linux or Windows")
 	flag.DurationVar(&settleTimeout, "settle-timeout", 2*time.Minute, "maximum journal reconciliation wait after workload ends, before shutdown")
 	flag.StringVar(&azureConnectionEnv, "azure-connection-env", "", "explicit connection-string environment reference; only with -scenario azure (no volume prefills)")
 	flag.StringVar(&diskFullVolume, "disk-full-volume", "", "dedicated empty Linux tmpfs <=64MiB, containing only .goobers-telemetry-load-volume; only with -scenario disk-full")
