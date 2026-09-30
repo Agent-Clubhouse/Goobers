@@ -45,6 +45,9 @@ concurrency:
 
 jobs:
   runtime:
+    # Disposable validation branch only: avoid a second Mac run while the
+    # focused hosted-Windows shutdown repetition below collects timing data.
+    if: ${{ false }}
     name: macOS runtime (unit · shipped · sandbox)
     runs-on: macos-latest
     timeout-minutes: 90
@@ -149,3 +152,33 @@ jobs:
           name: test-timings-macOS-nightly
           path: test-timings/unit-macOS.json
           if-no-files-found: warn
+
+  windows-shutdown-diagnostic:
+    name: temporary Windows telemetry shutdown repetition
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout frozen telemetry integration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.ref }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Windows host and fsync preflight
+        shell: pwsh
+        run: |
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber
+          go version
+          if ($null -ne (Get-Item Env:GOOBERS_DISABLE_FSYNC -ErrorAction SilentlyContinue)) { throw 'fsync override present' }
+          Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled
+      - name: Download modules
+        shell: pwsh
+        run: go mod download
+      - name: Repeat stalled-upload shutdown and immediate replay
+        shell: pwsh
+        timeout-minutes: 25
+        run: go test ./internal/telemetry -run '^TestAzureReplayShutdownBoundsStalledUploadAndReplaysAfterRestart$' -count=30 -timeout=20m -v
