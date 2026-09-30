@@ -25,7 +25,7 @@ func TestClassifyCoversDistinctDispositions(t *testing.T) {
 		{"duplicate or known", bundleWithDecision("run", "duplicate of known issue #123"), DispositionDuplicateOrKnown},
 		{"not reproduced", bundleWithDecision("run", "not reproduced on clean environment"), DispositionNotReproduced},
 		{"insufficient", diagnostics.Bundle{}, DispositionInsufficientEvidence},
-		{"goobers defect", bundleWithError("run", "internal", "goobers invariant violation reproduced on supported version"), DispositionGoobersDefectCandidate},
+		{"goobers defect", supportedBundle(bundleWithError("run", "internal", "goobers invariant violation reproduced on supported version")), DispositionGoobersDefectCandidate},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,6 +98,50 @@ func TestClassifyUnsupportedVersionUsesBinaryVersion(t *testing.T) {
 	}
 }
 
+func TestVersionSupportWindowIncludesCurrentPrereleaseAndPreviousStable(t *testing.T) {
+	for _, version := range []string{"v0.5.0", "v0.5.0-beta.11", "v0.4.5", "v0.4.0-rc.1"} {
+		if versionUnsupported(version) {
+			t.Fatalf("versionUnsupported(%q) = true, want false", version)
+		}
+	}
+	for _, version := range []string{"v0.3.3", "v0.2.0", "v0.1.0-beta.2"} {
+		if !versionUnsupported(version) {
+			t.Fatalf("versionUnsupported(%q) = false, want true", version)
+		}
+	}
+}
+
+func TestClassifyDoesNotPromoteProductCandidateWithoutSupportedBinaryVersion(t *testing.T) {
+	bundle := bundleWithError("run", "goobers_internal", "goobers invariant violation reproduced on supported version")
+	got := Classify(bundle)
+	if got.Disposition != DispositionInsufficientEvidence {
+		t.Fatalf("disposition = %q, want insufficient_evidence; result=%+v", got.Disposition, got)
+	}
+}
+
+func TestClassifyDoesNotPromoteProductCandidateWithCollectionGaps(t *testing.T) {
+	bundle := bundleWithError("run", "goobers_internal", "goobers invariant violation reproduced on supported version")
+	bundle.Binary.Version = "v0.5.0-beta.11"
+	bundle.Notes = []string{"could not collect run artifacts"}
+	got := Classify(bundle)
+	if got.Disposition != DispositionInsufficientEvidence {
+		t.Fatalf("disposition = %q, want insufficient_evidence; result=%+v", got.Disposition, got)
+	}
+}
+
+func TestClusterFingerprintIsStableAcrossVersionAndPlatform(t *testing.T) {
+	left := bundleWithError("run", "goobers_internal", "goobers invariant violation reproduced on supported version")
+	left.Binary = diagnostics.BinaryInfo{Version: "v0.5.0-beta.11", OS: "linux", Arch: "amd64"}
+	right := bundleWithError("run", "goobers_internal", "goobers invariant violation reproduced on supported version")
+	right.Binary = diagnostics.BinaryInfo{Version: "v0.4.5", OS: "windows", Arch: "arm64"}
+
+	leftResult := Classify(left)
+	rightResult := Classify(right)
+	if leftResult.Cluster.Fingerprint == "" || leftResult.Cluster.Fingerprint != rightResult.Cluster.Fingerprint {
+		t.Fatalf("cluster fingerprints = %q and %q, want equal non-empty", leftResult.Cluster.Fingerprint, rightResult.Cluster.Fingerprint)
+	}
+}
+
 func TestClassifyGoldenOutputs(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -140,13 +184,18 @@ func TestClassifyGoldenOutputs(t *testing.T) {
 			bundle: diagnostics.Bundle{},
 		},
 		{
-			name:   "goobers-defect-candidate",
-			bundle: bundleWithError("run-goobers", "goobers_internal", "goobers invariant violation reproduced on supported version"),
+			name: "goobers-defect-candidate",
+			bundle: func() diagnostics.Bundle {
+				bundle := bundleWithError("run-goobers", "goobers_internal", "goobers invariant violation reproduced on supported version")
+				bundle.Binary.Version = "v0.5.0-beta.11"
+				return bundle
+			}(),
 		},
 		{
 			name: "contradictory-fail-closed",
 			bundle: func() diagnostics.Bundle {
 				bundle := bundleWithError("run-ambiguous", "goobers_internal", "goobers invariant violation reproduced on supported version")
+				bundle.Binary.Version = "v0.5.0-beta.11"
 				bundle.Runs[0].Decisions = []diagnostics.Decision{{
 					Stage: "support", Subject: "run-ambiguous", Reason: "insufficient evidence: reproduction is ambiguous",
 				}}
@@ -195,4 +244,9 @@ func bundleWithDecision(runID, reason string) diagnostics.Bundle {
 		RunID: runID, Workflow: "workflow", Gaggle: "gaggle",
 		Decisions: []diagnostics.Decision{{Stage: "support", Subject: runID, Reason: reason}},
 	}}}
+}
+
+func supportedBundle(bundle diagnostics.Bundle) diagnostics.Bundle {
+	bundle.Binary.Version = "v0.5.0-beta.11"
+	return bundle
 }

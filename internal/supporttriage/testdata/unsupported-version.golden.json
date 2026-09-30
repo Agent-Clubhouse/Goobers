@@ -21,10 +21,10 @@
       "gaggle"
     ],
     "binaryVersion": "v0.2.0",
-    "fingerprint": "v0.2.0|workflow"
+    "fingerprint": "workflow"
   },
   "cluster": {
-    "fingerprint": "v0.2.0|workflow",
+    "fingerprint": "workflow",
     "occurrenceCount": 1,
     "affectedVersions": [
       "v0.2.0"

@@ -158,13 +158,13 @@ func collectSignals(bundle diagnostics.Bundle) []signal {
 			}
 		}
 		for _, err := range runErrors(run) {
-			signals = append(signals, classifyError(run.RunID, err)...)
+			signals = append(signals, classifyError(run.RunID, err, canPromoteProductCandidate(bundle))...)
 		}
 	}
 	return signals
 }
 
-func classifyError(runID string, err diagnostics.ErrorInfo) []signal {
+func classifyError(runID string, err diagnostics.ErrorInfo, allowProductCandidate bool) []signal {
 	code := lowerJoined(err.Code)
 	message := lowerJoined(err.Message)
 	text := strings.TrimSpace(code + " " + message)
@@ -188,6 +188,16 @@ func classifyError(runID string, err diagnostics.ErrorInfo) []signal {
 	case containsAny(text, "timeout", "temporarily", "transient", "try again", "connection reset"):
 		return []signal{{disposition: DispositionTransientFailure, evidence: evidence}}
 	case isGoobersOwnedDefect(text):
+		if !allowProductCandidate {
+			return []signal{{
+				disposition: DispositionInsufficientEvidence,
+				evidence: Evidence{
+					Kind:    "support_context",
+					Subject: runID,
+					Detail:  "candidate-looking Goobers evidence requires a supported binary version and complete diagnostics",
+				},
+			}}
+		}
 		return []signal{{disposition: DispositionGoobersDefectCandidate, evidence: evidence}}
 	default:
 		return nil
@@ -216,15 +226,122 @@ func isGoobersOwnedDefect(text string) bool {
 	return owned && reproduced
 }
 
+func canPromoteProductCandidate(bundle diagnostics.Bundle) bool {
+	if len(bundle.Notes) > 0 {
+		return false
+	}
+	return versionKnownSupported(bundle.Binary.Version)
+}
+
 func versionUnsupported(version string) bool {
+	release, ok := releaseLine(version)
+	if !ok {
+		return false
+	}
+	current, ok := releaseLine(supportmatrix.NextPlannedRelease)
+	if !ok {
+		return false
+	}
+	previous, hasPrevious := previousReleaseLine(current)
+	switch {
+	case sameReleaseLine(release, current):
+		return false
+	case hasPrevious && sameReleaseLine(release, previous):
+		return false
+	case compareReleaseLine(release, current) > 0:
+		return false
+	default:
+		return true
+	}
+}
+
+func versionKnownSupported(version string) bool {
+	release, ok := releaseLine(version)
+	if !ok {
+		return false
+	}
+	current, ok := releaseLine(supportmatrix.NextPlannedRelease)
+	if !ok {
+		return false
+	}
+	if sameReleaseLine(release, current) {
+		return true
+	}
+	previous, ok := previousReleaseLine(current)
+	return ok && sameReleaseLine(release, previous)
+}
+
+type releaseLineVersion struct {
+	major uint64
+	minor uint64
+}
+
+func releaseLine(version string) (releaseLineVersion, bool) {
 	version = strings.TrimSpace(version)
-	if version == "" || version == "dev" || version == supportmatrix.NextPlannedRelease {
-		return false
+	if version == "" || version == "dev" || !strings.HasPrefix(version, "v") {
+		return releaseLineVersion{}, false
 	}
-	if !strings.HasPrefix(version, "v") {
-		return false
+	if before, _, ok := strings.Cut(version, "-"); ok {
+		version = before
 	}
-	return version != supportmatrix.NextPlannedRelease
+	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	if len(parts) != 3 {
+		return releaseLineVersion{}, false
+	}
+	numbers := make([]uint64, 2)
+	for i := 0; i < 2; i++ {
+		part := parts[i]
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return releaseLineVersion{}, false
+		}
+		var value uint64
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return releaseLineVersion{}, false
+			}
+			value = value*10 + uint64(r-'0')
+		}
+		numbers[i] = value
+	}
+	patch := parts[2]
+	if patch == "" || (len(patch) > 1 && patch[0] == '0') {
+		return releaseLineVersion{}, false
+	}
+	for _, r := range patch {
+		if r < '0' || r > '9' {
+			return releaseLineVersion{}, false
+		}
+	}
+	return releaseLineVersion{major: numbers[0], minor: numbers[1]}, true
+}
+
+func previousReleaseLine(current releaseLineVersion) (releaseLineVersion, bool) {
+	if current.minor == 0 {
+		if current.major == 0 {
+			return releaseLineVersion{}, false
+		}
+		return releaseLineVersion{major: current.major - 1}, true
+	}
+	return releaseLineVersion{major: current.major, minor: current.minor - 1}, true
+}
+
+func sameReleaseLine(left, right releaseLineVersion) bool {
+	return left.major == right.major && left.minor == right.minor
+}
+
+func compareReleaseLine(left, right releaseLineVersion) int {
+	switch {
+	case left.major < right.major:
+		return -1
+	case left.major > right.major:
+		return 1
+	case left.minor < right.minor:
+		return -1
+	case left.minor > right.minor:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func hasContradiction(signals []signal) bool {
@@ -300,14 +417,14 @@ func summarizeCluster(bundle diagnostics.Bundle) ClusterInfo {
 }
 
 func fingerprint(bundle diagnostics.Bundle) string {
-	parts := []string{bundle.Binary.OS, bundle.Binary.Arch, bundle.Binary.Version}
+	var parts []string
 	for _, run := range bundle.Runs {
 		parts = append(parts, run.Workflow, run.Phase)
 		for _, err := range runErrors(run) {
 			parts = append(parts, err.Stage, err.Code, normalizeFingerprintText(err.Message))
 		}
 	}
-	if len(parts) == 3 {
+	if len(parts) == 0 {
 		for _, issue := range bundle.Instance.ConfigIssues {
 			parts = append(parts, normalizeFingerprintText(issue))
 		}
