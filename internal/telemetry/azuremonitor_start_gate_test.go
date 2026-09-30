@@ -60,10 +60,19 @@ func TestAzureReplayStartGateCloseBeforeReadyRetainsForRestart(t *testing.T) {
 	assertStartGateHeld(t, sent)
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
-	if err := s.close(ctx); !errors.Is(err, offline) {
-		t.Fatalf("close before ready = %v, want bounded final send's offline error", err)
+	if err := s.close(ctx); err != nil && !errors.Is(err, offline) {
+		t.Fatalf("close before ready = %v, want durable deferred replay or bounded final send", err)
 	}
-	assertStartGateDelivered(t, sent, payload) // Close bypasses the startup gate.
+	// If indexing finished before close, a final send can fail offline. If
+	// indexing was still deferred, close leaves the fsynced bootstrap batch for
+	// restart instead. Neither path may silently discard the record.
+	select {
+	case got := <-sent:
+		if got != payload {
+			t.Fatalf("final send payload = %q, want %q", got, payload)
+		}
+	default:
+	}
 	select {
 	case <-start:
 		t.Fatal("closing one exporter released the caller's startup signal")
@@ -82,8 +91,23 @@ func TestAzureReplayStartGateCloseBeforeReadyRetainsForRestart(t *testing.T) {
 	if retained {
 		t.Fatal("close before ready leaked shared index")
 	}
-	if stats := InspectAzureReplayRoot(root); !stats.AccountingReady || stats.PendingRecords != 1 {
-		t.Fatalf("failed startup lost its durable record: %+v", stats)
+	indexed, err := filepath.Glob(filepath.Join(root, "journal", "*"+azureReplayFileSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := filepath.Glob(filepath.Join(bootstrapDir(root, "journal"), "*"+azureReplayFileSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := append(indexed, bootstrap...)
+	if len(files) != 1 {
+		t.Fatalf("failed startup retained %d durable batches, want 1", len(files))
+	}
+	if _, got, err := readAzureReplayFile(files[0]); err != nil || string(got) != payload {
+		t.Fatalf("failed startup retained wrong batch: %q, %v", got, err)
+	}
+	if stats := InspectAzureReplayRoot(root); stats.AccountingReady && stats.PendingRecords != 1 {
+		t.Fatalf("fully accounted failed startup omitted its durable record: %+v", stats)
 	}
 	cfg.start = nil
 	_ = startGateTestSpool(t, cfg, func(_ context.Context, b []byte) error { sent <- string(b); return nil })
