@@ -22,6 +22,7 @@ var errAzureBootstrapReady = errors.New("azure replay index ready during bootstr
 
 const azureBootstrapFileLimit = 2048
 const azureBootstrapByteLimit = 8 << 20
+const azureBootstrapSweepInterval = 30 * time.Second
 
 func bootstrapDir(root, stream string) string {
 	if stream == "" {
@@ -30,31 +31,40 @@ func bootstrapDir(root, stream string) string {
 	return filepath.Join(root, ".replay-bootstrap", stream)
 }
 
-func lockBootstrap(ctx context.Context, dir string) (func(), error) {
-	parent := filepath.Dir(dir)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
+// The active daemon must find bootstrap files left by another short-lived
+// process. Only directory names are inspected on this idle cadence; a full
+// manifest audit is not started when the bootstrap area is empty.
+func (x *azureReplayIndex) hasBootstrapFiles() bool {
+	for _, stream := range x.streams {
+		entries, err := os.ReadDir(bootstrapDir(x.root, stream))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return true
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func lockBootstrap(ctx context.Context, root string) (func(), error) {
+	base := filepath.Join(root, ".replay-bootstrap")
+	if err := os.MkdirAll(base, 0o700); err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(parent)
+	info, err := os.Lstat(base)
 	if err != nil {
 		return nil, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("invalid Azure bootstrap directory: %s", parent)
+		return nil, fmt.Errorf("invalid Azure bootstrap directory: %s", base)
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
-	for _, path := range []string{dir} {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, err
-		}
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("invalid Azure bootstrap directory: %s", path)
-		}
-	}
-	path := filepath.Join(dir, ".lock")
+	path := filepath.Join(base, ".lock")
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -80,20 +90,35 @@ func lockBootstrap(ctx context.Context, dir string) (func(), error) {
 	}
 }
 
+func ensureBootstrapStream(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("invalid Azure bootstrap directory: %s", dir)
+	}
+	return nil
+}
+
 func (s *azureReplaySpool) submitBootstrap(ctx context.Context, name string, createdAt time.Time, payload []byte) error {
 	dir := bootstrapDir(s.index.root, s.stream)
-	unlock, err := lockBootstrap(ctx, dir)
+	unlock, err := lockBootstrap(ctx, s.index.root)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	select {
-	case <-s.index.ready:
+	if !s.index.bootstrapOpen.Load() {
 		return errAzureBootstrapReady
-	default:
 	}
 	if s.closed.Load() {
 		return errors.New("azure monitor replay spool is closed")
+	}
+	if err := ensureBootstrapStream(dir); err != nil {
+		return err
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -134,26 +159,35 @@ func (s *azureReplaySpool) submitBootstrap(ctx context.Context, name string, cre
 }
 
 func (x *azureReplayIndex) migrateBootstrap(ctx context.Context) error {
+	if !x.bootstrapOpen.Load() && !x.hasBootstrapFiles() {
+		return nil
+	}
+	unlock, err := lockBootstrap(ctx, x.root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	for _, stream := range x.streams {
-		if err := x.migrateBootstrapStream(ctx, stream); err != nil {
+		if err := x.migrateBootstrapStreamLocked(ctx, stream); err != nil {
 			return err
 		}
 	}
+	// Closing admission under the same root bootstrap lock prevents a producer
+	// from publishing after its stream was scanned but before index readiness.
+	x.bootstrapOpen.Store(false)
 	return nil
 }
 
-func (x *azureReplayIndex) migrateBootstrapStream(ctx context.Context, stream string) error {
+func (x *azureReplayIndex) migrateBootstrapStreamLocked(ctx context.Context, stream string) error {
 	dir := bootstrapDir(x.root, stream)
 	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
 	}
-	unlockBootstrap, err := lockBootstrap(ctx, dir)
-	if err != nil {
+	if err := ensureBootstrapStream(dir); err != nil {
 		return err
 	}
-	defer unlockBootstrap()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -163,6 +197,13 @@ func (x *azureReplayIndex) migrateBootstrapStream(ctx context.Context, stream st
 		if strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
 			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 				return fmt.Errorf("invalid Azure bootstrap entry %q", entry.Name())
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("invalid Azure bootstrap file %q", entry.Name())
 			}
 			files = append(files, entry)
 		}
@@ -188,7 +229,7 @@ func (x *azureReplayIndex) migrateBootstrapStream(ctx context.Context, stream st
 			from := filepath.Join(dir, entry.Name())
 			to := filepath.Join(x.root, stream, entry.Name())
 			if _, err := os.Lstat(to); err == nil {
-				return fmt.Errorf("Azure bootstrap destination already exists: %s", entry.Name())
+				return fmt.Errorf("azure bootstrap destination already exists: %s", entry.Name())
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

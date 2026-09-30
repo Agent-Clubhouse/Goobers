@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -122,7 +123,7 @@ func TestAzureReplayBootstrapSurvivesShutdownAndReplaysAfterRestart(t *testing.T
 		t.Fatal(err)
 	}
 	close(start)
-	delivered := make(chan []byte, 1)
+	delivered := make(chan []byte, 4)
 	second, err := newAzureReplaySpool(cfg, func(_ context.Context, body []byte) error {
 		delivered <- append([]byte(nil), body...)
 		return nil
@@ -170,6 +171,85 @@ func TestAzureReplayBootstrapBoundRejectsAndCountsOverflow(t *testing.T) {
 	}
 	if got := s.admissionFailures.Load(); got != 1 {
 		t.Fatalf("rejected bootstrap batch was not counted: %d", got)
+	}
+}
+
+func TestAzureReplayBootstrapGateClosesUnderMigrationLock(t *testing.T) {
+	root := t.TempDir()
+	x := &azureReplayIndex{root: root}
+	x.bootstrapOpen.Store(true)
+	s := &azureReplaySpool{index: x, stream: "journal", cfg: azureReplayConfig{maxBytes: 1 << 20}}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	unlock, err := lockBootstrap(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.submitBootstrap(ctx, "startup.ndjson", time.Now(), []byte("{}\n")) }()
+	x.bootstrapOpen.Store(false) // Migration closes the gate while holding this lock.
+	unlock()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errAzureBootstrapReady) {
+			t.Fatalf("late bootstrap writer did not switch to normal admission: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("late bootstrap writer did not release")
+	}
+	if entries, err := os.ReadDir(bootstrapDir(root, "journal")); err == nil && len(entries) != 0 {
+		t.Fatalf("late bootstrap file was stranded after migration: %v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestAzureReplayBootstrapLeftByOtherProcessIsMigrated(t *testing.T) {
+	root := t.TempDir()
+	start := make(chan struct{})
+	close(start)
+	delivered := make(chan []byte, 4)
+	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20, start: start}
+	s, err := newAzureReplaySpool(cfg, func(_ context.Context, body []byte) error {
+		delivered <- append([]byte(nil), body...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.close(context.Background()) }()
+	if err := s.index.wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockBootstrap(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := bootstrapDir(root, "journal")
+	if err := ensureBootstrapStream(dir); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	payload := []byte("{\"external\":true}\n")
+	if _, err := writeAzureReplayBatch(dir, "external.ndjson", time.Now(), payload); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	unlock()
+	if !s.index.hasBootstrapFiles() {
+		t.Fatal("cross-process bootstrap publication was invisible")
+	}
+	if err := s.index.migrateBootstrap(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	s.signal()
+	select {
+	case got := <-delivered:
+		if string(got) != string(payload) {
+			t.Fatalf("cross-process replay payload=%q want=%q", got, payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cross-process bootstrap file was not delivered")
 	}
 }
 

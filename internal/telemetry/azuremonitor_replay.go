@@ -444,14 +444,20 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 	}
 	delay := azureReplayRetryMinimum
 	retrying := false
+	bootstrapRetry := false
+	sweep := time.NewTicker(azureBootstrapSweepInterval)
+	defer sweep.Stop()
 	for {
 		var retry <-chan time.Time
 		wake := s.wake
+		periodic := sweep.C
+		sweepBootstrap := bootstrapRetry
 		var timer *time.Timer
 		if retrying {
 			// Leave new-work notifications pending until the backoff expires.
 			// Continuous traffic must not turn an outage into a retry storm.
 			wake = nil
+			periodic = nil
 			timer = time.NewTimer(jitterAzureReplayDelay(delay))
 			retry = timer.C
 		}
@@ -462,19 +468,37 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 			}
 			return
 		case <-wake:
+		case <-periodic:
+			if !s.index.hasBootstrapFiles() {
+				continue
+			}
+			sweepBootstrap = true
 		case <-retry:
 		}
 		if timer != nil {
 			timer.Stop()
 		}
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := s.drain(attempt)
+		var err error
+		var migrationErr error
+		if sweepBootstrap {
+			migrationErr = s.index.wait(attempt)
+			if migrationErr == nil {
+				migrationErr = s.index.migrateBootstrap(attempt)
+			}
+			err = migrationErr
+		}
+		if err == nil {
+			err = s.drain(attempt)
+		}
 		cancel()
 		if err == nil || errors.Is(err, errAzureReplayYield) {
+			bootstrapRetry = false
 			delay = azureReplayRetryMinimum
 			retrying = false
 			continue
 		}
+		bootstrapRetry = migrationErr != nil
 		retrying = true
 		delay = min(delay*2, azureReplayRetryMaximum)
 	}

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -36,20 +37,21 @@ var azureReplayIndexes = struct {
 }{roots: make(map[string]*azureReplayIndex)}
 
 type azureReplayIndex struct {
-	root         string
-	streams      []string
-	start        <-chan struct{}
-	db           *sql.DB
-	statsDB      *sql.DB
-	ready        chan struct{}
-	cancel       context.CancelFunc
-	err          error
-	refs         int // guarded by azureReplayIndexes
-	lockOnce     sync.Once
-	localLock    chan struct{}
-	dirty        bool // guarded by the root lock; retry a rolled-back mutation eagerly
-	firstAttempt chan struct{}
-	firstErr     error // immutable after firstAttempt closes
+	root          string
+	streams       []string
+	start         <-chan struct{}
+	bootstrapOpen atomic.Bool
+	db            *sql.DB
+	statsDB       *sql.DB
+	ready         chan struct{}
+	cancel        context.CancelFunc
+	err           error
+	refs          int // guarded by azureReplayIndexes
+	lockOnce      sync.Once
+	localLock     chan struct{}
+	dirty         bool // guarded by the root lock; retry a rolled-back mutation eagerly
+	firstAttempt  chan struct{}
+	firstErr      error // immutable after firstAttempt closes
 }
 
 func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
@@ -80,6 +82,7 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
+	index.bootstrapOpen.Store(cfg.start != nil)
 	if stream == "" {
 		index.streams = []string{""}
 	}
