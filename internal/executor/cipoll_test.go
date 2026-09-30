@@ -1202,7 +1202,7 @@ func TestMarshalCIChecksArtifact_ShedsSummariesBeforeAnnotations(t *testing.T) {
 		}
 	}
 
-	data, err := marshalCIChecksArtifact(checks, annotations, nil)
+	data, err := marshalCIChecksArtifact(checks, ciEvidenceByName(annotations), nil)
 	if err != nil {
 		t.Fatalf("marshalCIChecksArtifact: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestMarshalCIChecksArtifact_ModerateOverflowKeepsEveryAnnotation(t *testing
 		annotations[name] = []providers.CheckAnnotation{{Path: "a.go", StartLine: 1, Message: "boom"}}
 	}
 
-	data, err := marshalCIChecksArtifact(checks, annotations, nil)
+	data, err := marshalCIChecksArtifact(checks, ciEvidenceByName(annotations), nil)
 	if err != nil {
 		t.Fatalf("marshalCIChecksArtifact: %v", err)
 	}

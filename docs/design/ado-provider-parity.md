@@ -401,7 +401,7 @@ review-thread stages and without the `github:pr:write` grant. The read is GET-on
 
 The stage runs only when the brief's `hasFailingCI` is `true`. ADO's pull-request list
 carries no CI state, so `gather-pr-context` reads the selected pull request's evidence with
-the same `PullRequestCIFailures` call (two GETs: the pull request and its policy evaluations;
+the same classification through `HasPullRequestCIFailures` (two GETs: the pull request and its policy evaluations, no build reads;
 a failed read fails the stage) before it writes the brief. `hasFailingCI` is `true` exactly
 when that evidence is non-empty, so the brief and the gathered checks never disagree: a
 rejected comment-resolution or work-item-linking policy alone leaves it `false`. When it is
@@ -411,15 +411,17 @@ not read, so the fifo selection is unchanged.
 | Aspect | Behaviour |
 |---|---|
 | Source | The pull request's policy evaluations, classified by type id as in §11.1. |
-| Reported | Enabled, blocking build, status and unclassified policies whose evaluation is `rejected` or `broken`. Name: the policy type plus the build policy's `settings.displayName` or the status policy's `statusGenre/statusName`, else the configuration id (`Build #27`). Only a build policy's summary says build logs are not fetched. |
+| Reported | Enabled, blocking build, status and unclassified policies whose evaluation is `rejected` or `broken`. Name: the policy type plus the build policy's `settings.displayName` or the status policy's `statusGenre/statusName`, else the configuration id (`Build #27`). |
 | Human-only policies | Neither stage receives the CI-poll gate's `humanPolicyConfigurationIds`, so a rejected blocking policy a loop declares human-only (merge strategy, proof-of-presence) still counts as failing CI here and is reported under its policy type. |
 | Not reported | Reviewer, comment-resolution and work-item-linking policies (a wait on a human or on threads, never CI), advisory (non-blocking) policies, and `approved`, `queued`, `running` or `notApplicable` evaluations. |
-| Link | The build results page from `context.buildId` (`{org}/{project}/_build/results?buildId=N`); none for a status policy. |
-| Logs, annotations | Not fetched; annotations are empty. The raw-log volume bound stays 0 bytes. |
+| Link | The build results page from `context.buildId` (`{org}/{project}/_build/results?buildId=N`), or of the build found for the policy (below); none when no build is found. |
+| Build (#5652) | A build policy's build is `context.buildId`, else the latest build of `settings.buildDefinitionId` for `refs/pull/<id>/merge`. A status policy's build is the one its latest matching pull request status links to (`targetUrl` a `_build/results?buildId=N` page of this host and organization). Any other status, and any unclassified policy, is graded `unsupported` with the reason. A build of another repository (`repository.id`) or pull request (`triggerInfo.pr.number`) is rejected (`failed`) and nothing of it is read; a build of another head (`triggerInfo.pr.sourceSha`) is reported but graded `stale`. |
+| Logs, annotations (#5652) | From `builds/{id}/timeline`: each failed job's failed tasks (the job itself when no task failed; other failed records when no job failed), each task's error issues (warnings when it has none) as annotations with `sourcepath`/`linenumber`, then an excerpt of the task's log tail (`builds/{id}/logs/{logId}`, ranged by the `builds/{id}/logs` line count), ending at its last `##[error]` line, timestamps stripped, split into annotations of at most 1000 bytes so ci-poll's 1 KiB message bound does not cut them. Bounds (`ADOCIEvidenceBounds`): 3 failed jobs, 3 failed tasks per job, 5 issues per step, 200 log lines, 3000 excerpt bytes. |
+| Grade | Each failure's `CIFailureDetail.Evidence` (and the `evidence <state>` clause of its summary) is `complete`, `partial_bound`, `partial_provider`, `unsupported`, `failed` or `stale`. An authentication failure fails the stage rather than grading. Every read goes through `ADOProvider.send` (rate-limit and 401 handling) and is GET-only; the brief and `ci-checks.json` are scrubbed by the journal when recorded. |
+| ci-poll | The ci-poll executor reads the same evidence when a poll ends failing on ADO (`PullRequestCIFailureReader`), and pairs it with each failing polled check by build link, else by the refined name, in order. |
 | Head | Evaluations are pull-request-scoped, so the evidence carries the head ADO reports (`lastMergeSourceCommit`). When it differs from the brief's `gatherPRContext.headSha`, each finding's summary is prefixed `STALE:` with both heads rather than presented as evidence about the brief's head. With no rejected CI policy at the new head, a single `Azure DevOps policy evidence` check with conclusion `stale` says so, so empty evidence is never read as current. |
 
-Per-pipeline job detail, test results and log excerpts (#5652's larger ask) remain out of
-scope.
+Published test results (`_apis/test`) are not yet read (#5652 follow-up).
 
 ## 8. Hazards and invariants (consolidated)
 
