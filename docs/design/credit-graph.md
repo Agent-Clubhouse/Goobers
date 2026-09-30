@@ -73,7 +73,12 @@ A supplied fix marker moves a finding through `verification-pending`,
 cohort never counts as recovery. Stored audit passes durably record report
 cooldowns and operator fix markers in `scheduler/backprop-audit/state.json`;
 cooldowns are scoped by gaggle and workflow so a narrow read cannot suppress a
-broader cross-workflow classification. Operators record a deployed fix with
+broader cross-workflow classification. Only the candidate-findings pass that
+feeds filing applies and records the cooldown; `goobers telemetry stats` and
+the other status/read surfaces show every current finding and record only
+verification baselines, so viewing a finding never hides it from the filing
+pass. Unfixed cooldowns and baselines older than 30 days are pruned; fix
+markers and the baselines they verify against are kept. Operators record a deployed fix with
 `goobers telemetry mark-fix --finding=<backprop-id>` (optionally pinning its
 RFC3339 deployment time with `--applied-at`). This is auditor metadata only
 and does not mutate workflows, issues, or run journals.

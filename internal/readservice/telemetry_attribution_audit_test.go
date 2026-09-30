@@ -403,3 +403,83 @@ func terminalAuditRow(runID string, finishedAt time.Time) readmodel.RunRow {
 		StartedAt: finishedAt.Add(-time.Minute), FinishedAt: &finishedAt,
 	}
 }
+
+func TestPreviewStoredFaultAuditDoesNotConsumeFilingCooldown(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	writeAuditRecordWithEnvironment(t, root, "before", "v1", true, "windows")
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow("before", now.Add(-time.Hour))},
+	}}}
+	config := creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1}
+
+	for pass := range 2 {
+		preview, err := PreviewStoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if preview.Suppressed != 0 || len(preview.WorkflowFindings) != 1 {
+			t.Fatalf("preview pass %d = %+v, want the finding shown every time", pass, preview)
+		}
+	}
+	filed, err := StoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filed.Suppressed != 0 || len(filed.WorkflowFindings) != 1 {
+		t.Fatalf("filing pass = %+v, want previews not to start its cooldown", filed)
+	}
+}
+
+func TestPreviewStoredFaultAuditFindingCanBeMarkedFixed(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	writeAuditRecordWithEnvironment(t, root, "before", "v1", true, "windows")
+	reader := &pagedAttributionReader{pages: []readmodel.ListPage{{
+		Runs: []readmodel.RunRow{terminalAuditRow("before", now.Add(-time.Hour))},
+	}}}
+	preview, err := PreviewStoredFaultAudit(context.Background(), root, reader, StoredAttributionQuery{},
+		creditgraph.FaultAuditConfig{Now: now, SampleFloor: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.WorkflowFindings) != 1 {
+		t.Fatalf("preview = %+v, want one workflow finding", preview)
+	}
+	if err := RecordFaultAuditFix(context.Background(), root, preview.WorkflowFindings[0].ID, now); err != nil {
+		t.Fatalf("mark fix for a previewed finding: %v", err)
+	}
+}
+
+func TestFaultAuditStatePrunesStaleUnfixedEntries(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	stale := now.Add(-faultAuditStateRetention - time.Hour)
+	fixedID := "backprop-00000000000000000001"
+	staleID := "backprop-00000000000000000002"
+	freshID := "backprop-00000000000000000003"
+	observation := func(at time.Time) []creditgraph.AttributionObservation {
+		return []creditgraph.AttributionObservation{{RunID: "run", ObservedAt: at}}
+	}
+	state := faultAuditState{
+		PreviousReports: map[string]time.Time{fixedID: stale, staleID: stale, freshID: now},
+		FixesAppliedAt:  map[string]time.Time{fixedID: stale},
+		BaselineObservations: map[string][]creditgraph.AttributionObservation{
+			fixedID: observation(stale), "scope-ab:" + staleID: observation(stale), freshID: observation(now),
+		},
+	}
+	pruneFaultAuditState(&state, now)
+	if _, ok := state.PreviousReports[staleID]; ok {
+		t.Fatalf("stale unfixed cooldown retained: %+v", state.PreviousReports)
+	}
+	if _, ok := state.BaselineObservations["scope-ab:"+staleID]; ok {
+		t.Fatalf("stale unfixed baseline retained: %+v", state.BaselineObservations)
+	}
+	for _, id := range []string{fixedID, freshID} {
+		if _, ok := state.PreviousReports[id]; !ok {
+			t.Fatalf("report %s pruned, want fixed and fresh entries kept", id)
+		}
+		if _, ok := state.BaselineObservations[id]; !ok {
+			t.Fatalf("baseline %s pruned, want fixed and fresh entries kept", id)
+		}
+	}
+}

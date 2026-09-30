@@ -56,13 +56,40 @@ func StoredAttributionCohorts(
 }
 
 // StoredFaultAudit classifies enrolled terminal evidence without mutating
-// workflows, issues, or runs.
+// workflows, issues, or runs. It is the filing-path pass: it applies and
+// durably records the per-finding report cooldown, so it belongs to the
+// candidate-findings producer, not to interactive read surfaces.
 func StoredFaultAudit(
 	ctx context.Context,
 	root string,
 	reads readmodel.Reader,
 	query StoredAttributionQuery,
 	config creditgraph.FaultAuditConfig,
+) (creditgraph.FaultAuditReport, error) {
+	return storedFaultAudit(ctx, root, reads, query, config, true)
+}
+
+// PreviewStoredFaultAudit is StoredFaultAudit for status/read surfaces. It
+// neither applies nor records the report cooldown, so viewing findings never
+// hides them from a later view or from the filing pass. It still records
+// verification baselines so a finding first seen here can be marked fixed.
+func PreviewStoredFaultAudit(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	config creditgraph.FaultAuditConfig,
+) (creditgraph.FaultAuditReport, error) {
+	return storedFaultAudit(ctx, root, reads, query, config, false)
+}
+
+func storedFaultAudit(
+	ctx context.Context,
+	root string,
+	reads readmodel.Reader,
+	query StoredAttributionQuery,
+	config creditgraph.FaultAuditConfig,
+	cooldown bool,
 ) (creditgraph.FaultAuditReport, error) {
 	maxObservations := config.MaxObservations
 	if maxObservations < 1 {
@@ -85,14 +112,16 @@ func StoredFaultAudit(
 	if err != nil {
 		return creditgraph.FaultAuditReport{}, err
 	}
-	config.PreviousReports = mergeAuditTimes(previousReportsForScope(state.PreviousReports, query), config.PreviousReports)
+	if cooldown {
+		config.PreviousReports = mergeAuditTimes(previousReportsForScope(state.PreviousReports, query), config.PreviousReports)
+	}
 	config.FixesAppliedAt = mergeAuditTimes(state.FixesAppliedAt, config.FixesAppliedAt)
 	config.BaselineObservations = mergeAuditBaselines(
 		baselinesForScope(state.BaselineObservations, query),
 		config.BaselineObservations,
 	)
 	report := creditgraph.AuditFaultDomains(observations, config)
-	if err := recordFaultAuditReports(ctx, root, query, config.Now, report); err != nil {
+	if err := recordFaultAuditReports(ctx, root, query, config.Now, report, cooldown); err != nil {
 		return creditgraph.FaultAuditReport{}, err
 	}
 	return report, nil
@@ -210,10 +239,7 @@ func readFaultAuditState(root string) (faultAuditState, error) {
 
 func validateFaultAuditBaselines(stored map[string][]creditgraph.AttributionObservation) error {
 	for key, observations := range stored {
-		findingID := key
-		if separator := strings.LastIndexByte(key, ':'); separator >= 0 {
-			findingID = key[separator+1:]
-		}
+		findingID := faultAuditKeyFindingID(key)
 		if !faultAuditFindingIDPattern.MatchString(findingID) {
 			return fmt.Errorf("invalid baseline finding key %q", key)
 		}
@@ -307,7 +333,10 @@ func faultAuditReportKey(query StoredAttributionQuery, findingID string) string 
 	return faultAuditScopePrefix(query) + findingID
 }
 
-func recordFaultAuditReports(ctx context.Context, root string, query StoredAttributionQuery, now time.Time, report creditgraph.FaultAuditReport) error {
+func recordFaultAuditReports(
+	ctx context.Context, root string, query StoredAttributionQuery, now time.Time,
+	report creditgraph.FaultAuditReport, cooldown bool,
+) error {
 	ids := make([]string, 0, len(report.ProductFindings)+len(report.ExternalFindings)+len(report.WorkflowFindings)+len(report.UnknownFindings))
 	for _, findings := range [][]creditgraph.FaultFinding{report.ProductFindings, report.ExternalFindings, report.WorkflowFindings, report.UnknownFindings} {
 		for _, finding := range findings {
@@ -320,12 +349,56 @@ func recordFaultAuditReports(ctx context.Context, root string, query StoredAttri
 	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
 		for _, id := range ids {
 			key := faultAuditReportKey(query, id)
-			state.PreviousReports[key] = now
+			if cooldown {
+				state.PreviousReports[key] = now
+			}
 			if baseline := report.BaselineObservations[id]; len(baseline) > 0 {
 				state.BaselineObservations[key] = baseline
 			}
 		}
+		pruneFaultAuditState(state, now)
 	})
+}
+
+// faultAuditStateRetention bounds how long an unfixed finding's cooldown and
+// baseline survive after they were last refreshed. Every pass rewrites the
+// whole state file, so without a bound it grows with every distinct signature
+// the instance has ever produced. Fix markers, and the baselines of fixed
+// findings, are operator-created and kept until verification needs them.
+const faultAuditStateRetention = 30 * 24 * time.Hour
+
+func pruneFaultAuditState(state *faultAuditState, now time.Time) {
+	cutoff := now.Add(-faultAuditStateRetention)
+	for key, at := range state.PreviousReports {
+		if _, fixed := state.FixesAppliedAt[faultAuditKeyFindingID(key)]; !fixed && at.Before(cutoff) {
+			delete(state.PreviousReports, key)
+		}
+	}
+	for key, observations := range state.BaselineObservations {
+		if _, fixed := state.FixesAppliedAt[faultAuditKeyFindingID(key)]; fixed {
+			continue
+		}
+		if newest := newestObservation(observations); !newest.IsZero() && newest.Before(cutoff) {
+			delete(state.BaselineObservations, key)
+		}
+	}
+}
+
+func newestObservation(observations []creditgraph.AttributionObservation) time.Time {
+	newest := time.Time{}
+	for _, observation := range observations {
+		if observation.ObservedAt.After(newest) {
+			newest = observation.ObservedAt
+		}
+	}
+	return newest
+}
+
+func faultAuditKeyFindingID(key string) string {
+	if separator := strings.LastIndexByte(key, ':'); separator >= 0 {
+		return key[separator+1:]
+	}
+	return key
 }
 
 // RecordFaultAuditFix marks a finding for held-out verification by subsequent
@@ -339,19 +412,26 @@ func RecordFaultAuditFix(ctx context.Context, root, findingID string, appliedAt 
 	if err != nil {
 		return err
 	}
-	known := false
-	for key := range state.PreviousReports {
-		if key == findingID || strings.HasSuffix(key, ":"+findingID) {
-			known = true
-			break
-		}
-	}
-	if !known {
+	if !faultAuditFindingKnown(state, findingID) {
 		return fmt.Errorf("record fault audit fix: finding %q has not been reported", findingID)
 	}
 	return updateFaultAuditState(ctx, root, func(state *faultAuditState) {
 		state.FixesAppliedAt[findingID] = appliedAt
 	})
+}
+
+func faultAuditFindingKnown(state faultAuditState, findingID string) bool {
+	for key := range state.PreviousReports {
+		if faultAuditKeyFindingID(key) == findingID {
+			return true
+		}
+	}
+	for key := range state.BaselineObservations {
+		if faultAuditKeyFindingID(key) == findingID {
+			return true
+		}
+	}
+	return false
 }
 
 func updateFaultAuditState(ctx context.Context, root string, update func(*faultAuditState)) (err error) {
