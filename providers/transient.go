@@ -78,6 +78,10 @@ func IsTransientError(err error) bool {
 	if errors.As(err, &rl) {
 		return true
 	}
+	var claimDrift *ClaimMetadataDriftError
+	if errors.As(err, &claimDrift) {
+		return true
+	}
 	var urlErr *url.Error
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.As(err, &urlErr) && urlErr.Timeout()
@@ -100,6 +104,9 @@ func IsTransientError(err error) bool {
 		}
 	}
 	if strings.Contains(message, "send request:") && strings.HasSuffix(strings.TrimSpace(message), ": eof") {
+		return true
+	}
+	if strings.Contains(message, "claim metadata drift") {
 		return true
 	}
 	for _, fragment := range transientMessageFragments {

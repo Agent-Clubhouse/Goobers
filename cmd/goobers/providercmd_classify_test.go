@@ -203,6 +203,26 @@ func TestClassifyProviderError_UnknownErrorFallsBackToProviderError(t *testing.T
 	}
 }
 
+func TestClassifyProviderError_ClaimMetadataDrift(t *testing.T) {
+	err := fmt.Errorf("confirm provider claim: %w", &providers.ClaimMetadataDriftError{
+		Provider: providers.ProviderGitHub,
+		ItemID:   "7",
+		RunID:    "run-1",
+		Label:    providers.LabelClaimed,
+	})
+
+	code, retryable, extra := classifyProviderError(err)
+	if code != "claim_metadata_drift" {
+		t.Fatalf("code = %q, want claim_metadata_drift", code)
+	}
+	if !retryable {
+		t.Fatal("retryable = false, want true")
+	}
+	if extra != nil {
+		t.Fatalf("extra = %v, want nil", extra)
+	}
+}
+
 // TestClassifyProviderError_LandingRefusals proves ADO-N9's distinct codes:
 // a head-moved refusal and a branch-policy refusal each classify as their own
 // non-retryable code, and the policy refusal is never read as auth_failed.
