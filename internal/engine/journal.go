@@ -615,7 +615,7 @@ func (r *runJournal) evaluatorRetry(ctx workflow.Context, gate string, attempt i
 	r.append(ctx, journal.Event{
 		Type:  journal.EventError,
 		Gate:  gate,
-		Error: &journal.ErrorDetail{Code: "evaluator_transient", Message: err.Error()},
+		Error: journal.ErrorDetailFor("evaluator_transient", err),
 		Runner: map[string]any{
 			"evaluatorAttempt":  attempt,
 			"retryFailureClass": "infra",
@@ -740,9 +740,13 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 			detail["errorClass"] = string(telemetry.ClassifyError(errorCode))
 		}
 	}
+	errorDetail := &journal.ErrorDetail{Code: "run_failed", Message: journaled}
+	if len(cause) > 0 {
+		errorDetail.Causes = journal.ErrorCauses(cause[0])
+	}
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaled},
+		Error:  errorDetail,
 		Runner: detail,
 	})
 }
@@ -812,7 +816,22 @@ func resultErrorDetail(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 	if result.Error == nil {
 		return nil
 	}
-	return &journal.ErrorDetail{Code: result.Error.Code, Message: result.Error.Message}
+	return &journal.ErrorDetail{Code: result.Error.Code, Message: result.Error.Message, Causes: journalErrorCausesFrom(result.Error.Causes)}
+}
+
+func journalErrorCausesFrom(causes []apiv1.ErrorCause) []journal.ErrorCause {
+	if len(causes) == 0 {
+		return nil
+	}
+	out := make([]journal.ErrorCause, 0, len(causes))
+	for _, cause := range causes {
+		out = append(out, journal.ErrorCause{
+			Code:    cause.Code,
+			Class:   cause.Class,
+			Message: cause.Message,
+		})
+	}
+	return out
 }
 
 // journalRefsFrom mirrors internal/runner's refsFrom: the wire artifacts a

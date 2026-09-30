@@ -101,10 +101,39 @@
           "type": "string",
           "minLength": 1
         },
+        "causes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/errorCause"
+          }
+        },
         "retryable": {
           "type": "boolean"
         }
       }
+    },
+    "errorCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "anyOf": [
+        { "required": ["code"] },
+        { "required": ["class"] },
+        { "required": ["message"] }
+      ]
     }
   }
 }

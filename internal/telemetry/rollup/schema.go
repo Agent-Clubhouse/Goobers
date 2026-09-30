@@ -874,4 +874,17 @@ ON run_cost_attribution(provider, repository, external_kind, external_id, run_id
 CREATE INDEX idx_run_cost_attribution_run
 ON run_cost_attribution(run_id);
 `,
+	// v29 (#5433): preserve structured wrapped-error causes without widening
+	// the flat run_errors query table. A missing satellite row is the explicit
+	// legacy/unavailable representation.
+	`
+CREATE TABLE IF NOT EXISTS run_error_causes (
+	run_id      TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	causes_json TEXT NOT NULL,
+	PRIMARY KEY (run_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_error_causes_run ON run_error_causes(run_id);
+`,
 }

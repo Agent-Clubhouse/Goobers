@@ -3234,7 +3234,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	}
 	appendErr := jr.Append(journal.Event{
 		Type:   journal.EventError,
-		Error:  &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+		Error:  journal.ErrorDetailFor("run_failed", origErr),
 		Runner: terminalRunner,
 	})
 	// #1054: leave a human-visible trace on the driving item before finish()'s
@@ -4778,7 +4778,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			// now unreliable, so it is fatal, not best-effort.
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error(), Causes: journal.ErrorCauses(dispatchErr)},
 				Runner: map[string]any{
 					retryFailureClassKey:  string(failureClass),
 					infraCommittedWorkKey: infraFailedAttemptCommittedWork,
@@ -5706,7 +5706,22 @@ func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 			message = summary
 		}
 	}
-	return &journal.ErrorDetail{Code: result.Error.Code, Message: message}
+	return &journal.ErrorDetail{Code: result.Error.Code, Message: message, Causes: journalErrorCausesFrom(result.Error.Causes)}
+}
+
+func journalErrorCausesFrom(causes []apiv1.ErrorCause) []journal.ErrorCause {
+	if len(causes) == 0 {
+		return nil
+	}
+	out := make([]journal.ErrorCause, 0, len(causes))
+	for _, cause := range causes {
+		out = append(out, journal.ErrorCause{
+			Code:    cause.Code,
+			Class:   cause.Class,
+			Message: cause.Message,
+		})
+	}
+	return out
 }
 
 // dispositionReason is the human-facing explanation posted to the driving item

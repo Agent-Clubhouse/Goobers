@@ -575,7 +575,17 @@ type ExternalRef struct {
 // ErrorDetail is the failure detail on an error event. Code is a stable,
 // machine-readable classifier (normative); Message is human-facing (excluded).
 type ErrorDetail struct {
-	Code    string `json:"code"`
+	Code    string       `json:"code"`
+	Message string       `json:"message,omitempty"`
+	Causes  []ErrorCause `json:"causes,omitempty"`
+}
+
+// ErrorCause is one ordered layer from a wrapped Go error chain. Message is
+// human-facing and excluded from conformance; Code/Class retain stable typed
+// metadata when a cause exposes it.
+type ErrorCause struct {
+	Code    string `json:"code,omitempty"`
+	Class   string `json:"class,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 
