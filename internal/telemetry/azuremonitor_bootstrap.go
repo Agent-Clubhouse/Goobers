@@ -188,25 +188,9 @@ func (x *azureReplayIndex) migrateBootstrapStreamLocked(ctx context.Context, str
 	if err := ensureBootstrapStream(dir); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(dir)
+	files, err := bootstrapReplayFiles(dir)
 	if err != nil {
 		return err
-	}
-	var files []os.DirEntry
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
-			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-				return fmt.Errorf("invalid Azure bootstrap entry %q", entry.Name())
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("invalid Azure bootstrap file %q", entry.Name())
-			}
-			files = append(files, entry)
-		}
 	}
 	if len(files) == 0 {
 		return nil
@@ -264,4 +248,29 @@ func (x *azureReplayIndex) migrateBootstrapStreamLocked(ctx context.Context, str
 		x.dirty = false
 	}
 	return err
+}
+
+func bootstrapReplayFiles(dir string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var files []os.DirEntry
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), azureReplayFileSuffix) {
+			continue
+		}
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("invalid Azure bootstrap entry %q", entry.Name())
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("invalid Azure bootstrap file %q", entry.Name())
+		}
+		files = append(files, entry)
+	}
+	return files, nil
 }
