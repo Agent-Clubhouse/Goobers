@@ -427,6 +427,11 @@ const (
 	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
 	// a mutation that cannot be accepted in 8s is not going to be accepted.
 	MutationBudget = 8 * time.Second
+	// CancelBudget covers run cancellation. Unlike approve/override/rerun, the
+	// cancel route synchronously waits for the runner's cancellation and
+	// terminalization grace so the CLI receives a definitive outcome instead of
+	// a transport timeout.
+	CancelBudget = 60 * time.Second
 	// CredentialResolveBudget covers the credential plane's resolve route. Its
 	// time is an outbound token mint, not a query: a GitHub App installation
 	// token exchange is bounded at 30s (internal/githubapp mintTimeout), and
@@ -533,7 +538,7 @@ var v1Routes = []Route{
 	// Cancelling a live run is operator recovery, like `run abort` and the
 	// HITL resolution above — maintenance, outside the runtime parity
 	// contract.
-	{ID: RouteCancelRun, Method: http.MethodPost, Path: RunCancelPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteCancelRun, Method: http.MethodPost, Path: RunCancelPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: CancelBudget},
 
 	// The journal plane (§8, DS4) is machinery advancing a run's own record —
 	// a machine seam like the claims plane, not an operator capability, so it

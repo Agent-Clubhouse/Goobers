@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -251,7 +252,7 @@ func callDaemonMutationAPIWithKey(
 	}
 
 	// Do not redirect a mutation to a daemon whose identity was not displayed.
-	client := &http.Client{Timeout: remoteTriggerTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
+	client := &http.Client{Timeout: daemonMutationTimeout(routeID), CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 	response, err := client.Do(request)
@@ -271,6 +272,13 @@ func callDaemonMutationAPIWithKey(
 		return nil, fmt.Errorf("decode daemon %s result: %w", routeID, err)
 	}
 	return nil, nil
+}
+
+func daemonMutationTimeout(routeID apicontract.RouteID) time.Duration {
+	if routeID == apicontract.RouteCancelRun {
+		return apicontract.CancelBudget
+	}
+	return remoteTriggerTimeout
 }
 
 func newInterventionIdempotencyKey() (string, error) {
