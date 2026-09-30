@@ -52,6 +52,7 @@ type azureReplayIndex struct {
 	dirty         bool // guarded by the root lock; retry a rolled-back mutation eagerly
 	firstAttempt  chan struct{}
 	firstErr      error // immutable after firstAttempt closes
+	retry         chan struct{}
 }
 
 func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
@@ -92,7 +93,7 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 		return index, stream, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
+	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), retry: make(chan struct{}, 1), cancel: cancel, refs: 1}
 	index.bootstrapOpen.Store(cfg.start != nil)
 	if stream == "" {
 		index.streams = []string{""}
@@ -128,6 +129,8 @@ func (x *azureReplayIndex) initialize(ctx context.Context) error {
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-timer.C:
+		case <-x.retry:
+			timer.Stop()
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
@@ -221,10 +224,18 @@ func (x *azureReplayIndex) wait(ctx context.Context) error {
 		case <-x.ready:
 			return x.err
 		default:
+			x.signalRetry()
 			return x.firstErr
 		}
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (x *azureReplayIndex) signalRetry() {
+	select {
+	case x.retry <- struct{}{}:
+	default:
 	}
 }
 
