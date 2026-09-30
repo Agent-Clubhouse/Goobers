@@ -462,6 +462,61 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			name: "windows go rename access denied from aggregated local ci",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: --- FAIL: TestReadOnlyOperationsNeverResumeUntrustedUpdateTransaction (0.10s) agent toolkit install failed: rename C:\runs\.goobers\.agent-toolkit-install-123 C:\runs\.goobers\agent-toolkit: Access is denied`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "windows go rename access denied with source spaces",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: rename C:\Users\Jane Doe\source C:\work\dest: Access is denied`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "windows go rename access denied with destination spaces",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: rename C:\work\source C:\Users\Jane Doe\dest: Access is denied`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "windows go rename access denied with source and destination spaces",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: rename C:\Users\Jane Doe\source C:\Users\Jane Doe\dest: Access is denied`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "windows go rename access denied selected segment before assertion evidence",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: rename C:\Users\Jane Doe\source C:\Users\Jane Doe\dest: Access is denied | credential check failed: access is denied`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
 			name: "windows git unable to unlink a locked file",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
@@ -486,6 +541,54 @@ func TestFailureClass(t *testing.T) {
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
 				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: PUT https://api.example.com/v1/widgets: 403 access is denied for this credential"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "unrelated rename test name does not taint authorization denial",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: --- FAIL: TestRenameUnauthorized (0.10s): PUT https://api.example.com/v1/widgets: 403 access is denied for this credential"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "logged rename paths do not taint later authorization denial",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: cleanup logged rename C:\work\old C:\work\new; PUT https://api.example.com/v1/widgets: access is denied for this credential`},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "logged rename paths do not taint later credential denial",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: cleanup logged rename C:\work\old C:\work\new; credential check failed: access is denied`},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "logged rename paths do not span executor evidence delimiter",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: cleanup logged rename C:\work\old C:\work\new | credential check failed: access is denied`},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "logged rename paths do not absorb same-segment prose",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: cleanup logged rename C:\work\old C:\work\new credential check failed: access is denied`},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "boundary rename paths do not absorb same-segment prose",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: rename C:\work\old C:\work\new credential check failed: access is denied`},
 			},
 			want: OutcomeFail,
 		},
