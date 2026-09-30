@@ -301,11 +301,52 @@ func newProviderResponseError(resp *http.Response, method, endpoint string, body
 		method:             method,
 		endpoint:           endpoint,
 		statusCode:         resp.StatusCode,
-		body:               strings.TrimSpace(string(body)),
+		body:               responseErrorBody(resp.StatusCode, body),
 		retryAfter:         strings.TrimSpace(resp.Header.Get("Retry-After")),
 		rateLimitRemaining: strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")),
 		rateLimitReset:     strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")),
 	}
+}
+
+// responseErrorBody is the body text an error carries. A 401 answered with an
+// HTML page — Azure DevOps' sign-in page, which #6111 maps to 401 — is
+// summarized rather than embedded (Goobers#6120): kilobytes of markup bury
+// the one fact the error exists to state. Every other body is kept verbatim.
+func responseErrorBody(status int, body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if status != http.StatusUnauthorized || !looksLikeHTML(text) {
+		return text
+	}
+	summary := fmt.Sprintf("HTML sign-in page, %d bytes, not shown", len(body))
+	if title := htmlTitle(text); title != "" {
+		summary += fmt.Sprintf("; title %q", title)
+	}
+	return "<" + summary + ">"
+}
+
+func looksLikeHTML(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") ||
+		(strings.HasPrefix(lower, "<") && strings.Contains(lower, "<body"))
+}
+
+// htmlTitle extracts a short <title>, which on a sign-in page names it.
+func htmlTitle(text string) string {
+	lower := strings.ToLower(text)
+	start := strings.Index(lower, "<title>")
+	if start < 0 {
+		return ""
+	}
+	start += len("<title>")
+	end := strings.Index(lower[start:], "</title>")
+	if end < 0 {
+		return ""
+	}
+	title := strings.Join(strings.Fields(text[start:start+end]), " ")
+	if len(title) > 80 {
+		title = title[:80] + "…"
+	}
+	return title
 }
 
 // CommandRunner executes external commands such as git clone.

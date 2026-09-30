@@ -477,7 +477,7 @@ let journalFailures = traces
          gaggle=tostring(customDimensions["goobers.gaggle"]),
          workflow=tostring(customDimensions["goobers.workflow"]),
          runId=tostring(customDimensions["goobers.run.id"])
-| where code in ("github_auth_failed", "credential_unavailable",
+| where code in ("github_auth_failed", "provider_auth_failed", "credential_unavailable",
                  "provider_error", "poll_provider_error", "github_rate_limited",
                  "harness.failure")
     or (eventName == "workflow.refused" and reason startswith "conditions: harness-unavailable");

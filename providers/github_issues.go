@@ -33,6 +33,20 @@ const ErrorCodeRateLimited = "github_rate_limited"
 // with 401 or a permission-denied 403.
 const ErrorCodeAuthFailed = "github_auth_failed"
 
+// ErrorCodeProviderAuthFailed is the provider-neutral code for a credential a
+// forge other than GitHub rejects — today an Azure DevOps delivered
+// credential (ErrADODeliveredCredentialRejected, Goobers#6120), which used to
+// be reported as github_auth_failed. Consumers that react to an auth failure
+// match both codes through IsAuthFailureCode.
+const ErrorCodeProviderAuthFailed = "provider_auth_failed"
+
+// IsAuthFailureCode reports whether code is either stable auth-failure code.
+// Existing consumers keyed on github_auth_failed keep working; new ones should
+// call this instead of comparing against one code.
+func IsAuthFailureCode(code string) bool {
+	return code == ErrorCodeAuthFailed || code == ErrorCodeProviderAuthFailed
+}
+
 // RateLimitError is the typed error send() returns when a rate-limited
 // request cannot be absorbed by in-request backoff — the reset is further out
 // than the wait budget, or the retry budget is exhausted (#614). Callers can

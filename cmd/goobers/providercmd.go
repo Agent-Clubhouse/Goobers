@@ -411,6 +411,12 @@ const (
 	// see one) — a real permission failure. Never retryable: retrying with
 	// the same bad or expired credential cannot succeed.
 	errorCodeAuthFailed = providers.ErrorCodeAuthFailed
+	// errorCodeProviderAuthFailed is a delivered Azure DevOps credential that
+	// Azure DevOps rejected (providers.ErrADODeliveredCredentialRejected):
+	// the same verdict as errorCodeAuthFailed under a code that does not
+	// name GitHub (Goobers#6120). Never retryable at this layer — the one
+	// re-resolve a refreshable credential gets already happened in send().
+	errorCodeProviderAuthFailed = providers.ErrorCodeProviderAuthFailed
 	// errorCodeNetwork is either a transport-level failure (dial/DNS/reset/
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
@@ -506,6 +512,9 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if errors.As(err, &policyPush) {
 		return errorCodeBranchPolicyProtected, false, nil
 	}
+	if isADODeliveredCredentialRejection(err, message) {
+		return errorCodeProviderAuthFailed, false, nil
+	}
 	if providers.IsAuthenticationError(err) {
 		return errorCodeAuthFailed, false, nil
 	}
@@ -548,6 +557,14 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		return telemetry.ErrCodeInfraJournal, true, nil
 	}
 	return errorCodeProvider, false, nil
+}
+
+// isADODeliveredCredentialRejection recognizes an Azure DevOps rejection of a
+// delivered credential, typed in process or by its stable message prefix once
+// it has crossed a process boundary as text. lowered is err's lowercased text.
+func isADODeliveredCredentialRejection(err error, lowered string) bool {
+	return errors.Is(err, providers.ErrADODeliveredCredentialRejected) ||
+		strings.Contains(lowered, strings.ToLower(providers.ErrADODeliveredCredentialRejected.Error()))
 }
 
 // classifyLandingRefusal names the typed landing refusals (ADO-N9) ahead of

@@ -85,6 +85,10 @@ const (
 	ErrCodeProviderFailed = "provider_error"
 	ErrCodePollProvider   = "poll_provider_error"
 	ErrCodeGitHubAuth     = "github_auth_failed"
+	// ErrCodeProviderAuth is the provider-neutral auth failure (an Azure
+	// DevOps delivered credential rejected, Goobers#6120); it classifies
+	// exactly as ErrCodeGitHubAuth.
+	ErrCodeProviderAuth = "provider_auth_failed"
 	// ErrCodeCredentialUnavailable identifies a declared credential whose
 	// configured source cannot currently be materialized.
 	ErrCodeCredentialUnavailable = "credential_unavailable"
@@ -145,6 +149,7 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeProviderFailed:        ErrorClassProvider,
 	ErrCodePollProvider:          ErrorClassProvider,
 	ErrCodeGitHubAuth:            ErrorClassProvider,
+	ErrCodeProviderAuth:          ErrorClassProvider,
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
 	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
 	// The run's evidence contract, not the work: the claim did not hold up

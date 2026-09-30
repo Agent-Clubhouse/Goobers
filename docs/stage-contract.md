@@ -304,15 +304,49 @@ connection from that capability's `GOOBERS_CRED_<CAPABILITY>` and
 so an undeclared capability means no credential on Azure DevOps too, and the
 command runs the same in a stage pod, which has no instance config. A
 `GOOBERS_CRED_<CAPABILITY>` set without a scheme (a standalone invocation) is
-sent as a PAT (`basic`). A delivered value cannot be refreshed by the stage: if
-Azure DevOps rejects it with HTTP 401, the request fails without a retry, with
+sent as a PAT (`basic`). If Azure DevOps rejects a delivered value with HTTP
+401 (or the sign-in redirect that means the same thing), the request fails with
 an error naming the capability that keeps the 401 response and reports
-`github_auth_failed`. With a delivered expiry the error says the credential
-"expired at" that time when the 401 arrives at or after it, and "revoked or
-without access to this resource" before it; without one it says "expired,
-revoked, or without access to this resource". A new attempt receives a new
-value, which helps when the value expired but not when it lacks scope or
+`provider_auth_failed` (before #6120 it reported `github_auth_failed`; consumers
+that react to auth failures match both). An HTML sign-in page in the response is
+summarized in the error, not embedded. With a delivered expiry the error says
+the credential "expired at" that time when the 401 arrives at or after it, and
+"revoked or without access to this resource" before it; without one it says
+"expired, revoked, or without access to this resource". A new attempt receives
+a new value, which helps when the value expired but not when it lacks scope or
 project access.
+
+#### Mid-stage refresh (deterministic stages)
+
+A stage can run for hours, longer than a delivered token lives. So a
+deterministic goobers-CLI stage whose delivered credentials state an expiry
+also receives a **stage credential-refresh grant** (#6120):
+
+- `GOOBERS_CREDENTIAL_ENDPOINT`: the daemon API root to present it to (the
+  loopback API for a local stage, the daemon API for a stage pod);
+- `GOOBERS_CREDENTIAL_GRANT`: the grant itself, a secret registered with the
+  scrubber like any `GOOBERS_CRED_*` value.
+
+The grant is a signed bearer scoped to the run, the stage, the attempt and
+exactly the declared capabilities whose value expires. It expires with the
+stage (its timeout plus ten minutes, at most 24 hours), a local grant is
+revoked when its attempt returns, and every grant dies with the daemon process
+that minted it. The stage presents it to `POST /api/v1/credentials/refresh`
+with one capability and receives a freshly minted value. The route accepts only
+a grant: no operator, pod or worker token reaches it. Each refresh is re-checked
+against the run's pinned definition, journaled with the attempt, and
+rate-limited per grant.
+
+The stage's built-in commands use the grant themselves: a value within five
+minutes of its stated expiry is refreshed before it is sent, and a provider 401
+(on GitHub or Azure DevOps) re-resolves it once and resends. Git commands build
+their credential per invocation, so a long push or rebase sends the current
+value. A value with no stated expiry (a PAT) and a stage with no grant behave
+exactly as before: the delivered value is final. The in-process `ci-poll` kind
+re-resolves the same way, through the daemon's own injector locally and through
+the credential plane in a pod.
+
+Agentic stages receive no grant (phase 2 of #6120 covers harness tokens).
 Agentic stages fail closed on a missing grant on Azure DevOps as on GitHub;
 only a capability the harness marks optional (such as `agent:model`) is
 skipped.

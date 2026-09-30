@@ -566,6 +566,17 @@
       "recoverySafe": false
     },
     {
+      "id": "credentialRefresh",
+      "method": "POST",
+      "path": "/api/v1/credentials/refresh",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 45000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "stageSurrender",
       "method": "POST",
       "path": "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender",

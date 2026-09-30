@@ -149,7 +149,7 @@ func runCIPollStage(ctx context.Context, stderr io.Writer) apiv1.ResultEnvelope 
 	registry.Register([]byte(token))
 	scrub := func(s string) string { return string(scrubber.Scrub([]byte(s))) }
 
-	poller, err := podCIPollPoller(token)
+	poller, err := podCIPollPoller(token, podCIPollTokenSource(creds, required, registry))
 	if err != nil {
 		return failureEnvelope(ciPollProviderUnsupportedCode, scrub(err.Error()))
 	}
@@ -298,7 +298,7 @@ func podCIPollEnvelope(declared []string) apiv1.InvocationEnvelope {
 // (runnerwiring_executors.go) on purpose: a parity test that substitutes one
 // fake must be able to drive BOTH substrates through it, or the test proves
 // only that two different fakes behave differently.
-func podCIPollPoller(token string) (executor.PRPoller, error) {
+func podCIPollPoller(token string, source providers.TokenSource) (executor.PRPoller, error) {
 	repo, err := providerRepo(providerStageRoot(""))
 	if err != nil {
 		return nil, fmt.Errorf("resolve ci-poll repository: %w", err)
@@ -318,7 +318,7 @@ func podCIPollPoller(token string) (executor.PRPoller, error) {
 	// (#3914). The poller itself reads CI state, but the seam is what keeps
 	// every in-pod GitHub construction identical.
 	return newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), repo, true,
-		withStageProviderToken(token),
+		withStageProviderToken(token), withStageProviderTokenSource(source),
 	)
 }
 

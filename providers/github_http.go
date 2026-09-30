@@ -56,6 +56,7 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 	}
 	var rateLimitWaited time.Duration
 	var rateLimitRetries, transientRetries int
+	authRetried := false
 	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
@@ -97,6 +98,14 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 			return nil, fmt.Errorf("send request: %w", err)
 		}
 		p.observeQuota(ctx, resp)
+		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateToken() {
+			// A refreshable delivered credential was rejected (Goobers#6120):
+			// re-resolve it once and resend. Safe for every method — a 401
+			// is refused before the request is acted on.
+			_ = resp.Body.Close()
+			authRetried = true
+			continue
+		}
 		if isRateLimited(resp) {
 			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
 			_ = resp.Body.Close()
@@ -215,6 +224,17 @@ func (p *GitHubProvider) resolveToken(ctx context.Context) (string, error) {
 		return p.tokenSource.Token(ctx)
 	}
 	return p.Token, nil
+}
+
+// invalidateToken marks a refreshable token source's value rejected, and
+// reports whether the source can re-resolve at all.
+func (p *GitHubProvider) invalidateToken() bool {
+	source, ok := p.tokenSource.(RefreshableTokenSource)
+	if !ok {
+		return false
+	}
+	source.Invalidate()
+	return true
 }
 
 func (p *GitHubProvider) recordExternalRef(ctx context.Context, ref ExternalRef) {

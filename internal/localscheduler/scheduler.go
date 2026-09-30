@@ -2536,7 +2536,7 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 				s.recordWebhookPollResult(identity, entry.WebhookBackoff, webhookBackoffToken, result.NoWork, s.now())
 			}
 		}
-		if (startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed) ||
+		if (startErr == nil && providers.IsAuthFailureCode(result.FailureCode)) ||
 			result.FailureCode == telemetry.ErrCodeCredentialUnavailable {
 			s.openAuthCircuit(identity)
 		}

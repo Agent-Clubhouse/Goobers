@@ -166,6 +166,13 @@ const (
 	// (#2931), and resolution happens at stage start — never inherited from
 	// dispatch time.
 	CredentialResolvePath = V1Prefix + "/credentials/resolve"
+	// CredentialRefreshPath is the credential plane's mid-stage re-resolve
+	// endpoint (Goobers#6120, DS10/§11 acceptance item 8): a deterministic
+	// stage presenting its stage credential-refresh grant receives a fresh
+	// value for ONE capability the grant names. It accepts only a grant —
+	// never a pod token, a worker token or a human principal — and is served
+	// on the loopback API of a local daemon as well as to stage pods.
+	CredentialRefreshPath = V1Prefix + "/credentials/refresh"
 
 	// RunStageSurrenderPath is the surrender plane's write route (#3699): a
 	// mode-3 stage pod's dispatch-exec entrypoint PUTs its SurrenderedResult
@@ -319,6 +326,7 @@ const (
 	RouteCancelRun         RouteID = "cancelRun"
 	RouteJournalEmit       RouteID = "journalEmit"
 	RouteCredentialResolve RouteID = "credentialResolve"
+	RouteCredentialRefresh RouteID = "credentialRefresh"
 	RouteStageSurrender    RouteID = "stageSurrender"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
@@ -533,6 +541,9 @@ var v1Routes = []Route{
 	// workflow-execution action class, but its budget is mint-bound rather
 	// than ledger-bound (see CredentialResolveBudget).
 	{ID: RouteCredentialResolve, Method: http.MethodPost, Path: CredentialResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
+	// The refresh route mints exactly like resolve (one capability instead
+	// of the stage's set), so it shares resolve's class and mint-bound budget.
+	{ID: RouteCredentialRefresh, Method: http.MethodPost, Path: CredentialRefreshPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
 
 	// The surrender plane (#3699) is a machine seam like journal/credential —
 	// a stage pod delivering its own terminal result — so it shares the
