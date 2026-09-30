@@ -63,8 +63,9 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config templates status`](#goobers-config-templates-status) | show cached template update availability |
 | [`goobers config templates update`](#goobers-config-templates-update) | merge template changes into the user's config source |
 | [`goobers config-seed`](#goobers-config-seed) | seed a private worker instance from a rendered configuration mirror |
-| [`goobers diagnostics`](#goobers-diagnostics) | collect a portable, redacted support bundle |
+| [`goobers diagnostics`](#goobers-diagnostics) | collect redacted support evidence or classify one run |
 | [`goobers diagnostics bundle`](#goobers-diagnostics-bundle) | write a portable, redacted support bundle |
+| [`goobers diagnostics triage`](#goobers-diagnostics-triage) | classify one run before filing a Goobers defect |
 | [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
 | [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
 | [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
@@ -1117,7 +1118,7 @@ $ goobers dashboard --port=auto --no-open
 
 ## `goobers diagnostics`
 
-collect a portable, redacted support bundle
+collect redacted support evidence or classify one run
 
 ~~~text
 Usage: goobers diagnostics <subcommand> [flags] [path]
@@ -1129,6 +1130,8 @@ for reading a Goobers incident.
 Subcommands:
   bundle  write a redacted diagnostics archive (or --json to stdout)
 
+  triage  classify one run before filing a Goobers defect
+
 Default path is ".".
 ~~~
 
@@ -1136,6 +1139,7 @@ Default path is ".".
 
 ~~~console
 $ goobers diagnostics bundle ./my-instance
+$ goobers diagnostics triage --run 8f2c --json ./my-instance
 ~~~
 
 ## `goobers diagnostics bundle`
@@ -1177,6 +1181,32 @@ Exit codes: 0 = bundle written, 1 = collection failed, 2 = usage error.
 $ goobers diagnostics bundle ./my-instance
 $ goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance
 $ goobers diagnostics bundle --pr 4123 --json ./my-instance
+~~~
+
+## `goobers diagnostics triage`
+
+classify one run before filing a Goobers defect
+
+~~~text
+Usage: goobers diagnostics triage --run <id> [--json] [path]
+
+Classify one failed run from the redacted diagnostics evidence Goobers can
+collect from an instance directory. The output is a provider-neutral support
+case verdict for intake surfaces; it does not file, comment on, or mutate any
+issue. Ambiguous, contradictory, or incomplete evidence fails closed to
+`insufficient_evidence` rather than becoming a Goobers defect candidate.
+
+--json writes the versioned support-triage contract. Without --json, a short
+human-readable verdict is printed.
+
+Exit codes: 0 = triage written, 1 = collection failed, 2 = usage error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers diagnostics triage --run 8f2c --json ./my-instance
+$ goobers diagnostics triage --run 8f2c ./my-instance
 ~~~
 
 ## `goobers docs-churn`
