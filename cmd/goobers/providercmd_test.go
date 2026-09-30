@@ -179,6 +179,7 @@ type fakeGitHubServer struct {
 	// (and per-blocker) re-verification spends every cycle regardless of
 	// backlog size (#4182).
 	issueItemGetRequests int
+	hiddenIssueLabels    map[int]map[string]int
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -253,6 +254,18 @@ func (s *fakeGitHubServer) issueItemGetRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.issueItemGetRequests
+}
+
+func (s *fakeGitHubServer) hideIssueLabelOnNextGets(number int, label string, reads int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hiddenIssueLabels == nil {
+		s.hiddenIssueLabels = map[int]map[string]int{}
+	}
+	if s.hiddenIssueLabels[number] == nil {
+		s.hiddenIssueLabels[number] = map[string]int{}
+	}
+	s.hiddenIssueLabels[number][label] = reads
 }
 
 func (s *fakeGitHubServer) issueListPageSizeHistory() []int {
@@ -943,7 +956,21 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.issueItemGetRequests++
-		writeFakeJSON(w, issueJSON(issue))
+		out := issueJSON(issue)
+		if hidden := s.hiddenIssueLabels[num]; len(hidden) > 0 {
+			labels, _ := out["labels"].([]map[string]string)
+			visible := labels[:0]
+			for _, object := range labels {
+				label := object["name"]
+				if hidden[label] > 0 {
+					hidden[label]--
+					continue
+				}
+				visible = append(visible, object)
+			}
+			out["labels"] = visible
+		}
+		writeFakeJSON(w, out)
 	case len(parts) == 1 && r.Method == http.MethodPatch:
 		var body struct {
 			Labels    *[]string `json:"labels"`

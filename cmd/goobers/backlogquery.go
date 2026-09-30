@@ -1428,6 +1428,9 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			return fmt.Errorf("%s: %w", item.ID, err)
 		}
 		if result.Claimed {
+			if result.Item.ID != "" {
+				session.claimed[index] = mergeProviderConfirmedClaim(session.claimed[index], result.Item)
+			}
 			session.recordCurrentClaimObservation(ctx, item, result, nil)
 			index++
 			continue
@@ -1448,6 +1451,9 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 				return fmt.Errorf("%s: %w", item.ID, err)
 			}
 			if result.Claimed {
+				if result.Item.ID != "" {
+					session.claimed[index] = mergeProviderConfirmedClaim(session.claimed[index], result.Item)
+				}
 				session.recordCurrentClaimObservation(ctx, item, result, nil)
 				pf(session.env.stderr, "notice: retired the surrendered provider claim on item %s left by run %s and claimed it\n", item.ID, retiredHolder)
 				index++
@@ -1478,6 +1484,16 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
 	return nil
+}
+
+func mergeProviderConfirmedClaim(current, confirmed providers.WorkItem) providers.WorkItem {
+	if current.ReadyAt != nil && confirmed.ReadyAt == nil {
+		confirmed.ReadyAt = current.ReadyAt
+	}
+	if current.Integrity != "" {
+		confirmed.Integrity = current.Integrity
+	}
+	return confirmed
 }
 
 func (session *backlogClaimSession) recordCurrentClaimObservation(ctx context.Context, item providers.WorkItem, result providers.ClaimResult, claimErr error) {
