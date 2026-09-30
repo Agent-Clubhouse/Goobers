@@ -40,7 +40,10 @@ func (a startupHealthAudit) complete(enabled bool, profile string) bool {
 	}
 	streams := []string{"diagnostics"}
 	if profile != "health" {
-		streams = append(streams, "journal", "traces")
+		streams = append(streams, "journal")
+	}
+	if profile == "standard" || profile == "diagnostic" {
+		streams = append(streams, "traces")
 	}
 	for _, stream := range streams {
 		if a.Streams[stream].ShutdownEvents != 1 {

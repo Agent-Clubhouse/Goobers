@@ -168,6 +168,39 @@ func TestStartupHealthAuditCatchesShutdownLoss(t *testing.T) {
 	}
 }
 
+func TestStartupHealthAuditRequiredStreamsByProfile(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		streams []string
+	}{
+		{profile: "health", streams: []string{"diagnostics"}},
+		{profile: "journal", streams: []string{"diagnostics", "journal"}},
+		{profile: "standard", streams: []string{"diagnostics", "journal", "traces"}},
+		{profile: "diagnostic", streams: []string{"diagnostics", "journal", "traces"}},
+	} {
+		t.Run(tc.profile, func(t *testing.T) {
+			all := startupHealthAudit{Streams: map[string]startupHealthCounters{}}
+			for _, stream := range tc.streams {
+				all.Streams[stream] = startupHealthCounters{ShutdownEvents: 1}
+			}
+			if !all.complete(true, tc.profile) {
+				t.Fatal("profile's required streams were rejected")
+			}
+			for _, stream := range tc.streams {
+				incomplete := startupHealthAudit{Streams: map[string]startupHealthCounters{}}
+				for key, counters := range all.Streams {
+					if key != stream {
+						incomplete.Streams[key] = counters
+					}
+				}
+				if incomplete.complete(true, tc.profile) {
+					t.Fatalf("missing %s shutdown was accepted", stream)
+				}
+			}
+		})
+	}
+}
+
 type startupBrokenReader struct{}
 
 func (startupBrokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }

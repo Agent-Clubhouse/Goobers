@@ -572,8 +572,8 @@ For illustration only, 20 journal events per poll opportunity gives about
 fleet total stresses ingestion; the per-instance rate stresses the daemon.
 Do not treat 100 users as 100 instances until deployment topology is known.
 
-Run identical deterministic workloads in export-disabled, `health`, `standard`,
-and `diagnostic` configurations. Keep local journaling and fsync unchanged.
+Run identical deterministic workloads in export-disabled, `health`, `journal`,
+`standard`, and `diagnostic` configurations. Keep local journaling and fsync unchanged.
 Use all configured streams concurrently. Measure a normal rate, 10× that rate,
 and a 60-second 100× burst. Also include synchronized poll boundaries and
 1 KiB / 32 KiB / near-limit records. These multipliers are test levels, not

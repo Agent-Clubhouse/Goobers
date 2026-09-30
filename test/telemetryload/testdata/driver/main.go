@@ -202,7 +202,7 @@ func main() {
 	flag.DurationVar(&recoveryAfter, "recovery-after", 0, "override recovery time for prefill scenarios")
 	flag.DurationVar(&pollInterval, "poll-interval", 0, "pause per worker between workflows; use 3m with 10 workers for representative polling")
 	flag.DurationVar(&sampleInterval, "sample-interval", time.Second, "process and health sampling interval; use 10s for long soaks")
-	flag.StringVar(&collectionProfile, "profile", "standard", "health, standard or diagnostic collection profile")
+	flag.StringVar(&collectionProfile, "profile", "standard", "health, journal, standard or diagnostic collection profile")
 	flag.BoolVar(&windowsInsecureDemo, "windows-insecure-demo", false, "explicitly allow the bundled credential-free demo without network isolation on Windows")
 	flag.DurationVar(&settleTimeout, "settle-timeout", 2*time.Minute, "maximum journal reconciliation wait after workload ends, before shutdown")
 	flag.StringVar(&azureConnectionEnv, "azure-connection-env", "", "explicit connection-string environment reference; only with -scenario azure (no volume prefills)")
@@ -225,7 +225,7 @@ func main() {
 	if workers < 1 || workers > 256 || duration <= 0 || pollInterval < 0 || sampleInterval < time.Second || settleTimeout < 0 {
 		panic("invalid load limits")
 	}
-	if collectionProfile != "health" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
+	if collectionProfile != "health" && collectionProfile != "journal" && collectionProfile != "standard" && collectionProfile != "diagnostic" {
 		panic("invalid collection profile")
 	}
 	if !strings.Contains("|all|baseline|enabled|outage-recovery|network-faults|disk-full|near-cap|tiny-files|legacy|spool-failure|azure|crash|startup|", "|"+selected+"|") {
