@@ -39,9 +39,87 @@ type backlogStalenessSignal struct {
 
 type curationClaimedItem struct {
 	providers.WorkItem
-	Staleness    backlogStalenessSignal `json:"staleness"`
-	CurationMode string                 `json:"curationMode,omitempty"`
-	ReadOnly     bool                   `json:"readOnly,omitempty"`
+	// Staleness is nil only when StalenessUnavailable says why: an absent
+	// signal must never serialize as a zero-valued "stale": false, which the
+	// curator would read as fresh evidence.
+	Staleness *backlogStalenessSignal `json:"staleness,omitempty"`
+	// StalenessUnavailable is set ("provider") when the backlog provider
+	// cannot supply the comment history staleness is computed from.
+	StalenessUnavailable string `json:"stalenessUnavailable,omitempty"`
+	CurationMode         string `json:"curationMode,omitempty"`
+	ReadOnly             bool   `json:"readOnly,omitempty"`
+}
+
+// stalenessUnavailableProvider is StalenessUnavailable's value when the
+// backlog provider offers no staleness evidence surface.
+const stalenessUnavailableProvider = "provider"
+
+// stalenessCommentProvider is the provider surface claimed-item staleness
+// needs: the item's comment history. GitHub, Azure DevOps and Gitea all
+// implement it.
+type stalenessCommentProvider interface {
+	ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error)
+}
+
+type stalenessLoginProvider interface {
+	AuthenticatedLogin(context.Context) (string, error)
+}
+
+type stalenessIdentityProvider interface {
+	AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error)
+}
+
+// stalenessCommentFilter is how enrichment recognizes Goobers' own comments,
+// which never count as meaningful activity. botLogin is compared with a
+// comment's Author by calculateBacklogStaleness; selfID, when set, drops
+// comments whose stable AuthorID matches before that.
+type stalenessCommentFilter struct {
+	botLogin string
+	selfID   string
+}
+
+// resolveStalenessCommentFilter resolves the acting identity. Azure DevOps
+// comment authors are display names, which are not unique, so there the
+// stable identity ID is matched against Comment.AuthorID instead, and the ID
+// also stands in as botLogin, which no display name equals (Goobers#6104).
+// Every other provider keeps its AuthenticatedLogin comparison unchanged.
+func resolveStalenessCommentFilter(ctx context.Context, provider stalenessCommentProvider) (stalenessCommentFilter, error) {
+	if identified, ok := provider.(stalenessIdentityProvider); ok {
+		identity, err := identified.AuthenticatedIdentity(ctx)
+		if err != nil {
+			return stalenessCommentFilter{}, err
+		}
+		return stalenessCommentFilter{botLogin: identity.ID, selfID: identity.ID}, nil
+	}
+	logged, ok := provider.(stalenessLoginProvider)
+	if !ok {
+		return stalenessCommentFilter{}, fmt.Errorf("provider cannot report its authenticated login")
+	}
+	login, err := logged.AuthenticatedLogin(ctx)
+	return stalenessCommentFilter{botLogin: login}, err
+}
+
+func (f stalenessCommentFilter) keep(comments []providers.Comment) []providers.Comment {
+	if f.selfID == "" {
+		return comments
+	}
+	kept := make([]providers.Comment, 0, len(comments))
+	for _, comment := range comments {
+		if strings.TrimSpace(comment.AuthorID) != f.selfID {
+			kept = append(kept, comment)
+		}
+	}
+	return kept
+}
+
+// markStalenessUnavailable returns items with no staleness signal and the
+// explicit unavailable marker, for a backlog provider with no comment surface.
+func markStalenessUnavailable(items []providers.WorkItem) []curationClaimedItem {
+	marked := make([]curationClaimedItem, 0, len(items))
+	for _, item := range items {
+		marked = append(marked, curationClaimedItem{WorkItem: item, StalenessUnavailable: stalenessUnavailableProvider})
+	}
+	return marked
 }
 
 func readBacklogStalenessPolicy() (backlogStalenessPolicy, error) {
@@ -71,13 +149,16 @@ func readBacklogStalenessPolicy() (backlogStalenessPolicy, error) {
 
 func enrichClaimedItemsWithStaleness(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider stalenessCommentProvider,
 	repo providers.RepositoryRef,
 	items []providers.WorkItem,
 	observedAt time.Time,
 	policy backlogStalenessPolicy,
 ) ([]curationClaimedItem, error) {
-	botLogin, err := provider.AuthenticatedLogin(ctx)
+	if provider == nil {
+		return markStalenessUnavailable(items), nil
+	}
+	filter, err := resolveStalenessCommentFilter(ctx, provider)
 	if err != nil {
 		return nil, fmt.Errorf("resolve curation actor: %w", err)
 	}
@@ -88,11 +169,11 @@ func enrichClaimedItemsWithStaleness(
 		if err != nil {
 			return nil, fmt.Errorf("list comments for issue #%s: %w", item.ID, err)
 		}
-		signal, err := calculateBacklogStaleness(item, comments, botLogin, observedAt, policy)
+		signal, err := calculateBacklogStaleness(item, filter.keep(comments), filter.botLogin, observedAt, policy)
 		if err != nil {
 			return nil, fmt.Errorf("issue #%s: %w", item.ID, err)
 		}
-		enriched = append(enriched, curationClaimedItem{WorkItem: item, Staleness: signal})
+		enriched = append(enriched, curationClaimedItem{WorkItem: item, Staleness: &signal})
 	}
 	return enriched, nil
 }

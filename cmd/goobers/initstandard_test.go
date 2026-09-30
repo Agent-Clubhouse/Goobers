@@ -127,6 +127,62 @@ func TestInitStandardADOValidatesStrict(t *testing.T) {
 	}
 }
 
+// TestInitStandardOpenPRWorkItemsWriteIsADOOnly pins the scaffold contract
+// for open-pr's native work-item link: on Azure DevOps every scaffolded stage
+// that runs the built-in open-pr declares ado:work-items:write (without it
+// the pull request is linked by text only, so completion never transitions
+// the work item and a "Work item linking" branch policy blocks every PR); on
+// GitHub no stage declares it. Both the local-CI and pull-request-CI shapes
+// of the implementation workflow are covered.
+func TestInitStandardOpenPRWorkItemsWriteIsADOOnly(t *testing.T) {
+	const want = "ado:work-items:write"
+	for _, test := range []struct {
+		name    string
+		args    []string
+		declare bool
+	}{
+		{name: "ado pr-ci", args: []string{"--provider=ado", "--repo=example-org/example-project/example-repo", "--pr-ci"}, declare: true},
+		{name: "ado local-ci", args: []string{"--provider=ado", "--repo=example-org/example-project/example-repo", `--ci-command=["make","ci"]`, "--required-capabilities=go@1"}, declare: true},
+		{name: "github pr-ci", args: []string{"--provider=github", "--repo=example-org/example-repo", "--pr-ci"}},
+		{name: "github local-ci", args: []string{"--provider=github", "--repo=example-org/example-repo", `--ci-command=["make","ci"]`, "--required-capabilities=go@1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "scaffold")
+			args := append(append([]string{"init", "--template=standard"}, test.args...), root)
+			if code, stdout, stderr := runArgs(t, args...); code != 0 {
+				t.Fatalf("init code=%d stdout=%s stderr=%s", code, stdout, stderr)
+			}
+			set, report, err := instance.LoadConfigDir(filepath.Join(root, "config"))
+			if err != nil {
+				t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+			}
+			openPRStages := 0
+			for _, wf := range set.Workflows {
+				for _, task := range wf.Spec.Tasks {
+					if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" || task.Run.Command[1] != "open-pr" {
+						if slices.Contains(task.Capabilities, want) {
+							t.Errorf("%s/%s is not open-pr but declares %q", wf.Name, task.Name, want)
+						}
+						continue
+					}
+					openPRStages++
+					if got := slices.Contains(task.Capabilities, want); got != test.declare {
+						t.Errorf("%s/%s capabilities = %v; declares %q = %v, want %v", wf.Name, task.Name, task.Capabilities, want, got, test.declare)
+					}
+				}
+			}
+			if openPRStages == 0 {
+				t.Fatal("scaffold has no open-pr stage; the contract is vacuous")
+			}
+			for _, warning := range report.Warnings() {
+				if warning.Code == validate.WarningInertADOCapability {
+					t.Errorf("scaffold raised an inert-capability warning: %+v", warning)
+				}
+			}
+		})
+	}
+}
+
 func TestInitStandardADOAuthKinds(t *testing.T) {
 	for _, kind := range []string{instance.ADOAuthAzureCLI, instance.ADOAuthWorkloadIdentity, instance.ADOAuthManagedIdentity, instance.ADOAuthPAT} {
 		t.Run(kind, func(t *testing.T) {

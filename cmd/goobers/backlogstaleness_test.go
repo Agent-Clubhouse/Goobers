@@ -259,7 +259,10 @@ func TestBacklogQueryCurationWritesStructuredStaleness(t *testing.T) {
 	}
 	byID := make(map[string]backlogStalenessSignal, len(claimed))
 	for _, item := range claimed {
-		byID[item.ID] = item.Staleness
+		if item.Staleness == nil {
+			t.Fatalf("claimed item %s has no staleness signal (unavailable=%q)", item.ID, item.StalenessUnavailable)
+		}
+		byID[item.ID] = *item.Staleness
 	}
 
 	old := byID["7"]

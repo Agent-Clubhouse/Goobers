@@ -834,6 +834,15 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 		if task.Type == apiv1.TaskAgentic {
 			task.Capabilities = prependCapability(task.Capabilities, string(capability.AgentModel))
 		}
+		// On Azure DevOps, open-pr links the pull request natively to its
+		// claimed work item only when the stage declares ado:work-items:write
+		// (cmd/goobers/openpr.go openPRWorkItemLinker); without it the PR is
+		// referenced by text only, so Boards traceability, completion-driven
+		// work-item transitions and a "Work item linking" branch policy all
+		// fail. GitHub never resolves the name, so its scaffold is unchanged.
+		if opts.RepoProvider == string(apiv1.ProviderADO) && guidedTaskRunsBuiltin(*task, "open-pr") {
+			task.Capabilities = appendCapability(task.Capabilities, string(capability.ADOWorkItemsWrite))
+		}
 		// Template the operator's answered CI command into the generated
 		// local-ci stage instead of leaving the source example's literal
 		// command on disk: gaggle.yaml's ciCommand (ApplyGaggleCICommand) wins
@@ -974,6 +983,20 @@ func prependCapability(capabilities []string, name string) []string {
 		}
 	}
 	return append([]string{name}, capabilities...)
+}
+
+func appendCapability(capabilities []string, name string) []string {
+	if slices.Contains(capabilities, name) {
+		return capabilities
+	}
+	return append(capabilities, name)
+}
+
+// guidedTaskRunsBuiltin reports whether task runs the built-in
+// `goobers <command>` stage.
+func guidedTaskRunsBuiltin(task apiv1.Task, command string) bool {
+	return task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+		len(task.Run.Command) >= 2 && task.Run.Command[0] == "goobers" && task.Run.Command[1] == command
 }
 
 func guidedManifest(opts GuidedOptions) []byte {
