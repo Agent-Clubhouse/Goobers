@@ -61,10 +61,15 @@ type GaggleBundleDefinition struct {
 	Repositories []RepoRef          `json:"repositories"`
 }
 
+// gaggleBundleGaggle spells out the TypeMeta fields rather than embedding
+// TypeMeta/ObjectMeta so controller-gen does not mistake this private wire
+// projection for a root kind and emit a CRD for it. The JSON shape is
+// identical to the canonical Gaggle minus status.
 type gaggleBundleGaggle struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              GaggleSpec `json:"spec"`
+	APIVersion string            `json:"apiVersion,omitempty"`
+	Kind       string            `json:"kind,omitempty"`
+	Metadata   metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec       GaggleSpec        `json:"spec"`
 }
 
 type gaggleBundleDefinitionWire struct {
@@ -80,7 +85,7 @@ type gaggleBundleDefinitionWire struct {
 func (d GaggleBundleDefinition) MarshalJSON() ([]byte, error) {
 	return json.Marshal(gaggleBundleDefinitionWire{
 		Gaggle: gaggleBundleGaggle{
-			TypeMeta: d.Gaggle.TypeMeta, ObjectMeta: d.Gaggle.ObjectMeta, Spec: d.Gaggle.Spec,
+			APIVersion: d.Gaggle.APIVersion, Kind: d.Gaggle.Kind, Metadata: d.Gaggle.ObjectMeta, Spec: d.Gaggle.Spec,
 		},
 		Workflows: d.Workflows, Goobers: d.Goobers, Files: d.Files, Repositories: d.Repositories,
 	})
@@ -103,7 +108,8 @@ func (d *GaggleBundleDefinition) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	d.Gaggle = Gaggle{
-		TypeMeta: wire.Gaggle.TypeMeta, ObjectMeta: wire.Gaggle.ObjectMeta, Spec: wire.Gaggle.Spec,
+		TypeMeta:   metav1.TypeMeta{APIVersion: wire.Gaggle.APIVersion, Kind: wire.Gaggle.Kind},
+		ObjectMeta: wire.Gaggle.Metadata, Spec: wire.Gaggle.Spec,
 	}
 	d.Workflows = wire.Workflows
 	d.Goobers = wire.Goobers
