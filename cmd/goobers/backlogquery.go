@@ -990,7 +990,7 @@ func writeClaimedBacklogResult(
 	var err error
 	if opts.curationRun {
 		curationItems, err = enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
 		)
 		if err != nil {
 			return failProviderStage(env.stderr, "compute claimed-item staleness", err, "claimed-items.json")
@@ -999,7 +999,7 @@ func writeClaimedBacklogResult(
 			curationItems[index].CurationMode = opts.curationModeByID[curationItems[index].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
 		)
 		if enrichErr != nil {
 			return failProviderStage(env.stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
@@ -1044,6 +1044,22 @@ func marshalClaimedBacklogItems(
 	default:
 		return json.Marshal(claimed)
 	}
+}
+
+// backlogStalenessProvider is the provider claimed-item staleness is read
+// through: the concrete GitHub issue provider exactly as before, otherwise the
+// backlog's own issue provider when it exposes comments (Azure DevOps,
+// Goobers#6104). It returns an untyped nil — never a nil *GitHubProvider in
+// an interface — when neither applies, so enrichment marks the evidence
+// unavailable instead of dereferencing nil.
+func backlogStalenessProvider(env backlogQueryEnv) stalenessCommentProvider {
+	if env.ghIssueProvider != nil {
+		return env.ghIssueProvider
+	}
+	if provider, ok := env.issueProvider.(stalenessCommentProvider); ok && provider != nil {
+		return provider
+	}
+	return nil
 }
 
 func writeClaimedBacklogSummary(stdout io.Writer, claimed, readOnly []providers.WorkItem) {
@@ -2043,6 +2059,9 @@ func runReconcileBacklogQuery(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 ) int {
+	if backlogReconcileNotApplicable(env) {
+		return writeBacklogReconciliationNotApplicable(env.issueRepo().Provider, env.stdout, env.stderr)
+	}
 	reconciled, code := performBacklogQueryReconciliation(
 		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json",
 	)
@@ -2060,6 +2079,10 @@ func reconcileBacklogQueryMetadata(
 	observedAt time.Time,
 	resultFile string,
 ) int {
+	if backlogReconcileNotApplicable(env) {
+		env.debugf("metadata reconciliation not applicable on %s; skipped", env.issueRepo().Provider)
+		return 0
+	}
 	_, code := performBacklogQueryReconciliation(ctx, env, trustLabel, stalenessPolicy, observedAt, resultFile)
 	return code
 }
@@ -2354,6 +2377,45 @@ func labelExclusionReason(item providers.WorkItem, opts backlogScanOptions) stri
 		}
 	}
 	return "label predicate not matched"
+}
+
+// backlogReconcileNotApplicable reports whether this stage's backlog lives on
+// Azure DevOps, where the metadata reconciliation pass has no implementation
+// (Goobers#6104). The pass is scheduled housekeeping over GitHub label drift —
+// orphaned claim labels, tracking-parent labels, staleness markers and
+// invisible-claim restoration, every step typed to *providers.GitHubProvider —
+// and nothing downstream depends on it having run: claim liveness is decided
+// by the ledger, whose stale-lease sweep the daemon also runs on its own
+// ticker. So on ADO it is not-applicable, like update-behind-pr (ADO-N15),
+// rather than a failure that stops every later backlog-curation stage.
+// A Gitea backlog is deliberately not covered: it keeps the refusal below.
+func backlogReconcileNotApplicable(env backlogQueryEnv) bool {
+	return env.ghIssueProvider == nil && env.issueRepo().Provider == providers.ProviderADO
+}
+
+// writeBacklogReconciliationNotApplicable writes reconcile-backlog's result
+// for a provider it does not apply to. It is a success, not noWork: noWork
+// would short-circuit the run and skip every later backlog-curation stage,
+// which is the failure this replaces. reconciled stays 0 so the curation
+// telemetry rollup records no corrections for the cycle.
+func writeBacklogReconciliationNotApplicable(provider providers.ProviderKind, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("backlog metadata reconciliation is not applicable on %s: skipped", provider)
+	data, err := json.Marshal(map[string]any{
+		"reconciled":    0,
+		"notApplicable": "true",
+		"reason":        reason,
+	})
+	if err != nil {
+		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
+		return 1
+	}
+	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	pf(stdout, "%s\n", reason)
+	return 0
 }
 
 func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) int {
