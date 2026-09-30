@@ -171,7 +171,7 @@ func reportADOPermissions(r adoAccessReporter, access adoRepositoryAccess) bool 
 			strings.Join(missing, ", ")))
 	}
 	if !access.permissions[providers.ADOGitForcePush] {
-		r.warn(adoAccessForcePushCode, fmt.Sprintf("the identity lacks %q; pushing a rewritten run branch (for example after PR remediation) will fail",
+		r.warn(adoAccessForcePushCode, fmt.Sprintf("the identity lacks %q at repository level; Azure DevOps lets a branch's creator force-push its own branches, but rewriting or deleting branches it did not create (for example remediating a human-opened pull request) will fail",
 			providers.ADOGitForcePush.String()))
 	}
 	if held := adoPermissionsWithValue(access.permissions, adoBypassGitPermissions, true); len(held) > 0 {
@@ -275,6 +275,7 @@ func checkADOBacklogStates(gaggleName string, byType map[string][]string, repo i
 		diagnostics.add(file, path, adoBacklogStatesCode, string(validate.Warning), fmt.Sprintf("Gaggle/%s: %s", gaggleName, message))
 	}
 	reportADOCreateTypeStates(gaggleName, states, stdout, warn)
+	warnCaseDuplicateADOTypes(types, warn)
 	for _, itemType := range types {
 		path := "/spec/backlog/doneStates/byType/" + itemType
 		if err := states.byTypeErrs[itemType]; err != nil {
@@ -285,6 +286,23 @@ func checkADOBacklogStates(gaggleName string, byType map[string][]string, repo i
 			warn(path, fmt.Sprintf("backlog.doneStates.byType names state %q, which work item type %q does not have (its states: %s)",
 				name, itemType, adoStateNames(states.byType[itemType])))
 		}
+	}
+}
+
+// warnCaseDuplicateADOTypes warns about backlog.doneStates.byType keys that
+// name the same work item type in different case (ADO type names are
+// case-insensitive). The provider merges them, but two keys usually mean a
+// typo. types is sorted.
+func warnCaseDuplicateADOTypes(types []string, warn func(path, message string)) {
+	first := make(map[string]string, len(types))
+	for _, itemType := range types {
+		folded := strings.ToLower(strings.TrimSpace(itemType))
+		if earlier, ok := first[folded]; ok {
+			warn("/spec/backlog/doneStates/byType/"+itemType, fmt.Sprintf(
+				"backlog.doneStates.byType keys %q and %q name the same work item type; their states are merged", earlier, itemType))
+			continue
+		}
+		first[folded] = itemType
 	}
 }
 

@@ -285,6 +285,7 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 	}
 	cause := out.Result.FailureMessage
 	code := out.Result.FailureCode
+	var faultClass telemetry.ErrorClass
 	if out.Err != nil {
 		// A walk-level failure returns (RunResult{}, err): there is no status,
 		// no final state and no failure code, so the workflow's error IS the
@@ -296,13 +297,15 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 		if code == "" {
 			code = engineTerminalFailureCode(out.Err)
 		}
+		faultClass = engineTerminalFaultClass(out.Err)
 	}
 	if err := h.failed(ctx, runner.FailedOutcome{
-		RunID:   out.RunID,
-		RepoRef: h.repoRef,
-		Stage:   out.Result.FinalState,
-		Cause:   cause,
-		Code:    code,
+		RunID:      out.RunID,
+		RepoRef:    h.repoRef,
+		Stage:      out.Result.FinalState,
+		Cause:      cause,
+		Code:       code,
+		FaultClass: faultClass,
 	}); err != nil {
 		h.recordHookFailure(out, out.Result.FinalState, "failed_handling_failed", err)
 	}
@@ -321,6 +324,17 @@ func engineTerminalFailureCode(err error) string {
 		return telemetry.ErrCodeInfraFailure
 	}
 	return engineWalkFailureCode
+}
+
+// engineTerminalFaultClass is the engine arm's FailedOutcome.FaultClass
+// (#5638), from the same classifier as engineTerminalFailureCode, so the
+// failure streak sees the same explicit infra class from both drivers rather
+// than depending on this arm's choice of fallback code.
+func engineTerminalFaultClass(err error) telemetry.ErrorClass {
+	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
+		return telemetry.ErrorClassInfra
+	}
+	return ""
 }
 
 // itemID resolves the run's single driving backlog item: the one pinned at

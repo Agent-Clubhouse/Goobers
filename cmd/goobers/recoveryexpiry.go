@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -96,14 +97,61 @@ func retireExpiredRecovery(ctx context.Context, layout instance.Layout, setup *s
 	// duplicate from ever being retired ahead of the newer entry that
 	// protects its content in the same pass.
 	retained := retainedEvictionRecords(entries)
+	var entryFailures recoveryEntryFailures
 	for _, entry := range entries {
 		err := retireExpiredRecoveryEntry(ctx, root, setup, policy, managers, runsByRoot, entry, retained, operatorEvents, windowDryRun, operatorDryRun, graceActive, stdout, layout.SchedulerDir())
 		if err != nil {
 			pf(stderr, "warning: recovery retention failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
-			failures = errors.Join(failures, err)
+			entryFailures.add(entry.Record.RunID, err)
 		}
 	}
-	return failures
+	return errors.Join(failures, entryFailures.err())
+}
+
+// recoveryEntryFailures collapses per-entry sweep failures that share one
+// message. A cause common to every snapshot (a shared scan limit, an
+// unreachable repository) used to be joined once per entry, so the persisted
+// worktree_retention_sweep_failed event repeated one line 19 times and named
+// no snapshot at all (#5943). Each distinct message is now reported once with
+// how many snapshots it affected and which runs, so an operator sees the cause
+// and its scope in one line.
+type recoveryEntryFailures struct {
+	order []string
+	first map[string]error
+	runs  map[string][]string
+}
+
+func (f *recoveryEntryFailures) add(runID string, err error) {
+	message := err.Error()
+	if f.first == nil {
+		f.first = map[string]error{}
+		f.runs = map[string][]string{}
+	}
+	if _, seen := f.first[message]; !seen {
+		f.order = append(f.order, message)
+		f.first[message] = err
+	}
+	f.runs[message] = append(f.runs[message], runID)
+}
+
+// recoveryEntryFailureRunsNamed bounds how many run IDs one collapsed failure
+// names; the count always covers them all.
+const recoveryEntryFailureRunsNamed = 8
+
+func (f *recoveryEntryFailures) err() error {
+	var joined error
+	for _, message := range f.order {
+		runs := f.runs[message]
+		named := runs
+		suffix := ""
+		if len(named) > recoveryEntryFailureRunsNamed {
+			named = named[:recoveryEntryFailureRunsNamed]
+			suffix = fmt.Sprintf(", +%d more", len(runs)-len(named))
+		}
+		joined = errors.Join(joined, fmt.Errorf("recovery retention failed for %d snapshot(s) (runs: %s%s): %w",
+			len(runs), strings.Join(named, ", "), suffix, f.first[message]))
+	}
+	return joined
 }
 
 // prioritizeAbandonedRecovery puts operator-abandoned entries first so the

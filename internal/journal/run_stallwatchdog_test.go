@@ -3,6 +3,8 @@ package journal
 import (
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/activetime"
 )
 
 // A zero lastActivity means "not observed through this handle", not "idle since
@@ -55,5 +57,53 @@ func TestIfLastActivityBeforeDeclinesToJudgeAnUnobservedRun(t *testing.T) {
 	}
 	if claimedAt.IsZero() {
 		t.Fatal("claim received a zero timestamp for an observed run")
+	}
+}
+
+// Host suspension since the last activity is not inactivity (#5875). On
+// Windows Go's monotonic clock keeps counting through a sleep, so a run that
+// went quiet five minutes before a two-hour suspend read as two hours and five
+// minutes idle on the first sweep after resume, and a 45m stall timeout
+// escalated healthy work. The suspended interval must be discounted, while
+// the same run with no suspension, or one idle past the timeout in ACTIVE
+// time, is still judged stale.
+func TestIfLastActivityBeforeDiscountsHostSuspension(t *testing.T) {
+	start := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	now := start
+	run, err := Create(t.TempDir(), testIdentity(), nil, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	var suspended time.Duration
+	previous := suspendedSince
+	suspendedSince = func(activetime.Mark) time.Duration { return suspended }
+	t.Cleanup(func() { suspendedSince = previous })
+
+	run.ObserveActivity()
+	const timeout = 45 * time.Minute
+	now = start.Add(2*time.Hour + 5*time.Minute)
+
+	suspended = 2 * time.Hour
+	if run.IfLastActivityBefore(now.Add(-timeout), func(time.Time) {
+		t.Fatal("claim ran for a run idle only 5m of active time")
+	}) {
+		t.Fatal("a run idle 5m before a 2h host suspend was judged stale against a 45m timeout")
+	}
+
+	suspended = 0
+	var claimedAt time.Time
+	if !run.IfLastActivityBefore(now.Add(-timeout), func(at time.Time) { claimedAt = at }) {
+		t.Fatal("a run idle 2h5m with no suspension was not judged stale; the watchdog must still fire")
+	}
+	if !claimedAt.Equal(start) {
+		t.Fatalf("claim received %s, want the recorded activity time %s", claimedAt, start)
+	}
+
+	// Idle past the timeout in active time even after discounting the suspend.
+	suspended = time.Hour
+	if !run.IfLastActivityBefore(now.Add(-timeout), func(time.Time) {}) {
+		t.Fatal("a run idle 1h5m of active time was not judged stale against a 45m timeout")
 	}
 }

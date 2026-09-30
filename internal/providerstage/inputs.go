@@ -198,7 +198,7 @@ var inputSchemas = map[string][]Input{
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"report-pr-status": schema(
-		stringsIn("description", "pull-request-url", "state", "statusGenre", "statusName", "targetUrl"),
+		stringsIn("description", "headSha", "pull-request-url", "state", "statusGenre", "statusName", "targetUrl"),
 		integersIn("prNumber"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"resolve-review-threads": schema(pathsIn("resultFile"), durationsIn("timeout")),

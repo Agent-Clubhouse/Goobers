@@ -449,14 +449,11 @@ func setNonGitHubStageEnv(t *testing.T, kind providers.ProviderKind) {
 // the wrong one is caught by name.
 
 // everyCredentialedCapability is every capability the daemon can deliver as
-// GOOBERS_CRED_<capability> (credentialedCapabilities), so the probe can tell
-// any of them apart.
+// GOOBERS_CRED_<capability> from a repository credential
+// (repoCredentialedCapabilityNames, which on ADO includes
+// ado:work-items:write), so the probe can tell any of them apart.
 func everyCredentialedCapability() []string {
-	names := make([]string, 0, len(credentialedCapabilities))
-	for _, c := range credentialedCapabilities {
-		names = append(names, string(c))
-	}
-	return names
+	return repoCredentialedCapabilityNames()
 }
 
 // deliverEveryADOStageCapability delivers a distinct value for every
@@ -592,6 +589,7 @@ var (
 var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "backlog-health", inputs: map[string]string{"trustLabel": providers.LabelApproved}, want: []string{credIssuesRead}},
 	{command: "check-issue-staleness", inputs: map[string]string{"pullNumber": "77", "head": "goobers/implementation/run"}, want: []string{credPRWrite, credIssuesWrite}},
+	{command: "gather-issue-context", seed: seedADOGatherIssueContextRun, want: []string{credPRWrite, credIssuesRead}},
 	{command: "gather-pr-context", want: []string{credPRWrite}},
 	{command: "gather-review-threads", seed: seedADOGatherReviewThreadsRun, want: []string{credPRWrite}},
 	{command: "gather-sibling-context", inputs: map[string]string{"selectedNumber": "77"}, want: []string{credPRWrite}},
@@ -628,6 +626,7 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 	"pr-claim":                 TestPRClaimDispatchesFromCommand,
 	"publish-batch":            TestPublishBatchDispatchesFromCommand,
 	"report-pr-status":         TestReportPRStatusDispatchesFromCommand,
+	"respond-to-findings":      TestRespondToFindingsOnADOPostsOneThread,
 	"select-source":            TestSelectSourceDispatchesFromCommand,
 	"set-milestone":            TestSetMilestoneDispatchesFromCommand,
 	"validate-plan":            TestValidatePlanDispatchesFromCommand,
@@ -638,9 +637,7 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 // is consumed at all.
 var adoCredentialExempt = map[string]string{
 	"file-issues":           "Refuses every non-GitHub provider before building one (TestFileIssuesRefusesNonGitHubProviders).",
-	"gather-issue-context":  "Uses the broad remediation provider factory, whose Azure DevOps arm is an error, so no ADO provider is built.",
 	"pr-comment-watch":      "Refuses the ado repository provider before building one.",
-	"respond-to-findings":   "Uses the broad remediation provider factory, whose Azure DevOps arm is an error, so no ADO provider is built.",
 	"security-alerts-query": "Refuses every non-GitHub provider before building one (TestSecurityAlertsQueryRefusesNonGitHubProviders).",
 	"telemetry-query":       "Its only provider access is the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 	"update-behind-pr":      "Reports not-applicable on Azure DevOps and routes to full remediation without building a provider (ADO-N15).",
@@ -757,6 +754,13 @@ func TestADOStageProvidersConsumeTheDeclaredCapability(t *testing.T) {
 func seedADOGatherReviewThreadsRun(t *testing.T, root, runID string) {
 	t.Helper()
 	seedReviewThreadsBrief(t, root, runID, reviewThreadsBrief())
+}
+
+// seedADOGatherIssueContextRun seeds the remediation brief
+// gather-issue-context reads before it builds its providers.
+func seedADOGatherIssueContextRun(t *testing.T, root, runID string) {
+	t.Helper()
+	seedRemediationBriefRun(t, root, runID, issueContextBrief())
 }
 
 // seedADOResolveReviewThreadsRun seeds a published resolve-review-threads run

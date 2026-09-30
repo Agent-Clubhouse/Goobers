@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 func assertNoStandardMissingSkillWarnings(t *testing.T, report *validate.Report) {
@@ -18,6 +19,16 @@ func assertNoStandardMissingSkillWarnings(t *testing.T, report *validate.Report)
 		if warning.Code == validate.WarningMissingSkillPackage {
 			t.Fatalf("standard scaffold emitted a missing-skill-package warning: %+v", warning)
 		}
+	}
+}
+
+func assertNoStandardBuiltInSafetyCoverageWarnings(t *testing.T, report *validate.Report) {
+	t.Helper()
+	for _, warning := range report.Warnings() {
+		if warning.Code != validate.WarningCode(workflowsafety.CoverageCode) || warning.Safety == nil || warning.Safety.Stage == "local-ci" {
+			continue
+		}
+		t.Fatalf("standard scaffold emitted a built-in stage safety coverage warning: %+v", warning)
 	}
 }
 
@@ -32,6 +43,7 @@ func TestInitStandardNonInteractive(t *testing.T) {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
 	assertNoStandardMissingSkillWarnings(t, report)
+	assertNoStandardBuiltInSafetyCoverageWarnings(t, report)
 	if len(set.Workflows) != 2 || len(set.Goobers) != 3 {
 		t.Fatalf("got %d workflows and %d goobers, want canonical pair and its three personas", len(set.Workflows), len(set.Goobers))
 	}
@@ -66,6 +78,7 @@ func TestInitStandardADO(t *testing.T) {
 		t.Fatalf("load: %v report=%+v", err, report)
 	}
 	assertNoStandardMissingSkillWarnings(t, report)
+	assertNoStandardBuiltInSafetyCoverageWarnings(t, report)
 	if len(set.Gaggles) != 1 || set.Gaggles[0].Spec.Project.Provider != "ado" || set.Gaggles[0].Spec.Project.Project != "your-project" || set.Gaggles[0].Spec.Backlog.Provider != "ado" || set.Gaggles[0].Spec.Backlog.Project != "your-project" {
 		t.Fatalf("ADO identity not preserved: %+v", set.Gaggles)
 	}
@@ -296,6 +309,8 @@ func TestInitStandardWorkflowValidation(t *testing.T) {
 		{"--workflows=work-nomination", `--ci-command=["npm"]`, "--required-capabilities=node@24"},
 		{"--workflows=work-nomination", "--issue-scope=assigned"},
 		{"--provider=ado", "--repo=acme/widgets"},
+		{"--repo=acme/widgets", "--workflows=merge-review"},
+		{"--provider=ado", "--workflows=backlog-curation", "--repo-auth-kind=azure-cli", "--repo-token-env=MY_PAT"},
 	}
 	for _, extra := range invalid {
 		t.Run("invalid "+strings.Join(extra, " "), func(t *testing.T) {
@@ -308,6 +323,53 @@ func TestInitStandardWorkflowValidation(t *testing.T) {
 				t.Fatalf("invalid init wrote destination: %v", err)
 			}
 		})
+	}
+}
+
+// TestStandardInitOptionsInfersADOPATFromTokenEnv pins that naming an Azure
+// DevOps token variable without an auth kind selects PAT auth that reads it,
+// instead of silently scaffolding token-free azure-cli auth.
+func TestStandardInitOptionsInfersADOPATFromTokenEnv(t *testing.T) {
+	for name, test := range map[string]struct {
+		input             standardInitInput
+		wantKind, wantEnv string
+	}{
+		"token env without kind": {
+			input:    standardInitInput{RepoTokenEnv: "MY_PAT", RepoTokenEnvSet: true},
+			wantKind: instance.ADOAuthPAT, wantEnv: "MY_PAT",
+		},
+		"token env with pat": {
+			input:    standardInitInput{RepoAuthKind: "pat", RepoAuthKindSet: true, RepoTokenEnv: "MY_PAT", RepoTokenEnvSet: true},
+			wantKind: instance.ADOAuthPAT, wantEnv: "MY_PAT",
+		},
+		"pat without token env": {
+			input:    standardInitInput{RepoAuthKind: "pat", RepoAuthKindSet: true},
+			wantKind: instance.ADOAuthPAT, wantEnv: "GOOBERS_ADO_TOKEN",
+		},
+		"empty token env keeps the default": {
+			input:    standardInitInput{RepoAuthKind: "azure-cli", RepoAuthKindSet: true, RepoTokenEnvSet: true},
+			wantKind: instance.ADOAuthAzureCLI,
+		},
+		"no auth flags": {input: standardInitInput{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := test.input
+			input.Template, input.Provider = standardInitTemplate, "ado"
+			opts, err := standardInitOptions(input)
+			if err != nil {
+				t.Fatalf("standardInitOptions: %v", err)
+			}
+			if opts.RepoAuthKind != test.wantKind || opts.RepoTokenEnv != test.wantEnv {
+				t.Fatalf("auth kind %q token env %q, want %q %q", opts.RepoAuthKind, opts.RepoTokenEnv, test.wantKind, test.wantEnv)
+			}
+		})
+	}
+	_, err := standardInitOptions(standardInitInput{
+		Template: standardInitTemplate, Provider: "ado",
+		RepoAuthKind: "managed-identity", RepoAuthKindSet: true, RepoTokenEnv: "MY_PAT", RepoTokenEnvSet: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--repo-auth-kind=pat") {
+		t.Fatalf("token env with a token-free kind: err = %v, want a usage error naming --repo-auth-kind=pat", err)
 	}
 }
 

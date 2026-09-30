@@ -69,7 +69,7 @@ func TestPodPublishesOnlyItsOwnCommits(t *testing.T) {
 		stampEnv(t, "run-4124-quiet", digest)
 		ws := t.TempDir()
 		var errOut strings.Builder
-		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 			t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 		}
 		if got := strings.TrimSpace(runGitOutputT(t, ws, "rev-parse", "HEAD")); got != deltaHead {
@@ -112,7 +112,7 @@ func TestPodPublishesOnlyItsOwnCommits(t *testing.T) {
 		stampEnv(t, "run-4124-busy", digest)
 		ws := t.TempDir()
 		var errOut strings.Builder
-		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 			t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 		}
 		runGitT(t, ws, "config", "user.name", "stage")
@@ -152,7 +152,7 @@ func TestPodPublishesOnlyItsOwnCommits(t *testing.T) {
 		stampEnv(t, "run-4124-legacy", digest)
 		ws := t.TempDir()
 		var errOut strings.Builder
-		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+		if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 			t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 		}
 		path, err := publishBasePath(ws)
@@ -200,7 +200,7 @@ func TestThePublishBaselineIsInvisibleToTheStage(t *testing.T) {
 
 	ws := t.TempDir()
 	var errOut strings.Builder
-	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil); err != nil {
+	if err := checkoutRepoWorkspace(context.Background(), ws, &errOut, nil, ""); err != nil {
 		t.Fatalf("checkout: %v\nstderr: %s", err, errOut.String())
 	}
 	if out := strings.TrimSpace(runGitOutputT(t, ws, "status", "--porcelain")); out != "" {

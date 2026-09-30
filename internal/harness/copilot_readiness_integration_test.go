@@ -111,7 +111,7 @@ func TestIntegrationCopilotRequiredMCPReadOnlyAuthorization(t *testing.T) {
 	if err := runner.initialize(ctx, ProcessRequest{Command: []string{"copilot", "-p=must not run", "--session-id", sessionID, "--allow-all-tools", "--log-dir", filepath.Join(workspace, "logs")}, Dir: workspace, Env: overrideEnv(baseEnv(nil, nil), "COPILOT_HOME", filepath.Join(workspace, "copilot-home")), Timeout: 30 * time.Second}); err != nil {
 		t.Fatal(err)
 	}
-	report, err := probeRequiredMCPSession(ctx, runner.session)
+	report, err := probeRequiredMCPSession(ctx, runner.session, 0)
 	if err != nil || report.Connection != "ready" || report.Inventory != "ready" {
 		t.Fatalf("report=%+v calls=%d err=%v", report, calls.Load(), err)
 	}

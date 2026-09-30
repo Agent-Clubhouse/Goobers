@@ -269,6 +269,35 @@ func TestADOWorkItemsBatchRetriesTransientFailure(t *testing.T) {
 	}
 }
 
+// TestADOWIQLRetriesTransientFailure pins that a WIQL query, a read-only
+// POST, is resent after a 5xx instead of failing the scan.
+func TestADOWIQLRetriesTransientFailure(t *testing.T) {
+	attempts := 0
+	mux := http.NewServeMux()
+	handleADOTestStateCategories(t, mux)
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) {
+		p.BaseURL = server.URL
+		p.sleep = func(context.Context, time.Duration) error { return nil }
+	})
+	items, err := provider.findWorkItemsByMarker(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "marker", 10)
+	if err != nil {
+		t.Fatalf("findWorkItemsByMarker: %v", err)
+	}
+	if len(items) != 0 || attempts != 2 {
+		t.Fatalf("items = %+v after %d WIQL attempts, want none after one retry", items, attempts)
+	}
+}
+
 func TestADORetryableRequest(t *testing.T) {
 	cases := []struct {
 		method, endpoint string
@@ -276,7 +305,11 @@ func TestADORetryableRequest(t *testing.T) {
 	}{
 		{http.MethodGet, "https://dev.azure.com/org/project/_apis/wit/workitems/1", true},
 		{http.MethodPost, "https://dev.azure.com/org/project/_apis/wit/workitemsbatch?api-version=7.1", true},
-		{http.MethodPost, "https://dev.azure.com/org/project/_apis/wit/wiql?api-version=7.1", false},
+		// A WIQL query only reads, so it is retried like workitemsbatch.
+		{http.MethodPost, "https://dev.azure.com/org/project/_apis/wit/wiql?api-version=7.1", true},
+		{http.MethodPost, "https://dev.azure.com/org/project/_apis/wit/wiql?%24top=20000&api-version=7.1", true},
+		{http.MethodPatch, "https://dev.azure.com/org/project/_apis/wit/wiql", false},
+		{http.MethodPost, "https://dev.azure.com/org/project/_apis/git/repositories/repo/pullrequests", false},
 		{http.MethodPost, "https://dev.azure.com/org/project/_apis/wit/workitems/$Issue?api-version=7.1", false},
 		{http.MethodPatch, "https://dev.azure.com/org/project/_apis/wit/workitemsbatch", false},
 	}

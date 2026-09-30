@@ -345,7 +345,9 @@ Contract rules:
   `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
-  the non-secret `GOOBERS_REPO_AUTH_SCHEME`), and no stage reads
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
+  states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`),
+  and no stage reads
   `repos[].auth` (see [the stage contract](stage-contract.md)). When a
   gaggle keeps its backlog on another provider than its code (topology (b):
   a GitHub or Gitea backlog for Azure DevOps code), the credential a
@@ -392,7 +394,9 @@ Contract rules:
   agentic gate may override `maxRepasses`. The value bounds cumulative
   re-entries to a branch's target stage across all gates that route back to
   that stage; a pass at one gate does not reset that target's live budget.
-  Separate target stages can therefore have independent budgets. Stall
+  Only non-pass outcomes are charged: a `pass` branch into an already-completed
+  stage is a forward step, so each repair loop is bounded by the failure that
+  sent it back rather than by the passing validation that follows. Separate target stages can therefore have independent budgets. Stall
   detection does not have a task-level override: task/gate `timeoutSeconds`
   and retry policies already own per-attempt execution bounds, while the stall
   watchdog protects the run journal as a whole.
@@ -658,9 +662,9 @@ deployed config separately, and it can drift from the checked-in reference.
 
 Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
 prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
-are shipped, alongside the Azure DevOps provider (supported, though with known
-provider-parity gaps still open, e.g. #5554, #5648, #5649 — see
-`docs/provider-capability-matrix.md`) and an experimental Gitea provider,
+are shipped, alongside the Azure DevOps provider (supported; its remaining
+provider differences are listed in `docs/provider-capability-matrix.md` and
+`docs/guides/ado-limitations.md`) and an experimental Gitea provider,
 packaged-install machinery, the journal-backed portal, capability-scoped and
 per-goober credential injection, optional OIDC, and a narrow Tutor workflow.
 Native sandboxed stage execution has also shipped (epic #35, closed) but

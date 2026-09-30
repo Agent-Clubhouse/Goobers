@@ -149,12 +149,12 @@ _goobers_completion()
             ;;
         runs)
             case "${COMP_WORDS[2]:-}" in
-                list) flags+=" --json --phase --workflow --gaggle --limit" ;;
+                list) flags+=" --api --json --phase --workflow --gaggle --limit" ;;
                 du) flags+=" --json" ;;
             esac
             ;;
         status)
-            flags+=" --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --api --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -195,7 +195,7 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=" --json --follow --summary --verdicts --transcripts --transcript"
+            flags+=" --api --json --follow --summary --verdicts --transcripts --transcript"
             ;;
         e2e)
             case "${COMP_WORDS[2]:-}" in
@@ -204,10 +204,10 @@ _goobers_completion()
             esac
             ;;
         escalations)
-            flags+=" --json"
+            flags+=" --api --json"
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --include-verdict" ;;
-                resolve) flags+=" --resolution --gate --decision --rationale --actor --api" ;;
+                resolve) flags+=" --resolution --gate --decision --rationale --actor" ;;
             esac
             ;;
         telemetry)

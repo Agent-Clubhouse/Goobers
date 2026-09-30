@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/daemonclient"
 )
 
 // BlobPathPrefix is the blob endpoint's digest route root: one blob is
@@ -67,7 +68,7 @@ func (c *BlobClient) httpClient() *http.Client {
 	if c.Client != nil {
 		return c.Client
 	}
-	return &http.Client{Timeout: defaultBlobTimeout}
+	return daemonclient.NewHTTP(defaultBlobTimeout)
 }
 
 func (c *BlobClient) blobURL(digest string) (string, error) {
@@ -239,7 +240,7 @@ func ResolveStageCredentials(ctx context.Context, client *http.Client, baseURL, 
 		httpRequest.Header.Set("Authorization", "Bearer "+podToken)
 	}
 	if client == nil {
-		client = &http.Client{Timeout: defaultBlobTimeout}
+		client = daemonclient.NewHTTP(defaultBlobTimeout)
 	}
 	response, err := client.Do(httpRequest)
 	if err != nil {

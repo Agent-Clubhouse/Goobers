@@ -16,7 +16,7 @@ func TestMergeReviewStatusCommentLifecycle(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "sticky status")
 	const humanComment = "Human note quoting <!-- goobers:merge-review-status -->; preserve this exactly."
-	server.addComment(prNumber, humanComment)
+	server.addRawComment(prNumber, humanComment)
 	provider := server.newGitHubProvider("token")
 	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
 
@@ -57,7 +57,7 @@ func TestConcurrentMergeReviewStatusUpdatesConverge(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "concurrent sticky status")
 	const humanComment = "<!-- unrelated -->\nHuman-authored automation note."
-	server.addComment(prNumber, humanComment)
+	server.addRawComment(prNumber, humanComment)
 	provider := server.newGitHubProvider("token")
 	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
 
@@ -103,7 +103,7 @@ func TestRetriedMergeReviewStatusCommentsConverge(t *testing.T) {
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(prNumber, "retried sticky status")
 	const humanComment = "Automated note from another bot."
-	server.addComment(prNumber, humanComment)
+	server.addCommentAs(prNumber, "another-bot", humanComment)
 	server.addComment(prNumber, renderVerdictComment(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Summary:  "first retry",

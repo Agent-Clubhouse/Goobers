@@ -421,6 +421,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err := json.Unmarshal(out.Payload, &verdict); err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
+	verdict = undeclaredDeferralAsNeedsChanges(verdict, env.ReviewerDeferralAllowed)
 	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
@@ -1105,4 +1106,23 @@ func mediaTypeFor(path string) string {
 		return "application/json"
 	}
 	return "application/octet-stream"
+}
+
+// undeclaredDeferralAsNeedsChanges maps a reviewer "defer" to "needs-changes"
+// when the gate declares no defer route (#6061). completionContract only offers
+// "defer" when ReviewerDeferralAllowed, but a model can still return it, for
+// example by mirroring merge-review's own "verdict: defer" status comments on
+// the PR. An undeclared outcome would fail the run closed (GT-002), wasting the
+// review. A deferral is "not yet, and not a pass": needs-changes carries the
+// same meaning with the reviewer's findings intact, so a merge-review ordering
+// claim still reaches elect-lander and apply-verdict's ordering deferral. A gate
+// that also lacks a needs-changes route still fails closed as before.
+func undeclaredDeferralAsNeedsChanges(v apiv1.Verdict, deferralAllowed bool) apiv1.Verdict {
+	if deferralAllowed || v.Decision != apiv1.VerdictDefer {
+		return v
+	}
+	v.Decision = apiv1.VerdictNeedsChanges
+	v.ReasonCode = ""
+	v.Elected = false
+	return v
 }

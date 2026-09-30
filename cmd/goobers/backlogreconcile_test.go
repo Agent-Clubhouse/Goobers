@@ -178,7 +178,7 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 			root := initDemo(t)
 			server := newFakeGitHubServer(t, "your-org", "your-repo")
 			server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
-			server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+			server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 			server.addIssue(8, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
 
 			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
@@ -300,7 +300,7 @@ func TestReconcileBacklogMetadataRetriesOrphanedTrackingParentClose(t *testing.T
 		providers.LabelTracking,
 		providers.LabelAutoClose,
 	)
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+	server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 	server.addIssue(8, "Closed child")
 	server.addChild(7, 8)
 	server.setIssueState(8, "closed")
@@ -465,7 +465,7 @@ func TestReconcileBacklogMetadataPostsCommentBeforeRemovingLabels(t *testing.T) 
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Contradictory state", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman, providers.LabelClaimed)
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+	server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 
 	baseHandler := server.server.Config.Handler
 	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -508,7 +508,7 @@ func TestReconcileBacklogMetadataReservationBlocksConcurrentClaim(t *testing.T) 
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+	server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 
 	type claimAttempt struct {
 		ok     bool
@@ -587,7 +587,7 @@ func TestReconcileBacklogMetadataReleasesClaimLockBeforeProviderIO(t *testing.T)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
+	server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 
 	lockPath := filepath.Join(root, "scheduler", claimLockFileName)
 	probe := make(chan error, 1)

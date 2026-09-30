@@ -3,9 +3,11 @@ package executor
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -133,6 +135,48 @@ func TestBuildStageEnvTypesUnavailableCredential(t *testing.T) {
 	}
 	if got := coded.StageErrorCode(); got != telemetry.ErrCodeCredentialUnavailable {
 		t.Fatalf("StageErrorCode() = %q, want %q", got, telemetry.ErrCodeCredentialUnavailable)
+	}
+}
+
+// TestBuildStageEnvDeliversTheCredentialExpiry pins #5905 for local stages: a
+// credential whose source states an expiry is delivered with it, as a
+// non-secret variable outside the GOOBERS_CRED_ prefix, and a credential with
+// no stated expiry gets no such variable.
+func TestBuildStageEnvDeliversTheCredentialExpiry(t *testing.T) {
+	const envName = "GOOBERS_TEST_STATIC_CREDENTIAL"
+	t.Setenv(envName, "static-token-value")
+	expiresAt := time.Date(2026, 9, 28, 13, 4, 5, 0, time.UTC)
+	resolver, err := credentials.NewResolverWithExpiring(
+		[]credentials.TokenRef{{Name: "static", Env: envName}}, nil, nil,
+		map[string]credentials.ExpiringResolveFunc{"minted": func(context.Context) (string, time.Time, error) {
+			return "minted-token-value", expiresAt, nil
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "repo:push", Ref: "minted"},
+		{Capability: "github:issues:read", Ref: "static"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := buildStageEnv(
+		context.Background(), injector, []string{"repo:push", "github:issues:read"}, noopRegistrar{},
+		"", "", "", "", "", "", false, nil, nil, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CredentialExpiryEnvVar("repo:push") + "=2026-09-28T13:04:05Z"
+	if !slices.Contains(env, want) {
+		t.Fatalf("stage env lacks %q: %v", want, env)
+	}
+	for _, entry := range env {
+		if strings.HasPrefix(entry, CredentialExpiryEnvVar("github:issues:read")+"=") {
+			t.Fatalf("static credential carries an expiry: %q", entry)
+		}
 	}
 }
 

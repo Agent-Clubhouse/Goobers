@@ -1173,7 +1173,10 @@ func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider remediati
 	if len(marked) == 0 {
 		return fmt.Errorf("merge-review status comment disappeared during reconciliation")
 	}
-	if marked[0].Body != body {
+	// The stored body carries the provider's attribution footer whenever the
+	// stage runs with attribution, so only the text this stage wrote decides
+	// whether the canonical comment still needs an update.
+	if providers.StripAttribution(marked[0].Body) != strings.TrimSpace(body) {
 		if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
 			return fmt.Errorf("update canonical merge-review status comment: %w", err)
 		}
@@ -1673,6 +1676,10 @@ func publishADOPassVerdict(
 		Name:        "validation",
 		State:       providers.CheckStatePassing,
 		Description: "goobers merge-review verdict: pass",
+		// Pin to the reviewed head: a push after the pin check must not
+		// inherit this pass on ADO's latest iteration. The non-pass path
+		// stays unpinned, since a failing status on a newer head only blocks.
+		HeadSHA: current.HeadSHA,
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
 	}

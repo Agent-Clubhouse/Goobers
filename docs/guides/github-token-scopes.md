@@ -424,6 +424,7 @@ repos:
       kind: github-app
       appId: 123456            # or the App's client ID string
       installationId: 987654
+      slug: my-app             # login is my-app[bot]; installation tokens cannot GET /user
       privateKey:
         file: /run/secrets/goobers-app.pem   # env: and store: (#683) work too
 ```
@@ -475,6 +476,39 @@ requests (Read and write), Checks + Commit statuses (Read-only, for
 Verify with `goobers validate`: the repository preflight performs a real
 token exchange, so a missing installation or rejected key fails there with
 GitHub's diagnosis instead of mid-run.
+
+### Externally minted installation tokens (`auth.kind: github-app-token`)
+
+A trusted host or CI token broker can mint the installation token without giving
+Goobers the App private key. Declare the App identity alongside the token ref:
+
+```yaml
+repos:
+  - provider: github
+    owner: your-org
+    name: your-repo
+    token:
+      env: INSTALLATION_TOKEN  # file, keychain and store refs also work
+    auth:
+      kind: github-app-token
+      slug: my-app            # required, without the [bot] suffix
+```
+
+This mode does not mint, refresh or introspect an App identity. The trusted
+external issuer must verify that the token belongs to the declared App, narrow
+its repositories/permissions, and renew or replace it before expiry. With an
+environment ref, provision a fresh process for a new token; file/store refs are
+resolved through the normal credential resolver. An expired token fails closed;
+there is no fallback to the host's GitHub login. `token.githubCLI` is forbidden
+because it selects a user identity, not an externally minted installation token.
+
+`auth.slug` is an operator-owned trust declaration used by claim, release and
+trusted-comment checks, not proof obtained from the token. Bind it from verified
+issuer metadata, never from the repository being worked on. Per-capability
+overrides used by those checks must represent the same declared App. A separate
+reviewer still needs a separate identity. Do not use this mode to relabel a PAT.
+`appId`, `installationId` and `privateKey` are forbidden in this mode; the
+existing `github-app` mode continues to own minting. PAT configs are unchanged.
 
 ## Least privilege per workflow
 

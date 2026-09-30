@@ -1583,7 +1583,7 @@ func TestBacklogQueryReleaseReconcilesHistoricalProviderClaim(t *testing.T) {
 	schedulerDir := filepath.Join(root, "scheduler")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:claimed")
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier Goobers version.")
+	server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")

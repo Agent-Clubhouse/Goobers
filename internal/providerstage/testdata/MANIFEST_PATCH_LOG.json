@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "ff2e04db1adf9813a3318cb9fab754572600cffb387aaf2f2dd00f757439ac31",
+  "snapshotSha256": "28872d39dc2e506bd0c3008932a77e1b27627ebf13717ebc5cd3d68011fd2fc3",
   "changes": [
     {
       "version": 1,
@@ -52,6 +52,10 @@
     {
       "version": 13,
       "description": "Add optional uses for topology (b) (ADO-N31, docs/design/ado-parity-dsl-2-0.md section 7.2): open-pr gains optional github:issues:read and github:issues:write for the claimed-issue staleness re-check on a GitHub/Gitea backlog, and issue-close-out gains optional github:pr:write and provider:pr:write for the pull-request lookup on the Azure DevOps code provider. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling and no capability is auto-derived onto a task."
+    },
+    {
+      "version": 14,
+      "description": "Reword the consequence text of open-pr's optional ado:work-items:write use (#5925): native Azure Boards linking is best-effort, so without the capability the pull request opens with a text reference only, and the Azure DevOps repository credential backs the capability when declared. Text only: no capability, optional bit, flag or result-file field changes, so every shipped config's admission is unchanged."
     }
   ]
 }

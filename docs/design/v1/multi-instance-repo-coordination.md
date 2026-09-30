@@ -92,11 +92,11 @@ overlap by construction** (so the race window is never entered), not lean on a
 mutex that doesn't exist yet:
 
 - **Region ownership via disjoint required labels** is the primary mechanism —
-  reuses existing `backlog-query` label filters, and is provider-neutral on
-  GitHub. On Azure DevOps, `requireLabels` currently fails the claim outright
-  (label transitions are unimplemented; [#5554](https://github.com/Agent-Clubhouse/Goobers/issues/5554),
-  open), so this pattern is not yet usable there; see §5. Document this as the
-  recommended pattern for GitHub, not a incidental possibility.
+  reuses existing `backlog-query` label filters. On Azure DevOps, `requireLabels`
+  works too: label transitions are read from work-item update history
+  ([#5554](https://github.com/Agent-Clubhouse/Goobers/issues/5554), fixed by
+  ADO-N21), but its ADO parity is not yet verified (MIRC-6); see §5. Document
+  this as the recommended pattern, not a incidental possibility.
 - **Distinct `BranchNamespace` per instance** for the PR-lifecycle side — already
   shipped, needs to become an explicit, paired recommendation rather than an
   unrelated knob operators might not think to combine with label partitioning.
@@ -199,11 +199,11 @@ supplement, the soft mechanisms above for that deployment:
 
 ## 5. GitHub / ADO parity
 
-> **Correction (2026-09-25):** this section overstated Phase 1 symmetry. Required-label
-> filtering is not yet symmetric: on Azure DevOps, `requireLabels` including a
-> label like `goobers:ready` fails the claim because label transitions are
-> unimplemented ([#5554](https://github.com/Agent-Clubhouse/Goobers/issues/5554),
-> open). Tag filtering that does work on ADO is a WIQL `CONTAINS` substring
+> **Correction (2026-09-25, updated):** this section overstated Phase 1 symmetry.
+> On Azure DevOps, `requireLabels` including a label like `goobers:ready` used to
+> fail the claim because label transitions were unimplemented
+> ([#5554](https://github.com/Agent-Clubhouse/Goobers/issues/5554)). That is fixed:
+> Goobers now reads them from work-item update history (ADO-N21). Tag filtering that does work on ADO is a WIQL `CONTAINS` substring
 > match plus an exact client-side recheck, not an exact label match. MIRC-6
 > (ADO parity verification, [#1905](https://github.com/Agent-Clubhouse/Goobers/issues/1905))
 > is still open, so the symmetry this design assumed has not been verified for
@@ -213,7 +213,7 @@ Assignee (COORD's `providers.WorkItem.Assignee` is already read/filter/create-pl
 for both GitHub and ADO per the COORD design's own research), and
 `BranchNamespace`'s branch-prefix matching (a git-branch-name mechanism, not
 provider-specific at all) are symmetric. Region ownership via required labels
-is not, until #5554 is fixed. Phase 2's shared-claim-store option would need
+now works on both (#5554 is fixed), pending MIRC-6's verification. Phase 2's shared-claim-store option would need
 equivalent treatment for both if that path is chosen, since Temporal
 workflow-ID claiming is itself provider-agnostic (it keys on `repo+issue`
 identity, not on which provider hosts the issue).

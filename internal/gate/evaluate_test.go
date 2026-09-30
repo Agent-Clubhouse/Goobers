@@ -961,7 +961,10 @@ func TestEvaluatorBoundsRepassTargetAcrossDistinctGates(t *testing.T) {
 	}
 }
 
-func TestEvaluatorChargesPassBranchWhenItReentersStage(t *testing.T) {
+// #5942: a pass whose branch re-enters a completed stage is a forward step, so
+// it is neither charged nor escalated even when genuine repasses have already
+// spent the target's budget.
+func TestEvaluatorDoesNotChargePassBranchWhenItReentersStage(t *testing.T) {
 	g := apiv1.Gate{
 		Name: "review", Evaluator: apiv1.EvaluatorAutomated,
 		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
@@ -978,9 +981,12 @@ func TestEvaluatorChargesPassBranchWhenItReentersStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateKnownOutcome: %v", err)
 	}
-	if !result.Escalated || result.Attempt != 2 || result.GateAttempt != 0 ||
-		result.RepassTarget != "implement" || result.Target != wf.TargetEscalate {
-		t.Fatalf("result = %+v, want pass-driven target-stage escalation with reset gate attempt", result)
+	if result.Escalated || result.Attempt != 0 || result.GateAttempt != 0 ||
+		result.RepassTarget != "" || result.Target != "implement" {
+		t.Fatalf("result = %+v, want an uncharged pass routed to implement with reset gate attempt", result)
+	}
+	if got := ev.RepassAttempts["implement"]; got != 1 {
+		t.Fatalf("RepassAttempts[implement] = %d, want 1 — a pass must not charge it", got)
 	}
 }
 

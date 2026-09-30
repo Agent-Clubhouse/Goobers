@@ -288,6 +288,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		// The predicate below compares labels exactly; ADO folds a read tag
+		// equal to one of these ignoring case onto this spelling.
+		CompareLabels: b.labelPredicate.Labels(),
 		Assignee: func() string {
 			if b.respectAssignee && b.assignedTo != "" {
 				return b.assignedTo
@@ -566,9 +569,20 @@ func buildScheduleDemandCounter(
 	if !hasSchedule || !ok {
 		return nil
 	}
+	repo := backlogCounterRepoRef(cfg, repoRef)
+	if repo.Provider == providers.ProviderADO {
+		// Azure DevOps has no webhook ingestion, so the schedule is its only
+		// autonomous pr-remediation trigger, and update-behind-pr is
+		// not-applicable there (ADO-N15), so behind-ness is not its
+		// eligibility. The demand count is GitHub-only; a counter that can
+		// only error would size every tick to zero. Without one each due
+		// tick fires unsized, bounded by readiness, and gather-pr-context
+		// ends a run with no eligible pull request as ordinary no-work.
+		return nil
+	}
 	return &remediationDemandCounter{
 		ref:          repoRef.Owner + "/" + repoRef.Name,
-		repo:         backlogCounterRepoRef(cfg, repoRef),
+		repo:         repo,
 		base:         base,
 		headPrefix:   headPrefix,
 		gaggle:       wf.Spec.Gaggle,

@@ -105,24 +105,38 @@ func (p *ADOProvider) recordMutation(ctx context.Context, kind, id, operation st
 // recorded effect carries one, including the paths whose response shape does not
 // include links. Mirrors workItemURL's constructed-URL approach on the GitHub
 // side. Returns "" when the identity needed to build it is absent, so an
-// unknown URL stays empty rather than becoming a link that 404s.
+// unknown URL stays empty rather than becoming a link that 404s. Path
+// segments are escaped, so a project or repository name with spaces still
+// yields a link that works in markdown.
 func (p *ADOProvider) entityWebURL(repo RepositoryRef, kind, id string) string {
 	project := p.project(repo)
 	if p.Organization == "" || project == "" || strings.TrimSpace(id) == "" {
 		return ""
-	}
-	base := strings.TrimSuffix(p.BaseURL, "/")
-	if base == "" {
-		base = "https://dev.azure.com"
 	}
 	if kind == "pr" {
 		name := adoRepositoryName(repo)
 		if name == "" {
 			return ""
 		}
-		return base + "/" + p.Organization + "/" + project + "/_git/" + name + "/pullrequest/" + id
+		return p.webURL(project, "_git", name, "pullrequest", id)
 	}
-	return base + "/" + p.Organization + "/" + project + "/_workitems/edit/" + id
+	return p.webURL(project, "_workitems", "edit", id)
+}
+
+// webURL joins the organization and segments onto the web base URL, path
+// escaping each one.
+func (p *ADOProvider) webURL(segments ...string) string {
+	base := strings.TrimSuffix(p.BaseURL, "/")
+	if base == "" {
+		base = "https://dev.azure.com"
+	}
+	var b strings.Builder
+	b.WriteString(base)
+	for _, segment := range append([]string{p.Organization}, segments...) {
+		b.WriteString("/")
+		b.WriteString(url.PathEscape(segment))
+	}
+	return b.String()
 }
 
 // adoRepositoryName prefers the declared repository name over its opaque id:
@@ -576,11 +590,13 @@ func (p *ADOProvider) identitiesBaseURL() string {
 	return strings.TrimRight(u.String(), "/")
 }
 
-// resolveIdentityID resolves a reviewer string (a UPN, an email, or a
-// display name) to the Azure DevOps identity GUID RequestReview's reviewers
-// endpoint requires. A reviewer that already looks like a GUID passes through
-// untouched, skipping the lookup. It errors — rather than silently skipping
-// the reviewer — when nothing resolves.
+// resolveIdentityID resolves a reviewer string (a UPN or an email) to the
+// Azure DevOps identity GUID RequestReview's reviewers endpoint requires. A
+// reviewer that already looks like a GUID passes through untouched, skipping
+// the lookup. It errors — rather than silently skipping the reviewer — when
+// nothing resolves, and rather than guessing when the search matches more
+// than one identity (as a shared display name can), since adding the wrong
+// person as a reviewer would pass unnoticed.
 func (p *ADOProvider) resolveIdentityID(ctx context.Context, reviewer string) (string, error) {
 	if adoIdentityGUID.MatchString(reviewer) {
 		return reviewer, nil
@@ -601,10 +617,31 @@ func (p *ADOProvider) resolveIdentityID(ctx context.Context, reviewer string) (s
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &out); err != nil {
 		return "", err
 	}
-	if len(out.Value) == 0 || strings.TrimSpace(out.Value[0].ID) == "" {
+	ids := adoDistinctIdentityIDs(out)
+	switch len(ids) {
+	case 0:
 		return "", fmt.Errorf("ado: reviewer %q did not resolve to an identity", reviewer)
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("ado: reviewer %q matched %d identities; name the reviewer by a unique UPN, email or identity id", reviewer, len(ids))
 	}
-	return out.Value[0].ID, nil
+}
+
+// adoDistinctIdentityIDs returns the non-empty identity ids of a lookup, each
+// once, in response order.
+func adoDistinctIdentityIDs(out adoIdentitiesLookup) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, identity := range out.Value {
+		id := strings.TrimSpace(identity.ID)
+		if id == "" || seen[strings.ToLower(id)] {
+			continue
+		}
+		seen[strings.ToLower(id)] = true
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func (p *ADOProvider) project(repo RepositoryRef) string {
@@ -661,11 +698,12 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
 			// A transport failure (connection reset, DNS blip, timeout) is only
-			// safe to retry automatically for an idempotent method (#2026): a
-			// POST/PATCH may have already committed server-side before its
-			// response was lost, and ADO has no transport-level dedup marker
-			// (unlike GitHub issue creation's footer check, #140) to make a
-			// blind retry safe for those.
+			// safe to retry automatically for an idempotent method (#2026), or
+			// for a POST to a read-only endpoint (workitemsbatch, WIQL; see
+			// adoRetryableRequest): any other POST/PATCH may have already
+			// committed server-side before its response was lost, and ADO has
+			// no transport-level dedup marker (unlike GitHub issue creation's
+			// footer check, #140) to make a blind retry safe for those.
 			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
 					return nil, serr
@@ -753,7 +791,12 @@ func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, e
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &adoDeliveredCredentialRejectedError{label: source.label, cause: newProviderResponseError(resp, method, endpoint, body)}
+	return &adoDeliveredCredentialRejectedError{
+		label:     source.label,
+		cause:     newProviderResponseError(resp, method, endpoint, body),
+		expiresAt: source.expiresAt,
+		at:        p.now(),
+	}
 }
 
 func (p *ADOProvider) invalidateCredential() bool {

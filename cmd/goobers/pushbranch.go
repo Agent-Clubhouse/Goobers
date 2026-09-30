@@ -589,7 +589,8 @@ func pushBranchADOOrigin(dir string, routed providers.RepositoryRef, isRouted bo
 // dev.azure.com remote for the same repository would. The configured
 // Owner/Project/Name are compared as-is (case-insensitively) against the
 // origin's decoded coordinates; no name character class is imposed. An origin
-// that embeds a password never matches: push-branch would otherwise place it
+// that embeds a password, or a username other than the organization or "git"
+// (which may be a token), never matches: push-branch would otherwise place it
 // on argv (`git push <url>`) and in the scoped extraheader config key, so it
 // fails closed instead.
 func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bool) {
@@ -611,9 +612,10 @@ func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bo
 // adoOriginMatches reports whether remote addresses the Azure DevOps
 // repository organization/project/name, by the rules adoRepoForOrigin
 // documents: any spelling providers.ParseADORemoteURL accepts, compared
-// case-insensitively, and never an origin that embeds a password.
+// case-insensitively, and never an origin whose userinfo may carry a
+// credential (remoteEmbedsCredential).
 func adoOriginMatches(remote, organization, project, name string) bool {
-	if remoteHasPassword(remote) {
+	if remoteEmbedsCredential(remote) {
 		return false
 	}
 	org, remoteProject, remoteName, ok := providers.ParseADORemoteURL(remote)
@@ -634,12 +636,42 @@ func remoteHasPassword(remote string) bool {
 	return set
 }
 
+// remoteHasCredentialUsername reports whether a URL-form Azure DevOps remote
+// carries something other than an identity in its userinfo username. The
+// forms Azure DevOps itself produces name the organization
+// (https://<org>@dev.azure.com/..., ssh://<org>@vs-ssh.visualstudio.com/...)
+// or "git" (ssh://git@ssh.dev.azure.com/...); any other username may be a
+// token (https://<PAT>@dev.azure.com/...), which push-branch would otherwise
+// place on argv and in the scoped extraheader config key.
+func remoteHasCredentialUsername(remote string) bool {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	username := parsed.User.Username()
+	if username == "" || username == "git" {
+		return false
+	}
+	org, _, _, ok := providers.ParseADORemoteURL(remote)
+	return !ok || !strings.EqualFold(username, org)
+}
+
+// remoteEmbedsCredential reports whether a remote's userinfo may carry a
+// credential: a password, or a username that is not an identity
+// (remoteHasCredentialUsername). Such an origin is never routed.
+func remoteEmbedsCredential(remote string) bool {
+	return remoteHasPassword(remote) || remoteHasCredentialUsername(remote)
+}
+
 // adoOriginMismatchError is push-branch's fail-closed error for an ADO origin
 // adoRepoForOrigin did not route. The remote is rendered with any embedded
-// password masked, and a password-bearing origin gets its own explanation.
+// credential masked, and a credential-bearing origin gets its own explanation.
 func adoOriginMismatchError(remote string) error {
 	if remoteHasPassword(remote) {
 		return fmt.Errorf("ADO origin %q embeds a password; remove it from the remote and configure the repository's auth instead", redactedRemote(remote))
+	}
+	if remoteHasCredentialUsername(remote) {
+		return fmt.Errorf("ADO origin %q embeds a credential in its username; remove it from the remote (only the organization name or \"git\" is accepted there) and configure the repository's auth instead", redactedRemote(remote))
 	}
 	return fmt.Errorf("ADO origin %q does not match any configured repository", redactedRemote(remote))
 }
@@ -648,18 +680,26 @@ func adoOriginMismatchError(remote string) error {
 // the origin is not the repository the stage was routed to, so the stage's
 // repo:push credential is not sent to it.
 func adoOriginRoutedMismatchError(remote string, routed providers.RepositoryRef) error {
-	if remoteHasPassword(remote) {
+	if remoteEmbedsCredential(remote) {
 		return adoOriginMismatchError(remote)
 	}
 	return fmt.Errorf("ADO origin %q does not match the routed repository %s/%s/%s", redactedRemote(remote), routed.Owner, routed.Project, routed.Name)
 }
 
 // redactedRemote renders a remote for an error message with any embedded
-// password masked.
+// password masked, and a username that may be a credential
+// (remoteHasCredentialUsername) masked too.
 func redactedRemote(remote string) string {
 	parsed, err := url.Parse(remote)
 	if err != nil {
 		return remote
+	}
+	if remoteHasCredentialUsername(remote) {
+		if _, set := parsed.User.Password(); set {
+			parsed.User = url.UserPassword("xxxxx", "xxxxx")
+		} else {
+			parsed.User = url.User("xxxxx")
+		}
 	}
 	return parsed.Redacted()
 }

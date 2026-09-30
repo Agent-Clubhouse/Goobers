@@ -97,8 +97,18 @@ func TestADOLandingAuthorityKeepsRevocationLive(t *testing.T) {
 				t.Fatalf("admitted landing authority = %q, %v; want %q", got, err, tc.want)
 			}
 			writeFixture(t, path, workflowYAMLDeclaring(tc.revokedTo))
-			if got, err := landingAuthority(ado); err == nil {
+			got, err = landingAuthority(ado)
+			if err == nil {
 				t.Fatalf("revoked %s still authorized an ADO land as %q", tc.want, got)
+			}
+			// A declared ado:pr:complete never falls back, so its refusal
+			// must not suggest github:pr:merge would do.
+			wantMsg := "needs " + string(merge) + " (or " + string(complete) + ")"
+			if tc.want == complete {
+				wantMsg = "with the declared " + string(complete) + " (no fallback to " + string(merge) + ")"
+			}
+			if !strings.Contains(err.Error(), wantMsg) {
+				t.Fatalf("revocation error = %q, want it to say %q", err, wantMsg)
 			}
 		})
 	}

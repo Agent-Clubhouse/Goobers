@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // Status is a check outcome.
@@ -114,7 +116,12 @@ type Options struct {
 	// with no namespaces registered, so this must exist before first use —
 	// see deploy/reference/temporal/namespace-job.yaml.
 	TemporalNamespace string
-	// DialTemporal dials the Temporal frontend; nil uses client.Dial. Tests
+	// TemporalTLS is the frontend transport security the namespace check
+	// dials with (#5289); nil dials plaintext. The check reports which
+	// transport it used.
+	TemporalTLS *temporaldial.TLS
+	// DialTemporal dials the Temporal frontend; nil uses temporaldial.Dial
+	// with TemporalTLS. Tests
 	// substitute a fake to avoid a live Temporal server.
 	DialTemporal func(ctx context.Context, hostPort string) (temporalNamespaceDescriber, error)
 	// HTTPClient serves the issuer/registry probes; nil builds one bounded

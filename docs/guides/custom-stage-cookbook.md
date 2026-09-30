@@ -300,7 +300,9 @@ the `todos-found` gate must evaluate.
   `run.env`. Goobers otherwise carries only tool/runtime
   basics (`PATH`, `HOME`, `TMPDIR`, XDG, locale, CA/proxy, and Go toolchain
   variables), declared inputs as normalized `GOOBERS_INPUT_*` variables, and
-  credentials for declared capabilities as `GOOBERS_CRED_*`.
+  credentials for declared capabilities as `GOOBERS_CRED_*`. A credential whose
+  source states an expiry (a GitHub App or Microsoft Entra token) also carries
+  the non-secret `GOOBERS_CREDENTIAL_EXPIRES_*`, an RFC 3339 UTC timestamp.
 - A custom command does not receive `GOOBERS_RUN_ID`, `GOOBERS_WORKFLOW`, or
   `GOOBERS_INSTANCE_ROOT`; those operational variables are reserved for stages
   whose command is the `goobers` CLI. It also does not inherit arbitrary daemon

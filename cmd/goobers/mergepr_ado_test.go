@@ -31,6 +31,10 @@ type adoMergePRServer struct {
 	// threadComments is the PR's thread comments the pre-lock verdict recovery
 	// reads (#2746) — empty until setVerdictThread seeds one.
 	threadComments atomic.Value // []map[string]any
+	// stackedOnHead, when set, is an open pull request whose target is PR
+	// 359's source branch (a stacked PR), served by the list endpoint.
+	stackedOnHead atomic.Bool
+	listCalls     int64
 }
 
 // adoMergePRAuthor is the display name the fake connectionData endpoint reports,
@@ -98,6 +102,19 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 			t.Errorf("unexpected method %s on pullrequests/359", r.Method)
 			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
 		}
+	})
+	mux.HandleFunc("/myorg/myproject/_apis/git/repositories/myrepo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&state.listCalls, 1)
+		prs := []map[string]any{}
+		stackedBase := "refs/heads/goobers/tb-ado-implementation/wire-merge"
+		if state.stackedOnHead.Load() && r.URL.Query().Get("searchCriteria.targetRefName") == stackedBase {
+			prs = append(prs, map[string]any{
+				"pullRequestId": 360, "status": "active",
+				"sourceRefName": "refs/heads/goobers/tb-ado-implementation/stacked",
+				"targetRefName": stackedBase,
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": prs})
 	})
 	mux.HandleFunc("/myorg/myproject/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&state.evalCalls, 1)
@@ -297,6 +314,41 @@ func TestMergePRADOSetsDeleteSourceBranchWithGrant(t *testing.T) {
 		}
 		if _, present := opts["deleteSourceBranch"]; present {
 			t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted without the github:branch:delete grant", opts)
+		}
+		if atomic.LoadInt64(&state.listCalls) != 0 {
+			t.Fatal("stacked pull requests were listed without the github:branch:delete grant")
+		}
+	})
+
+	// PRL-072's stacked exception: with the grant, a source branch another
+	// open pull request targets is kept, exactly as GitHub's cleanup skips
+	// it, and the result file says so.
+	t.Run("with grant but stacked", func(t *testing.T) {
+		server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+		state.stackedOnHead.Store(true)
+		root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+			"pullNumber": "359",
+			"verdict":    "pass",
+			"headSha":    "headsha1",
+			"baseSha":    "basesha1",
+		})
+		t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "branch-delete-token")
+
+		code, stdout, stderr := runArgs(t, "merge-pr", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		body, _ := state.patchBody.Load().(map[string]interface{})
+		opts, _ := body["completionOptions"].(map[string]interface{})
+		if opts == nil {
+			t.Fatalf("PATCH body = %+v, want completionOptions", body)
+		}
+		if _, present := opts["deleteSourceBranch"]; present {
+			t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted while a stacked PR targets the source branch", opts)
+		}
+		result := readMergeResult(t, dir)
+		if result["branchCleanup"] != "skipped-stacked" || result["headBranch"] != "goobers/tb-ado-implementation/wire-merge" {
+			t.Fatalf("result = %+v, want branchCleanup=skipped-stacked for the head branch", result)
 		}
 	})
 }

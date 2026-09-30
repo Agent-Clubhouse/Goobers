@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // initBareOrigin creates a local bare git repo at dir/origin.git seeded with
@@ -317,6 +318,33 @@ func TestADORepoForOriginRequiresExactConfiguredRemote(t *testing.T) {
 	if err := adoOriginMismatchError("https://organization:placeholder@dev.azure.com/o/p/_git/r"); strings.Contains(err.Error(), "placeholder") ||
 		!strings.Contains(err.Error(), "embeds a password") {
 		t.Fatalf("adoOriginMismatchError() = %q, want a redacted password refusal", err)
+	}
+
+	// A username that is not the organization or "git" may be a token
+	// (https://<PAT>@dev.azure.com/...): it fails closed like a password, and
+	// the refusal masks it.
+	if _, ok := adoRepoForOrigin(cfg, "https://not-the-org@dev.azure.com/organization/project%20name/_git/repository"); ok {
+		t.Fatal("ADO origin with a non-identity username was routed to configured credentials")
+	}
+	if err := adoOriginMismatchError("https://tokenlikevalue@dev.azure.com/organization/project%20name/_git/repository"); strings.Contains(err.Error(), "tokenlikevalue") ||
+		!strings.Contains(err.Error(), "embeds a credential in its username") {
+		t.Fatalf("adoOriginMismatchError() = %q, want a redacted username refusal", err)
+	}
+	routed := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "organization", Project: "project name", Name: "repository"}
+	if err := adoOriginRoutedMismatchError("https://tokenlikevalue@dev.azure.com/organization/project%20name/_git/repository", routed); strings.Contains(err.Error(), "tokenlikevalue") ||
+		!strings.Contains(err.Error(), "embeds a credential in its username") {
+		t.Fatalf("adoOriginRoutedMismatchError() = %q, want a redacted username refusal", err)
+	}
+	for _, identity := range []string{
+		"https://ORGANIZATION@dev.azure.com/organization/project%20name/_git/repository",
+		"https://organization@organization.visualstudio.com/project%20name/_git/repository",
+		"ssh://git@ssh.dev.azure.com/v3/organization/project%20name/repository",
+		"ssh://organization@vs-ssh.visualstudio.com/v3/organization/project%20name/repository",
+		"git@ssh.dev.azure.com:v3/organization/project%20name/repository",
+	} {
+		if _, ok := adoRepoForOrigin(cfg, identity); !ok {
+			t.Fatalf("adoRepoForOrigin(%q) did not route an identity username", identity)
+		}
 	}
 
 	// A bare slug or local path is never an ADO origin.

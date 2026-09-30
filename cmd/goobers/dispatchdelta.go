@@ -39,6 +39,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -253,7 +254,7 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 		// the branch and should never hand such a digest across a rebind; this
 		// is the pod re-asserting it at the substrate, where git's own message
 		// alone would send a reader hunting a base drift that never happened.
-		return fmt.Errorf("%w%s", err, deltaBranchContext(dir))
+		return fmt.Errorf("%w%s", err, deltaBranchContext(dir, preRebindDeltaClause))
 	}
 	head, err := git.Output(ctx, dir, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
@@ -267,8 +268,14 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 	if err != nil {
 		// The shared guard already names both SHAs; what it cannot know is
 		// WHICH branch this pod is standing on, which is the first thing a
-		// reader of a diverged pr-remediation run needs (#392).
-		return fmt.Errorf("%w%s", err, deltaBranchContext(dir))
+		// reader of a diverged pr-remediation run needs (#392), nor what the
+		// checkout carries that the delta lacks — the commits landing the
+		// delta would destroy (#5948).
+		var diverged *workspacedelta.DivergedError
+		if errors.As(err, &diverged) {
+			return fmt.Errorf("%w%s%s", err, deltaBranchContext(dir, movedReboundBranchClause), divergedResidue(ctx, git, dir, diverged))
+		}
+		return fmt.Errorf("%w%s", err, deltaBranchContext(dir, movedReboundBranchClause))
 	}
 	switch outcome {
 	case workspacedelta.OutcomeKeep:
@@ -294,22 +301,75 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 // deltaBranchContext is the branch half of a delta failure's message: which
 // branch the workspace is actually on, and whether that branch is one the run
 // REBOUND to (#392) rather than the run branch a pod derives for itself.
+// reboundClause words the rebind for the failure at hand: the two call sites
+// establish different facts, so they need different words (#5948).
 //
 // It returns a leading-space suffix, or "" when neither fact is available —
 // appending nothing is better than appending a lie, and a checkout too broken
 // to answer `symbolic-ref` has already produced a louder error of its own.
-func deltaBranchContext(dir string) string {
+func deltaBranchContext(dir string, reboundClause func(rebound string) string) string {
 	var parts []string
 	if branch, err := currentBranch(dir); err == nil && branch != "" {
 		parts = append(parts, fmt.Sprintf("the workspace is on branch %q", branch))
 	}
 	if rebound := strings.TrimSpace(os.Getenv(dispatcher.EnvWorkspaceBranch)); rebound != "" {
-		parts = append(parts, fmt.Sprintf("this run rebound its workspace branch to %q, so a delta produced before the rebind cannot land here", rebound))
+		parts = append(parts, reboundClause(rebound))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// preRebindDeltaClause words the rebind for a FETCH refusal: the thin
+// bundle's prerequisite is absent from this checkout, which across a rebind
+// is what a delta bundled on the other line of history looks like.
+func preRebindDeltaClause(rebound string) string {
+	return fmt.Sprintf("this run rebound its workspace branch to %q, so a delta produced before the rebind cannot land here", rebound)
+}
+
+// movedReboundBranchClause words the rebind for an ANCESTRY refusal, and it
+// must not repeat preRebindDeltaClause (#5948). The fetch succeeded, so the
+// delta's prerequisite IS in this checkout's history, and the engine hands a
+// consumer only deltas produced on the branch it is checked out on
+// (selectDelta's branch filter) — so this delta was produced on the rebound
+// branch, after the rebind. What diverged is the branch itself: its remote
+// head carries commits the delta lacks. MEASURED twice on a production
+// instance (PRs #5506 and #5861): each time a person pushed to the PR while
+// the run was working, and the old clause sent the reader after the run's own
+// rebind instead. The refusal itself is right — landing the delta would
+// discard that push.
+func movedReboundBranchClause(rebound string) string {
+	return fmt.Sprintf("this run rebound its workspace branch to %q before the delta was produced, so the delta was built on this branch and the branch moved after it: landing the delta would discard what the branch gained", rebound)
+}
+
+// divergedResidueLimit bounds how many residue commits a refusal names. The
+// count is always reported; the list is evidence, not an inventory.
+const divergedResidueLimit = 5
+
+// divergedResidue names the commits the receiving ref carries that the delta
+// does not — the --cherry-pick residue workspacedelta.RebaseOf found
+// non-empty, i.e. exactly what landing the delta would destroy. It is the one
+// fact that tells a reader WHO moved the branch (a person's push, a merge of
+// base), and the pod that knows it is disposed as soon as the stage fails.
+//
+// Best-effort: it returns "" when git cannot answer, because the refusal is
+// already complete without it.
+func divergedResidue(ctx context.Context, git podGit, dir string, diverged *workspacedelta.DivergedError) string {
+	out, err := git.Output(ctx, dir, "log", "--no-merges", "--cherry-pick", "--right-only", "--format=%h %s", diverged.Tip+"..."+diverged.Current)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return ""
+	}
+	commits := strings.Split(strings.TrimSpace(out), "\n")
+	shown := commits
+	if len(shown) > divergedResidueLimit {
+		shown = shown[:divergedResidueLimit]
+	}
+	more := ""
+	if len(commits) > len(shown) {
+		more = fmt.Sprintf("; and %d more", len(commits)-len(shown))
+	}
+	return fmt.Sprintf(" (the ref carries %d commit(s) the delta lacks: %s%s)", len(commits), strings.Join(shown, "; "), more)
 }
 
 // publishBasePath is where the handed-HEAD baseline lives for the workspace

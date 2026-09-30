@@ -139,6 +139,7 @@ type Client struct {
 	tracer             trace.Tracer
 	scrubber           journal.Scrubber
 	journalLogs        *journalLogPipeline
+	journalCatchup     *journalCatchup
 	unregisterJournal  func()
 }
 
@@ -449,6 +450,9 @@ func (c *Client) Flush(ctx context.Context) error {
 		_ = c.meterProvider.ForceFlush(ctx)
 	}
 	if c.journalLogs != nil {
+		if c.journalCatchup != nil {
+			_ = c.journalCatchup.flush(ctx)
+		}
 		// Like metrics, journal Logs are remote-only and best-effort. The
 		// pipeline reports failures independently of the journal writer.
 		_ = c.journalLogs.flush(ctx)
@@ -476,6 +480,9 @@ func (c *Client) FlushLocal(ctx context.Context) error {
 func (c *Client) Shutdown(ctx context.Context) error {
 	if c.unregisterJournal != nil {
 		c.unregisterJournal()
+	}
+	if c.journalCatchup != nil {
+		c.journalCatchup.shutdown(ctx)
 	}
 	var errs []error
 	if c.tracerProvider != nil {

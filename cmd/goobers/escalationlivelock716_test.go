@@ -243,7 +243,7 @@ func TestGatherPRContextExcludesEscalatedNeedsRemediationPR(t *testing.T) {
 		t.Fatalf("remediationStateComment: %v", err)
 	}
 	srv.comments = []map[string]interface{}{
-		{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stateComment, "created_at": "2026-07-16T00:00:00Z"},
+		{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(stateComment, "comment"), "created_at": "2026-07-16T00:00:00Z"},
 	}
 	server := srv.start(t)
 
@@ -301,7 +301,7 @@ func TestGatherPRContextSelfHealsOnBaseAdvance(t *testing.T) {
 		headSHA: headSHA, baseSHA: baseSHA, // base moved since escalation
 		labels: []string{needsRemediationLabel, remediationEscalatedLabel},
 		comments: []map[string]interface{}{
-			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stateComment, "created_at": "2026-07-16T00:00:00Z"},
+			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(stateComment, "comment"), "created_at": "2026-07-16T00:00:00Z"},
 		},
 	}
 	server := srv.start(t)
@@ -358,6 +358,7 @@ func TestRemediationCheckpointEscalationCommentIsSticky(t *testing.T) {
 	if code, _, stderr := runArgs(t, "remediation-checkpoint", instanceRoot); code != 0 {
 		t.Fatalf("first cycle: code = %d, stderr = %q", code, stderr)
 	}
+	t.Setenv("GOOBERS_RUN_ID", "run-364-next") // a later remediation attempt is a new run (#6008)
 	// Second cycle: same diff -> escalates, editing the cycle-1 comment.
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
@@ -429,7 +430,7 @@ func TestGatherPRContextDigestShortCircuitsOnClearedLabel(t *testing.T) {
 		headSHA: headSHA, baseSHA: baseSHA,
 		labels: []string{needsRemediationLabel}, // merge-escalated cleared by a human
 		comments: []map[string]interface{}{
-			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stateComment, "created_at": "2026-07-16T00:00:00Z"},
+			{"id": 1, "user": map[string]string{"login": "goobers-bot"}, "body": stampOwnFixtureBody(stateComment, "comment"), "created_at": "2026-07-16T00:00:00Z"},
 		},
 	}
 	server := srv.start(t)

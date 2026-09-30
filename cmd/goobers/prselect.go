@@ -171,6 +171,7 @@ func runPRSelectCore(
 		return 1
 	}
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
+	targetedPullNumber, hasTargetedPullNumber := webhookhttp.PullNumberFromTriggerRef(triggerRef)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
@@ -188,9 +189,13 @@ func runPRSelectCore(
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
+	safetyGateBases := []string{base}
+	if targeted, ok := targetedPullRequest(prs, targetedPullNumber, hasTargetedPullNumber); ok && targeted.Base != "" && targeted.Base != base {
+		safetyGateBases = append(safetyGateBases, targeted.Base)
+	}
 
 	gateState, gateCode := loadPRSelectSafetyGateState(
-		ctx, gateProvider, repo, openPRs, base, headPrefixes, expectedAuthorLogin, stdout, stderr,
+		ctx, gateProvider, repo, openPRs, safetyGateBases, headPrefixes, expectedAuthorLogin, stdout, stderr,
 	)
 	if gateCode != 0 {
 		return gateCode
@@ -210,7 +215,8 @@ func runPRSelectCore(
 	exclusions.report.ObservedAt = now
 	exclusions.report.CompleteSnapshot = bool(completeness)
 	for _, pr := range prs {
-		if pr.State != "open" || pr.Base != base ||
+		matchesTargetedPull := hasTargetedPullNumber && strconv.Itoa(pr.Number) == targetedPullNumber
+		if pr.State != "open" || (!matchesTargetedPull && pr.Base != base) ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
 			continue
 		}
@@ -266,6 +272,18 @@ func runPRSelectCore(
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
 		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
+}
+
+func targetedPullRequest(prs []providers.PullRequestSummary, targetedPullNumber string, targeted bool) (providers.PullRequestSummary, bool) {
+	if !targeted {
+		return providers.PullRequestSummary{}, false
+	}
+	for _, pr := range prs {
+		if strconv.Itoa(pr.Number) == targetedPullNumber {
+			return pr, true
+		}
+	}
+	return providers.PullRequestSummary{}, false
 }
 
 // completePRSelection is the provider-neutral selection decision after a
@@ -408,19 +426,37 @@ func pullRequestsForSelection(
 		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
 	}
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if targeted && completeness != prSelectCompleteSnapshot {
+	var targetedPR *providers.PullRequestSummary
+	if targeted {
 		pr, err := provider.GetPullRequest(ctx, repo, pullID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
 		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
-			return nil, openPRs, nil
+			if completeness != prSelectCompleteSnapshot {
+				return nil, openPRs, nil
+			}
+			targeted = false
 		}
-		pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+		if targeted {
+			pr.CheckState, err = provider.RefCheckState(ctx, repo, pr.HeadSHA)
+			if err != nil {
+				return nil, nil, fmt.Errorf("read webhook pull request #%s checks: %w", pullID, err)
+			}
+			targetedPR = &pr
+			if pr.Base != "" && pr.Base != base {
+				basePRs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+					Repository: repo, Base: pr.Base, SkipCheckState: true,
+				})
+				if err != nil {
+					return nil, nil, fmt.Errorf("list open pull requests for webhook pull request #%s base %q: %w", pullID, pr.Base, err)
+				}
+				openPRs = mergePullRequestSummaries(openPRs, basePRs)
+			}
+			if completeness != prSelectCompleteSnapshot {
+				return []providers.PullRequestSummary{pr}, openPRs, nil
+			}
 		}
-		return []providers.PullRequestSummary{pr}, openPRs, nil
 	}
 
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
@@ -437,7 +473,30 @@ func pullRequestsForSelection(
 		}
 		prs = append(prs, pr)
 	}
+	if targetedPR != nil {
+		prs = mergePullRequestSummaries(prs, []providers.PullRequestSummary{*targetedPR})
+	}
 	return prs, openPRs, nil
+}
+
+func mergePullRequestSummaries(base []providers.PullRequestSummary, extras []providers.PullRequestSummary) []providers.PullRequestSummary {
+	if len(extras) == 0 {
+		return base
+	}
+	seen := make(map[int]bool, len(base)+len(extras))
+	out := make([]providers.PullRequestSummary, 0, len(base)+len(extras))
+	for _, pr := range base {
+		seen[pr.Number] = true
+		out = append(out, pr)
+	}
+	for _, pr := range extras {
+		if seen[pr.Number] {
+			continue
+		}
+		seen[pr.Number] = true
+		out = append(out, pr)
+	}
+	return out
 }
 
 // prSelectSource contains only the provider-dependent reads that construct the
@@ -634,7 +693,7 @@ func loadPRSelectSafetyGateState(
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	openPRs []providers.PullRequestSummary,
-	base string,
+	bases []string,
 	headPrefixes []string,
 	expectedAuthorLogin string,
 	stdout, stderr io.Writer,
@@ -653,12 +712,27 @@ func loadPRSelectSafetyGateState(
 	liveSiblingBlockers := make(map[int][]int)
 	// #5602: a recorded blocker this instance cannot land never holds a PR.
 	unlandable := unlandableSiblingSet(openPRs, headPrefixes, expectedAuthorLogin)
+	recordedBlockers := make(map[int][]int, len(openPRs))
 	for _, pr := range openPRs {
 		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
-		blockers = withoutDemoted(blockers, unlandable)
+		recordedBlockers[pr.Number] = blockers
+	}
+	// A recorded blocker the election has dropped from candidacy (demoted,
+	// parked needs-human, or escalated with a park that still blocks) can
+	// never be crowned, so it must not hold its successors either. Without
+	// this, elect-lander crowns the next FIFO member while pr-select keeps that
+	// member held behind the parked blocker, and the cluster never drains.
+	// Only PRs actually named as live blockers are resolved, so the common
+	// no-hold path costs no extra provider reads.
+	excluded, err := blockerElectionExclusions(blockerScanCtx, provider, repo, openPRs, recordedBlockers, unlandable, stderr)
+	if err != nil {
+		return state, failProviderStage(stderr, "resolve election exclusions for recorded sibling blockers", err, "selected-pr.json")
+	}
+	for _, pr := range openPRs {
+		blockers := withoutDemoted(recordedBlockers[pr.Number], excluded)
 		liveSiblingBlockers[pr.Number] = blockers
 		for _, blocker := range blockers {
 			state.blockedDependents[blocker]++
@@ -666,7 +740,7 @@ func loadPRSelectSafetyGateState(
 		// #3095: selection asks the fail-closed question, which also covers the
 		// PR that holds the label with no readable blocker record — the shape
 		// liveBlockedOnSiblingBlockers reports as unblocked by design.
-		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, unlandable)
+		held, reason, err := blockedOnSiblingSelectionHold(blockerScanCtx, provider, repo, pr, excluded)
 		if err != nil {
 			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
@@ -675,40 +749,47 @@ func loadPRSelectSafetyGateState(
 			state.siblingHoldReason[pr.Number] = reason
 		}
 	}
-	var couplingDependents []providers.PullRequestSummary
-	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && mergeReviewCanLand(pr, headPrefixes, expectedAuthorLogin) {
-			couplingDependents = append(couplingDependents, pr)
+	for _, base := range bases {
+		var basePRs []providers.PullRequestSummary
+		var couplingDependents []providers.PullRequestSummary
+		for _, pr := range openPRs {
+			if pr.Base != base {
+				continue
+			}
+			basePRs = append(basePRs, pr)
+			if pr.State == "open" && mergeReviewCanLand(pr, headPrefixes, expectedAuthorLogin) {
+				couplingDependents = append(couplingDependents, pr)
+			}
 		}
-	}
-	couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, openPRs, state.siblingBlocked)
-	if err != nil {
-		return state, failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
-	}
-	for _, warning := range couplingWarnings {
-		pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
-	}
-	for _, coupling := range couplings {
-		changed, err := flagFoundationCoupling(
-			blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
-		)
+		couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, basePRs, state.siblingBlocked)
 		if err != nil {
-			return state, failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), err, "selected-pr.json")
+			return state, failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
 		}
-		if !changed {
-			continue
+		for _, warning := range couplingWarnings {
+			pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
 		}
-		liveSiblingBlockers[coupling.dependent.Number] = append(
-			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
-		)
-		state.siblingBlocked[coupling.dependent.Number] = true
-		state.siblingHoldReason[coupling.dependent.Number] = fmt.Sprintf(
-			"foundation-coupled behind PR #%d (%s)",
-			coupling.foundation.Number, strings.Join(coupling.files, ", "),
-		)
-		state.blockedDependents[coupling.foundation.Number]++
-		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
-			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
+		for _, coupling := range couplings {
+			changed, err := flagFoundationCoupling(
+				blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
+			)
+			if err != nil {
+				return state, failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), err, "selected-pr.json")
+			}
+			if !changed {
+				continue
+			}
+			liveSiblingBlockers[coupling.dependent.Number] = append(
+				liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
+			)
+			state.siblingBlocked[coupling.dependent.Number] = true
+			state.siblingHoldReason[coupling.dependent.Number] = fmt.Sprintf(
+				"foundation-coupled behind PR #%d (%s)",
+				coupling.foundation.Number, strings.Join(coupling.files, ", "),
+			)
+			state.blockedDependents[coupling.foundation.Number]++
+			pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
+				coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
+		}
 	}
 	return state, 0
 }
@@ -880,15 +961,33 @@ func pullRequestsForSelectionADO(
 		return nil, nil, fmt.Errorf("list open pull requests: %w", err)
 	}
 	pullID, targeted := webhookhttp.PullNumberFromTriggerRef(triggerRef)
-	if targeted && completeness != prSelectCompleteSnapshot {
+	var targetedPR *providers.PullRequestSummary
+	if targeted {
 		pr, err := adoSelectionCandidate(ctx, provider, repo, pullID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read webhook pull request #%s: %w", pullID, err)
 		}
 		if !identityFilters.MatchesIdentityFields(pr.Author, pr.Assignees, pr.RequestedReviewers) {
-			return nil, openPRs, nil
+			if completeness != prSelectCompleteSnapshot {
+				return nil, openPRs, nil
+			}
+			targeted = false
 		}
-		return []providers.PullRequestSummary{pr}, openPRs, nil
+		if targeted {
+			targetedPR = &pr
+			if pr.Base != "" && pr.Base != base {
+				basePRs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+					Repository: repo, Base: pr.Base, SkipCheckState: true,
+				})
+				if err != nil {
+					return nil, nil, fmt.Errorf("list open pull requests for webhook pull request #%s base %q: %w", pullID, pr.Base, err)
+				}
+				openPRs = mergePullRequestSummaries(openPRs, basePRs)
+			}
+			if completeness != prSelectCompleteSnapshot {
+				return []providers.PullRequestSummary{pr}, openPRs, nil
+			}
+		}
 	}
 
 	prs := make([]providers.PullRequestSummary, 0, len(openPRs))
@@ -913,6 +1012,9 @@ func pullRequestsForSelectionADO(
 			pr.State = poll.State
 		}
 		prs = append(prs, pr)
+	}
+	if targetedPR != nil {
+		prs = mergePullRequestSummaries(prs, []providers.PullRequestSummary{*targetedPR})
 	}
 	return prs, openPRs, nil
 }
