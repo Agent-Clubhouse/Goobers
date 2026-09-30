@@ -32,8 +32,18 @@ type serviceSuperviseDeps struct {
 }
 
 func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps serviceSuperviseDeps) int {
+	// --daemon-log is passed by the Windows Scheduled Task action: the task's
+	// PowerShell host is hidden, so without it the supervised daemon's output
+	// (including a fatal startup error) would go nowhere. The supervisor owns
+	// the log itself rather than relying on shell redirection so output is
+	// redacted, timestamped, and ordered exactly as on the Windows Service path.
+	daemonLog := false
+	if len(args) > 0 && args[0] == serviceSuperviseDaemonLogFlag {
+		daemonLog = true
+		args = args[1:]
+	}
 	if len(args) > 1 {
-		pf(stderr, "Usage: goobers __service-supervise [path]\n")
+		pf(stderr, "Usage: goobers __service-supervise [%s] [path]\n", serviceSuperviseDaemonLogFlag)
 		return 2
 	}
 	root := "."
@@ -50,16 +60,24 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 		return 2
 	}
 	run := func(ctx context.Context, supervisorStdout, supervisorStderr io.Writer) int {
+		readiness := newServiceReadinessTracker(supervisorStdout)
 		stopTelemetry := startCommandJournalTelemetry(layout, supervisorStderr)
 		defer stopTelemetry()
 		err := deps.runSupervisor(ctx, selfupdate.SupervisorOptions{
 			Root:      root,
 			Escalator: selfUpdateEscalator{root: root},
-			Stdout:    supervisorStdout,
+			Stdout:    readiness,
 			Stderr:    supervisorStderr,
 		})
 		if err != nil {
-			pf(supervisorStderr, "error: supervise daemon: %v\n", err)
+			if daemonLog {
+				// Written through the daemon log's MergedWriter, so the line
+				// gains the timestamp prefix latestServiceSupervisorFailure
+				// parses and passes through the same secret redaction.
+				pf(supervisorStderr, "%s: error: supervise daemon: %v\n", serviceSupervisorFailureKind(readiness.Ready()), err)
+			} else {
+				pf(supervisorStderr, "error: supervise daemon: %v\n", err)
+			}
 			return 1
 		}
 		return 0
@@ -70,8 +88,12 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 		return 1
 	}
 	if isService {
-		// A Windows service's stdout/stderr are not an interactive console a
-		// human is watching live, so redirecting the SCM-captured streams to
+		daemonLog = true
+	}
+	var merged *daemonlog.MergedWriter
+	if daemonLog {
+		// A supervised daemon's stdout/stderr are not an interactive console a
+		// human is watching live, so redirecting the captured streams to
 		// separate stdout/stderr files (as the previous behavior did) loses
 		// their relative ordering. Give both the same MergedWriter over one
 		// file instead (#4368): writes from the supervisor and its child
@@ -82,12 +104,14 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 			pf(stderr, "error: open daemon log %s: %v\n", layout.DaemonLogFile(), err)
 			return 1
 		}
-		merged := daemonlog.NewMergedWriter(logFile)
+		merged = daemonlog.NewMergedWriter(logFile)
 		defer func() {
 			if closeErr := merged.Close(); closeErr != nil {
 				pf(stderr, "error: close daemon log %s: %v\n", layout.DaemonLogFile(), closeErr)
 			}
 		}()
+	}
+	if isService {
 		code, err := deps.runWindowsService(service.Name, func(ctx context.Context) int {
 			return run(ctx, merged, merged)
 		})
@@ -99,5 +123,8 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 	}
 	ctx, stop := deps.setupSignalContext()
 	defer stop()
+	if merged != nil {
+		return run(ctx, merged, merged)
+	}
 	return run(ctx, stdout, stderr)
 }
