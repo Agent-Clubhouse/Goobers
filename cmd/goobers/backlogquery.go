@@ -375,7 +375,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// blocked checks, and claim — must address the backlog project rather than
 	// the routed code repo. On GitHub the two coincide and backlogRepo == repo.
 	trustLabel := providerInput("trustLabel", "")
-	requireLabels := splitLabelList(providerInput("requireLabels", ""))
+	requireLabels := backlogQueryRequireLabels(env)
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
 	labelExpression := providerInput("labelPredicate", "")
 	labelFilter, excludeLabels, err := compileBacklogLabelSelection(labelExpression, requireLabels, excludeLabels, providerInput("parkLabels", ""), providerInput("filterParkLabels", "true"))
