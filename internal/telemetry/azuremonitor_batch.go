@@ -149,11 +149,23 @@ func (s *azureReplaySpool) claimBatch(ctx context.Context) (azureReplayBatch, er
 }
 
 func (s *azureReplaySpool) finishBatch(ctx context.Context, batch azureReplayBatch, delivered bool) error {
-	return s.index.withLock(ctx, func(tx *sql.Tx) error {
-		if !delivered {
-			_, err := tx.ExecContext(ctx, `UPDATE files SET lease_until=0,lease_owner='' WHERE lease_owner=?`, batch.owner)
+	if !delivered {
+		// Releasing a failed upload only changes lease metadata; avoid a full
+		// filesystem reconciliation on the shutdown path.
+		if err := s.index.wait(ctx); err != nil {
 			return err
 		}
+		unlock, err := s.index.lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		return s.index.transaction(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE files SET lease_until=0,lease_owner='' WHERE lease_owner=?`, batch.owner)
+			return err
+		})
+	}
+	return s.index.withLock(ctx, func(tx *sql.Tx) error {
 		var owned int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE lease_owner=?`, batch.owner).Scan(&owned); err != nil {
 			return err
