@@ -38,6 +38,7 @@ payload/.goobers/agent-toolkit/api/schemas/schema-output.schema.json
 payload/.goobers/agent-toolkit/api/schemas/security-alerts-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-set.schema.json
+payload/.goobers/agent-toolkit/api/schemas/support-triage-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/verdict.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workflow.schema.json
 payload/.goobers/agent-toolkit/config-examples/README.md
