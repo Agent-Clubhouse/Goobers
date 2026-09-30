@@ -262,6 +262,80 @@ func TestAzureReplayBootstrapLeftByOtherProcessIsMigrated(t *testing.T) {
 	}
 }
 
+// A rename is durable even when a later file aborts the SQLite transaction.
+// Reopening must discover the already-moved file and migrate the remainder;
+// neither file may be silently omitted from the rebuilt manifest.
+func TestAzureReplayBootstrapRecoversMidMigrationRollback(t *testing.T) {
+	root := t.TempDir()
+	dir := bootstrapDir(root, "journal")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "journal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstName, secondName := "0001.ndjson", "0002.ndjson"
+	firstPayload, secondPayload := []byte("{\"id\":1}\n"), []byte("{\"id\":2}\n")
+	for _, batch := range []struct {
+		name string
+		body []byte
+	}{{firstName, firstPayload}, {secondName, secondPayload}} {
+		if _, err := writeAzureReplayBatch(dir, batch.name, time.Now(), batch.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The second destination forces a deterministic failure after the first
+	// rename, before the manifest transaction can commit.
+	collision := filepath.Join(root, "journal", secondName)
+	if _, err := writeAzureReplayBatch(filepath.Dir(collision), secondName, time.Now(), []byte("{\"collision\":true}\n")); err != nil {
+		t.Fatal(err)
+	}
+	x := &azureReplayIndex{root: root, streams: []string{"journal"}}
+	if err := x.open(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.migrateBootstrap(t.Context()); err == nil {
+		t.Fatal("destination collision did not abort migration")
+	}
+	if _, err := os.Stat(filepath.Join(root, "journal", firstName)); err != nil {
+		t.Fatalf("first rename was not exercised: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, secondName)); err != nil {
+		t.Fatalf("unmoved second batch was not retained: %v", err)
+	}
+	var indexed int
+	if err := x.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM files WHERE stream='journal' AND name=?`, firstName).Scan(&indexed); err != nil || indexed != 0 {
+		t.Fatalf("rolled-back move appeared committed: rows=%d err=%v", indexed, err)
+	}
+	if err := x.closeDatabases(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(collision); err != nil {
+		t.Fatal(err)
+	}
+	reopened := &azureReplayIndex{root: root, streams: []string{"journal"}}
+	if err := reopened.open(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.closeDatabases() }()
+	if err := reopened.migrateBootstrap(t.Context()); err != nil {
+		t.Fatalf("reopen failed to finish migration: %v", err)
+	}
+	for _, batch := range []struct {
+		name string
+		body []byte
+	}{{firstName, firstPayload}, {secondName, secondPayload}} {
+		_, payload, err := readAzureReplayFile(filepath.Join(root, "journal", batch.name))
+		if err != nil || string(payload) != string(batch.body) {
+			t.Fatalf("recovered %s payload=%q err=%v", batch.name, payload, err)
+		}
+	}
+	var files, records int
+	if err := reopened.db.QueryRowContext(t.Context(), `SELECT files,records FROM totals WHERE stream='journal'`).Scan(&files, &records); err != nil || files != 2 || records != 2 {
+		t.Fatalf("reopened manifest files=%d records=%d err=%v", files, records, err)
+	}
+}
+
 func TestAzureReplayExternalInspectionMarksBootstrapAccountingPartial(t *testing.T) {
 	root := t.TempDir()
 	cfg := azureReplayConfig{root: root, dir: filepath.Join(root, "journal"), maxAge: time.Hour, maxBytes: 1 << 20}
