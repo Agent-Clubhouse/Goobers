@@ -146,6 +146,43 @@ func TestKillTerminatesJobDescendants(t *testing.T) {
 	}
 }
 
+func TestKillIsIdempotentAfterJobClose(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=marker", "GOOBERS_PROC_HELPER_MARKER="+filepath.Join(t.TempDir(), "started"))
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = tree.Kill()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("first Kill: %v", err)
+	}
+	_ = cmd.Wait()
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("second Kill: %v", err)
+	}
+}
+
+func TestIdentifyDescendantsIgnoresUnreadableParentage(t *testing.T) {
+	started := time.Unix(123, 0)
+	got := identifyDescendantsWithStartTime(10, map[int][]int{
+		10: {20, 30},
+		20: {40},
+	}, func(pid int) (time.Time, bool) {
+		if pid == 20 {
+			return started, true
+		}
+		return time.Time{}, false
+	})
+	if len(got) != 1 || got[0].pid != 20 || !got[0].startTime.Equal(started) {
+		t.Fatalf("identifyDescendantsWithStartTime = %+v, want only pid 20", got)
+	}
+}
+
 func TestProcessTreeHelper(t *testing.T) {
 	role := os.Getenv("GOOBERS_PROC_HELPER_ROLE")
 	if role == "" {
