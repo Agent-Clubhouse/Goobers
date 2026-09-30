@@ -21,6 +21,9 @@ load-test a production tenant without its approval.
 - HTTP holds no filesystem lock or database transaction. Each replay pass sends
   at most 32 requests with the worker's five-second context; acknowledgement
   cleanup has a separate maximum five-second allowance.
+  Each stream's final shutdown remote pass has a one-second budget (or the
+  shorter caller deadline), with unsent durable records retained for restart.
+  This bounds remote waiting, not stalled local filesystem cleanup.
 - Replay combines tiny files into bounded 128-record / 1 MiB requests, preserving
   stable identities and at-least-once delivery. Existing larger batches travel
   alone. Cross-process leases protect uploads from concurrent pruning/delivery.
@@ -74,6 +77,15 @@ These are background goroutines, **not an OS low-priority scheduling class**.
 Asynchronous work still consumes CPU, memory, disk bandwidth, and filesystem
 operations. Local authoritative journal fsync remains a separate cost.
 
+The daemon supplies an instance-lifecycle startup signal to its Azure replay
+workers. Background uploads wait until API readiness; local recording, durable
+admission, manifest initialization and health accounting remain active. Each
+daemon owns its signal, including its independent diagnostic exporter. One-shot
+commands retain immediate replay. If startup fails, exporter cancellation stops
+waiting workers and the existing bounded final drain still runs; unacknowledged
+records remain durable. This is not an OS priority guarantee or a promise that
+replay consumes no resources after readiness.
+
 Azure uploads reuse at most four gzip compressors per process. Cache misses
 allocate rather than waiting; unused compressors above the bound are discarded.
 Request output buffers are not cached, and a compressor is released before HTTP
@@ -100,12 +112,24 @@ go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalLogsDurableHTTP$
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayBacklogAdmission$' -benchtime=5x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexedStats$' -benchtime=100x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexAudit$' -benchtime=3x -count=3
+go test ./internal/telemetry -run '^$' -bench '^BenchmarkAzureReplayIndexOpen$' -benchtime=3x -count=3 -timeout=20m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupAcknowledgedHistory$' -benchtime=14400x -count=3 -timeout=3m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRetainedDirectorySweep$' -benchtime=3x -count=1 -timeout=45m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupCommitHint$' -benchtime=100000x -count=3
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupRateControlledBurst$' -benchtime=1x -count=3 -timeout=30m
 go test ./internal/telemetry -run '^$' -bench '^BenchmarkJournalCatchupNormalRate$' -benchtime=1x -count=3
 ```
+
+`BenchmarkAzureReplayIndexOpen` isolates opening a missing versus current
+manifest with zero or 12,000 tiny replay files. Preparation uses the production
+file publication/fsync path; preparation, priming, close and correctness checks
+are excluded from timing. Cold iterations reset only the private fixture's
+manifest, never its authoritative payloads. Warm iterations refresh the audit
+timestamp outside timing and verify it did not change during open; expired
+audits have their own benchmark above. Report source, Go version, OS, storage,
+antivirus and the full repeated results. These are warm-OS-cache component
+measurements, not daemon startup or delivery qualification. Run them only on
+an idle host, separately from whole-daemon load/soak measurements.
 
 The commands also work in PowerShell. Benchmarks are measurements, not hard
 wall-clock CI assertions. Keep their text output with the release evidence.
@@ -365,15 +389,30 @@ untrusted workflows. Child processes have ambient provider/telemetry credential
 variables removed. On Linux make the daemon executable readable/executable by
 the workload identity, not just the host root user.
 
+The demo gaggle contains GitHub-shaped project/backlog names, but the synthetic
+load driver configures no repository connections and calls only the bundled
+`__demo-provider` in scratch workspaces. All four stages request `network: none`
+on platforms that support that sandbox. The driver now refuses to start if the
+demo acquires a repository connection, networked/non-demo stage or stage
+capability. Thus the workload does not call the GitHub API; GitHub Actions may
+still contact GitHub to run CI, and the Windows test host is not packet-isolated.
+
 Scenarios: `baseline`, `enabled`, `outage-recovery` (503 and stalled requests),
-`tiny-files`, `near-cap`, `legacy`, `spool-failure`, and `crash` (two lifetimes).
-`all` runs the first seven sequentially. `-recovery-after 60s` sets restoration
-time for prefills; use at least three minutes for their initial drain checks.
-`-profile health|standard|diagnostic` selects collection. Health-only and disabled
+`near-cap`, `tiny-files`, `legacy`, `spool-failure`, `network-faults`,
+`disk-full` (requires an explicit dedicated `-disk-full-volume`), `crash`
+(two lifetimes), `startup`, and `azure` (requires an explicit connection-string
+environment reference). `all` runs the first seven sequentially.
+`-recovery-after 60s` sets restoration time for prefills; use at least three
+minutes for their initial drain checks. `-profile health|journal|standard|diagnostic`
+selects collection. Health-only and disabled
 profiles do not assert run-journal export. The driver fails on workflow/health
 errors, measurement errors, shutdown over 20 seconds, or unexplained missing
 run/spool records in eligible loopback scenarios. Burst overload tests need a
 separate explicitly justified loss policy, not silently relaxed assertions.
+Result JSON also counts every CLI failure by bounded category (`class_saturated`,
+`accepted_status_unavailable`, `cli_timeout`, or `other`) and counts authoritative
+started/finished run journals. A reported CLI failure can still have a finished
+run; compare both counts before calling it a refusal or retrying the work.
 
 After workload submission stops, eligible scenarios wait up to `-settle-timeout`
 (default two minutes) for all authoritative run sequence keys before shutdown.
@@ -406,6 +445,43 @@ use daemon health warnings and journals for those, not zero-valued inspector fie
 
 ### Repeated startup and shutdown measurement
 
+#### Post-ready responsiveness
+
+An upload-start change must not merely move work beyond the readiness marker.
+Use an additional matched experiment alongside (not instead of) the idle grid:
+
+```sh
+bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-post-ready-half-cold-healthy -scenario startup -startup-rounds 20 -startup-prefill half -startup-index cold -startup-endpoint healthy -startup-post-ready 15s
+```
+
+The optional window starts immediately after the two readiness routes first
+succeed, before an accounting wait or idle dwell. It samples `/readyz` and
+`/api/v1/instance` at a 100 ms cadence and concurrently starts one real demo
+workflow. Raw per-request latency/status/errors, first-command latency, its
+output, and consecutive source-journal events with exactly one completed run
+are retained. Each HTTP call retains the driver's three-second timeout; the
+workflow command has a separate 45-second bound. Failed measurements are saved
+before the driver exits. Priming a warm manifest never runs this workload.
+The default zero window preserves the existing idle experiment unchanged.
+
+For release evidence use 20 alternating pairs, a 15-second window, at least
+100 observations per route per lifecycle, and first probe/workflow submission
+within 100 ms of observed readiness. Require zero HTTP/workflow/journal errors.
+Additional responsiveness gates, fixed before measuring this mode: each route's
+p95 <=250 ms and p99 <=1 second; added p95 <=max(50 ms, 20% of disabled baseline).
+For the first whole-workflow command, added p95 <=max(250 ms, 10% of baseline).
+Keep all maxima and outliers, and apply these comparisons per route and matched
+case, not pooled across platforms. These are supplemental end-to-end gates;
+they do not replace the stricter append/dispatch component budgets below.
+
+This mode explicitly does **not** reconcile remote delivery: the startup
+receiver still discards bulk synthetic seeds to bound receiver memory. Its
+`DeliveryReconciled` result stays false. Use the separate load/recovery scenarios
+for delivery and resource-overhead qualification. The one-pair, one-second CI
+smoke checks harness behavior only, never these release timing distributions.
+
+#### Idle lifecycle grid
+
 Use the separate `startup` scenario for idle daemon lifecycle comparisons:
 
 ```sh
@@ -415,10 +491,22 @@ bin/telemetry-load -bin bin/goobers -out /tmp/telemetry-startup-half-cold-stalle
 Run this only on an otherwise idle validation host, with an external watchdog.
 It creates fresh matched disabled/enabled instances and alternates pair order.
 `startup-results.json` retains every raw launch-to-ready and shutdown duration,
-request counts, and actual pre/post replay file counts and bytes. Both `/readyz`
+request counts, actual pre/post replay file counts and bytes, and per-stream
+maxima from the daemon's independent health events through process exit.
+Each enabled stream emits one aggregate `shutdown` snapshot after its final
+drain attempt; the driver requires these snapshots so silence cannot pass as
+zero loss. This adds no per-run logging or remote upload.
+The driver fails a healthy-endpoint sample for any counted admission failure,
+queue drop, export failure, age/byte prune, or malformed replay file. For a
+stalled endpoint it permits remote export failures, but still rejects local
+admission loss, queue drops, pruning, and malformed files. This catches
+short-lifecycle shutdown loss that can appear only after API readiness; these
+counters are not a remote-delivery reconciliation. Both `/readyz`
 and the instance API must answer successfully; readiness polling has 50 ms
-resolution. No workflows are submitted. Shutdown uses a 15-second drain setting;
-the larger watchdog is not the acceptance limit. Independently compare disabled
+resolution. No workflows are submitted. Shutdown uses a 15-second active-run
+drain setting, which is not an aggregate timeout for provider cleanup. The
+separate acceptance target below still measures the entire stop-to-process-exit
+duration; the larger watchdog is not the acceptance limit. Independently compare disabled
 and enabled p95 against the 250 ms added-startup budget, and each shutdown
 against 15.250 seconds. Use at least 20 samples per variant; the one-pair CI
 smoke exercises harness correctness only, never performance acceptance.
@@ -499,8 +587,8 @@ For illustration only, 20 journal events per poll opportunity gives about
 fleet total stresses ingestion; the per-instance rate stresses the daemon.
 Do not treat 100 users as 100 instances until deployment topology is known.
 
-Run identical deterministic workloads in export-disabled, `health`, `standard`,
-and `diagnostic` configurations. Keep local journaling and fsync unchanged.
+Run identical deterministic workloads in export-disabled, `health`, `journal`,
+`standard`, and `diagnostic` configurations. Keep local journaling and fsync unchanged.
 Use all configured streams concurrently. Measure a normal rate, 10× that rate,
 and a 60-second 100× burst. Also include synchronized poll boundaries and
 1 KiB / 32 KiB / near-limit records. These multipliers are test levels, not

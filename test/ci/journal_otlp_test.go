@@ -48,6 +48,8 @@ func journalOTLPTestInventory(t *testing.T) map[string][]string {
 		"internal/telemetry/azuremonitor_index_test.go",
 		"internal/telemetry/azuremonitor_health_test.go",
 		"internal/telemetry/azuremonitor_startup_test.go",
+		"internal/telemetry/azuremonitor_start_gate_test.go",
+		"internal/telemetry/azuremonitor_reader_test.go",
 		"internal/telemetry/azuremonitor_identity_test.go",
 		"internal/telemetry/azuremonitor_compression_test.go",
 		"internal/telemetry/azureprivacy_test.go",
@@ -64,6 +66,7 @@ func journalOTLPTestInventory(t *testing.T) map[string][]string {
 		"cmd/goobers/journaltelemetry_test.go",
 		"cmd/goobers/journalretention_replay_test.go",
 		"cmd/goobers/telemetryidentity_test.go",
+		"cmd/goobers/daemontelemetrystartup_test.go",
 	} {
 		paths, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
 		if err != nil || len(paths) == 0 {

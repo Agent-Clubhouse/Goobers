@@ -32,6 +32,7 @@ type replayHealthEvent struct {
 	Stream             string             `json:"stream"`
 	PID                int                `json:"pid"`
 	Causes             []string           `json:"causes"`
+	AccountingReady    bool               `json:"accountingReady"`
 	PendingRecords     int                `json:"pendingRecords"`
 	PendingFiles       int                `json:"pendingFiles"`
 	PendingBytes       int64              `json:"pendingBytes"`
@@ -67,7 +68,12 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 	if stats.OldestPendingAge >= 30*time.Second {
 		causes = append(causes, "backlog_old")
 	}
-	if !h.at.IsZero() && stats.PendingRecords > h.previous.PendingRecords {
+	// Successive counts can rise even when each sample sees a different fresh
+	// batch. Count sustained growth only if backlog survives the actual sample
+	// interval; stale accounting cannot establish that continuity either.
+	elapsed := now.Sub(h.at)
+	if !h.at.IsZero() && elapsed > 0 && stats.AccountingReady && h.previous.AccountingReady &&
+		stats.PendingRecords > h.previous.PendingRecords && stats.OldestPendingAge >= elapsed {
 		h.growing++
 	} else {
 		h.growing = 0
@@ -94,10 +100,11 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 		causes = append(causes, "recovery_unconfirmed")
 	}
 	event := &replayHealthEvent{Time: now.UTC(), Event: "telemetry.export.health", Status: "warning", Causes: causes,
-		PendingRecords: stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
+		AccountingReady: stats.AccountingReady,
+		PendingRecords:  stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
 		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures, Retried: stats.Retried,
 		PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes, Malformed: stats.Malformed, Queue: loss}
-	if seconds := now.Sub(h.at).Seconds(); !h.at.IsZero() && seconds > 0 {
+	if seconds := elapsed.Seconds(); !h.at.IsZero() && seconds > 0 {
 		event.AdmittedPerSecond = float64(stats.Accepted-h.previous.Accepted) / seconds
 		event.DeliveredPerSecond = float64(stats.Delivered-h.previous.Delivered) / seconds
 	}
@@ -155,6 +162,32 @@ func (s *azureReplaySpool) reportHealth(state *replayHealthState) {
 		root = s.cfg.dir
 	}
 	writeReplayHealth(root, *event)
+}
+
+// A final snapshot makes shutdown accounting explicit even when the stream
+// never warranted a warning. It is emitted after the final drain attempt, so
+// release validation need not mistake health-log silence for zero loss.
+func (s *azureReplaySpool) reportShutdownHealth(stats AzureReplayStats) {
+	loss := replayLossCounters{Dropped: stats.QueueDropped, ExportFailures: stats.ExportFailures}
+	if source := s.lossSource.Load(); source != nil {
+		loss.CatchupDeferred = source.sample().CatchupDeferred
+	}
+	stream := s.stream
+	if stream == "" {
+		stream = "export"
+	}
+	root := s.cfg.root
+	if root == "" {
+		root = s.cfg.dir
+	}
+	writeReplayHealth(root, replayHealthEvent{
+		Time: time.Now().UTC(), Event: "telemetry.export.health", Status: "shutdown",
+		Stream: stream, PID: os.Getpid(), AccountingReady: stats.AccountingReady, PendingRecords: stats.PendingRecords,
+		PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
+		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures,
+		Retried: stats.Retried, PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes,
+		Malformed: stats.Malformed, Queue: loss,
+	})
 }
 
 func writeReplayHealth(root string, event replayHealthEvent) {
