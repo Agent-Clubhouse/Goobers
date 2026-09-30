@@ -508,6 +508,44 @@ describe("run detail", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows all journal events newest-first with deterministic same-time ties", async () => {
+    const runId = "01JZ455ESCALATE";
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.[runId];
+    const eventList = fixtures.runEvents?.[runId];
+    if (!detail || !eventList) {
+      throw new Error("Expected completed run fixtures.");
+    }
+    const event = (seq: number, time: string): RunEvent => ({
+      schema: "v1",
+      seq,
+      type: seq === 1 ? "run.started" : seq === 4 ? "run.finished" : "stage.finished",
+      branch: 0,
+      time,
+      knownSchema: true,
+      category: "transition",
+      status: seq === 4 ? "completed" : "success",
+      stage: seq === 1 || seq === 4 ? undefined : "implement",
+    });
+    eventList.events = [
+      event(1, "2026-07-18T02:00:01Z"),
+      event(2, "2026-07-18T02:00:03Z"),
+      event(3, "2026-07-18T02:00:03Z"),
+      event(4, "2026-07-18T02:00:02Z"),
+    ];
+    detail.lastSeq = 4;
+    renderRun(runId, new FixtureDaemonClient(fixtures));
+
+    await openRunTab("Journal");
+    fireEvent.click(screen.getByRole("button", { name: "All events (4)" }));
+
+    expect(
+      screen.getAllByRole("button", { name: /^Select sequence/ }).map((button) =>
+        Number(button.getAttribute("aria-label")?.match(/^Select sequence (\d+):/)?.[1]),
+      ),
+    ).toEqual([3, 2, 4, 1]);
+  });
+
   it("opens route-backed event details for direct graph and journal selections", async () => {
     const user = userEvent.setup();
     const runId = "01JZ441DAEMONAPI";
@@ -701,7 +739,7 @@ describe("run detail", () => {
     );
   });
 
-  it("prioritizes major events while preserving grouped evidence and exact all-event order", async () => {
+  it("prioritizes major events while preserving grouped evidence and newest-first all-event order", async () => {
     const user = userEvent.setup();
     const runId = "01JZ455ESCALATE";
     const fixtures = populatedDaemonFixtures();
@@ -866,40 +904,40 @@ describe("run detail", () => {
     expect(screen.getByText("Unsupported schema v2-preview")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Select sequence 3:/ })).not.toBeInTheDocument();
 
-    const firstEvent = screen.getByRole("button", { name: /^Select sequence 1:/ });
     const firstGroup = screen.getByRole("button", {
-      name: /Expand 3 supporting events for Review · Visit 1, sequences 2 through 4/,
+      name: /Expand 3 supporting events for Review · Visit 2, sequences 9 through 11/,
     });
-    firstEvent.focus();
-    fireEvent.keyDown(firstEvent, { key: "ArrowDown" });
+    const priorEvent = screen.getByRole("button", { name: /^Select sequence 12:/ });
+    priorEvent.focus();
+    fireEvent.keyDown(priorEvent, { key: "ArrowDown" });
     expect(firstGroup).toHaveFocus();
 
     fireEvent.click(firstGroup);
-    const gateStart = screen.getByRole("button", { name: /^Select sequence 2:/ });
-    const transcript = screen.getByRole("button", { name: /^Select sequence 3:/ });
+    const verdict = screen.getByRole("button", { name: /^Select sequence 11:/ });
+    const transcript = screen.getByRole("button", { name: /^Select sequence 10:/ });
     expect(screen.getByText("Transcript for Review was recorded. Select this event to inspect the evidence.")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "verdict/review-1.json captured the Review decision: needs-changes selecting implement. Select this event to inspect the artifact.",
+        "verdict/review-2.json captured the Review decision: pass selecting @complete. Select this event to inspect the artifact.",
       ),
     ).toBeInTheDocument();
     fireEvent.keyDown(firstGroup, { key: "ArrowDown" });
-    expect(gateStart).toHaveFocus();
-    fireEvent.keyDown(gateStart, { key: "ArrowDown" });
+    expect(verdict).toHaveFocus();
+    fireEvent.keyDown(verdict, { key: "ArrowDown" });
     expect(transcript).toHaveFocus();
 
     fireEvent.click(transcript);
     let dialog = await screen.findByRole("dialog", { name: "Event detail" });
-    expect(within(dialog).getByText("Sequence 3")).toBeInTheDocument();
+    expect(within(dialog).getByText("Sequence 10")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Close event detail" }));
     await openRunTab("Diagnostics");
     expect(
-      screen.getByRole("button", { name: "review, gate, Running at sequence 3" }),
+      screen.getByRole("button", { name: "review, gate, Running at sequence 10" }),
     ).toHaveAttribute("aria-pressed", "true");
     let inspector = screen.getByRole("complementary", { name: "implementation · review attempt inspector" });
-    expect(within(inspector).getByText("Evidence · Visit 1 · Sequence 3")).toBeInTheDocument();
+    expect(within(inspector).getByText("Evidence · Visit 2 · Sequence 10")).toBeInTheDocument();
     fireEvent.click(within(inspector).getByRole("button", { name: "View transcript" }));
-    expect(await within(inspector).findByText(transcriptOne)).toBeInTheDocument();
+    expect(await within(inspector).findByText(transcriptTwo)).toBeInTheDocument();
 
     await openRunTab("Journal");
     fireEvent.click(screen.getByRole("button", { name: "All events (15)" }));
@@ -961,7 +999,7 @@ describe("run detail", () => {
       screen.getAllByRole("button", { name: /^Select sequence/ }).map((button) =>
         Number(button.getAttribute("aria-label")?.match(/^Select sequence (\d+):/)?.[1]),
       ),
-    ).toEqual(Array.from({ length: 15 }, (_, index) => index + 1));
+    ).toEqual(Array.from({ length: 15 }, (_, index) => 15 - index));
   });
 
   it("keeps the latest evidence visible when returning from replay history", async () => {
@@ -1518,7 +1556,7 @@ describe("run detail", () => {
     await openRunTab("Journal");
     const sequenceFour = await screen.findByRole("button", { name: /^Select sequence 4:/ });
     sequenceFour.focus();
-    fireEvent.keyDown(sequenceFour, { key: "ArrowDown" });
+    fireEvent.keyDown(sequenceFour, { key: "ArrowUp" });
 
     const sequenceFive = screen.getByRole("button", { name: /^Select sequence 5:/ });
     expect(sequenceFive).toHaveFocus();
