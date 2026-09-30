@@ -332,23 +332,15 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 
+	nowMu.Lock()
+	now = now.Add(triggerResponseWait() + time.Millisecond)
+	nowMu.Unlock()
+
 	var code int
-	finished := false
-	advanceClock := time.NewTicker(time.Millisecond)
-	defer advanceClock.Stop()
-	for !finished {
-		select {
-		case code = <-codeDone:
-			finished = true
-		case <-advanceClock.C:
-			nowMu.Lock()
-			// Advance past every newly observed client deadline. The polling
-			// goroutine may be descheduled before capturing its first one.
-			now = now.Add(triggerResponseWait() + time.Millisecond)
-			nowMu.Unlock()
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 	if code != 0 || !strings.Contains(stdout.String(), "state=queued") {
 		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want queued acceptance", code, stdout.String(), stderr.String())
