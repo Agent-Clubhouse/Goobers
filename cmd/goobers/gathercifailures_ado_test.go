@@ -55,11 +55,52 @@ func fakeADOCIFailuresServer(t *testing.T, repo providers.RepositoryRef, head st
 		}
 		writeJSONResp(t, w, map[string]any{"value": evaluations})
 	})
+	serveADOFailedBuild(t, mux, repo, head)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected ADO request: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 	})
 	return httptest.NewServer(mux)
+}
+
+// serveADOFailedBuild serves build 314 of PR 77 (#5652): its detail, a
+// timeline whose "unit tests" task failed with a compile error, and that
+// task's log.
+func serveADOFailedBuild(t *testing.T, mux *http.ServeMux, repo providers.RepositoryRef, head string) {
+	t.Helper()
+	build := "/" + repo.Owner + "/" + repo.Project + "/_apis/build/builds/314"
+	mux.HandleFunc(build, func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResp(t, w, map[string]any{
+			"id": 314, "buildNumber": "20260101.1", "status": "completed", "result": "failed",
+			"sourceBranch": "refs/pull/77/merge", "sourceVersion": "merge-sha",
+			"triggerInfo": map[string]string{"pr.number": "77", "pr.sourceSha": head},
+			"definition":  map[string]any{"id": 12, "name": "ci"},
+			"repository":  map[string]string{"id": "repo-guid", "name": repo.Name},
+		})
+	})
+	mux.HandleFunc(build+"/timeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResp(t, w, map[string]any{"records": []any{
+			map[string]any{"id": "job", "type": "Job", "name": "Linux", "result": "failed", "order": 1},
+			map[string]any{
+				"id": "task", "parentId": "job", "type": "Task", "name": "unit tests", "result": "failed", "order": 1,
+				"log": map[string]int{"id": 7},
+				"issues": []any{map[string]any{
+					"type": "error", "message": "undefined: widgetCount",
+					"data": map[string]string{"sourcepath": "widget/widget.go", "linenumber": "42"},
+				}},
+			},
+		}})
+	})
+	mux.HandleFunc(build+"/logs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResp(t, w, map[string]any{"value": []any{map[string]int{"id": 7, "lineCount": 3}}})
+	})
+	mux.HandleFunc(build+"/logs/7", func(w http.ResponseWriter, r *http.Request) {
+		writeJSONResp(t, w, map[string]any{"count": 3, "value": []string{
+			"2026-01-01T00:00:01.0000000Z --- FAIL: TestWidget (0.00s)",
+			"2026-01-01T00:00:02.0000000Z FAIL\texample.com/widget",
+			"2026-01-01T00:00:03.0000000Z ##[error]Bash exited with code '1'.",
+		}})
+	})
 }
 
 // runGatherCIFailuresOnBrief seeds brief as runID's gather-pr-context result,
@@ -99,6 +140,21 @@ func TestGatherCIFailuresOnADOWritesPolicyEvidence(t *testing.T) {
 	}
 	if strings.Contains(check.Summary, "STALE") {
 		t.Errorf("summary = %q, want no stale marker at the brief's head", check.Summary)
+	}
+	// #5652: the remediation agent gets the build's failure detail, not just
+	// a policy name — the failed task's issue and an excerpt of its log.
+	if !strings.Contains(check.Summary, "evidence complete") || !strings.Contains(check.Summary, "build 20260101.1") {
+		t.Errorf("summary = %q, want the graded build evidence", check.Summary)
+	}
+	if len(check.Annotations) != 2 {
+		t.Fatalf("annotations = %+v, want the failed task's issue and its log excerpt", check.Annotations)
+	}
+	issue, excerpt := check.Annotations[0], check.Annotations[1]
+	if issue.Path != "widget/widget.go" || issue.StartLine != 42 || issue.Title != "Linux / unit tests" || issue.Message != "undefined: widgetCount" {
+		t.Errorf("issue annotation = %+v", issue)
+	}
+	if !strings.Contains(excerpt.Message, "--- FAIL: TestWidget") || !strings.HasSuffix(excerpt.Message, "##[error]Bash exited with code '1'.") {
+		t.Errorf("log excerpt = %q", excerpt.Message)
 	}
 }
 

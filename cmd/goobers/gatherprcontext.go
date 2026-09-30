@@ -241,13 +241,14 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 // cannot disagree: a rejected comment-resolution or work-item-linking policy
 // is a human wait, not CI, and leaves the list's pending state in place.
 // ListPullRequests cannot report CI state, so without this read hasFailingCI
-// would always be false on Azure DevOps.
+// would always be false on Azure DevOps. It classifies the evaluations only;
+// the build detail behind them is gather-ci-failures' read (#5652).
 func resolveADOSelectedCheckState(ctx context.Context, provider *providers.ADOProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) error {
-	evidence, err := provider.PullRequestCIFailures(ctx, repo, strconv.Itoa(pr.Number))
+	failing, err := provider.HasPullRequestCIFailures(ctx, repo, strconv.Itoa(pr.Number))
 	if err != nil {
 		return err
 	}
-	if len(evidence.Failures) > 0 {
+	if failing {
 		pr.CheckState = providers.CheckStateFailing
 	}
 	return nil
