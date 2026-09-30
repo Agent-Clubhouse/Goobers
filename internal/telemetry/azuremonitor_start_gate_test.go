@@ -36,8 +36,38 @@ func TestAzureReplayStartGateRetainsAndReleases(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertStartGateHeld(t, sent)
-	if stats := s.stats(); !stats.AccountingReady || stats.PendingRecords != 1 || stats.Accepted != 1 {
-		t.Fatalf("startup gate blocked accounting or recording: %+v", stats)
+	stats := s.stats()
+	if stats.Accepted != 1 {
+		t.Fatalf("startup gate blocked recording: %+v", stats)
+	}
+	if stats.AccountingReady {
+		if stats.PendingRecords != 1 {
+			t.Fatalf("ready startup accounting omitted retained batch: %+v", stats)
+		}
+	} else {
+		// The cold index may still be reconciling. An accepted pre-index
+		// batch must be on disk even though manifest accounting is not ready.
+		// A concurrent migration can rename it between listing and reading.
+		found := false
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline) && !found; {
+			for _, dir := range []string{bootstrapDir(s.index.root, s.stream), s.cfg.dir} {
+				files, err := filepath.Glob(filepath.Join(dir, "*"+azureReplayFileSuffix))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range files {
+					if _, got, err := readAzureReplayFile(file); err == nil && string(got) == payload {
+						found = true
+					}
+				}
+			}
+			if !found {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		if !found {
+			t.Fatalf("accepted startup batch was not durable; stats: %+v", stats)
+		}
 	}
 	close(start)
 	assertStartGateDelivered(t, sent, payload)
