@@ -195,6 +195,62 @@ func credentialPlaneStub(t *testing.T, grant []string) string {
 	return server.URL
 }
 
+func TestPodCIPollCredentialSourceReResolvesPerPoll(t *testing.T) {
+	capabilities := []string{string(capability.ProviderPRWrite)}
+	setPodCIPollEnv(t, ciPollFixture{
+		inputs:       defaultCIPollFixture().inputs,
+		capabilities: capabilities,
+		repoOwner:    "acme",
+		repoName:     "web",
+	})
+	calls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc(apicontract.CredentialResolvePath, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var req struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !reflect.DeepEqual(req.Capabilities, capabilities) {
+			t.Errorf("requested capabilities = %v, want %v", req.Capabilities, capabilities)
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Credentials []dispatcher.MintedCredential `json:"credentials"`
+		}{Credentials: []dispatcher.MintedCredential{{
+			Capability: string(capability.ProviderPRWrite),
+			Value:      fmt.Sprintf("pod-ci-poll-token-%d", calls),
+		}}})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	var registered []string
+	source := podCIPollTokenSource{
+		capability: string(capability.ProviderPRWrite),
+		register: func(token string) {
+			registered = append(registered, token)
+		},
+	}
+
+	first, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("first Token: %v", err)
+	}
+	second, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("second Token: %v", err)
+	}
+	if first != "pod-ci-poll-token-1" || second != "pod-ci-poll-token-2" {
+		t.Fatalf("tokens = %q, %q; want two independently resolved values", first, second)
+	}
+	if !reflect.DeepEqual(registered, []string{first, second}) {
+		t.Fatalf("registered tokens = %v, want [%s %s]", registered, first, second)
+	}
+}
+
 // stubPRPoller substitutes the fixture poller on the seam BOTH substrates
 // resolve through.
 func stubPRPoller(t *testing.T, poller executor.PRPoller) {

@@ -55,6 +55,16 @@ func (f *sequencedPoller) PollPullRequest(ctx context.Context, req providers.Pul
 	return providers.PullRequestPollResult{CheckState: step.state}, step.err
 }
 
+type refreshableSequencedPoller struct {
+	sequencedPoller
+	refreshes int
+}
+
+func (f *refreshableSequencedPoller) RefreshCIPollCredential(context.Context) (bool, error) {
+	f.refreshes++
+	return true, nil
+}
+
 func cfgFor(owner, repo, pullID string) CIPollConfig {
 	return CIPollConfig{Owner: owner, Repo: repo, PullID: pullID}
 }
@@ -520,6 +530,68 @@ func TestCIPollExecutor_TransientErrorsThenPass(t *testing.T) {
 	}
 }
 
+func TestCIPollExecutor_UnauthorizedPollThenPass(t *testing.T) {
+	poller := &refreshableSequencedPoller{sequencedPoller: sequencedPoller{steps: []pollStep{
+		{err: errors.New(`GET https://api.github.com/repos/acme/web/pulls/42 failed: status 401: {"message":"Bad credentials"}`)},
+		{state: providers.CheckStatePassing},
+	}}}
+	exec, err := NewCIPollExecutor(poller, newFakeRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+	exec.Timeout = time.Hour
+
+	result, err := exec.Run(context.Background(), cfgFor("acme", "web", "42"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
+		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
+	}
+	if poller.calls != 1 {
+		t.Fatalf("expected 2 poll calls (401 + terminal), got %d", poller.calls+1)
+	}
+	if poller.refreshes != 1 {
+		t.Fatalf("credential refreshes = %d, want 1", poller.refreshes)
+	}
+}
+
+func TestCIPollExecutor_PersistentUnauthorizedPollIsInfrastructureError(t *testing.T) {
+	unauthorized := errors.New(`GET https://api.github.com/repos/acme/web/pulls/42 failed: status 401: {"message":"Bad credentials"}`)
+	poller := &refreshableSequencedPoller{sequencedPoller: sequencedPoller{steps: []pollStep{
+		{err: unauthorized},
+		{err: unauthorized},
+	}}}
+	exec, err := NewCIPollExecutor(poller, newFakeRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.Sleep = noSleep
+	exec.Timeout = time.Hour
+	exec.MaxConsecutivePollErrors = 1
+
+	_, err = exec.Run(context.Background(), cfgFor("acme", "web", "42"))
+	if err == nil {
+		t.Fatal("expected persistent 401 to return an error")
+	}
+	if !IsCIPollInfrastructureError(err) {
+		t.Fatalf("error = %v, want ci-poll infrastructure classification", err)
+	}
+	if strings.Contains(err.Error(), "consecutive transient errors") {
+		t.Fatalf("error = %v, want refreshable auth infrastructure failure rather than transient exhaustion", err)
+	}
+	if poller.calls != 1 {
+		t.Fatalf("expected 2 poll calls (initial 401 + one refresh retry), got %d", poller.calls+1)
+	}
+	if poller.refreshes != 1 {
+		t.Fatalf("credential refreshes = %d, want 1", poller.refreshes)
+	}
+}
+
 // TestCIPollExecutor_NonTransientErrorAbortsImmediately is the negative
 // control for #239 Part 1: an error that doesn't look transient (a 404, a
 // permissions error) must still abort the poll on the first occurrence —
@@ -545,9 +617,9 @@ func TestCIPollExecutor_NonTransientErrorAbortsImmediately(t *testing.T) {
 }
 
 // TestCIPollExecutor_ConsecutiveTransientErrorsBoundedAbort is the
-// bounded-loop regression test for #239: a poller that fails transiently
+// bounded-loop regression test for #239: a poller that fails recoverably
 // forever must not spin until the overall Timeout — it gives up once
-// MaxConsecutivePollErrors back-to-back transient errors are seen.
+// MaxConsecutivePollErrors back-to-back recoverable errors are seen.
 func TestCIPollExecutor_ConsecutiveTransientErrorsBoundedAbort(t *testing.T) {
 	alwaysTransient := &alwaysErrorPoller{err: errors.New("GET .../status failed: status 503: down")}
 	exec, err := NewCIPollExecutor(alwaysTransient, newFakeRecorder())
