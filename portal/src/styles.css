@@ -228,11 +228,17 @@ summary:focus-visible {
   top: 0;
 }
 
+/* html and body never scroll, so the guided setup frame owns its scrolling,
+   like .portal-main does for the dashboard. */
 .getting-started-frame {
   background:
     radial-gradient(circle at 15% 5%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 30rem),
     var(--bg);
-  min-height: 100vh;
+  height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .getting-started-header {

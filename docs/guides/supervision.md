@@ -219,7 +219,13 @@ that retry policy. A clean daemon exit, including the drain requested by
 The task launches a hidden, non-interactive Windows PowerShell host that waits
 for `__service-supervise` and propagates its exit code. This keeps Task Scheduler
 attached to the supervisor for stop, restart, and failure-retry behavior without
-opening a persistent console or Windows Terminal tab.
+opening a persistent console or Windows Terminal tab. Because that console is
+hidden, the supervisor writes its own and the daemon's output, timestamped and
+redacted, to `daemon.log` in the instance root. When the supervised daemon
+fails, `task-start` and `task-status` report the last recorded startup or
+supervisor failure from that log alongside the task's last result. Tasks
+installed by an earlier release do not capture this output; run
+`task-uninstall` and `task-install` to pick it up.
 
 The task runs the stable `__service-supervise` host, so self-update activation,
 health monitoring, and rollback use the same mutable binary layout as the other

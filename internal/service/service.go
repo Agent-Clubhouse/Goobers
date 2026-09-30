@@ -51,17 +51,29 @@ var ErrNotInstalled = errors.New("goobers service is not installed")
 
 // Status describes the installed and runtime state of the Goobers service.
 type Status struct {
-	Platform    string `json:"platform"`
-	Supervisor  string `json:"supervisor"`
-	Installed   bool   `json:"installed"`
-	Loaded      bool   `json:"loaded"`
-	Running     bool   `json:"running"`
-	State       string `json:"state"`
-	ConfigPath  string `json:"configPath,omitempty"`
-	Account     string `json:"account,omitempty"`
-	Trigger     string `json:"trigger,omitempty"`
-	TaskName    string `json:"taskName,omitempty"`
-	LastFailure string `json:"lastFailure,omitempty"`
+	Platform          string             `json:"platform"`
+	Supervisor        string             `json:"supervisor"`
+	Installed         bool               `json:"installed"`
+	Loaded            bool               `json:"loaded"`
+	Running           bool               `json:"running"`
+	State             string             `json:"state"`
+	ConfigPath        string             `json:"configPath,omitempty"`
+	Account           string             `json:"account,omitempty"`
+	Trigger           string             `json:"trigger,omitempty"`
+	TaskName          string             `json:"taskName,omitempty"`
+	LastFailure       string             `json:"lastFailure,omitempty"`
+	LastRunTime       string             `json:"lastRunTime,omitempty"`
+	DaemonLogPath     string             `json:"daemonLogPath,omitempty"`
+	SupervisorFailure *SupervisorFailure `json:"supervisorFailure,omitempty"`
+	lastResult        string
+}
+
+// SupervisorFailure describes the latest supervised daemon failure captured in
+// the instance daemon log for service status consumers.
+type SupervisorFailure struct {
+	Kind       string `json:"kind"`
+	Message    string `json:"message"`
+	RecordedAt string `json:"recordedAt,omitempty"`
 }
 
 // CommandRunner executes native supervisor commands.
@@ -274,7 +286,7 @@ func (m *Manager) StartTask(ctx context.Context) (Status, error) {
 	if err := m.runRequired(ctx, "schtasks.exe", "/Run", "/TN", m.windowsTaskName()); err != nil {
 		return Status{}, err
 	}
-	return waitUntilRunning(ctx, m.statusTask)
+	return waitUntilTaskRunning(ctx, m.statusTask, status)
 }
 
 // TaskStatus reports the per-user Windows Scheduled Task state.
@@ -645,10 +657,19 @@ func quotePowerShellLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
+// SuperviseDaemonLogFlag tells __service-supervise to write the supervised
+// daemon's merged, redacted output to the instance daemon log itself.
+const SuperviseDaemonLogFlag = "--daemon-log"
+
+// windowsScheduledTaskAction deliberately avoids PowerShell stream
+// redirection: Windows PowerShell 5.1 turns redirected native stderr into
+// error records (terminating under ErrorActionPreference=Stop) and re-encodes
+// the output, so the supervisor writes the daemon log itself.
 func windowsScheduledTaskAction(executable, instanceRoot string) (string, string) {
 	command := fmt.Sprintf(
-		`$ErrorActionPreference='Stop'; & %s __service-supervise %s; exit $LASTEXITCODE`,
+		`$ErrorActionPreference='Stop'; & %s __service-supervise %s %s; exit $LASTEXITCODE`,
 		quotePowerShellLiteral(executable),
+		SuperviseDaemonLogFlag,
 		quotePowerShellLiteral(instanceRoot),
 	)
 	arguments := strings.Join([]string{
@@ -696,6 +717,8 @@ func (m *Manager) statusTask(ctx context.Context) (Status, error) {
 	if failure := windowsTaskLastFailure(firstProperty(values, "Last Result", "Last Run Result")); failure != "" {
 		status.LastFailure = failure
 	}
+	status.lastResult = firstProperty(values, "Last Result", "Last Run Result")
+	status.LastRunTime = firstProperty(values, "Last Run Time", "Last Run")
 	return status, nil
 }
 
@@ -962,6 +985,14 @@ func quoteWindowsCommandArg(value string) string {
 }
 
 func waitUntilRunning(ctx context.Context, status func(context.Context) (Status, error)) (Status, error) {
+	return waitUntilRunningAfter(ctx, status, Status{}, false)
+}
+
+func waitUntilTaskRunning(ctx context.Context, status func(context.Context) (Status, error), before Status) (Status, error) {
+	return waitUntilRunningAfter(ctx, status, before, true)
+}
+
+func waitUntilRunningAfter(ctx context.Context, status func(context.Context) (Status, error), before Status, requireNewTaskFailure bool) (Status, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, serviceStartupTimeout)
 	defer cancel()
 	ticker := time.NewTicker(serviceStatusInterval)
@@ -970,6 +1001,7 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 	consecutiveRunning := 0
 	readinessWindow := serviceReadinessWindow
 	var runningSince time.Time
+	observedRunning := false
 	for {
 		current, err := status(waitCtx)
 		if err != nil {
@@ -982,10 +1014,11 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 		if !current.Installed {
 			return Status{}, errors.New("service registration disappeared while starting")
 		}
-		if current.State == "stopped" && current.LastFailure != "" {
+		if !current.Running && current.LastFailure != "" && (!requireNewTaskFailure || taskFailureBelongsToStart(before, current, observedRunning)) {
 			return Status{}, fmt.Errorf("service failed while starting: %s", current.LastFailure)
 		}
 		if current.Running {
+			observedRunning = true
 			if consecutiveRunning == 0 {
 				runningSince = time.Now()
 			}
@@ -1005,6 +1038,22 @@ func waitUntilRunning(ctx context.Context, status func(context.Context) (Status,
 		case <-ticker.C:
 		}
 	}
+}
+
+func taskFailureBelongsToStart(before, current Status, observedRunning bool) bool {
+	if observedRunning {
+		return true
+	}
+	if before.LastRunTime != "" && current.LastRunTime != "" && current.LastRunTime != before.LastRunTime {
+		return true
+	}
+	if before.lastResult != "" && current.lastResult != "" && current.lastResult != before.lastResult {
+		return true
+	}
+	if before.LastFailure == "" && current.LastFailure != "" {
+		return true
+	}
+	return false
 }
 
 // Count-based probes remain the existing policy for the other supervisors.

@@ -27,11 +27,28 @@ import (
 )
 
 const (
-	milestoneHelperEnv    = "GOOBERS_TEST_MILESTONE_HELPER"
-	milestoneHelperMarker = "GOOBERS_TEST_MILESTONE_MARKER"
+	milestoneHelperEnv       = "GOOBERS_TEST_MILESTONE_HELPER"
+	milestoneHelperMarker    = "GOOBERS_TEST_MILESTONE_MARKER"
+	preflightArgsLauncherArg = "--goobers-test-preflight-args-launcher"
 )
 
 func TestMain(m *testing.M) {
+	if slices.Contains(os.Args, preflightArgsLauncherArg) {
+		switch {
+		case slices.Contains(os.Args, launcherContractFlag):
+			_, _ = fmt.Fprint(os.Stdout, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+			os.Exit(0)
+		case slices.Contains(os.Args, "--version"):
+			_, _ = fmt.Fprintln(os.Stdout, "copilot fixture version")
+			os.Exit(0)
+		case slices.Contains(os.Args, "--obsolete-preflight"):
+			fmt.Fprintln(os.Stderr, "unknown flag: --obsolete-preflight")
+			os.Exit(2)
+		default:
+			fmt.Fprintf(os.Stderr, "unexpected preflight args launcher invocation: %q\n", os.Args[1:])
+			os.Exit(2)
+		}
+	}
 	if os.Getenv(milestoneHelperEnv) == "1" {
 		want := []string{"set-milestone", "--item", "7", "--milestone", "22"}
 		if !slices.Equal(os.Args[1:], want) {

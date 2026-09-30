@@ -75,6 +75,9 @@ func TestExecutorManifestArtifactSet(t *testing.T) {
 				if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "invalid_declared_artifact_set" || len(result.Artifacts) != 0 || len(rec.artifacts) != 0 {
 					t.Fatalf("invalid set published or wrong failure: %+v; records %d", result, len(rec.artifacts))
 				}
+				if !result.Error.Retryable {
+					t.Fatalf("invalid declared artifact set was non-retryable: %+v", result.Error)
+				}
 				return
 			}
 			count := 3
