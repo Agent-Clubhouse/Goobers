@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestValidateSurfacesResolvedLargeRepoPreset(t *testing.T) {
@@ -712,13 +713,23 @@ func TestValidateErrorsOnMissingDSLVersionPin(t *testing.T) {
 		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: 2.0, 3.0) — the transitional default is gone now that DSL 1.4 is dropped",
+		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: " + loadableDSLVersionsForTest() + ") — the transitional default is gone now that DSL 1.4 is dropped",
 		"config directory failed validation",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
 		}
 	}
+}
+
+func loadableDSLVersionsForTest() string {
+	var versions []string
+	for _, version := range supportmatrix.GetDSL().Versions() {
+		if version.Level != supportmatrix.LevelUnsupported {
+			versions = append(versions, version.Version)
+		}
+	}
+	return strings.Join(versions, ", ")
 }
 
 func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
