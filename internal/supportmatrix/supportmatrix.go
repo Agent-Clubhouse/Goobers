@@ -53,6 +53,9 @@ const (
 	// later, separate lock ceremony staged under ValidateSupportPolicy's
 	// append-only rules.
 	V3DSLVersion = "3.0"
+	// V31DSLVersion carries DSL 3.0 semantics forward and adds the producer
+	// artifact-slot and consumer artifact-input contract surface.
+	V31DSLVersion = "3.1"
 
 	// NextPlannedRelease is the next planned stable release line this repo
 	// intends to cut (#4709). TestDSLMatrixAgainstNextPlannedRelease asserts
@@ -186,6 +189,12 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 		Level: LevelPreview,
 		History: []SupportTransition{
 			{Level: LevelPreview, SinceVersion: "v0.4.0"},
+		},
+	},
+	V31DSLVersion: {
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.5.0"},
 		},
 	},
 })

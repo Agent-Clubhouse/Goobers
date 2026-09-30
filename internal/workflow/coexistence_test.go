@@ -147,7 +147,7 @@ func TestFeatureRegistryReportsBothInterpreterVersions(t *testing.T) {
 	}
 }
 
-func TestBackpropFeatureRegistryReportsOnlyDSL30(t *testing.T) {
+func TestBackpropFeatureRegistryReportsDSL30And31(t *testing.T) {
 	for _, id := range []FeatureID{
 		"workflow.spec.backprop.enabled",
 		"workflow.spec.backprop.version",
@@ -156,9 +156,12 @@ func TestBackpropFeatureRegistryReportsOnlyDSL30(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s feature is missing", id)
 		}
-		if len(feature.DSLVersions) != 1 ||
-			feature.DSLVersions[0] != (DSLFeatureSupport{Version: v30.DSLVersion, Level: SupportGA}) {
-			t.Errorf("%s DSL versions = %+v, want only DSL %s GA", id, feature.DSLVersions, v30.DSLVersion)
+		want := []DSLFeatureSupport{
+			{Version: v30.DSLVersion, Level: SupportGA},
+			{Version: "3.1", Level: SupportGA},
+		}
+		if !slices.Equal(feature.DSLVersions, want) {
+			t.Errorf("%s DSL versions = %+v, want %+v", id, feature.DSLVersions, want)
 		}
 	}
 }

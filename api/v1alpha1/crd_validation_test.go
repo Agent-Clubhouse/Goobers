@@ -90,6 +90,32 @@ func TestWorkflowCRDRejectsEmptyExecutableName(t *testing.T) {
 	}
 }
 
+func TestWorkflowCRDValidatesArtifactInputKeys(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/goobers.dev_workflows.yaml")
+	if err != nil {
+		t.Fatalf("read Workflow CRD: %v", err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("decode Workflow CRD: %v", err)
+	}
+
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	taskSchema := root.Properties["spec"].Properties["tasks"].Items.Schema
+	artifactInputs := taskSchema.Properties["artifactInputs"]
+	if len(artifactInputs.XValidations) != 1 {
+		t.Fatalf("artifactInputs CEL validations = %d, want 1", len(artifactInputs.XValidations))
+	}
+	validation := artifactInputs.XValidations[0]
+	const wantRule = "self.all(k, k.matches('^[A-Za-z0-9_-]{1,128}$'))"
+	if validation.Rule != wantRule {
+		t.Fatalf("artifactInputs CEL rule = %q, want %q", validation.Rule, wantRule)
+	}
+	if validation.Message != "artifactInputs keys must contain only letters, digits, '_' or '-'" {
+		t.Fatalf("artifactInputs CEL message = %q", validation.Message)
+	}
+}
+
 func TestWorkflowCRDValidatesDSLVersionShape(t *testing.T) {
 	data, err := os.ReadFile("../../config/crd/bases/goobers.dev_workflows.yaml")
 	if err != nil {

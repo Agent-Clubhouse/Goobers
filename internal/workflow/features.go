@@ -108,6 +108,12 @@ func AllFeatures() []Feature {
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
 	}
+	for _, feature := range v31InheritedFeatures() {
+		merge(feature)
+	}
+	for _, feature := range v31ArtifactFeatures() {
+		merge(feature)
+	}
 	features = append(features, binaryLayerFeatures()...)
 	sort.Slice(features, func(i, j int) bool {
 		return features[i].ID < features[j].ID
@@ -139,8 +145,8 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	}
 	if def.Spec.Backprop != nil {
 		features = append(features,
-			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion),
-			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion),
+			binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+			binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		)
 	}
 	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
@@ -220,8 +226,8 @@ func binaryLayerFeatures() []Feature {
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
 		binaryLayerFeature("workflow.spec.enabled"),
-		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion),
-		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
+		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 	}
 }
 
@@ -230,7 +236,7 @@ func binaryLayerFeature(id FeatureID) Feature {
 }
 
 func binaryLayerFeatureSince(id FeatureID, since string) Feature {
-	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, v30.DSLVersion)
+	return binaryLayerFeatureForDSL(id, since, v20.DSLVersion, v30.DSLVersion, supportmatrix.V31DSLVersion)
 }
 
 func binaryLayerFeatureForDSL(id FeatureID, since string, versions ...string) Feature {
@@ -238,11 +244,55 @@ func binaryLayerFeatureForDSL(id FeatureID, since string, versions ...string) Fe
 	for i, version := range versions {
 		dslVersions[i] = DSLFeatureSupport{Version: version, Level: SupportGA}
 	}
+
 	return Feature{
 		ID: id, Level: SupportGA, SinceVersion: since,
 		History:     []SupportTransition{{Level: SupportGA, SinceVersion: since}},
 		DSLVersions: dslVersions,
 	}
+}
+
+const v31InitialFeatureVersion = "v0.5.0"
+
+const (
+	featureTaskArtifactSlots           FeatureID = "task.artifactSlots"
+	featureTaskArtifactSlotsName       FeatureID = "task.artifactSlots.name"
+	featureTaskArtifactSlotsMediaType  FeatureID = "task.artifactSlots.mediaType"
+	featureTaskArtifactSlotsSchemaPath FeatureID = "task.artifactSlots.schemaPath"
+	featureTaskArtifactSlotsMaxSize    FeatureID = "task.artifactSlots.maxSize"
+	featureTaskArtifactInputs          FeatureID = "task.artifactInputs"
+	featureTaskArtifactInputsFrom      FeatureID = "task.artifactInputs.from"
+)
+
+func v31InheritedFeatures() []Feature {
+	source := v30.AllFeatures()
+	features := make([]Feature, 0, len(source))
+	for _, feature := range source {
+		converted := v30Feature(feature)
+		converted.DSLVersions = []DSLFeatureSupport{{
+			Version: supportmatrix.V31DSLVersion,
+			Level:   converted.Level,
+		}}
+		features = append(features, converted)
+	}
+	return features
+}
+
+func v31ArtifactFeatures() []Feature {
+	ids := []FeatureID{
+		featureTaskArtifactSlots,
+		featureTaskArtifactSlotsName,
+		featureTaskArtifactSlotsMediaType,
+		featureTaskArtifactSlotsSchemaPath,
+		featureTaskArtifactSlotsMaxSize,
+		featureTaskArtifactInputs,
+		featureTaskArtifactInputsFrom,
+	}
+	features := make([]Feature, 0, len(ids))
+	for _, id := range ids {
+		features = append(features, binaryLayerFeatureForDSL(id, v31InitialFeatureVersion, supportmatrix.V31DSLVersion))
+	}
+	return features
 }
 
 // FeaturesForGoober resolves features used by a goober for a pinned definition.
@@ -469,6 +519,107 @@ func checkV30FeatureSupport(features []Feature, allowPreview bool) []FeatureDiag
 
 func checkV30WorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
 	return diagnosticsFromV30(v30.CheckWorkflowFeatureSupport(def, allowPreview))
+}
+
+// --- DSL 3.1 glue: DSL 3.0 semantics plus named artifact contracts. ------
+
+func newV31FeatureRegistry(features []Feature) (FeatureRegistry, error) {
+	return featureRegistry(features), nil
+}
+
+func v31FeaturesAtDSLVersion(features []Feature, version string) ([]Feature, error) {
+	filtered := make([]Feature, 0, len(features))
+	for _, feature := range features {
+		for _, support := range feature.DSLVersions {
+			if support.Version != version {
+				continue
+			}
+			projected := cloneFeature(feature)
+			projected.Level = support.Level
+			filtered = append(filtered, projected)
+			break
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].ID < filtered[j].ID
+	})
+	return filtered, nil
+}
+
+func featuresForV31Workflow(def Definition) ([]Feature, error) {
+	features, err := featuresForV30Workflow(def)
+	if err != nil {
+		return nil, err
+	}
+	used := map[FeatureID]struct{}{}
+	add := func(ids ...FeatureID) {
+		for _, id := range ids {
+			used[id] = struct{}{}
+		}
+	}
+	for _, task := range def.Spec.Tasks {
+		if task.ArtifactSlots != nil {
+			add(featureTaskArtifactSlots)
+		}
+		for _, slot := range task.ArtifactSlots {
+			if slot.Name != "" {
+				add(featureTaskArtifactSlotsName)
+			}
+			if slot.MediaType != "" {
+				add(featureTaskArtifactSlotsMediaType)
+			}
+			if slot.SchemaPath != "" {
+				add(featureTaskArtifactSlotsSchemaPath)
+			}
+			if slot.MaxSize != 0 {
+				add(featureTaskArtifactSlotsMaxSize)
+			}
+		}
+		if task.ArtifactInputs != nil {
+			add(featureTaskArtifactInputs)
+		}
+		for _, ref := range task.ArtifactInputs {
+			if ref.From != "" {
+				add(featureTaskArtifactInputsFrom)
+			}
+		}
+	}
+	if len(used) == 0 {
+		return features, nil
+	}
+	artifactFeatures := map[FeatureID]Feature{}
+	for _, feature := range v31ArtifactFeatures() {
+		artifactFeatures[feature.ID] = feature
+	}
+	ids := make([]FeatureID, 0, len(used))
+	for id := range used {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		features = append(features, artifactFeatures[id])
+	}
+	return features, nil
+}
+
+func featuresForV31Gaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
+	return featuresForV30Gaggle(spec)
+}
+
+func featuresForV31Goober(spec apiv1.GooberSpec) ([]Feature, error) {
+	return featuresForV30Goober(spec)
+}
+
+func checkV31FeatureSupport(features []Feature, allowPreview bool) []FeatureDiagnostic {
+	return checkV30FeatureSupport(features, allowPreview)
+}
+
+func checkV31WorkflowFeatureSupport(def Definition, allowPreview bool) []FeatureDiagnostic {
+	features, err := featuresForV31Workflow(def)
+	if err != nil {
+		return []FeatureDiagnostic{{Blocking: true, Message: err.Error()}}
+	}
+	return checkV31FeatureSupport(features, allowPreview)
 }
 
 func featuresFromV30(features []v30.Feature) []Feature {
