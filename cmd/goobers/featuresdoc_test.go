@@ -205,9 +205,15 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 			"task.runsOn.capabilities",
 			"task.runsOn.restrictions",
 		},
-		"Task.RepoFrom":    {"task.repoFrom"},
-		"Task.CommitsRepo": {"task.commitsRepo"},
-		"Task.Experiment":  {"task.experiment"},
+		"Task.RepoFrom":                     {"task.repoFrom"},
+		"Task.CommitsRepo":                  {"task.commitsRepo"},
+		"Task.Experiment":                   {"task.experiment"},
+		"AutomatedGate.Check":               {"gate.evaluator.automated.check"},
+		"AutomatedGate.Params":              {"gate.evaluator.automated.params"},
+		"AutomatedGate.TimeoutSeconds":      {"gate.evaluator.automated.timeoutSeconds"},
+		"AutomatedGate.Retry":               {"gate.evaluator.automated.retry"},
+		"AutomatedGate.PollIntervalSeconds": {"gate.evaluator.automated.pollIntervalSeconds"},
+		"AutomatedGate.MaxTimeoutPolls":     {"gate.evaluator.automated.maxTimeoutPolls"},
 	}
 	// The feature registry covers EVERY author-facing spec field (#3292, the
 	// PO-ruled reversal of #3003's operational-metadata exclusion): an
@@ -229,6 +235,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		reflect.TypeOf(apiv1.GooberSpec{}),
 		reflect.TypeOf(apiv1.Trigger{}),
 		reflect.TypeOf(apiv1.Task{}),
+		reflect.TypeOf(apiv1.AutomatedGate{}),
 	} {
 		for i := 0; i < typ.NumField(); i++ {
 			key := typ.Name() + "." + typ.Field(i).Name

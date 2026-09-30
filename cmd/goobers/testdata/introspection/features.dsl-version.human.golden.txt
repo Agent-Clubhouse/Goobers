@@ -59,6 +59,7 @@ gate.evaluator.automated.check.output-numeric-lt   2.0          ga              
 gate.evaluator.automated.check.output-numeric-lte  2.0          ga               supported        dev
 gate.evaluator.automated.check.queue-outcome       2.0          ga               supported        dev
 gate.evaluator.automated.check.status-equals       2.0          ga               supported        dev
+gate.evaluator.automated.maxTimeoutPolls           2.0          ga               supported        dev
 gate.evaluator.automated.params                    2.0          ga               supported        dev
 gate.evaluator.automated.pollIntervalSeconds       2.0          ga               supported        dev
 gate.evaluator.automated.retry                     2.0          ga               supported        dev
@@ -187,4 +188,4 @@ workflow.terminal.abort                            2.0          ga              
 workflow.terminal.complete                         2.0          ga               supported        dev
 workflow.terminal.escalate                         2.0          ga               supported        dev
 
-187 feature/version row(s)
+188 feature/version row(s)

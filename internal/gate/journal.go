@@ -119,6 +119,10 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	if r.RepassTarget != "" {
 		runner["repassTarget"] = r.RepassTarget
 	}
+	if r.PollTarget != "" {
+		runner["pollAttempt"] = r.PollAttempt
+		runner["pollTarget"] = r.PollTarget
+	}
 	if r.Interrupted {
 		runner["interrupted"] = true
 	}

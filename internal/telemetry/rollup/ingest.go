@@ -958,6 +958,8 @@ func classifyGateEvaluation(runID string, ev journalEvent) (string, string, stri
 			}
 		case reason == "UNCHANGED_REPASS":
 			classification = "unchanged-repass"
+		case reason == "POLLING_BUDGET_EXHAUSTED":
+			classification = "polling"
 		default:
 			classification = "repass-escalation"
 			if reason == "" {

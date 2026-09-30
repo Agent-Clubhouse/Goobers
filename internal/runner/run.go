@@ -1348,6 +1348,7 @@ type walkState struct {
 	repassAttempts       map[string]int
 	infraGateAttempts    map[string]int
 	infraRepassAttempts  map[string]int
+	pollAttempts         map[string]int
 	gateDiffDigests      map[string]string
 	visitedStages        map[string]bool
 	// evidenceRejections is the per-gate budget for the runner's own
@@ -1642,6 +1643,27 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 	return s
 }
 
+func (r *Runner) newWalkGateEvaluator(ws *walkState) *gate.Evaluator {
+	return &gate.Evaluator{
+		Automated:   r.runAutomated(ws.in, ws.jr),
+		Journal:     ws.jr,
+		MaxRepasses: int(ws.in.RunControls.MaxRepasses),
+		Attempts:    ws.gateAttempts,
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := ws.in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
+		RepassAttempts:               ws.repassAttempts,
+		InfrastructureAttempts:       ws.infraGateAttempts,
+		InfrastructureRepassAttempts: ws.infraRepassAttempts,
+		PollAttempts:                 ws.pollAttempts,
+		IsReentry: func(target string) bool {
+			return ws.visitedStages[target]
+		},
+		LastDiffDigest: ws.gateDiffDigests,
+	}
+}
+
 // walk advances the machine from startState to a terminal state (or a
 // human-gate/drain pause), journaling every stage/gate attempt and every
 // artifact produced along the way. Gate dispatch (bounded repass, escalation,
@@ -1661,23 +1683,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	// itself, so every run on the repository checks whether the base has moved
 	// past the failure that parked it.
 	r.releaseBaselineParks(ctx, ws)
-	ws.gateEval = &gate.Evaluator{
-		Automated:   r.runAutomated(ws.in, ws.jr),
-		Journal:     ws.jr,
-		MaxRepasses: int(ws.in.RunControls.MaxRepasses),
-		Attempts:    ws.gateAttempts,
-		IsNeedsHumanTarget: func(target string) bool {
-			task, ok := ws.in.Machine.Task(target)
-			return ok && task.Inputs["status"] == "needs-human"
-		},
-		RepassAttempts:               ws.repassAttempts,
-		InfrastructureAttempts:       ws.infraGateAttempts,
-		InfrastructureRepassAttempts: ws.infraRepassAttempts,
-		IsReentry: func(target string) bool {
-			return ws.visitedStages[target]
-		},
-		LastDiffDigest: ws.gateDiffDigests,
-	}
+	ws.gateEval = r.newWalkGateEvaluator(ws)
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
 		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))

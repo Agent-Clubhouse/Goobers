@@ -23,6 +23,10 @@ const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
 // infrastructure outcomes without consuming the policy repass budget.
 const DefaultMaxInfrastructureRepasses = runcontrol.DefaultMaxInfrastructureRepasses
 
+// DefaultMaxTimeoutPolls bounds consecutive timeout polls when a gate does not
+// declare automated.maxTimeoutPolls.
+const DefaultMaxTimeoutPolls = runcontrol.DefaultMaxTimeoutPolls
+
 // Result is the outcome of one gate evaluation.
 type Result struct {
 	// Gate is the evaluated gate's name.
@@ -47,6 +51,10 @@ type Result struct {
 	// GateAttempt is this gate's consecutive non-pass evaluation count. It is
 	// retained separately to recover dangling gate evaluations after a crash.
 	GateAttempt int
+	// PollAttempt is this gate's consecutive timeout-poll count for PollTarget.
+	PollAttempt int
+	// PollTarget is the configured timeout branch target charged by PollAttempt.
+	PollTarget string
 	// Escalated is true when Target was overridden by the runner because the
 	// repass budget was exhausted or evaluation cannot make progress.
 	Escalated bool
@@ -173,6 +181,7 @@ const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTE
 const (
 	ReasonRepassBudgetExhausted         = runcontrol.ReasonRepassBudgetExhausted
 	ReasonInfrastructureBudgetExhausted = runcontrol.ReasonInfrastructureBudgetExhausted
+	ReasonPollingBudgetExhausted        = runcontrol.ReasonPollingBudgetExhausted
 )
 
 func (c RepassCause) String() string {
@@ -241,6 +250,8 @@ type Evaluator struct {
 	// infrastructure retries bounded and crash-resumable.
 	InfrastructureAttempts       map[string]int
 	InfrastructureRepassAttempts map[string]int
+	// PollAttempts is the per-target timeout polling budget.
+	PollAttempts map[string]int
 
 	// IsReentry reports whether a configured branch target is a stage that has
 	// already completed in this run. Nil preserves the historical assumption
@@ -567,6 +578,7 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 	r := Result{
 		Gate: g.Name, Outcome: outcome, Target: target, Attempt: charge.Attempt,
 		RepassTarget: charge.RepassTarget, GateAttempt: charge.GateAttempt, Escalated: escalated,
+		PollAttempt: charge.PollAttempt, PollTarget: charge.PollTarget,
 		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
 		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
 		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
@@ -690,6 +702,7 @@ func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) RepassChar
 		InfrastructureAttempts:       e.InfrastructureAttempts,
 		RepassAttempts:               e.RepassAttempts,
 		InfrastructureRepassAttempts: e.InfrastructureRepassAttempts,
+		PollAttempts:                 e.PollAttempts,
 	}
 	charge := budget.Charge(g, outcome, target, reentry, e.MaxRepasses)
 	// Charge allocates any map it has to touch, so the lazily-created ones are
@@ -699,6 +712,7 @@ func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) RepassChar
 	e.InfrastructureAttempts = budget.InfrastructureAttempts
 	e.RepassAttempts = budget.RepassAttempts
 	e.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
+	e.PollAttempts = budget.PollAttempts
 	return charge
 }
 

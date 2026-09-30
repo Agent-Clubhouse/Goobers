@@ -5824,6 +5824,29 @@ func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
 	}
 }
 
+func TestTimeoutSeedsPreserveGateRecoveryCounters(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeFail, Target: "remediate-ci",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "remediate-ci"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0, "pollAttempt": 1.0, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateStarted, Gate: "ci-gate", Runner: map[string]any{"repassAttempt": 2.0}},
+	}
+	if got := gateRepassSeed(events)["ci-gate"]; got != 2 {
+		t.Fatalf("policy gate seed after fail -> timeout -> dangling start = %d, want 2", got)
+	}
+
+	infraEvents := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeInfra, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0, "pollAttempt": 1.0, "pollTarget": "ci-poll"}},
+	}
+	if got := gateInfrastructureSeed(infraEvents)["ci-gate"]; got != 1 {
+		t.Fatalf("infrastructure gate seed after infra -> timeout = %d, want 1", got)
+	}
+}
+
 // TestInfrastructureSeedsAreZeroForPreInfrastructureHistories is the
 // backwards-compatibility half of #3930: a run resumed from a journal written
 // BEFORE the infrastructure counters existed must start with those counters at

@@ -284,12 +284,14 @@ type gateEvaluationRecord struct {
 	RepassAttempt int
 	GateAttempt   int
 	RepassTarget  string
+	PollAttempt   int
+	PollTarget    string
 	Reason        string
 }
 
 func (r gateEvaluationRecord) String() string {
-	return fmt.Sprintf("gate=%s outcome=%s target=%s escalated=%t repassAttempt=%d gateAttempt=%d repassTarget=%s reason=%s",
-		r.Gate, r.Outcome, r.Target, r.Escalated, r.RepassAttempt, r.GateAttempt, r.RepassTarget, r.Reason)
+	return fmt.Sprintf("gate=%s outcome=%s target=%s escalated=%t repassAttempt=%d gateAttempt=%d repassTarget=%s pollAttempt=%d pollTarget=%s reason=%s",
+		r.Gate, r.Outcome, r.Target, r.Escalated, r.RepassAttempt, r.GateAttempt, r.RepassTarget, r.PollAttempt, r.PollTarget, r.Reason)
 }
 
 // gateEvaluations extracts a side's gate.evaluated events in order.
@@ -306,6 +308,8 @@ func gateEvaluations(side paritySide) []gateEvaluationRecord {
 			rec.RepassAttempt = annotationInt(e.Runner, "repassAttempt")
 			rec.GateAttempt = annotationInt(e.Runner, "gateAttempt")
 			rec.RepassTarget = annotationString(e.Runner, "repassTarget")
+			rec.PollAttempt = annotationInt(e.Runner, "pollAttempt")
+			rec.PollTarget = annotationString(e.Runner, "pollTarget")
 			rec.Reason = annotationString(e.Runner, "reason")
 		}
 		out = append(out, rec)
@@ -578,13 +582,16 @@ func rebuildRepassBudget(side paritySide) (gate.RepassBudget, error) {
 		InfrastructureAttempts:       map[string]int{},
 		RepassAttempts:               map[string]int{},
 		InfrastructureRepassAttempts: map[string]int{},
+		PollAttempts:                 map[string]int{},
 	}
 	infraTargets := map[string]string{}
+	pollTargets := map[string]string{}
 	for _, rec := range gateEvaluations(side) {
 		switch rec.Outcome {
 		case gate.OutcomePass:
 			budget.Attempts[rec.Gate] = 0
 			budget.InfrastructureAttempts[rec.Gate] = 0
+		case gate.OutcomeTimeout:
 		case gate.OutcomeInfra:
 			budget.Attempts[rec.Gate] = 0
 			budget.InfrastructureAttempts[rec.Gate] = rec.GateAttempt
@@ -596,6 +603,18 @@ func rebuildRepassBudget(side paritySide) (gate.RepassBudget, error) {
 			if target := infraTargets[rec.Gate]; target != "" {
 				budget.InfrastructureRepassAttempts[target] = 0
 			}
+		}
+		if rec.Outcome != gate.OutcomeTimeout {
+			if target := pollTargets[rec.Gate]; target != "" {
+				budget.PollAttempts[target] = 0
+			}
+		}
+		if rec.Outcome == gate.OutcomeTimeout {
+			if rec.PollTarget != "" {
+				pollTargets[rec.Gate] = rec.PollTarget
+				budget.PollAttempts[rec.PollTarget] = rec.PollAttempt
+			}
+			continue
 		}
 		if rec.RepassTarget == "" {
 			if rec.RepassAttempt != 0 {
@@ -623,6 +642,7 @@ func diffRepassBudgets(runnerBudget, engineBudget gate.RepassBudget) error {
 		{"per-gate infrastructure attempts", runnerBudget.InfrastructureAttempts, engineBudget.InfrastructureAttempts},
 		{"per-target policy budget", runnerBudget.RepassAttempts, engineBudget.RepassAttempts},
 		{"per-target infrastructure budget", runnerBudget.InfrastructureRepassAttempts, engineBudget.InfrastructureRepassAttempts},
+		{"per-target polling budget", runnerBudget.PollAttempts, engineBudget.PollAttempts},
 	} {
 		if err := diffCounterMaps(counter.name, counter.runner, counter.engin); err != nil {
 			return err

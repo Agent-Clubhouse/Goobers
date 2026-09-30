@@ -887,4 +887,20 @@ CREATE TABLE IF NOT EXISTS run_error_causes (
 
 CREATE INDEX IF NOT EXISTS idx_run_error_causes_run ON run_error_causes(run_id);
 `,
+	// v30 (#5558): classify polling-budget exhaustion distinctly for stores
+	// that already materialized v21 gate classifications before
+	// POLLING_BUDGET_EXHAUSTED existed. Fresh stores run v21 first, then this
+	// data migration; upgraded stores repair the already-derived rows.
+	`
+UPDATE gate_classifications
+SET classification = 'polling',
+	reason = 'POLLING_BUDGET_EXHAUSTED'
+WHERE EXISTS (
+	SELECT 1
+	FROM gate_verdicts
+	WHERE gate_verdicts.run_id = gate_classifications.run_id
+		AND gate_verdicts.seq = gate_classifications.seq
+		AND json_extract(gate_verdicts.runner_json, '$.reason') = 'POLLING_BUDGET_EXHAUSTED'
+);
+`,
 }

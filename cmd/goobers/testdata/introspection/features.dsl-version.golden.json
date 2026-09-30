@@ -305,6 +305,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gate.evaluator.automated.maxTimeoutPolls",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gate.evaluator.automated.params",
       "stability": "ga",
       "sinceVersion": "dev"

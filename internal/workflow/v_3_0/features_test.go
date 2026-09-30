@@ -1057,7 +1057,7 @@ func automatedFeatureGate(check, next string) apiv1.Gate {
 		Name: check, Evaluator: apiv1.EvaluatorAutomated,
 		Automated: &apiv1.AutomatedGate{
 			Check: check, Params: map[string]string{"key": "value"}, TimeoutSeconds: 30,
-			Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3}, PollIntervalSeconds: 5,
+			Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3}, PollIntervalSeconds: 5, MaxTimeoutPolls: 6,
 		},
 		MaxRepasses: 2,
 		Branches:    map[string]string{"pass": next, "fail": TargetAbort, BranchEscalate: TargetEscalate},
@@ -1177,6 +1177,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"gate.evaluator.automated.retry.maxAttempts",
 		"gate.evaluator.automated.retry.backoff",
 		"gate.evaluator.automated.pollIntervalSeconds",
+		"gate.evaluator.automated.maxTimeoutPolls",
 		"gate.evaluator.automated.check.status-equals",
 		"gate.evaluator.automated.check.failure-class",
 		"gate.evaluator.automated.check.output-equals",
