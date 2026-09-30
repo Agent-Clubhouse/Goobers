@@ -59,8 +59,9 @@ type restartManagerProcessInfo struct {
 // Configure-only caller that never routed through newTree), in which case kill
 // degrades to terminating the lone pid.
 type Tree struct {
-	pid int
-	job windows.Handle
+	pid    int
+	job    windows.Handle
+	closed bool
 }
 
 type processIdentity struct {
@@ -201,7 +202,11 @@ func vanishedThread(err error) bool {
 // terminate descendants after closing the job to cover descendants created
 // while the first snapshot was being processed.
 func (t *Tree) kill() error {
+	if t.closed {
+		return nil
+	}
 	if t.job == 0 {
+		t.closed = true
 		return terminatePID(t.pid)
 	}
 	descendants, snapshotErr := snapshotDescendants(t.pid)
@@ -209,6 +214,7 @@ func (t *Tree) kill() error {
 	runtime.SetFinalizer(t, nil)
 	_ = windows.CloseHandle(t.job)
 	t.job = 0
+	t.closed = true
 	if err != nil {
 		snapshotErr = errors.Join(snapshotErr, fmt.Errorf("proc: terminate job for %d: %w", t.pid, err))
 	}
@@ -278,21 +284,30 @@ func snapshotDescendants(root int) ([]processIdentity, error) {
 	for _, process := range processes {
 		children[process.parent] = append(children[process.parent], process.pid)
 	}
+	return identifyDescendants(root, children), nil
+}
+
+func identifyDescendants(root int, children map[int][]int) []processIdentity {
+	return identifyDescendantsWithStartTime(root, children, startTime)
+}
+
+func identifyDescendantsWithStartTime(root int, children map[int][]int, readStartTime func(int) (time.Time, bool)) []processIdentity {
 	// The walk is shared with the unix collectors and is cycle-safe: a
 	// Windows entry's parent pid is its creator's pid at creation time and
 	// survives that creator's exit, so a recycled pid can make the recorded
 	// parentage point back into the subtree and an unguarded walk never
 	// terminates (#3922).
 	var descendants []processIdentity
-	var identityErr error
 	for _, pid := range collectDescendants(root, children) {
-		if started, ok := startTime(pid); ok {
-			descendants = append(descendants, processIdentity{pid: pid, startTime: started})
-		} else if alive(pid) {
-			identityErr = errors.Join(identityErr, fmt.Errorf("proc: read start time for descendant %d", pid))
+		// ParentProcessID is stale once the creator exits; an unreadable pid is
+		// not safe proof that the original tree still owns that process.
+		started, ok := readStartTime(pid)
+		if !ok {
+			continue
 		}
+		descendants = append(descendants, processIdentity{pid: pid, startTime: started})
 	}
-	return descendants, identityErr
+	return descendants
 }
 
 // terminateExitWait bounds how long a terminated process is waited on. The
