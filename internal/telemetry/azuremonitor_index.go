@@ -491,8 +491,15 @@ func replayIndexStats(ctx context.Context, db *sql.DB, stream string, now time.T
 }
 
 func (x *azureReplayIndex) stats(ctx context.Context, stream string, now time.Time) (AzureReplayStats, error) {
-	if err := x.wait(ctx); err != nil {
-		return AzureReplayStats{}, fmt.Errorf("replay accounting unavailable: %w", err)
+	select {
+	case <-x.ready:
+		if x.err != nil {
+			return AzureReplayStats{}, fmt.Errorf("replay accounting unavailable: %w", x.err)
+		}
+	default:
+		// A failed first attempt may still be retrying. Do not return that
+		// stale error once a later initialization makes the manifest ready.
+		return AzureReplayStats{}, errors.New("replay accounting unavailable: initialization pending")
 	}
 	return replayIndexStats(ctx, x.db, stream, now)
 }
