@@ -2,6 +2,7 @@ package dslmigrate
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -206,6 +207,11 @@ func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
 			want:      "{pollIntervalSeconds: 10, check: ci-status, params: {description: keep}}",
 		},
 		{
+			name:      "comment-only empty flow",
+			automated: "{ # keep this comment\n      }",
+			want:      "{ # keep this comment\n      pollIntervalSeconds: 10\n      }",
+		},
+		{
 			name:      "anchored flow mapping",
 			automated: "&ci {check: ci-status}",
 			want:      "&ci {pollIntervalSeconds: 10, check: ci-status}",
@@ -224,6 +230,11 @@ func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
 			name:      "tag then anchor flow mapping",
 			automated: "!!map &ci {check: ci-status}",
 			want:      "!!map &ci {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "decorated comment-only empty flow",
+			automated: "&a { # keep this comment\n      }",
+			want:      "&a { # keep this comment\n      pollIntervalSeconds: 10\n      }",
 		},
 	}
 	for _, test := range tests {
@@ -272,6 +283,33 @@ func TestMigrateTransformEditsDecoratedBlockAutomatedMapping(t *testing.T) {
 			}
 			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
 				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformPreservesCommentsInFixtureMatrix(t *testing.T) {
+	sources := []string{
+		workflowWithUnpinnedCIPoll,
+		workflowWithPinnedCIPoll,
+		workflowWithAutomatedMapping("{ # keep this comment\n      }"),
+		workflowWithAutomatedMapping("&a { # keep this comment\n      }"),
+		workflowWithAutomatedBlock("        check: ci-status # keep check comment\n"),
+		workflowWithAutomatedBlock("        pollIntervalSeconds: # keep null comment\n        check: ci-status\n"),
+		strings.Replace(workflowWithAutomatedBlock("        check: ci-status\n"),
+			"      type: deterministic\n",
+			"      type: deterministic\n      goal: |\n        literal # not a comment inside block\n", 1),
+	}
+	for i, source := range sources {
+		t.Run(fmt.Sprintf("fixture-%d", i), func(t *testing.T) {
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			for _, comment := range yamlCommentTexts([]byte(source)) {
+				if !strings.Contains(result.After, comment) {
+					t.Fatalf("comment %q was not preserved in:\n%s", comment, result.After)
+				}
 			}
 		})
 	}

@@ -92,7 +92,13 @@ func applyV14ToV20SourcePreserving(source []byte, root *yaml.Node, versionNode *
 			}
 		}
 	}
+	if err := validateTransformSourceEdits(source, edits); err != nil {
+		return nil, nil, err
+	}
 	edited := applySourceEdits(source, edits)
+	if err := validateCommentsPreserved(source, edited); err != nil {
+		return nil, nil, err
+	}
 	ok, err := sourceEditMatchesV14ToV20(source, edited, to)
 	if err != nil {
 		return nil, nil, err
@@ -113,6 +119,74 @@ func sourceEditMatchesV14ToV20(source, edited []byte, to string) (bool, error) {
 		return false, err
 	}
 	return reflect.DeepEqual(got, want), nil
+}
+
+func validateTransformSourceEdits(source []byte, edits []sourceEdit) error {
+	for _, edit := range edits {
+		if edit.start < 0 || edit.end < edit.start || edit.end > len(source) {
+			return fmt.Errorf("source-preserving migration produced invalid edit range [%d,%d)", edit.start, edit.end)
+		}
+		if edit.end == edit.start {
+			continue
+		}
+		replaced := source[edit.start:edit.end]
+		if bytes.Contains(replaced, []byte("#")) && strings.TrimSpace(string(replaced)) != "pollIntervalSeconds:" {
+			return errors.New("source-preserving migration edit would replace a YAML comment")
+		}
+	}
+	return nil
+}
+
+func validateCommentsPreserved(source, edited []byte) error {
+	for _, comment := range yamlCommentTexts(source) {
+		if !bytes.Contains(edited, []byte(comment)) {
+			return fmt.Errorf("source-preserving migration lost YAML comment %q", comment)
+		}
+	}
+	return nil
+}
+
+func yamlCommentTexts(source []byte) []string {
+	var comments []string
+	inSingle := false
+	inDouble := false
+	lineStart := 0
+	for i := 0; i < len(source); i++ {
+		switch source[i] {
+		case '\n':
+			inSingle = false
+			inDouble = false
+			lineStart = i + 1
+		case '\'':
+			if !inDouble {
+				if inSingle && i+1 < len(source) && source[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = !inSingle
+			}
+		case '"':
+			if !inSingle {
+				backslashes := 0
+				for j := i - 1; j >= lineStart && source[j] == '\\'; j-- {
+					backslashes++
+				}
+				if backslashes%2 == 0 {
+					inDouble = !inDouble
+				}
+			}
+		case '#':
+			if !inSingle && !inDouble {
+				end := i
+				for end < len(source) && source[end] != '\r' && source[end] != '\n' {
+					end++
+				}
+				comments = append(comments, string(source[i:end]))
+				i = end - 1
+			}
+		}
+	}
+	return comments
 }
 
 func expectedSemanticV14ToV20(source []byte, to string) (semanticYAML, error) {
@@ -545,8 +619,13 @@ func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string)
 		return sourceEdit{start: start + 1, end: closeOffset, replacement: []byte(line)}, nil
 	}
 	if len(mapping.Content) == 0 {
-		if strings.TrimSpace(string(source[start+1:closeOffset])) != "" {
-			return sourceEdit{start: start + 1, end: closeOffset, replacement: []byte(line)}, nil
+		body := source[start+1 : closeOffset]
+		if strings.TrimSpace(string(body)) != "" {
+			eol := sourceEOL(source)
+			closeIndent := indentForOffset(source, closeOffset)
+			replacement := append([]byte(line), eol...)
+			replacement = append(replacement, []byte(closeIndent)...)
+			return sourceEdit{start: closeOffset, end: closeOffset, replacement: replacement}, nil
 		}
 	}
 	replacement := []byte(line)
