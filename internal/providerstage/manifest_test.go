@@ -257,6 +257,19 @@ func TestResultFile(t *testing.T) {
 	}
 }
 
+func TestIsDefaultResultFile(t *testing.T) {
+	for _, name := range []string{"queue-result.json", "claimed-item.json", "published-batch.json"} {
+		if !IsDefaultResultFile(name) {
+			t.Fatalf("IsDefaultResultFile(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"analysis-result.json", "nested/claimed-item.json", ""} {
+		if IsDefaultResultFile(name) {
+			t.Fatalf("IsDefaultResultFile(%q) = true, want false", name)
+		}
+	}
+}
+
 // TestSupportsResultFile pins the tri-state classification #4415's admission
 // check relies on: a command with a default ResultFile resolves Always, an
 // explicit ResultFileSupport override wins regardless of ResultFile, and a
