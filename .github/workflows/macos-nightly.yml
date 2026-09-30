@@ -46,6 +46,7 @@ concurrency:
 jobs:
   runtime:
     name: macOS runtime (unit · shipped · sandbox)
+    if: ${{ github.ref != 'refs/heads/codex/telemetry-linux-burst-diagnostic' }}
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
@@ -149,3 +150,97 @@ jobs:
           name: test-timings-macOS-nightly
           path: test-timings/unit-macOS.json
           if-no-files-found: warn
+
+  # Disposable workflow-dispatch branch: no scheduled/default-branch impact.
+  # This is a failure-finding diagnostic, not Azure hardware qualification.
+  telemetry-burst:
+    name: Hosted Linux telemetry 10x and burst diagnostic
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/telemetry-linux-burst-diagnostic' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GOMAXPROCS: '2'
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build and identify fixture
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GOOBERS_DISABLE_FSYNC+x}" != x
+          mkdir -p "$RUNNER_TEMP/telemetry-burst"
+          {
+            date -u +%Y-%m-%dT%H:%M:%SZ
+            uname -a
+            nproc
+            head -n 3 /proc/meminfo
+            go version
+            git rev-parse HEAD
+            df -h "$RUNNER_TEMP"
+          } > "$RUNNER_TEMP/telemetry-burst/host.txt"
+          go build -o "$RUNNER_TEMP/telemetry-burst/goobers" ./cmd/goobers
+          go build -o "$RUNNER_TEMP/telemetry-burst/telemetry-load" ./test/telemetryload/testdata/driver
+          "$RUNNER_TEMP/telemetry-burst/goobers" version --json > "$RUNNER_TEMP/telemetry-burst/version.json"
+          sha256sum "$RUNNER_TEMP/telemetry-burst/goobers" "$RUNNER_TEMP/telemetry-burst/telemetry-load" > "$RUNNER_TEMP/telemetry-burst/binaries.sha256"
+
+      - name: Sustained approximately 10x polling (30 minutes)
+        timeout-minutes: 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/telemetry-burst/telemetry-load" \
+            -bin "$RUNNER_TEMP/telemetry-burst/goobers" \
+            -out "$RUNNER_TEMP/telemetry-burst/10x" \
+            -scenario enabled -duration 30m -workers 10 -poll-interval 14s \
+            -sample-interval 5s -profile standard \
+            > "$RUNNER_TEMP/telemetry-burst/10x-driver.log" \
+            2> "$RUNNER_TEMP/telemetry-burst/10x-driver.err"
+
+      - name: High-rate 60-second burst
+        if: ${{ !cancelled() }}
+        timeout-minutes: 7
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/telemetry-burst/telemetry-load" \
+            -bin "$RUNNER_TEMP/telemetry-burst/goobers" \
+            -out "$RUNNER_TEMP/telemetry-burst/burst" \
+            -scenario enabled -duration 60s -workers 30 -poll-interval 1s \
+            -sample-interval 1s -profile standard \
+            > "$RUNNER_TEMP/telemetry-burst/burst-driver.log" \
+            2> "$RUNNER_TEMP/telemetry-burst/burst-driver.err"
+
+      - name: Archive synthetic evidence even on failure
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$RUNNER_TEMP/telemetry-burst"
+          paths=()
+          for path in host.txt version.json binaries.sha256 \
+            10x 10x-driver.log 10x-driver.err \
+            burst burst-driver.log burst-driver.err; do
+            if test -e "$RUNNER_TEMP/telemetry-burst/$path"; then
+              paths+=("$path")
+            fi
+          done
+          test "${#paths[@]}" -gt 0
+          tar -czf "$RUNNER_TEMP/telemetry-burst-evidence.tar.gz" \
+            -C "$RUNNER_TEMP/telemetry-burst" "${paths[@]}"
+          sha256sum "$RUNNER_TEMP/telemetry-burst-evidence.tar.gz"
+
+      - name: Upload synthetic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: telemetry-linux-burst-diagnostic
+          path: ${{ runner.temp }}/telemetry-burst-evidence.tar.gz
+          if-no-files-found: error
