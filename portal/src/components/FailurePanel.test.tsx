@@ -3,6 +3,31 @@ import { describe, expect, it } from "vitest";
 import { FailurePanel } from "./FailurePanel";
 
 describe("FailurePanel", () => {
+  it("prefers structured causes and keeps the complete raw message", () => {
+    render(
+      <FailurePanel
+        failure={{
+          message: "review gate failed: review requested changes",
+          code: "review_failed",
+          stage: "review",
+          attempt: 1,
+          causes: [
+            { message: "review gate failed" },
+            { code: "review_rejected", message: "review requested changes" },
+          ],
+        }}
+      />,
+    );
+
+    const chain = screen.getByRole("list", { name: "Failure cause chain" });
+    expect(within(chain).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "review gate failed",
+      "review requested changes",
+    ]);
+    expect(screen.getByText("review gate failed: review requested changes", { selector: "pre" }))
+      .toBeInTheDocument();
+  });
+
   it("shows structured metadata once and formats a wrapped error as a causal chain", () => {
     const message =
       'runner: execute stage "push-branch": prepare stage "push-branch": create worktree: reconcile released branch "goobers/implementation/example": occupant Q:\\GitHub\\Goobers\\workcopies\\run: recovery inventory is full: 128 of 128 slots used';

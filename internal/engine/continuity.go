@@ -320,6 +320,6 @@ func (r *runJournal) workspaceDelta(ctx workflow.Context, stage, gate string, at
 func (r *runJournal) repoHandoffRefused(ctx workflow.Context, stage string, err error) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: RepoHandoffUndeclaredErrorCode, Message: err.Error()},
+		Error: journal.ErrorDetailFor(RepoHandoffUndeclaredErrorCode, err),
 	})
 }

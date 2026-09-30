@@ -24,7 +24,13 @@ export function FailurePanel({
   errorsHref?: string;
 }) {
   const aborted = phase === "aborted";
-  const reasonParts = splitFailureReason(failure.message);
+  const structuredReasons = failure.causes
+    ?.map((cause) => cause.message || cause.code || cause.class || "")
+    .filter(Boolean);
+  const reasonParts =
+    structuredReasons && structuredReasons.length > 0
+      ? structuredReasons
+      : splitFailureReason(failure.message);
   return (
     <section aria-labelledby="failure-title" className="failure-panel" tabIndex={0}>
       <span className="escalation-icon">

@@ -74,7 +74,7 @@ func appendErrorCauses(causes *[]ErrorCause, err error) {
 		child := unwrapped.Unwrap()
 		cause := errorCauseFor(err, wrappedLayerMessage(err, child))
 		*causes = append(*causes, cause)
-		if child != nil && cause.Message == child.Error() && (cause.Code != "" || cause.Class != "") {
+		if child != nil && cause.Message == child.Error() && (cause.Code != "" || cause.Class != "") && !wrapsAnother(child) {
 			return
 		}
 		appendErrorCauses(causes, child)
@@ -89,6 +89,19 @@ func errorCauseFor(err error, message string) ErrorCause {
 		Class:   errorCauseClass(err),
 		Message: strings.TrimSpace(message),
 	}
+}
+
+func wrapsAnother(err error) bool {
+	if err == nil {
+		return false
+	}
+	if wrapped, ok := any(err).(singleUnwrapper); ok && wrapped.Unwrap() != nil {
+		return true
+	}
+	if wrapped, ok := any(err).(multiUnwrapper); ok && len(wrapped.Unwrap()) > 0 {
+		return true
+	}
+	return false
 }
 
 func wrappedLayerMessage(err, child error) string {

@@ -433,17 +433,22 @@ type contextManifest struct {
 
 // executorError mirrors runTask's per-attempt dispatch-failure event.
 func (r *runJournal) executorError(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error, identity *attemptidentity.Identity) {
+	ev := executorErrorEvent(stage, attempt, class, failureClass, dispatchErr, identity)
+	r.append(ctx, ev)
+}
+
+func executorErrorEvent(stage string, attempt int, class journal.AttemptClass, failureClass journal.AttemptClass, dispatchErr error, identity *attemptidentity.Identity) journal.Event {
 	code := telemetry.ErrCodeExecutor
 	if failureClass == journal.AttemptInfra {
 		code = telemetry.ErrCodeInfraFailure
 	}
 	ev := journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-		Error:  &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+		Error:  journal.ErrorDetailFor("executor_error", dispatchErr),
 		Runner: map[string]any{"retryFailureClass": string(failureClass), "errorCode": code, "errorClass": string(telemetry.ClassifyError(code))},
 	}
 	addAttemptIdentity(&ev, identity)
-	r.append(ctx, ev)
+	return ev
 }
 
 func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admission *apiv1.IntegrityAdmissionError) {
@@ -452,9 +457,7 @@ func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admiss
 		Stage:            stage,
 		Integrity:        admission.Actual,
 		MinimumIntegrity: admission.Minimum,
-		Error: &journal.ErrorDetail{
-			Code: apiv1.IntegrityAdmissionErrorCode, Message: admission.Error(),
-		},
+		Error:            journal.ErrorDetailFor(apiv1.IntegrityAdmissionErrorCode, admission),
 	})
 }
 

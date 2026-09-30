@@ -796,10 +796,20 @@ function AttemptDetail({
         </div>
       )}
       {attempt.error && (
-        <p className="artifact-load-error">
-          {attempt.error.code}
-          {attempt.error.message ? `: ${attempt.error.message}` : ""}
-        </p>
+        <div className="artifact-load-error">
+          <p>
+            {attempt.error.code}
+            {attempt.error.message ? `: ${attempt.error.message}` : ""}
+          </p>
+          {attempt.error.causes && attempt.error.causes.length > 0 && (
+            <ol aria-label="Attempt failure cause chain" className="failure-reason-chain">
+              {attempt.error.causes.map((cause, index) => {
+                const label = cause.message || cause.code || cause.class || "Unknown cause";
+                return <li key={`${index}-${label}`}>{label}</li>;
+              })}
+            </ol>
+          )}
+        </div>
       )}
       {outputs.length > 0 && (
         <details className="definition-disclosure" open>

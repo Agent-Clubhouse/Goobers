@@ -148,6 +148,7 @@ func outboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr err
 	commandResult.Error = &apiv1.ErrorInfo{
 		Code:    outboxExportFailureCode,
 		Message: exportErr.Error(),
+		Causes:  apiErrorCauses(exportErr),
 	}
 	return commandResult
 }

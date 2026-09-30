@@ -59,6 +59,22 @@ func TestErrorCausesRetainsTypedCodeOnOwningLayerOnly(t *testing.T) {
 	}
 }
 
+func TestErrorCausesContinueThroughTypedWrapperAroundWrappedChain(t *testing.T) {
+	leaf := errors.New("leaf unavailable")
+	wrapped := fmt.Errorf("inner boundary: %w", leaf)
+	err := fmt.Errorf("outer boundary: %w", typedCause{code: "typed_boundary", class: "infra", err: wrapped})
+
+	causes := ErrorCauses(err)
+	got := causeMessages(causes)
+	want := []string{"outer boundary", "inner boundary: leaf unavailable", "inner boundary", "leaf unavailable"}
+	if !equalStrings(got, want) {
+		t.Fatalf("cause messages = %#v, want %#v (full causes %#v)", got, want, causes)
+	}
+	if causes[1].Code != "typed_boundary" || causes[1].Class != "infra" {
+		t.Fatalf("typed wrapper metadata = %+v, want code/class", causes[1])
+	}
+}
+
 func causeMessages(causes []ErrorCause) []string {
 	out := make([]string, len(causes))
 	for i, cause := range causes {
