@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -426,6 +427,92 @@ func TestBacklogReconcileReportsPartialScanTruthfully(t *testing.T) {
 		t.Fatalf("result = %#v, want one correction and incomplete scan provenance", result)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+}
+
+func TestBacklogReconcileFailsClosedWhenCursorAdvanceFails(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "3")
+	resultFile := filepath.Join(t.TempDir(), "backlog-reconciliation.json")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for id := 7; id <= 10; id++ {
+		server.addIssue(id, fmt.Sprintf("Drift %d", id), "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	}
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	realOpen := openStageStateStore
+	failAdvance := true
+	openStageStateStore = func(l instance.Layout) (stateclient.Store, error) {
+		store, err := realOpen(l)
+		if err != nil {
+			return nil, err
+		}
+		return failingUpdateStore{Store: store, fail: func(key, operation string) bool {
+			return failAdvance && strings.HasPrefix(key, "backlog-reconcile-") && operation == claimLockOperationBacklogScanCursor
+		}}, nil
+	}
+	t.Cleanup(func() { openStageStateStore = realOpen })
+
+	var stderr strings.Builder
+	result, code := performBacklogQueryReconciliation(
+		context.Background(),
+		backlogQueryEnv{
+			layout:          layoutFor(root),
+			repo:            repo,
+			backlogRepo:     repo,
+			ghIssueProvider: server.newGitHubProvider("token"),
+			stderr:          &stderr,
+		},
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now().UTC(),
+		resultFile,
+	)
+	if code == 0 {
+		t.Fatalf("performBacklogQueryReconciliation code = 0, result = %#v; want fatal cursor advance failure", result)
+	}
+	if !strings.Contains(stderr.String(), "advance backlog reconciliation cursor") {
+		t.Fatalf("stderr = %q, want cursor advance failure surfaced", stderr.String())
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("read failure result: %v", err)
+	}
+	if strings.Contains(string(data), `"complete":true`) || strings.Contains(string(data), `"reconciled"`) {
+		t.Fatalf("failure result = %s, want typed error without authoritative reconciliation summary", data)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+
+	failAdvance = false
+	key := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy())
+	store, err := realOpen(layoutFor(root))
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	value, err := store.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("read reconcile cursor: %v", err)
+	}
+	if value.Exists() {
+		t.Fatalf("cursor advanced despite failed write: %s", value.Data)
+	}
+	second, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now,
+	)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if second.Scan.OpenExamined == 0 || !second.Scan.WorkRemaining {
+		t.Fatalf("second result = %#v, want restart from unadvanced cursor with remaining work", second)
+	}
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
 }
 
@@ -1327,6 +1414,18 @@ func reconcileBacklogMetadata(
 ) (int, error) {
 	result, err := reconcileBacklogMetadataDetailed(ctx, l, provider, repo, trustLabel, stalenessPolicy, now)
 	return result.Reconciled, err
+}
+
+type failingUpdateStore struct {
+	stateclient.Store
+	fail func(key, operation string) bool
+}
+
+func (s failingUpdateStore) Update(ctx context.Context, key, operation string, fn func(stateclient.Value) ([]byte, bool, error)) error {
+	if s.fail != nil && s.fail(key, operation) {
+		return errors.New("injected scheduler-state update failure")
+	}
+	return s.Store.Update(ctx, key, operation, fn)
 }
 
 func assertFakeIssueLabels(t *testing.T, server *fakeGitHubServer, id int, want, reject []string) {
