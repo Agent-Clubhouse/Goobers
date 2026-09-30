@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
@@ -431,12 +431,12 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 	if !found {
 		return nil, nil
 	}
-	labels := make([]string, 0, len(selector))
+	labels := append([]string(nil), gaggle.Spec.Backlog.Labels...)
 	for k := range selector {
 		labels = append(labels, k)
 	}
-	sort.Strings(labels)
-	predicate, err := labelpredicate.Compile(expression, labels, nil)
+	labels = uniqueSortedLabels(labels)
+	predicate, err := labelpredicate.Compile(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, expression), labels, nil)
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
 	}
@@ -509,13 +509,14 @@ func buildRefillDemandCounter(
 	if configured, ok := task.Inputs["requireLabels"]; ok {
 		requireLabels = splitLabelList(configured)
 	}
+	requireLabels = append(requireLabels, gaggle.Spec.Backlog.Labels...)
 	if trust := task.Inputs["trustLabel"]; trust != "" {
 		requireLabels = append(requireLabels, trust)
 	}
 	excludeLabels := append(splitLabelList(task.Inputs["excludeLabels"]), providers.LabelClaimed)
 	requireLabels = uniqueSortedLabels(requireLabels)
 	excludeLabels = uniqueSortedLabels(excludeLabels)
-	predicate, _, err := compileBacklogLabelSelection(task.Inputs["labelPredicate"], requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
+	predicate, _, err := compileBacklogLabelSelection(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, task.Inputs["labelPredicate"]), requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q refill label predicate: %w", wf.Name, err)
 	}

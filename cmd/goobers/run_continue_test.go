@@ -485,6 +485,76 @@ func TestRunRunContinueRejectsClaimThatLostAssigneeOwnership(t *testing.T) {
 	}
 }
 
+func TestContinuationEligibilityPolicyEnforcesGaggleBacklogScope(t *testing.T) {
+	tests := []struct {
+		name          string
+		writeWorkflow func(*testing.T, string)
+	}{
+		{
+			name:          "backlog-item trigger",
+			writeWorkflow: writeContinuationBacklogItemTriggerWorkflow,
+		},
+		{
+			name:          "start task backlog-query",
+			writeWorkflow: writeContinuationEligibilityWorkflow,
+		},
+	}
+	cases := []struct {
+		name      string
+		labels    []string
+		wantError string
+	}{
+		{
+			name:      "missing gaggle backlog label",
+			labels:    []string{"scope:continuation", "goobers:ready"},
+			wantError: `missing required label "goobers"`,
+		},
+		{
+			name:      "missing gaggle label predicate label",
+			labels:    []string{"goobers", "goobers:ready"},
+			wantError: "label predicate not matched",
+		},
+		{
+			name:   "fully matching item remains eligible",
+			labels: []string{"goobers", "scope:continuation", "goobers:ready"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDeterministicDemo(t)
+			writeContinuationBacklogLabelPredicate(t, root)
+			tt.writeWorkflow(t, root)
+			policy, err := continuationEligibilityPolicyFor(root, journal.RunIdentity{
+				Workflow: "default-implement",
+				Gaggle:   "example",
+			})
+			if err != nil {
+				t.Fatalf("continuationEligibilityPolicyFor: %v", err)
+			}
+			if policy == nil {
+				t.Fatal("continuationEligibilityPolicyFor returned nil policy")
+			}
+
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					item := providers.WorkItem{ID: "7", State: "open", Labels: tc.labels, Assignee: "goobersbot"}
+					err := validateContinuationEligibility(item, providers.ProviderGitHub, "7", policy)
+					if tc.wantError == "" {
+						if err != nil {
+							t.Fatalf("validateContinuationEligibility returned %v, want nil", err)
+						}
+						return
+					}
+					if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+						t.Fatalf("validateContinuationEligibility error = %v, want %q", err, tc.wantError)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestRunRunContinueRejectsClosedRetainedPullRequestClaimBeforeCreatingContinuation(t *testing.T) {
 	root := initDeterministicDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -508,6 +578,48 @@ func TestRunRunContinueRejectsClosedRetainedPullRequestClaimBeforeCreatingContin
 	}
 	if !strings.Contains(stderr.String(), `source claim "pr/9" is no longer open (state "closed")`) {
 		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func writeContinuationBacklogLabelPredicate(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(raw), "    labels:\n      - goobers\n", "    labels:\n      - goobers\n    labelPredicate: '\"scope:continuation\" in labels'\n", 1)
+	if updated == string(raw) {
+		t.Fatalf("gaggle fixture did not contain expected backlog labels:\n%s", raw)
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeContinuationBacklogItemTriggerWorkflow(t *testing.T, root string) {
+	t.Helper()
+	const workflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: backlog-item
+      selector:
+        goobers:ready: "true"
+  start: local-ci
+  tasks:
+    - name: local-ci
+      type: deterministic
+      goal: run a no-op local command
+      run:
+        command: ["true"]
+`
+	if err := os.WriteFile(filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml"), []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
