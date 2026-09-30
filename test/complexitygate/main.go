@@ -142,6 +142,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "complexitygate: scan: %v\n", err)
 		return 1
 	}
+	if os.Getenv("TELEMETRY_COMPLEXITY_DIAG") == "1" {
+		for _, scored := range functions {
+			if scored.Complexity >= limits.ratchet &&
+				(strings.Contains(scored.Path, "telemetry") || strings.Contains(scored.Path, "daemon.go") || strings.Contains(scored.Path, "up.go")) {
+				_, _ = fmt.Fprintf(stdout, "diagnostic: %s:%d %s complexity=%d body=%d\n",
+					scored.Path, scored.Line, scored.Symbol, scored.Complexity, scored.BodyLines)
+			}
+		}
+	}
 
 	resolved := *baselinePath
 	if !filepath.IsAbs(resolved) {

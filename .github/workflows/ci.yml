@@ -161,6 +161,10 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      - name: Diagnose telemetry complexity on disposable branch
+        if: github.event_name == 'workflow_dispatch'
+        run: TELEMETRY_COMPLEXITY_DIAG=1 go run ./test/complexitygate
+
       - name: Set up golangci-lint
         uses: ./.github/actions/setup-golangci-lint
         timeout-minutes: 8
