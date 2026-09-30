@@ -345,9 +345,6 @@ func backlogItemReadyAt(item providers.WorkItem) time.Time {
 	if item.ReadyAt != nil && !item.ReadyAt.IsZero() {
 		return item.ReadyAt.UTC()
 	}
-	if item.CreatedAt != nil && !item.CreatedAt.IsZero() {
-		return item.CreatedAt.UTC()
-	}
 	return time.Time{}
 }
 
