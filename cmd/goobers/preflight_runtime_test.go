@@ -351,6 +351,7 @@ runners:
   - name: local
     host: self
     provides:
+      os: macOS
       capabilities:
         - node@20
   - name: linux-pool
