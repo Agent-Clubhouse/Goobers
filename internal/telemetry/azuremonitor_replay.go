@@ -85,10 +85,14 @@ var activeAzureReplaySpools = struct {
 func InspectAzureReplayRoot(root string) AzureReplayStats {
 	result, indexed := inspectReplayIndex(root)
 	if !indexed {
+		complete := true
 		for _, stream := range []string{"traces", "journal", "diagnostics"} {
 			dir := filepath.Join(root, stream)
 			entries, err := os.ReadDir(dir)
 			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					complete = false
+				}
 				continue
 			}
 			for _, entry := range entries {
@@ -97,6 +101,7 @@ func InspectAzureReplayRoot(root string) AzureReplayStats {
 				}
 				info, err := entry.Info()
 				if err != nil {
+					complete = false
 					continue
 				}
 				result.PendingBytes += info.Size()
@@ -108,9 +113,12 @@ func InspectAzureReplayRoot(root string) AzureReplayStats {
 					if age > result.OldestPendingAge {
 						result.OldestPendingAge = age
 					}
+				} else {
+					complete = false
 				}
 			}
 		}
+		result.AccountingReady = result.AccountingReady && complete
 	}
 	activeAzureReplaySpools.Lock()
 	for spool := range activeAzureReplaySpools.spools {
