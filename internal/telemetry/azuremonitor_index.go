@@ -245,7 +245,11 @@ func (x *azureReplayIndex) open(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	path := filepath.Join(x.root, azureReplayIndexName)
+	// #6058: sqliteuri.File requires an absolute path.
+	path, err := filepath.Abs(filepath.Join(x.root, azureReplayIndexName))
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err

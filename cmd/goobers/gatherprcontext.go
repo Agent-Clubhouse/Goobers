@@ -102,6 +102,7 @@ type gatherPRContextAdapter struct {
 	note             string
 	gitAuth          gitAuthEnvironmentResolver
 	list             func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	get              func(context.Context, string) (providers.PullRequestSummary, error)
 	prepare          func(context.Context, []providers.PullRequestSummary, map[string]bool) ([]providers.PullRequestSummary, map[int]int, error)
 	resolveCheck     func(context.Context, *providers.PullRequestSummary) error
 	behindBase       func(providers.PullRequestSummary) (bool, error)
@@ -150,6 +151,9 @@ func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.Repository
 	bases := map[string]bool{}
 	return gatherPRContextAdapter{
 		features: gatherPRContextFeatures{checkState: true, siblingBlocking: true, liveBaseTip: true}, gitAuth: tokenGitAuthEnvironment(pushToken), list: provider.ListPullRequests,
+		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+			return provider.GetPullRequest(ctx, repo, id)
+		},
 		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
 			if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
 				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
@@ -203,6 +207,14 @@ func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (ga
 		return gatherPRContextAdapter{}, err
 	}
 	return gatherPRContextAdapter{features: gatherPRContextFeatures{checkState: true}, gitAuth: gitAuth, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+		get: func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+			pr, err := provider.GetPullRequest(ctx, repo, id)
+			if err != nil {
+				return providers.PullRequestSummary{}, err
+			}
+			pr.Labels, err = provider.PullRequestLabelNames(ctx, repo, id)
+			return pr, err
+		},
 		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
 			return resolveADOSelectedCheckState(ctx, provider, repo, pr)
 		},
@@ -277,9 +289,9 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 	target := remediationTargetFromEnv()
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := a.list(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: prefix, SkipCheckState: true})
+	prs, err := gatherPRContextPullRequests(ctx, a, repo, base, prefix, target)
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
+		return failProviderStage(stderr, "select pull requests", err, remediationBriefResultFile)
 	}
 	listed := prs
 	prs, pinned, done, code := gatherPRContextCandidateScope(root, target, prs, stdout, stderr)
@@ -321,6 +333,9 @@ func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherP
 		return code
 	}
 	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(root, repo, selected.Number, comments, author), comments, stdout, stderr)
+}
+func gatherPRContextPullRequests(ctx context.Context, a gatherPRContextAdapter, repo providers.RepositoryRef, base, prefix string, target remediationTarget) ([]providers.PullRequestSummary, error) {
+	return remediationPullRequestCandidates(ctx, repo, base, prefix, target, a.list, a.get)
 }
 func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
 	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)
