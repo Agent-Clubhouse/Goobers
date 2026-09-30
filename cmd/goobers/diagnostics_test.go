@@ -13,9 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/api/schemas"
+	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/diagnostics"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/supporttriage"
 )
 
 // seedDiagnosticsRun writes a run journal shaped like the incident #2968 was
@@ -186,6 +189,30 @@ func TestDiagnosticsBundleCarriesNoCredentialValue(t *testing.T) {
 		if strings.Contains(cred.SourceName, leaked) {
 			t.Fatalf("credential source carries a value: %+v", cred)
 		}
+	}
+}
+
+func TestDiagnosticsTriageJSONClassifiesOneRun(t *testing.T) {
+	root := initDemo(t)
+	seedDiagnosticsRun(t, root, "run-auth", "selected work", "ghp_0123456789abcdefghijklmnopqrstuvwxyzA")
+
+	code, stdout, stderr := runArgs(t, "diagnostics", "triage", "--run", "run-auth", "--json", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	validator, err := apivalidate.New()
+	if err != nil {
+		t.Fatalf("new schema validator: %v", err)
+	}
+	if err := validator.ValidateJSON(schemas.SupportTriage, []byte(stdout)); err != nil {
+		t.Fatalf("support triage schema validation: %v\n%s", err, stdout)
+	}
+	var result supporttriage.Result
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode support triage: %v", err)
+	}
+	if result.Disposition != supporttriage.DispositionHarnessAuthentication {
+		t.Fatalf("disposition = %q, want %q; result=%+v", result.Disposition, supporttriage.DispositionHarnessAuthentication, result)
 	}
 }
 

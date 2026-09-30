@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "local_environment",
+  "confidence": "high",
+  "nextAction": "Fix the local runner environment and rerun before filing a Goobers defect.",
+  "evidence": [
+    {
+      "kind": "error",
+      "subject": "run-local",
+      "detail": "exec_failed: echo not on PATH"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-local"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "echo not on path|exec_failed|failed|stage|workflow"
+  },
+  "cluster": {
+    "fingerprint": "echo not on path|exec_failed|failed|stage|workflow",
+    "occurrenceCount": 1
+  }
+}

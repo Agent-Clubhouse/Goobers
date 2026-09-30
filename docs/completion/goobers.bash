@@ -57,6 +57,7 @@ _goobers_completion()
         diagnostics)
             case "${COMP_WORDS[2]:-}" in
                 bundle) flags+=" --run --pr --max-runs --output --json" ;;
+                triage) flags+=" --run --json" ;;
             esac
             ;;
         agent-kit)
@@ -324,7 +325,7 @@ _goobers_completion()
             ;;
         diagnostics)
             if (( COMP_CWORD == 2 )); then
-                candidates="bundle"
+                candidates="bundle triage"
             fi
             ;;
         agent-kit)

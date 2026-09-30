@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "harness_authentication",
+  "confidence": "high",
+  "nextAction": "Restore the required harness credential and rerun before filing a Goobers defect.",
+  "evidence": [
+    {
+      "kind": "error",
+      "subject": "run-auth",
+      "detail": "github_forbidden: credential unauthorized"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-auth"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "credential unauthorized|failed|github_forbidden|stage|workflow"
+  },
+  "cluster": {
+    "fingerprint": "credential unauthorized|failed|github_forbidden|stage|workflow",
+    "occurrenceCount": 1
+  }
+}

@@ -81,6 +81,9 @@ const InvestigationEvidence = "investigation-evidence.schema.json"
 // Diagnostics is the validate/lint machine-readable findings envelope.
 const Diagnostics = "diagnostics.schema.json"
 
+// SupportTriage is the support-case triage result emitted by diagnostics triage.
+const SupportTriage = "support-triage-v1.schema.json"
+
 // Features is the workflow-DSL feature discovery envelope.
 const Features = "features.schema.json"
 

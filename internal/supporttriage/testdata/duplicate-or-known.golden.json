@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "duplicate_or_known",
+  "confidence": "high",
+  "nextAction": "Link the existing known issue instead of filing a duplicate.",
+  "evidence": [
+    {
+      "kind": "selector_decision",
+      "subject": "run-known",
+      "detail": "duplicate of known issue #123"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-known"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "workflow"
+  },
+  "cluster": {
+    "fingerprint": "workflow",
+    "occurrenceCount": 1
+  }
+}
