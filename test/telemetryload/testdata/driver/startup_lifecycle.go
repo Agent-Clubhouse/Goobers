@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,12 +21,110 @@ type startupTiming struct {
 	StartedUTC, FinishedUTC time.Time
 	StartupMS, ShutdownMS   float64
 	Requests, Rejected      int64
+	PostReady               *startupResponsiveness `json:",omitempty"`
+	Health                  startupHealthAudit
+}
+
+type startupHealthCounters struct {
+	Events, ShutdownEvents, AdmissionFailures, QueueDropped, ExportFailures uint64
+	PrunedAge, PrunedBytes, MalformedFiles                                  uint64
+}
+
+type startupHealthAudit struct {
+	Streams map[string]startupHealthCounters
+}
+
+func (a startupHealthAudit) complete(enabled bool, profile string) bool {
+	if !enabled {
+		return true
+	}
+	streams := []string{"diagnostics"}
+	if profile != "health" {
+		streams = append(streams, "journal")
+	}
+	if profile == "standard" || profile == "diagnostic" {
+		streams = append(streams, "traces")
+	}
+	for _, stream := range streams {
+		if a.Streams[stream].ShutdownEvents != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func (a startupHealthAudit) clean(endpoint string) bool {
+	for _, counters := range a.Streams {
+		if counters.AdmissionFailures != 0 || counters.QueueDropped != 0 ||
+			counters.PrunedAge != 0 || counters.PrunedBytes != 0 || counters.MalformedFiles != 0 {
+			return false
+		}
+		if endpoint == "healthy" && counters.ExportFailures != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Parse the daemon's independent health channel after exit. A warning can be
+// emitted only at shutdown, after the startup timing sample has completed.
+// Counters are cumulative per stream, so retain maxima rather than summing
+// repeated snapshots.
+func auditStartupHealth(path string) (startupHealthAudit, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return startupHealthAudit{}, err
+	}
+	defer file.Close()
+	audit := startupHealthAudit{Streams: make(map[string]startupHealthCounters)}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 || line[0] != '{' || !strings.Contains(string(line), `"telemetry.export.health"`) {
+			continue
+		}
+		var event struct {
+			Event, Stream, Status                  string
+			AdmissionFailures                      uint64
+			PrunedAge, PrunedBytes, MalformedFiles uint64
+			Queue                                  struct {
+				Dropped, ExportFailures uint64
+			}
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			return audit, fmt.Errorf("decode startup health event: %w", err)
+		}
+		if event.Event != "telemetry.export.health" || event.Stream == "" {
+			return audit, fmt.Errorf("invalid startup health event: %s", line)
+		}
+		counters := audit.Streams[event.Stream]
+		counters.Events++
+		if event.Status == "shutdown" {
+			counters.ShutdownEvents++
+		}
+		counters.AdmissionFailures = max(counters.AdmissionFailures, event.AdmissionFailures)
+		counters.QueueDropped = max(counters.QueueDropped, event.Queue.Dropped)
+		counters.ExportFailures = max(counters.ExportFailures, event.Queue.ExportFailures)
+		counters.PrunedAge = max(counters.PrunedAge, event.PrunedAge)
+		counters.PrunedBytes = max(counters.PrunedBytes, event.PrunedBytes)
+		counters.MalformedFiles = max(counters.MalformedFiles, event.MalformedFiles)
+		audit.Streams[event.Stream] = counters
+	}
+	if err := scanner.Err(); err != nil {
+		return audit, fmt.Errorf("scan startup daemon log: %w", err)
+	}
+	return audit, nil
 }
 
 // Startup probes need request/fault evidence, not a growing map of every seed
 // identity ever received. Stream decoding to discard bounds receiver memory;
 // the separate workflow scenarios keep their full reconciliation collector.
 func consumeStartupReplay(w http.ResponseWriter, decoded io.Reader, responseMode int32) {
+	if startupRecoveryActive.Load() {
+		consumeStartupRecovery(w, decoded, responseMode)
+		return
+	}
 	if _, err := io.Copy(io.Discard, decoded); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -37,10 +137,10 @@ func consumeStartupReplay(w http.ResponseWriter, decoded io.Reader, responseMode
 	w.WriteHeader(http.StatusOK)
 }
 
-func measureStartup(name, root, api string, waitForIndex bool) startupTiming {
+func measureStartup(name, root, api string, waitForIndex bool, postReady time.Duration) startupTiming {
 	log, err := os.Create(filepath.Join(out, name+"-daemon.log"))
 	must(err)
-	defer func() { must(log.Close()) }()
+	defer func() { _ = log.Close() }()
 	c := cmd(context.Background(), "up", "--drain-timeout", "15s", root)
 	c.Stdout, c.Stderr = log, log
 	c.Env = append(c.Env, "GODEBUG=gctrace=1")
@@ -70,11 +170,17 @@ func measureStartup(name, root, api string, waitForIndex bool) startupTiming {
 		time.Sleep(50 * time.Millisecond)
 	}
 	result.StartupMS = float64(time.Since(started).Nanoseconds()) / 1e6
+	if postReady > 0 {
+		// Start immediately after observed readiness, before index waits or the
+		// idle dwell can hide a replay burst. Baseline uses the same workload.
+		result.PostReady = measureStartupResponsiveness(name, root, api, postReady)
+	}
 	if waitForIndex {
 		waitStartupIndex(root)
 	}
-	// No workflow execution: this isolates idle lifecycle with queued replay.
-	// Both baseline and enabled retain the same post-readiness dwell.
+	// The default remains an idle lifecycle. Optional post-ready work above is
+	// explicitly recorded and is not comparable to the original idle grid.
+	// Both baseline and enabled retain the same final dwell.
 	time.Sleep(time.Second)
 	stopStarted := time.Now()
 	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -92,6 +198,9 @@ func measureStartup(name, root, api string, waitForIndex bool) startupTiming {
 	result.ShutdownMS = float64(time.Since(stopStarted).Nanoseconds()) / 1e6
 	result.FinishedUTC = time.Now().UTC()
 	result.Requests, result.Rejected = requests.Load()-rq, rejects.Load()-rejected
+	must(log.Close()) // Release the writer before rereading on Windows.
+	result.Health, err = auditStartupHealth(filepath.Join(out, name+"-daemon.log"))
+	must(err)
 	return result
 }
 

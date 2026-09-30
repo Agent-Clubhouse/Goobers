@@ -214,7 +214,10 @@ failures, not background HTTP failures. Flush settles the journal queue into
 the spool; it is not a remote-ingestion barrier. One worker per stream owns
 delivery, new arrivals respect its retry backoff, and HTTP holds no shared
 spool lock. Each replay pass sends at most 32 batches within its context;
-shutdown makes a bounded best-effort pass and leaves remaining files for restart.
+shutdown gives each stream's entire final remote pass at most one second (or
+the shorter caller deadline) and leaves unacknowledged files for restart. This
+is not a one-second bound on all daemon cleanup: local claim release, journal
+catch-up, and provider shutdown have their own budgets.
 
 Replay combines small persisted files into requests of up to 128 records and
 1 MiB (an existing larger valid batch travels alone). Claims and acknowledgements
@@ -284,12 +287,28 @@ An unwritable health file falls back to stderr. These are best-effort operationa
 warnings, not a new durable audit journal.
 
 Fixed causes identify unavailable accounting, a spool at 80% of its byte cap,
-pending records older than 30 seconds, growing record backlog over two sample
-intervals, and newly observed losses/export failures. Warnings repeat at most
+pending records older than 30 seconds, growing record backlog that persists
+across two sample intervals, and newly observed losses/export failures. Growth
+requires current accounting at both ends of each interval and an oldest pending
+record at least as old as that actual interval. Increasing counts of entirely
+fresh batches do not establish sustained pressure; high-water, age and loss
+warnings remain independent. Warnings repeat at most
 once per minute per process/stream; a recovery transition is emitted when the
 alert conditions clear. Recovery does not restore previously dropped records.
 Reports contain aggregate counts and admission/delivery rates, never envelope
 content, user/machine names, connection strings, paths, or raw exception text.
+
+An `accounting_unavailable` sample means the process could not obtain a current
+manifest snapshot. The lookup has a 100 ms budget and uses a separate read-only
+connection instead of waiting for replay's writer connection. A busy health
+reader or unavailable database can still cause a temporary warning without a
+failed admission or upload. When available, the
+last successful backlog snapshot is retained but marked unavailable; its counts
+are not a fresh measurement or proof of an empty spool. The warning alone does
+not establish record loss. Inspect loss counters, subsequent delivery, and
+journal sequence coverage rather than suppressing it. Recovery requires both
+cleared warning conditions and delivery advancing after the last observed
+problem; fresh accounting alone does not prove end-to-end delivery recovered.
 
 Journal and diagnostic queue drops, failed local admission, age/byte pruning,
 and malformed files are visible. These counters can overlap and must not be

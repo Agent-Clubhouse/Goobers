@@ -594,12 +594,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// expired-claim reap — setup's included — a no-op until the renewal set
 	// has been rebuilt from ledger + liveness below.
 	claimRecoveryGate := localscheduler.NewRecoveryGate()
-	schedulerSetupStarted := time.Now()
-	setupOptions := []schedulerSetupOption{
-		withDesktopNotifications(notifications, stderr),
-		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
-		withClaimRecoveryGate(claimRecoveryGate),
-	}
+	setupOptions, startTelemetryReplay := daemonStartupSetupOptions(notifications, stdout, stderr, claimRecoveryGate)
 	buildSetup := buildSchedulerSetup
 	if *skipPreflight {
 		buildSetup = buildSchedulerSetupAllowingInvalidConfig
@@ -1796,6 +1791,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		tracker.completeBudget(time.Now())
 		ready.Store(true)
 		pf(stdout, "%s startup phase=ready status=done target=%q address=%s\n", startupTimestamp(), "api", apiServer.Address())
+		startTelemetryReplay()
 	}
 	// Now that the API is up and status/dashboard reads no longer block on
 	// it, run the broad retention sweep deferred above (#4373).

@@ -27,6 +27,10 @@ const (
 	azureReplayDrainLimit   = 32
 	azureReplayBatchRecords = 128
 	azureReplayBatchBytes   = 1 << 20
+	// Shutdown is a last-chance remote send, not a backlog recovery window.
+	// Each signal closes separately; ordinary five-second attempts otherwise
+	// accumulate into a long daemon shutdown while Azure Monitor is stalled.
+	azureReplayShutdownDrainTimeout = time.Second
 )
 
 var errAzureReplayYield = errors.New("azure monitor replay work budget exhausted")
@@ -36,6 +40,7 @@ type azureReplayConfig struct {
 	dir      string
 	maxAge   time.Duration
 	maxBytes int64
+	start    <-chan struct{}
 }
 
 func (c Config) azureReplayConfig(stream string) azureReplayConfig {
@@ -46,6 +51,7 @@ func (c Config) azureReplayConfig(stream string) azureReplayConfig {
 		root:   c.AzureMonitorReplayRoot,
 		dir:    filepath.Join(c.AzureMonitorReplayRoot, stream),
 		maxAge: c.AzureMonitorReplayMaxAge, maxBytes: c.AzureMonitorReplayMaxBytes,
+		start: c.AzureMonitorReplayStart,
 	}
 }
 
@@ -202,6 +208,15 @@ func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) (submitEr
 	if err := s.ensureIndex(); err != nil {
 		return err
 	}
+	if s.cfg.start != nil {
+		select {
+		case <-s.index.ready:
+		default:
+			if err = s.submitBootstrap(ctx, name, now, payload); !errors.Is(err, errAzureBootstrapReady) {
+				return err
+			}
+		}
+	}
 	var rejected bool
 	err = s.index.withLock(ctx, func(tx *sql.Tx) error {
 		if s.closed.Load() {
@@ -244,7 +259,11 @@ func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) (submitEr
 }
 
 func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload []byte) (string, error) {
-	tmp, err := os.CreateTemp(s.cfg.dir, ".pending-*")
+	return writeAzureReplayBatch(s.cfg.dir, name, createdAt, payload)
+}
+
+func writeAzureReplayBatch(dir, name string, createdAt time.Time, payload []byte) (string, error) {
+	tmp, err := os.CreateTemp(dir, ".pending-*")
 	if err != nil {
 		return "", fmt.Errorf("create Azure Monitor replay batch: %w", err)
 	}
@@ -272,7 +291,7 @@ func (s *azureReplaySpool) writeLocked(name string, createdAt time.Time, payload
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("close Azure Monitor replay batch: %w", err)
 	}
-	destination := filepath.Join(s.cfg.dir, name)
+	destination := filepath.Join(dir, name)
 	if err := os.Rename(tmpName, destination); err != nil {
 		return "", fmt.Errorf("publish Azure Monitor replay batch: %w", err)
 	}
@@ -416,16 +435,29 @@ func (s *azureReplaySpool) signal() {
 
 func (s *azureReplaySpool) run(ctx context.Context) {
 	defer close(s.done)
+	if s.cfg.start != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.cfg.start:
+		}
+	}
 	delay := azureReplayRetryMinimum
 	retrying := false
+	bootstrapRetry := false
+	sweep := time.NewTicker(azureBootstrapSweepInterval)
+	defer sweep.Stop()
 	for {
 		var retry <-chan time.Time
 		wake := s.wake
+		periodic := sweep.C
+		sweepBootstrap := bootstrapRetry
 		var timer *time.Timer
 		if retrying {
 			// Leave new-work notifications pending until the backoff expires.
 			// Continuous traffic must not turn an outage into a retry storm.
 			wake = nil
+			periodic = nil
 			timer = time.NewTimer(jitterAzureReplayDelay(delay))
 			retry = timer.C
 		}
@@ -436,19 +468,37 @@ func (s *azureReplaySpool) run(ctx context.Context) {
 			}
 			return
 		case <-wake:
+		case <-periodic:
+			if !s.index.hasBootstrapFiles() {
+				continue
+			}
+			sweepBootstrap = true
 		case <-retry:
 		}
 		if timer != nil {
 			timer.Stop()
 		}
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := s.drain(attempt)
+		var err error
+		var migrationErr error
+		if sweepBootstrap {
+			migrationErr = s.index.wait(attempt)
+			if migrationErr == nil {
+				migrationErr = s.index.migrateBootstrap(attempt)
+			}
+			err = migrationErr
+		}
+		if err == nil {
+			err = s.drain(attempt)
+		}
 		cancel()
 		if err == nil || errors.Is(err, errAzureReplayYield) {
+			bootstrapRetry = false
 			delay = azureReplayRetryMinimum
 			retrying = false
 			continue
 		}
+		bootstrapRetry = migrationErr != nil
 		retrying = true
 		delay = min(delay*2, azureReplayRetryMaximum)
 	}
@@ -523,7 +573,11 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	select {
 	case <-s.done:
 	case <-ctx.Done():
-		go func() { <-s.done; _ = s.stats(); _ = s.index.release(context.Background()) }()
+		go func() {
+			<-s.done
+			s.reportShutdownHealth(s.stats())
+			_ = s.index.release(context.Background())
+		}()
 		return ctx.Err()
 	}
 	// No batch can be admitted before indexing is ready. Do not wait for a
@@ -533,9 +587,15 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 	var err error
 	select {
 	case <-s.index.ready:
-		err = s.drain(ctx)
+		// Keep the shorter caller deadline, and bound the entire final drain,
+		// not each request independently. Unacknowledged files stay durable
+		// for restart. Local claim cleanup retains its own bounded context;
+		// this limit is not a promise about a wedged local filesystem.
+		drainCtx, cancel := context.WithTimeout(ctx, azureReplayShutdownDrainTimeout)
+		err = s.drain(drainCtx)
+		cancel()
 	default:
 	}
-	_ = s.stats()
+	s.reportShutdownHealth(s.stats())
 	return errors.Join(err, s.index.release(ctx))
 }

@@ -27,8 +27,13 @@ var auditedSQLOpeners = []string{
 	"internal/readmodel/store.go:Open:Open",
 	"internal/readmodel/store.go:openReaderPool:Open",
 	// Both telemetry stores use versioned sqliteschema migrations and reject
-	// newer versions. The read-only manifest inspector requires version 1.
+	// newer versions. The read-only manifest inspector accepts supported
+	// versions 1 through len(replayIndexMigrations), without migrating them.
 	"internal/telemetry/azuremonitor_index.go:inspectReplayIndex:Open",
+	"internal/telemetry/azuremonitor_index.go:open:Open",
+	// Second open in this function: a mode=ro accounting pool. It is created
+	// only after the writer's versioned migration and reconciliation succeed,
+	// inherits that established schema, and performs no DDL or migrations.
 	"internal/telemetry/azuremonitor_index.go:open:Open",
 	"internal/telemetry/journalcatchup_store.go:openJournalCursorStore:Open",
 	"internal/telemetry/rollup/db.go:Open:Open",
