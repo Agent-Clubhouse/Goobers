@@ -144,7 +144,7 @@ func init() {
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --demo ./demo"),
 		coreCommand("connect", apicontract.ActionConfigTime, runConnect).
 			withSynopsis(synopsisByID["connect"]).
-			withHelp("connect an instance to your own GitHub repository", connectHelp).
+			withHelp("connect an instance to your own GitHub or Azure DevOps repository", connectHelp).
 			withExamples(
 				"goobers connect acme/web ./my-instance",
 				"goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance",

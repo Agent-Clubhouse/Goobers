@@ -9,7 +9,7 @@
 | Command | Description |
 | --- | --- |
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
-| [`goobers connect`](#goobers-connect) | connect an instance to your own GitHub repository |
+| [`goobers connect`](#goobers-connect) | connect an instance to your own GitHub or Azure DevOps repository |
 | [`goobers cost`](#goobers-cost) | show bounded cost attribution by pull request or issue |
 | [`goobers dashboard`](#goobers-dashboard) | serve and open the local operations portal |
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
@@ -471,7 +471,8 @@ provider-visible marker, and writes it to the declared result file.
 trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it. --read-only also bypasses
 claim locks, blocked-record reconciliation, scan cursors, and read caches,
-and uses only the github:issues:read capability. When inputs.resultFile
+and uses only the github:issues:read capability routed to the configured
+backlog provider (GitHub, Azure DevOps, or Gitea). When inputs.resultFile
 is declared, it also writes a read-only candidate report with scan coverage;
 candidates are for inspection, not claims or permission to re-ready work.
 
@@ -996,7 +997,7 @@ $ goobers config-seed --mirror /mnt/config-mirror --instance /var/lib/worker/ins
 
 ## `goobers connect`
 
-connect an instance to your own GitHub repository
+connect an instance to your own GitHub or Azure DevOps repository
 
 ~~~text
 Usage: goobers connect <repository> [--token-env NAME] [--seed] [--replace] [--json] [path]
