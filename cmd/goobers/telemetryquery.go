@@ -36,6 +36,7 @@ type candidateFindingsArtifact struct {
 	Findings            []rollup.Finding                `json:"findings"`
 	CausalCredit        []readmodel.CausalNodeCredit    `json:"causalCredit,omitempty"`
 	AttributionCohorts  []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	FaultAudit          *creditgraph.FaultAuditReport   `json:"faultAudit,omitempty"`
 	PromotionSignals    []readservice.PromotionSignal   `json:"promotionSignals,omitempty"`
 	PromotionCandidates []readservice.PromotionSignal   `json:"promotionCandidates"`
 	NoWork              bool                            `json:"noWork,omitempty"`
@@ -733,6 +734,13 @@ func detectCandidateFindingsWithCausalCredit(
 			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
 		}
 		result.AttributionCohorts = cohorts
+		audit, err := readservice.StoredFaultAudit(context.Background(), root, creditStore, readservice.StoredAttributionQuery{
+			Gaggle: gaggle, Workflow: workflowName, Since: since,
+		}, creditgraph.FaultAuditConfig{})
+		if err != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("audit attribution fault domains: %w", err)
+		}
+		result.FaultAudit = &audit
 	}
 	return result, nil
 }
@@ -1004,6 +1012,7 @@ func candidateFindingsFromPlane(
 			CounterEvidence:      planeEvidenceLinks(cohort.CounterEvidence),
 		})
 	}
+	artifact.FaultAudit = faultAuditReportFromPlane(response.FaultAudit)
 	for _, signal := range response.PromotionSignals {
 		artifact.PromotionSignals = append(artifact.PromotionSignals, readservicePromotionSignal(signal))
 	}
@@ -1019,6 +1028,42 @@ func candidateFindingsFromPlane(
 		artifact.Note = strings.TrimSpace(artifact.Note + " (answer truncated at the plane's cardinality ceiling)")
 	}
 	return artifact
+}
+
+func faultAuditReportFromPlane(report *telemetryclient.FaultAuditReport) *creditgraph.FaultAuditReport {
+	if report == nil {
+		return nil
+	}
+	return &creditgraph.FaultAuditReport{
+		Schema:              report.Schema,
+		Mode:                report.Mode,
+		Since:               report.Since,
+		Until:               report.Until,
+		ObservationsScanned: report.ObservationsScanned,
+		ProductFindings:     faultFindingsFromPlane(report.ProductFindings),
+		ExternalFindings:    faultFindingsFromPlane(report.ExternalFindings),
+		WorkflowFindings:    faultFindingsFromPlane(report.WorkflowFindings),
+		UnknownFindings:     faultFindingsFromPlane(report.UnknownFindings),
+		Suppressed:          report.Suppressed,
+		Truncated:           report.Truncated,
+	}
+}
+
+func faultFindingsFromPlane(findings []telemetryclient.FaultFinding) []creditgraph.FaultFinding {
+	result := make([]creditgraph.FaultFinding, 0, len(findings))
+	for _, finding := range findings {
+		result = append(result, creditgraph.FaultFinding{
+			ID: finding.ID, Signature: finding.Signature, Domain: creditgraph.FaultDomain(finding.Domain),
+			Confidence: finding.Confidence, RunIDs: finding.RunIDs, Workflows: finding.Workflows,
+			EffectiveVersions: finding.EffectiveVersions, Environments: finding.Environments,
+			NodePaths: finding.NodePaths, Evidence: planeEvidenceLinks(finding.Evidence),
+			CounterEvidence: finding.CounterEvidence, Rationale: finding.Rationale,
+			AlternativeDomains: finding.AlternativeDomains, RecommendedOwner: finding.RecommendedOwner,
+			RecommendedAction: finding.RecommendedAction,
+			Verification:      creditgraph.VerificationState(finding.Verification),
+		})
+	}
+	return result
 }
 
 func planeContributingPaths(paths []telemetryclient.ContributingPath) []creditgraph.ContributingPath {

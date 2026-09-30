@@ -127,11 +127,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers speech`](#goobers-speech) | preflight and test local speech notifications |
 | [`goobers speech preflight`](#goobers-speech-preflight) | check the configured local speech engine without emitting sound |
 | [`goobers speech test`](#goobers-speech-test) | speak the fixed local readiness phrase |
-| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, prune, or compact telemetry |
+| [`goobers telemetry`](#goobers-telemetry) | configure, test, query, export, mark fixes, prune, or compact telemetry |
 | [`goobers telemetry compact`](#goobers-telemetry-compact) | drop aged scheduler journal/rollup rows and reclaim disk (VACUUM) |
 | [`goobers telemetry configure`](#goobers-telemetry-configure) | configure customer-owned Application Insights export from a secret reference |
 | [`goobers telemetry errors`](#goobers-telemetry-errors) | recent errors across runs, by class, with run/stage refs |
 | [`goobers telemetry export`](#goobers-telemetry-export) | re-emit a span-start-time window from journaled OTLP/JSON |
+| [`goobers telemetry mark-fix`](#goobers-telemetry-mark-fix) | mark a Backprop finding for post-fix verification |
 | [`goobers telemetry merges`](#goobers-telemetry-merges) | confirmed PR landings and daily counts by originating instance |
 | [`goobers telemetry prune`](#goobers-telemetry-prune) | remove terminal runs outside configured retention bounds |
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
@@ -4306,10 +4307,10 @@ $ goobers status --agents --json
 
 ## `goobers telemetry`
 
-configure, test, query, export, prune, or compact telemetry
+configure, test, query, export, mark fixes, prune, or compact telemetry
 
 ~~~text
-Usage: goobers telemetry <configure|test|stats|merges|errors|export|prune|prune-orphans|compact> [flags] [path]
+Usage: goobers telemetry <configure|test|stats|merges|errors|export|mark-fix|prune|prune-orphans|compact> [flags] [path]
 
 configure: enable or disable customer-owned Application Insights export
 test:    send one secret-safe direct-ingestion connectivity probe
@@ -4317,6 +4318,7 @@ merges: confirmed PR landings and daily counts by originating instance
 stats:  run/stage outcomes, curation actions, and ready-pool health
 errors: recent errors across runs, by class, with run/stage refs
 export: re-emit a span-start-time window from journaled OTLP/JSON
+mark-fix: mark a Backprop finding for post-fix verification
 prune:   remove terminal runs outside the configured retention bounds
 prune-orphans: report or delete old run directories that lack run.yaml
 compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
@@ -4327,8 +4329,8 @@ compact: drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
 ~~~console
 $ goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance
 $ goobers telemetry test ./instance
-$ goobers telemetry stats
-$ goobers telemetry errors
+$ goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
+$ goobers telemetry prune --dry-run
 ~~~
 
 ## `goobers telemetry compact`
@@ -4415,6 +4417,26 @@ unsupported OTLP data emits nothing and exits non-zero. Exit codes: 0 = OK,
 ~~~console
 $ goobers telemetry export --since=2026-07-01T00:00:00Z
 $ goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z
+~~~
+
+## `goobers telemetry mark-fix`
+
+mark a Backprop finding for post-fix verification
+
+~~~text
+Usage: goobers telemetry mark-fix --finding=<backprop-id> [--applied-at=RFC3339] [path]
+
+Record when an operator-deployed fix for a Backprop fault-audit finding was
+applied. Subsequent report-only audit passes compare held-out runs after this
+time and show verification-pending, recovered, or repeated. --applied-at
+defaults to the current time. Exit codes: 0 = recorded, 1 = state error,
+2 = usage/config error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123
 ~~~
 
 ## `goobers telemetry merges`

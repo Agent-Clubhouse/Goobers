@@ -82,7 +82,7 @@ func (r *registry) unknownFieldError(selector string, parts []selectorPart, inde
 	prefixParts := make([]selectorPart, index)
 	copy(prefixParts, parts[:index])
 	if itemDoc, _, itemResolved, found, err := r.resolveItems(doc, node, 0); found && err == nil {
-		prefixParts[index-1].element = true
+		prefixParts[index-1].elements = 1
 		doc, node = itemDoc, itemResolved
 	}
 	candidates := r.propertyNames(doc, node, 0)
@@ -110,7 +110,7 @@ func (r *registry) unknownFieldError(selector string, parts []selectorPart, inde
 func notAnArraySelector(selector string, parts []selectorPart, index int) error {
 	scalar := make([]selectorPart, len(parts))
 	copy(scalar, parts)
-	scalar[index].element = false
+	scalar[index].elements = 0
 	return &SelectorError{
 		Selector:   selector,
 		Segment:    parts[index].name,

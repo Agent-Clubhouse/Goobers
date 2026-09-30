@@ -44,8 +44,8 @@ type Explanation struct {
 }
 
 type selectorPart struct {
-	name    string
-	element bool
+	name     string
+	elements int
 }
 
 type schemaDocument struct {
@@ -92,21 +92,23 @@ func Explain(selector string) (Explanation, error) {
 		declared = child
 		currentDoc, resolved = childDoc, childResolved
 
-		if !part.element {
+		if part.elements == 0 {
 			continue
 		}
 		elementDescription, _ = schemaString(declared, resolved, "description")
-		itemDoc, items, itemResolved, found, resolveErr :=
-			r.resolveItems(currentDoc, resolved, 0)
-		if resolveErr != nil {
-			return Explanation{}, unknownSelector(selector)
+		for range part.elements {
+			itemDoc, items, itemResolved, found, resolveErr :=
+				r.resolveItems(currentDoc, resolved, 0)
+			if resolveErr != nil {
+				return Explanation{}, unknownSelector(selector)
+			}
+			if !found {
+				return Explanation{}, notAnArraySelector(selector, parts, index+1)
+			}
+			declared = items
+			currentDoc, resolved = itemDoc, itemResolved
+			required = nil
 		}
-		if !found {
-			return Explanation{}, notAnArraySelector(selector, parts, index+1)
-		}
-		declared = items
-		currentDoc, resolved = itemDoc, itemResolved
-		required = nil
 	}
 
 	explanation, err := projectFacts(selector, selectorString(parts, true), declared, resolved, required, elementDescription)
@@ -349,8 +351,8 @@ func selectorString(parts []selectorPart, includeElements bool) string {
 	names := make([]string, len(parts))
 	for i, part := range parts {
 		names[i] = part.name
-		if includeElements && part.element {
-			names[i] += "[]"
+		if includeElements && part.elements > 0 {
+			names[i] += strings.Repeat("[]", part.elements)
 		}
 	}
 	return strings.Join(names, ".")
@@ -868,12 +870,16 @@ func parseSelector(selector string) ([]selectorPart, error) {
 		if raw == "" {
 			return nil, unknownSelector(selector)
 		}
-		element := strings.HasSuffix(raw, "[]")
-		name := strings.TrimSuffix(raw, "[]")
-		if name == "" || strings.ContainsAny(name, "[]") || (i == 0 && element) {
+		name := raw
+		elements := 0
+		for strings.HasSuffix(name, "[]") {
+			name = strings.TrimSuffix(name, "[]")
+			elements++
+		}
+		if name == "" || strings.ContainsAny(name, "[]") || (i == 0 && elements > 0) {
 			return nil, unknownSelector(selector)
 		}
-		parts[i] = selectorPart{name: name, element: element}
+		parts[i] = selectorPart{name: name, elements: elements}
 	}
 	return parts, nil
 }

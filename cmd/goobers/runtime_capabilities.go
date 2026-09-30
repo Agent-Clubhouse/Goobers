@@ -634,6 +634,9 @@ func init() {
 			subcommand("telemetry export", "export", apicontract.ActionReadOnlyNavigation, runTelemetryExport).
 				withHelp("re-emit a span-start-time window from journaled OTLP/JSON", telemetryExportHelp).
 				withExamples("goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z"),
+			subcommand("telemetry mark-fix", "mark-fix", apicontract.ActionMaintenance, runTelemetryMarkFix).
+				withHelp("mark a Backprop finding for post-fix verification", telemetryMarkFixHelp).
+				withExamples("goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123"),
 			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
@@ -645,8 +648,8 @@ func init() {
 				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
 		).
 			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("configure, test, query, export, prune, or compact telemetry", telemetryHelp).
-			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry stats", "goobers telemetry errors"),
+			withHelp("configure, test, query, export, mark fixes, prune, or compact telemetry", telemetryHelp).
+			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123", "goobers telemetry prune --dry-run"),
 		groupCommand(
 			"journal",
 			runJournal,
