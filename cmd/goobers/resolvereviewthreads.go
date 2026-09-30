@@ -287,8 +287,12 @@ func failThreadResponseValidation(validationErr error, stderr io.Writer) int {
 // reply to one review thread. The stage recognises its own reply by it, both
 // before posting (idempotent re-runs) and after (the visibility check).
 func reviewThreadResponseMarker(runID, threadID string) string {
-	return fmt.Sprintf("<!-- goobers:review-thread-response:%s:%s -->", runID, threadID)
+	return fmt.Sprintf("%s%s:%s -->", reviewThreadResponseMarkerPrefix, runID, threadID)
 }
+
+// reviewThreadResponseMarkerPrefix opens every reviewThreadResponseMarker.
+// pr-comment-watch reads it to recognise a Goobers-written thread reply.
+const reviewThreadResponseMarkerPrefix = "<!-- goobers:review-thread-response:"
 
 func renderReviewThreadReply(runID, headSHA string, response reviewThreadDisposition) string {
 	marker := reviewThreadResponseMarker(runID, response.ThreadID)
