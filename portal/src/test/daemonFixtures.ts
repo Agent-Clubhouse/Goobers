@@ -681,6 +681,9 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           runs: [
             {
               runId: "01JZ455ESCALATE",
+              gaggle: "core",
+              workflow: "implementation",
+              status: "escalated",
               startedAt: "2026-07-18T02:00:00Z",
               usageAttempts: 3,
               measuredAttempts: 3,

@@ -1319,6 +1319,8 @@ export function ExternalCostBreakdown({
                     <thead>
                       <tr>
                         <th scope="col">Run</th>
+                        <th scope="col">Gaggle / workflow</th>
+                        <th scope="col">Status</th>
                         <th scope="col">Started</th>
                         <th scope="col">Attempts</th>
                         <th scope="col">Provider-native</th>
@@ -1331,6 +1333,11 @@ export function ExternalCostBreakdown({
                           <td>
                             <a href={routeHash({ page: "run", id: run.runId })}>{run.runId}</a>
                           </td>
+                          <td>
+                            <strong>{run.gaggle || "Unknown gaggle"}</strong>
+                            <small className="data-table-meta">{run.workflow || "Workflow unavailable"}</small>
+                          </td>
+                          <td>{run.status || "Status unavailable"}</td>
                           <td>
                             <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
                           </td>
