@@ -468,3 +468,78 @@ func TestNewADODeliveredCredentialSourceRejectsUnusableInput(t *testing.T) {
 		t.Fatalf("empty secret error = %v, want one naming repo:push", err)
 	}
 }
+
+// TestADOProviderRefreshesBearerOnSignInPage pins that ADO's rejected-bearer
+// answer — a redirect to its sign-in service, which a following client sees
+// as a 203 HTML page — refreshes the credential exactly as a 401 does,
+// instead of failing the call on a JSON decode of the HTML ("invalid
+// character '<'").
+func TestADOProviderRefreshesBearerOnSignInPage(t *testing.T) {
+	for name, first := range map[string]func() *http.Response{
+		"followed redirect (203 HTML)": func() *http.Response {
+			h := make(http.Header)
+			h.Set("Content-Type", "text/html; charset=utf-8")
+			return &http.Response{StatusCode: http.StatusNonAuthoritativeInfo, Header: h, Body: io.NopCloser(strings.NewReader("<html><head><title>Azure DevOps Services | Sign In</title>"))}
+		},
+		"unfollowed redirect (302 to sign-in)": func() *http.Response {
+			h := make(http.Header)
+			h.Set("Location", "https://spsprodeus21.vssps.visualstudio.com/_signin?realm=dev.azure.com")
+			return &http.Response{StatusCode: http.StatusFound, Header: h, Body: io.NopCloser(strings.NewReader("<html><head><title>Object moved</title>"))}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := &rotatingADOCredentialSource{token: "stale-token"}
+			var headers []string
+			client := adoHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+				headers = append(headers, req.Header.Get("Authorization"))
+				if len(headers) == 1 {
+					return first(), nil
+				}
+				body := `{"id":42,"fields":{"System.WorkItemType":"Issue","System.Title":"item","System.State":"Active"}}`
+				if strings.Contains(req.URL.Path, "/workitemtypes/") {
+					body = `{"value":[{"name":"Active","category":"InProgress"}]}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			provider := NewADOProvider("org", "project", "",
+				WithADOCredentialSource(source),
+				func(p *ADOProvider) { p.Client = client },
+			)
+			if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42"); err != nil {
+				t.Fatalf("sign-in page was not treated as a refreshable 401: %v", err)
+			}
+			if len(headers) < 2 || headers[0] == headers[1] {
+				t.Fatalf("credential was not refreshed after the sign-in page: %#v", headers)
+			}
+		})
+	}
+}
+
+// TestADOSignInResponseNormalization pins which responses count as ADO's
+// rejected-credential sign-in answer: only a 203, or a redirect to the
+// sign-in service — never an ordinary 2xx or an unrelated redirect.
+func TestADOSignInResponseNormalization(t *testing.T) {
+	cases := []struct {
+		status   int
+		location string
+		want     int
+	}{
+		{http.StatusNonAuthoritativeInfo, "", http.StatusUnauthorized},
+		{http.StatusFound, "https://spsprodeus21.vssps.visualstudio.com/_signin?realm=dev.azure.com", http.StatusUnauthorized},
+		{http.StatusFound, "https://login.microsoftonline.com/common/oauth2/authorize", http.StatusUnauthorized},
+		{http.StatusFound, "https://dev.azure.com/org/project/_apis/git/repositories/other", http.StatusFound},
+		{http.StatusOK, "", http.StatusOK},
+		{http.StatusNoContent, "", http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		h := make(http.Header)
+		if tc.location != "" {
+			h.Set("Location", tc.location)
+		}
+		resp := &http.Response{StatusCode: tc.status, Header: h}
+		normalizeADOSignInResponse(resp)
+		if resp.StatusCode != tc.want {
+			t.Errorf("status %d location %q: got %d, want %d", tc.status, tc.location, resp.StatusCode, tc.want)
+		}
+	}
+}

@@ -713,6 +713,7 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
+		normalizeADOSignInResponse(resp)
 		p.observeQuota(ctx, resp)
 		p.observeRateLimitDelay(ctx, resp, endpoint)
 		if err := p.deliveredCredentialRejected(resp, method, endpoint); err != nil {
@@ -964,4 +965,35 @@ type adoIdentity struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
 	UniqueName  string `json:"uniqueName"`
+}
+
+// normalizeADOSignInResponse rewrites ADO's rejected-credential response to
+// the 401 it means. ADO does not answer a rejected or expired bearer with
+// 401: it redirects (302) to its sign-in service, and a client that follows
+// the redirect lands on a 203 Non-Authoritative Information HTML page. Left
+// as-is, that 2xx page is decoded as JSON ("invalid character '<'") and the
+// 401 paths — the one-shot credential refresh and the delivered-credential
+// rejection — never run, so a token that merely expired fails the stage
+// instead of being refreshed.
+func normalizeADOSignInResponse(resp *http.Response) {
+	switch {
+	case resp.StatusCode == http.StatusNonAuthoritativeInfo:
+	case resp.StatusCode >= 300 && resp.StatusCode < 400 && adoSignInLocation(resp.Header.Get("Location")):
+	default:
+		return
+	}
+	resp.StatusCode = http.StatusUnauthorized
+	resp.Status = fmt.Sprintf("%d %s (ADO sign-in redirect)", http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+}
+
+// adoSignInLocation reports whether a redirect target is ADO's sign-in flow.
+func adoSignInLocation(location string) bool {
+	u, err := url.Parse(location)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return strings.HasSuffix(host, ".vssps.visualstudio.com") ||
+		host == "login.microsoftonline.com" ||
+		strings.Contains(strings.ToLower(u.Path), "/_signin")
 }
