@@ -51,19 +51,29 @@ var ErrNotInstalled = errors.New("goobers service is not installed")
 
 // Status describes the installed and runtime state of the Goobers service.
 type Status struct {
-	Platform    string `json:"platform"`
-	Supervisor  string `json:"supervisor"`
-	Installed   bool   `json:"installed"`
-	Loaded      bool   `json:"loaded"`
-	Running     bool   `json:"running"`
-	State       string `json:"state"`
-	ConfigPath  string `json:"configPath,omitempty"`
-	Account     string `json:"account,omitempty"`
-	Trigger     string `json:"trigger,omitempty"`
-	TaskName    string `json:"taskName,omitempty"`
-	LastFailure string `json:"lastFailure,omitempty"`
-	LastRunTime string `json:"lastRunTime,omitempty"`
-	lastResult  string
+	Platform          string             `json:"platform"`
+	Supervisor        string             `json:"supervisor"`
+	Installed         bool               `json:"installed"`
+	Loaded            bool               `json:"loaded"`
+	Running           bool               `json:"running"`
+	State             string             `json:"state"`
+	ConfigPath        string             `json:"configPath,omitempty"`
+	Account           string             `json:"account,omitempty"`
+	Trigger           string             `json:"trigger,omitempty"`
+	TaskName          string             `json:"taskName,omitempty"`
+	LastFailure       string             `json:"lastFailure,omitempty"`
+	LastRunTime       string             `json:"lastRunTime,omitempty"`
+	DaemonLogPath     string             `json:"daemonLogPath,omitempty"`
+	SupervisorFailure *SupervisorFailure `json:"supervisorFailure,omitempty"`
+	lastResult        string
+}
+
+// SupervisorFailure describes the latest supervised daemon failure captured in
+// the instance daemon log for service status consumers.
+type SupervisorFailure struct {
+	Kind       string `json:"kind"`
+	Message    string `json:"message"`
+	RecordedAt string `json:"recordedAt,omitempty"`
 }
 
 // CommandRunner executes native supervisor commands.

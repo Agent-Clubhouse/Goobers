@@ -80,8 +80,8 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		layout := instance.NewLayout(root)
 		pf(stderr, "error: start scheduled task: %v", err)
-		if diagnostic := latestServiceFatalStartup(layout.DaemonLogFile()); diagnostic != "" {
-			pf(stderr, "; last startup failure: %s", diagnostic)
+		if failure := latestServiceSupervisorFailure(layout.DaemonLogFile()); failure.Message != "" {
+			pf(stderr, "; %s: %s", serviceSupervisorFailureLabel(failure.Kind), failure.Message)
 		}
 		pf(stderr, "; inspect daemon log %s\n", layout.DaemonLogFile())
 		return 1
@@ -112,6 +112,7 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: query scheduled task: %v\n", err)
 		return 1
 	}
+	status = enrichTaskStatusWithSupervisorFailure(root, status)
 	if *asJSON {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -126,8 +127,8 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 		if status.LastFailure != "" {
 			layout := instance.NewLayout(root)
 			pf(stdout, " (last failure: %s", status.LastFailure)
-			if diagnostic := latestServiceFatalStartup(layout.DaemonLogFile()); diagnostic != "" {
-				pf(stdout, "; last startup failure: %s", diagnostic)
+			if status.SupervisorFailure != nil {
+				pf(stdout, "; %s: %s", serviceSupervisorFailureLabel(status.SupervisorFailure.Kind), status.SupervisorFailure.Message)
 			}
 			pf(stdout, "; inspect daemon log %s)", layout.DaemonLogFile())
 		}
@@ -137,6 +138,23 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	return 1
+}
+
+func enrichTaskStatusWithSupervisorFailure(root string, status service.Status) service.Status {
+	if !status.Installed || status.LastFailure == "" {
+		return status
+	}
+	layout := instance.NewLayout(root)
+	status.DaemonLogPath = layout.DaemonLogFile()
+	status.SupervisorFailure = latestServiceSupervisorFailure(status.DaemonLogPath).statusPayload()
+	return status
+}
+
+func serviceSupervisorFailureLabel(kind string) string {
+	if kind == serviceSupervisorFailureStartup {
+		return "last startup failure"
+	}
+	return "last supervisor failure"
 }
 
 func runTaskErrorCommand(args []string, stdout, stderr io.Writer, name string, action func(scheduledTaskManager) error, success string) int {

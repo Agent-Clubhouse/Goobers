@@ -50,16 +50,17 @@ func runServiceSuperviseWith(args []string, stdout, stderr io.Writer, deps servi
 		return 2
 	}
 	run := func(ctx context.Context, supervisorStdout, supervisorStderr io.Writer) int {
+		readiness := newServiceReadinessTracker(supervisorStdout)
 		stopTelemetry := startCommandJournalTelemetry(layout, supervisorStderr)
 		defer stopTelemetry()
 		err := deps.runSupervisor(ctx, selfupdate.SupervisorOptions{
 			Root:      root,
 			Escalator: selfUpdateEscalator{root: root},
-			Stdout:    supervisorStdout,
+			Stdout:    readiness,
 			Stderr:    supervisorStderr,
 		})
 		if err != nil {
-			if logErr := appendServiceFatalStartup(layout, err); logErr != nil {
+			if logErr := appendServiceSupervisorFailure(layout, readiness.Ready(), err); logErr != nil {
 				pf(supervisorStderr, "error: append daemon startup log %s: %v\n", layout.DaemonLogFile(), logErr)
 			}
 			pf(supervisorStderr, "error: supervise daemon: %v\n", err)

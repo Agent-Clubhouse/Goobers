@@ -253,7 +253,7 @@ func TestExistingScheduledTaskStartupFailureIsCapturedInDaemonLogAndStatus(t *te
 	if err != nil {
 		t.Fatalf("read daemon log: %v", err)
 	}
-	for _, want := range []string{serviceFatalStartupMarker, diagnostic} {
+	for _, want := range []string{serviceSupervisorFailureStartup + ":", diagnostic} {
 		if !strings.Contains(string(log), want) {
 			t.Fatalf("daemon log = %q, missing %q", log, want)
 		}
@@ -274,6 +274,76 @@ func TestExistingScheduledTaskStartupFailureIsCapturedInDaemonLogAndStatus(t *te
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, missing %q", stdout, want)
 		}
+	}
+
+	code, stdout, stderr = runArgs(t, "service", "task-status", "--json", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("task-status --json code = %d, stderr = %q", code, stderr)
+	}
+	var status daemonservice.Status
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatalf("decode JSON status: %v; output = %q", err, stdout)
+	}
+	if status.DaemonLogPath != logPath {
+		t.Fatalf("daemonLogPath = %q, want %q", status.DaemonLogPath, logPath)
+	}
+	if status.SupervisorFailure == nil ||
+		status.SupervisorFailure.Kind != serviceSupervisorFailureStartup ||
+		!strings.Contains(status.SupervisorFailure.Message, diagnostic) ||
+		status.SupervisorFailure.RecordedAt == "" {
+		t.Fatalf("supervisorFailure = %+v, want startup diagnostic", status.SupervisorFailure)
+	}
+}
+
+func TestServiceSupervisorRecordsRuntimeFailureAfterReadiness(t *testing.T) {
+	root := serviceTestInstance(t)
+	diagnostic := "daemon child crashed after startup"
+	deps := serviceSuperviseDeps{
+		runSupervisor: func(_ context.Context, opts selfupdate.SupervisorOptions) error {
+			pf(opts.Stdout, "daemon started at %s (1 workflow(s)); API listening at http://127.0.0.1:0/api\n", root)
+			return errors.New(diagnostic)
+		},
+		isWindowsService: func() (bool, error) { return false, nil },
+		runWindowsService: func(string, func(context.Context) int) (int, error) {
+			t.Fatal("Windows service runner called by scheduled-task supervisor path")
+			return 0, nil
+		},
+		setupSignalContext: func() (context.Context, func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel
+		},
+	}
+	code := runServiceSuperviseWith([]string{root}, io.Discard, io.Discard, deps)
+	if code != 1 {
+		t.Fatalf("service supervisor code = %d, want runtime failure", code)
+	}
+	logPath := instance.NewLayout(root).DaemonLogFile()
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read daemon log: %v", err)
+	}
+	if !strings.Contains(string(log), serviceSupervisorFailureRuntime+":") || strings.Contains(string(log), serviceSupervisorFailureStartup+":") {
+		t.Fatalf("daemon log = %q, want runtime failure only", log)
+	}
+
+	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{
+		Installed:   true,
+		State:       "ready",
+		Account:     `CONTOSO\alice`,
+		LastFailure: "0x00000001",
+	}}}
+	useFakeScheduledTaskManager(t, manager)
+	code, stdout, stderr := runArgs(t, "service", "task-status", root)
+	if code != 1 || stderr != "" {
+		t.Fatalf("task-status code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{"last supervisor failure", diagnostic, logPath} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, missing %q", stdout, want)
+		}
+	}
+	if strings.Contains(stdout, "last startup failure") {
+		t.Fatalf("runtime failure was reported as startup: %q", stdout)
 	}
 }
 
