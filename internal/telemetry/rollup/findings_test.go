@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // seedDeployRun writes a run with a "build" stage that always succeeds and
@@ -248,6 +249,114 @@ func TestDetectErrorSignaturesExcludeRunFailedSelfCluster(t *testing.T) {
 	}
 	if rateLimit.Metrics["count"] != 5 {
 		t.Errorf("count = %v, want 5", rateLimit.Metrics["count"])
+	}
+}
+
+// TestDetectErrorSignaturesExcludeOperatorCanceledRuns is the regression for
+// #5685: five live operator cancels crossed the error-signature threshold and
+// produced a bug nomination even though every cited journal carried
+// run_canceled immediately before run.finished(aborted). The error remains
+// visible in TopErrorSignatures with class "operator", but Detect must not
+// turn expected human control flow into a defect candidate.
+func TestDetectErrorSignaturesExcludeOperatorCanceledRuns(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	for i := 0; i < 5; i++ {
+		runID := fmt.Sprintf("c%031d", i)
+		startedAt := base.Add(time.Duration(i) * time.Hour)
+		dir := filepath.Join(runsDir, runID)
+		mustMkdirAll(t, dir)
+		mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: implement"))
+		lines := []string{
+			eventLine(1, startedAt, `"type":"run.started","status":"running"`),
+			eventLine(2, startedAt.Add(time.Second), `"type":"stage.started","stage":"local-ci","attempt":1`),
+			eventLine(3, startedAt.Add(2*time.Second), `"type":"error","error":{"code":"`+telemetry.ErrCodeRunCanceled+`","message":"operator canceled run"}`),
+			eventLine(4, startedAt.Add(3*time.Second), `"type":"run.finished","status":"aborted"`),
+		}
+		mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	signatures, err := db.TopErrorSignatures(context.Background(), StatsRequest{}, 10)
+	if err != nil {
+		t.Fatalf("TopErrorSignatures: %v", err)
+	}
+	var sawCancel bool
+	for _, sig := range signatures {
+		if sig.Code == telemetry.ErrCodeRunCanceled {
+			sawCancel = true
+			if sig.ErrorClass != string(telemetry.ErrorClassOperator) || sig.Count != 5 {
+				t.Fatalf("run_canceled signature = %+v, want class operator count 5", sig)
+			}
+		}
+	}
+	if !sawCancel {
+		t.Fatalf("run_canceled was not queryable in TopErrorSignatures: %+v", signatures)
+	}
+
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	for i := range findings {
+		if findings[i].Kind == FindingErrorSignature && findings[i].Subject == telemetry.ErrCodeRunCanceled {
+			t.Fatalf("operator cancel self-clustered into a defect finding: %+v", findings[i])
+		}
+	}
+}
+
+func TestDetectErrorSignatureExclusionsApplyBeforeDefaultLimit(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	for i := 0; i < 6; i++ {
+		runID := fmt.Sprintf("x%031d", i)
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		dir := filepath.Join(runsDir, runID)
+		mustMkdirAll(t, dir)
+		mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: implement"))
+		lines := []string{
+			eventLine(1, startedAt, `"type":"run.started","status":"running"`),
+			eventLine(2, startedAt.Add(time.Second), `"type":"error","error":{"code":"`+telemetry.ErrCodeRunCanceled+`","message":"operator canceled run"}`),
+			eventLine(3, startedAt.Add(2*time.Second), `"type":"run.finished","status":"aborted"`),
+		}
+		mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+	}
+	for codeIndex := 0; codeIndex < 20; codeIndex++ {
+		code := fmt.Sprintf("validation.actionable.%02d", codeIndex)
+		for runIndex := 0; runIndex < 5; runIndex++ {
+			runID := fmt.Sprintf("a%02d%029d", codeIndex, runIndex)
+			startedAt := base.Add(time.Duration(10+codeIndex*5+runIndex) * time.Minute)
+			seedErrorClassOverrideRun(t, runsDir, runID, startedAt, code, string(telemetry.ErrorClassValidation))
+		}
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	errorSignatures := map[string]bool{}
+	for i := range findings {
+		if findings[i].Kind == FindingErrorSignature {
+			errorSignatures[findings[i].Subject] = true
+		}
+	}
+	for codeIndex := 0; codeIndex < 20; codeIndex++ {
+		code := fmt.Sprintf("validation.actionable.%02d", codeIndex)
+		if !errorSignatures[code] {
+			t.Fatalf("Detect missed actionable signature %s after filtering excluded signatures; got %v", code, errorSignatures)
+		}
+	}
+	if errorSignatures[telemetry.ErrCodeRunCanceled] {
+		t.Fatalf("Detect included excluded operator cancel signature: %v", errorSignatures)
 	}
 }
 
