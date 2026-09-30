@@ -157,6 +157,28 @@
       "recoverySafe": false
     },
     {
+      "id": "gaggleBundleExport",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/bundle",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "gaggleBundleImport",
+      "method": "POST",
+      "path": "/api/v1/gaggles/import",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workflowDetail",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workflows/{workflow}",

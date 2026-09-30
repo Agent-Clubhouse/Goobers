@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GAGGLE IMPORT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gaggle import \- atomically create a gaggle from a validated bundle
+.SH SYNOPSIS
+\fBgoobers gaggle import\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gaggle import --name <destination-name> <bundle-file> [path]
+
+Validate the complete bundle and destination repository authorizations before
+atomically creating a new gaggle. The source remains unchanged. Any schema,
+digest, reference, name-conflict, authorization, validation, or write failure
+leaves the destination configuration unchanged.
+.fi
+.SH EXAMPLES
+.nf
+goobers gaggle import --name copied-example example.bundle.json ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

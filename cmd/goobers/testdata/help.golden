@@ -141,6 +141,7 @@ Advanced operator commands:
   features          list the workflow-DSL features this build supports
   fix               mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
   fleet             associate this instance with a Fleet service (experimental; superseded)
+  gaggle            export or import sanitized portable gaggle bundles
   journal redact    remove a leaked secret from a stored blob (SEC-041)
   lint              lint config via the single authoritative validation engine (alias for validate)
   netpol-render     render per-runner-class NetworkPolicy reference manifests from the runners: inventory
@@ -1431,6 +1432,31 @@ Usage: goobers fleet status [--json] [path]
 Experimental and superseded embedded Fleet connector. Show the durable Fleet
 registration, connection, heartbeat, ACL version, and credential expiry state.
 Private key and bearer credential material are never printed.
+
+### gaggle
+Usage: goobers gaggle export|import [flags]
+
+A team or bounded workforce: its project/backlog connections, goobers, and workflows.
+
+Export or import a sanitized, portable gaggle bundle. Bundles contain only
+declarative gaggle, workflow, stage, Goober, instruction, skill, repository
+reference, and provenance data. Structured credentials and runtime state are
+excluded; companion text with recognized credential or local-path shapes is refused.
+
+### gaggle export
+Usage: goobers gaggle export [--output <file>] <gaggle> [path]
+
+Validate the source configuration and write a deterministic JSON bundle.
+The digest is stable for unchanged sanitized definitions; exportedAt is not
+part of the digest. Without --output, write the bundle to stdout.
+
+### gaggle import
+Usage: goobers gaggle import --name <destination-name> <bundle-file> [path]
+
+Validate the complete bundle and destination repository authorizations before
+atomically creating a new gaggle. The source remains unchanged. Any schema,
+digest, reference, name-conflict, authorization, validation, or write failure
+leaves the destination configuration unchanged.
 
 ### gate-removal-guard
 Usage: goobers gate-removal-guard [path]

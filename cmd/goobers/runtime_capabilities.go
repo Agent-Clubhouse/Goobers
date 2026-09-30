@@ -97,6 +97,22 @@ func (c cliCommand) withExamples(examples ...string) cliCommand {
 // always safe at runtime.
 var cliCommands []cliCommand
 
+func gaggleCLICommand() cliCommand {
+	return groupCommand(
+		"gaggle",
+		runGaggle,
+		subcommand("gaggle export", "export", apicontract.ActionReadOnlyNavigation, runGaggleExport).
+			withHelp("export a sanitized portable gaggle bundle", gaggleExportHelp).
+			withExamples("goobers gaggle export example", "goobers gaggle export --output example.bundle.json example ./instance"),
+		subcommand("gaggle import", "import", apicontract.ActionMaintenance, runGaggleImport).
+			withHelp("atomically create a gaggle from a validated bundle", gaggleImportHelp).
+			withExamples("goobers gaggle import --name copied-example example.bundle.json ./instance"),
+	).
+		withSynopsis(synopsisByID["gaggle"]).
+		withHelp("export or import sanitized portable gaggle bundles", gaggleHelp).
+		withExamples("goobers gaggle export example", "goobers gaggle import --name copied-example example.bundle.json")
+}
+
 func init() {
 	cliCommands = []cliCommand{
 		groupCommand("roots", runRoots,
@@ -210,6 +226,7 @@ func init() {
 			withSynopsis(synopsisByID["scaffold"]).
 			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
+		gaggleCLICommand(),
 		groupCommand(
 			"diagnostics",
 			runDiagnostics,

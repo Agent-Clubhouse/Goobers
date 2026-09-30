@@ -220,6 +220,15 @@ remove this instance's Fleet association and protected secrets (experimental; su
 \fBgoobers fleet status\fR
 show durable Fleet registration and connection state (experimental; superseded)
 .TP
+\fBgoobers gaggle\fR
+export or import sanitized portable gaggle bundles
+.TP
+\fBgoobers gaggle export\fR
+export a sanitized portable gaggle bundle
+.TP
+\fBgoobers gaggle import\fR
+atomically create a gaggle from a validated bundle
+.TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
 .TP
@@ -607,6 +616,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-fleet-join\fR(1),
 \fBgoobers-fleet-leave\fR(1),
 \fBgoobers-fleet-status\fR(1),
+\fBgoobers-gaggle\fR(1),
+\fBgoobers-gaggle-export\fR(1),
+\fBgoobers-gaggle-import\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),

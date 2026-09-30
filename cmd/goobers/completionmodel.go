@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"gaggle export": {
+		{name: "output", takesArg: true, desc: "Write the bundle to a file"},
+	},
+	"gaggle import": {
+		{name: "name", takesArg: true, desc: "Destination gaggle name"},
+	},
 	"config templates import": {
 		{name: "repository", takesArg: true, desc: "Template Git repository"},
 		{name: "directory", takesArg: true, desc: "Template directory in the repository"},

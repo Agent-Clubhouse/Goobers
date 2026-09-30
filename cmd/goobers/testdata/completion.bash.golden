@@ -48,6 +48,12 @@ _goobers_completion()
                 gaggle) flags+=" --force --from" ;;
             esac
             ;;
+        gaggle)
+            case "${COMP_WORDS[2]:-}" in
+                export) flags+=" --output" ;;
+                import) flags+=" --name" ;;
+            esac
+            ;;
         diagnostics)
             case "${COMP_WORDS[2]:-}" in
                 bundle) flags+=" --run --pr --max-runs --output --json" ;;
@@ -309,6 +315,11 @@ _goobers_completion()
         scaffold)
             if (( COMP_CWORD == 2 )); then
                 candidates="goober workflow gaggle"
+            fi
+            ;;
+        gaggle)
+            if (( COMP_CWORD == 2 )); then
+                candidates="export import"
             fi
             ;;
         diagnostics)

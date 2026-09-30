@@ -77,6 +77,12 @@ _goobers_completion()
                 gaggle) flags+=(--force --from) ;;
             esac
             ;;
+        gaggle)
+            case "${words[3]:-}" in
+                export) flags+=(--output) ;;
+                import) flags+=(--name) ;;
+            esac
+            ;;
         diagnostics)
             case "${words[3]:-}" in
                 bundle) flags+=(--run --pr --max-runs --output --json) ;;
@@ -344,6 +350,13 @@ _goobers_completion()
         scaffold)
             if (( CURRENT == 3 )); then
                 candidates=(goober workflow gaggle)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        gaggle)
+            if (( CURRENT == 3 )); then
+                candidates=(export import)
                 _describe -V 'command' candidates
                 return
             fi
