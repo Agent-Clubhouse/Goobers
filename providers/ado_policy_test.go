@@ -126,6 +126,33 @@ func TestADOPollPullRequestClassifiesPolicyEvaluations(t *testing.T) {
 			t.Fatalf("CheckState = %q, want failing", result.CheckState)
 		}
 	})
+	// "Require a merge strategy" is settled by the completion's mergeStrategy,
+	// not by code: before completion ADO reports it unmet, and treating that as
+	// failing CI escalated every implementation run on a repository with the
+	// policy (found in the v0.5.0 ADO soak).
+	t.Run("merge-strategy policy never gates CI", func(t *testing.T) {
+		for _, status := range []string{"rejected", "queued"} {
+			result := pollADOPolicies(t, []map[string]interface{}{
+				buildPolicy("approved", 7),
+				typedPolicy("fa4e907d-c16b-4a4c-9dfa-4916e5d171ab", "Require a merge strategy", status),
+			})
+			if result.CheckState != CheckStatePassing {
+				t.Fatalf("status %s: CheckState = %q, want passing — the build passed and a merge strategy is not CI", status, result.CheckState)
+			}
+			for _, c := range result.Checks {
+				if c.State == CheckStateFailing {
+					t.Fatalf("status %s: check %+v is failing; a merge-strategy policy must never fail CI", status, c)
+				}
+			}
+		}
+		pending := pollADOPolicies(t, []map[string]interface{}{
+			buildPolicy("queued", 7),
+			typedPolicy("fa4e907d-c16b-4a4c-9dfa-4916e5d171ab", "Require a merge strategy", "rejected"),
+		})
+		if pending.CheckState != CheckStatePending {
+			t.Fatalf("queued build + unmet merge strategy: CheckState = %q, want pending (the build is still running), not failing", pending.CheckState)
+		}
+	})
 	// PO ruling 2026-09-27: a rejected comment-resolution or
 	// work-item-linking policy is not failing CI. Its threads route to
 	// gather-review-threads and its link to open-pr's workItemRefs.
