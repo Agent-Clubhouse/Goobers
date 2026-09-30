@@ -51,6 +51,22 @@ func TestCanonicalADOLabel(t *testing.T) {
 	}
 }
 
+// TestFoldLabelsForCompare pins the single-item fold: on ADO a read label is
+// returned in the spelling the caller compares against; on GitHub and Gitea
+// labels come back untouched, so their exact comparison is unchanged.
+func TestFoldLabelsForCompare(t *testing.T) {
+	labels := []string{"needs-design", "Keep"}
+	wanted := []string{"Needs-Design"}
+	if got, want := FoldLabelsForCompare(ProviderADO, labels, wanted), []string{"Needs-Design", "Keep"}; !slices.Equal(got, want) {
+		t.Fatalf("ADO fold = %v, want %v", got, want)
+	}
+	for _, kind := range []ProviderKind{ProviderGitHub, ProviderGitea} {
+		if got := FoldLabelsForCompare(kind, labels, wanted); !slices.Equal(got, labels) {
+			t.Fatalf("%s fold = %v, want labels unchanged", kind, got)
+		}
+	}
+}
+
 func TestApplyADOTagSetIgnoresCase(t *testing.T) {
 	got := applyADOTagSet(
 		[]string{"GOOBERS:CLAIMED", "Route/Backend", "Goobers/Status:Claimed"},

@@ -363,7 +363,7 @@ func TestGatherPRContextChecksOutSelectedPRAndLoadsContext(t *testing.T) {
 		unselectedCount: 40,
 		comments: []map[string]interface{}{
 			{"id": 1, "user": map[string]string{"login": "human-reviewer"}, "body": "please rebase", "created_at": "2026-07-01T00:00:00Z"},
-			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": verdictComment, "created_at": "2026-07-02T00:00:00Z"},
+			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": stampOwnFixtureBody(verdictComment, "comment"), "created_at": "2026-07-02T00:00:00Z"},
 			{"id": 3, "user": map[string]string{"login": "mallory"}, "body": spoofedVerdictComment, "created_at": "2026-07-03T00:00:00Z"},
 			{"id": 4, "user": map[string]string{"login": "merge-review-bot"}, "body": legacyPassComment, "created_at": "2026-07-04T00:00:00Z"},
 		},
@@ -915,7 +915,7 @@ func TestGatherPRContextCountsCrossPRConflictVerdict(t *testing.T) {
 		labels: []string{"goobers:needs-remediation"},
 		comments: []map[string]interface{}{
 			{"id": 1, "user": map[string]string{"login": "merge-review-bot"}, "body": olderPassComment, "created_at": "2026-07-15T11:32:41Z"},
-			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": verdictComment, "created_at": "2026-07-16T11:32:41Z"},
+			{"id": 2, "user": map[string]string{"login": "merge-review-bot"}, "body": stampOwnFixtureBody(verdictComment, "comment"), "created_at": "2026-07-16T11:32:41Z"},
 			{"id": 3, "user": map[string]string{"login": "mallory"}, "body": spoofedPassComment, "created_at": "2026-07-17T11:32:41Z"},
 		},
 	}

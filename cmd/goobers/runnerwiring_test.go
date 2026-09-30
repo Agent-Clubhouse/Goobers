@@ -871,6 +871,12 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	if copilot.Name() != "copilot-cli" {
 		t.Fatalf("adapter Name = %q, want existing diagnostic identity copilot-cli", copilot.Name())
 	}
+	// The launcher prefix stays the bare CLI: --no-remote-export is enforced
+	// on every final session argv by the adapter, not carried in the prefix
+	// an operator override could replace.
+	if got, want := strings.Join(copilot.Command, " "), "copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want built-in default %q", got, want)
+	}
 	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
 		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
 	}
@@ -1872,7 +1878,7 @@ func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != len(credentialedCapabilities) {
+	if len(grants) != len(repoCredentialedCapabilityNames()) {
 		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
 	}
 	for _, grant := range grants {
@@ -5183,5 +5189,29 @@ func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
 	}
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
 		t.Fatalf("script result = %+v, want a credential_read_refused failure", result)
+	}
+}
+
+// TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot is
+// #6058: `goobers up .` passes a relative instance root. The replay spool root
+// must still be absolute, because the journal-export cursor store and replay
+// index open SQLite through sqliteuri.File, which only accepts absolute paths.
+func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_RELATIVE_ROOT_CONNECTION", connectionString)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var cfg telemetry.Config
+	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_RELATIVE_ROOT_CONNECTION"},
+	}, instance.TelemetryProfileStandard, ".", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(cfg.AzureMonitorReplayRoot) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want an absolute path for a relative instance root", cfg.AzureMonitorReplayRoot)
+	}
+	if !strings.HasSuffix(cfg.AzureMonitorReplayRoot, filepath.Join("telemetry-export", "azure-monitor")) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want it under the instance root's telemetry-export/azure-monitor", cfg.AzureMonitorReplayRoot)
 	}
 }

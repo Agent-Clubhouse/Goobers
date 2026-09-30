@@ -35,7 +35,7 @@ func TestCopilotPreflightProbesCompleteLauncherPrefix(t *testing.T) {
 	}
 	want := [][]string{
 		append(append([]string(nil), resolveHarnessCommand(original)...), "version", "--short"),
-		append(append([]string(nil), resolveHarnessCommand(original)...), "auth", "status"),
+		append(append([]string(nil), resolveHarnessCommand(original)...), "auth", "status", copilotNoRemoteExportFlag),
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("preflight checked a different launcher than dispatch: got %q, want %q", calls, want)

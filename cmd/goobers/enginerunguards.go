@@ -105,7 +105,7 @@ func newDaemonEngineClient(cfg *instance.Config) (*daemonEngineClient, error) {
 		return nil, nil
 	}
 	engineConfig := cfg.EffectiveEngineConfig()
-	c, err := dialDaemonEngine(engineConfig.HostPort, engineConfig.Namespace)
+	c, err := dialDaemonEngine(engineConfig.HostPort, engineConfig.Namespace, engineConfig.TLS)
 	if err != nil {
 		return nil, fmt.Errorf("dial temporal at %s: %w", engineConfig.HostPort, err)
 	}

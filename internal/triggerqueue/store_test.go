@@ -382,3 +382,25 @@ func TestRestartSnapshotAndRetryPreserveIdentityAndRespectReceipt(t *testing.T) 
 		t.Fatalf("receipt overwritten: %v", err)
 	}
 }
+
+func TestRequeuePreservesAcceptanceAndReason(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "accepted.db"))
+	accepted := acceptTest(t, s, "delivery", time.Now())
+	if err := s.BeginDispatch(t.Context(), accepted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Requeue(t.Context(), accepted.ID, "conditions: max-parallel"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(t.Context(), accepted.ID, accepted.Actor)
+	if err != nil || got.State != Accepted || got.Key != accepted.Key || got.RunID != "" || got.Reason != "conditions: max-parallel" || !got.AcceptedAt.Equal(accepted.AcceptedAt) {
+		t.Fatalf("requeued = %+v, %v", got, err)
+	}
+	pending, err := s.Pending(t.Context(), 100)
+	if err != nil || len(pending) != 1 || pending[0].ID != accepted.ID {
+		t.Fatalf("pending = %+v, %v", pending, err)
+	}
+	if err := s.Finish(t.Context(), accepted.ID, Rejected, "", "late refusal", time.Now()); !errors.Is(err, ErrTransition) {
+		t.Fatalf("terminal outcome accepted without custody: %v", err)
+	}
+}

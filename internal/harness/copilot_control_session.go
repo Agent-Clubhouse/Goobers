@@ -59,6 +59,7 @@ type copilotControlledRunner struct {
 	runCancel       context.CancelFunc
 	deadlineDone    func()
 	readiness       MCPReadiness
+	settleTimeout   time.Duration
 }
 
 func (r *copilotControlledRunner) initialize(ctx context.Context, req ProcessRequest) error {
@@ -103,7 +104,7 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 	if !r.ready {
 		err := r.open(r.runCtx, req)
 		if err == nil {
-			r.readiness, err = probeRequiredMCPSession(ctx, r.session)
+			r.readiness, err = probeRequiredMCPSession(ctx, r.session, r.settleTimeout)
 		}
 		if err := readinessReportedError(r.request, r.readiness, err); err != nil {
 			return ProcessResult{ExitCode: -1}, err

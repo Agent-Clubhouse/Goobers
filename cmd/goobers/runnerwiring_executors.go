@@ -80,6 +80,52 @@ var credentialedCapabilities = []capability.Capability{
 	capability.ADOPRComplete,
 }
 
+// adoRepoCredentialedCapabilities are backed by a repository's own credential
+// only when that repository is on Azure DevOps (#5925). The ADO repository
+// credential backs ado:work-items:write, so a stage that declares it (open-pr's
+// native work-item link) needs no separate credentials: entry; a GitHub or
+// Gitea repository credential never backs an Azure Boards capability. Only a
+// stage that declares the capability receives its credential, which keeps
+// work-item mutation separate from pull-request creation and completion.
+var adoRepoCredentialedCapabilities = []capability.Capability{capability.ADOWorkItemsWrite}
+
+// repoCredentialedCapabilityNames is the capability set credentials.RunnerGrants
+// binds to a repository credential: credentialedCapabilities plus
+// adoRepoCredentialedCapabilities. Callers pass the grants through
+// withoutNonADORepoGrants, which drops the ADO-only ones for a repository on
+// another provider.
+func repoCredentialedCapabilityNames() []string {
+	names := make([]string, 0, len(credentialedCapabilities)+len(adoRepoCredentialedCapabilities))
+	for _, c := range credentialedCapabilities {
+		names = append(names, string(c))
+	}
+	for _, c := range adoRepoCredentialedCapabilities {
+		names = append(names, string(c))
+	}
+	return names
+}
+
+// withoutNonADORepoGrants drops each grant of an adoRepoCredentialedCapabilities
+// capability whose credential is a GitHub or Gitea repository's own. Grants
+// from credentials: entries and the daemon identity are kept: an explicit
+// entry is the operator's decision.
+func withoutNonADORepoGrants(repos []instance.RepoRef, grants []credentials.Grant) []credentials.Grant {
+	nonADORepoRefs := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		if repo.Provider != string(apiv1.ProviderADO) {
+			nonADORepoRefs[repo.Owner+"/"+repo.Name] = true
+		}
+	}
+	kept := grants[:0:0]
+	for _, grant := range grants {
+		if nonADORepoRefs[grant.Ref] && slices.Contains(adoRepoCredentialedCapabilities, capability.Capability(grant.Capability)) {
+			continue
+		}
+		kept = append(kept, grant)
+	}
+	return kept
+}
+
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
 // credential (static token or App-minted) is registered under (#1780),
 // namespaced away from repo refs ("owner/name") and explicit credentials:
@@ -229,11 +275,7 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
-		caps[i] = string(c)
-	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, role, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, repoCredentialedCapabilityNames(), overrides))
 	result := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		result[grant.Capability] = true
@@ -244,11 +286,15 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, bac
 var copilotModelLister harness.CopilotModelLister
 
 func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConfig {
+	// Validated at load; an unparseable value cannot reach here, and zero
+	// keeps the adapter default.
+	settle, _ := cfg.RequiredMCPSettleTimeoutDuration()
 	return harness.EnvironmentConfig{
-		ExtraAllowlist: cfg.EnvPassthrough,
-		Unset:          cfg.HarnessEnvUnset,
-		SessionArgs:    cfg.HarnessSessionArgs,
-		PreflightArgs:  cfg.HarnessPreflightArgs,
+		ExtraAllowlist:           cfg.EnvPassthrough,
+		Unset:                    cfg.HarnessEnvUnset,
+		SessionArgs:              cfg.HarnessSessionArgs,
+		PreflightArgs:            cfg.HarnessPreflightArgs,
+		RequiredMCPSettleTimeout: settle,
 	}
 }
 
@@ -287,6 +333,8 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		DeferDiscovery:      deferModelDiscovery,
 		ModelCredential:     modelCredential,
 		EphemeralTmp:        ephemeralTmp,
+
+		RequiredMCPSettleTimeout: environment.RequiredMCPSettleTimeout,
 	}
 	if customLauncher {
 		copilotAdapter.RequiredTools = []string{"task_complete"}

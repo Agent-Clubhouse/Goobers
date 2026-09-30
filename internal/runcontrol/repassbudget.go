@@ -129,7 +129,9 @@ type RepassCharge struct {
 //
 // The counter mutations happen before the reentry check, and deliberately: a
 // gate's per-gate class counters advance on every evaluation, including the
-// ones whose branch routes forward and charges no budget at all.
+// ones whose branch routes forward and charges no budget at all. A pass
+// charges no per-target budget either, even when reentry is true: only a
+// non-pass outcome is a repass (#5942).
 func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool, maxRepasses int) RepassCharge {
 	infrastructure := outcome == "infra"
 	if b.Attempts == nil {
@@ -172,7 +174,14 @@ func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool
 		b.Attempts[g.Name]++
 		charge.GateAttempt = b.Attempts[g.Name]
 	}
-	if !reentry {
+	// A pass is never a repass, even when its branch re-enters a completed
+	// stage (#5942). implementation's pre-review-gate routes pass back into
+	// capture-diff after every repair, so charging that forward edge counted
+	// each genuine repair a second time against the target, and the fourth
+	// passing validation escalated as REPASS_BUDGET_EXHAUSTED. The repair
+	// that caused the revisit already charged its own target (implement,
+	// remediate-ci), and that is the budget that bounds the loop.
+	if !reentry || outcome == string(apiv1.VerdictPass) {
 		return charge
 	}
 	// (a)/(b) The two per-target budgets: separate counter, separate bound.

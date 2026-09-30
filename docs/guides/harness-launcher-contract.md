@@ -42,6 +42,20 @@ process. Changing a wrapper requires
 restarting that process. A separate worker or stage process performs
 its own proof; verification is never written to configuration or shared storage.
 
+## Session export is always disabled
+
+Goobers appends `--no-remote-export` to every Copilot session it launches —
+stage invocations, reviewer gates, and the fallback prompt authentication probe
+— after the configured launcher prefix and any extra arguments, unless the argv
+already contains it. A `runner.harnessCommand` override therefore cannot
+re-enable exporting agent sessions to GitHub web and mobile, and a forwarding
+launcher must pass the flag through to the Copilot CLI. A version-2
+`authProbe` starts no session and receives its declared arguments unchanged.
+There is no opt-in to session export. The flag requires Copilot CLI 1.0.52 or
+newer. An older CLI fails the startup preflight with an upgrade message rather
+than running without the flag: those releases can already export sessions
+through the user's Copilot configuration and have no per-invocation opt-out.
+
 ## Environment isolation
 
 Harness subprocesses inherit only Goobers' built-in environment allowlist plus
@@ -192,11 +206,21 @@ are surfaced as capture errors rather than silently advancing the source cursor.
 
 Direct Copilot invocations with the default arguments on macOS and Linux use
 one owned headless process and one native SDK session for both the required
-`goobers-io` check and model turns. Startup and each readiness phase have a
-15-second cap within the invocation's total timeout. The adapter initializes
-that session's tools, checks the server's connection, and requires all five
-`goobers-io` tools in its inventory before sending the model prompt. A separate
-throwaway MCP connection is not readiness evidence for this session.
+`goobers-io` check and model turns. Startup, tool initialization, and the
+inventory and authorization checks each have a 15-second cap within the
+invocation's total timeout. The adapter initializes that session's tools,
+checks the server's connection, and requires all five `goobers-io` tools in
+its inventory before sending the model prompt. The CLI starts session MCP
+servers asynchronously, so while the server is still `pending`, is listed
+among the MCP host's in-flight connections without having connected, or the
+session's MCP host has not yet initialized, the adapter re-lists every 250 ms.
+That wait has its own budget, 30 seconds by default, set with
+`runner.requiredMCPSettleTimeout` in `instance.yaml`; a slow tool
+initialization does not shorten it, and the invocation's total timeout still
+applies. Any other status is judged immediately. A server still starting when
+the budget expires is reported as `required_tool_unavailable`, a retryable
+infrastructure failure, and no model turn is sent. A separate throwaway MCP
+connection is not readiness evidence for this session.
 
 The controlled session's permission handler permits only the declared tools,
 keeps file requests within the workspace and the sandbox's existing narrow
@@ -208,8 +232,22 @@ permission requests fail closed in this unattended session.
 
 A `runner.annotation` with kind `required-mcp-readiness` records the `server`,
 `source`, `category`, `connection`, `inventory`, and `authorization` observations
-with phase `before-model`, schema version 1, and the adapter identity. Server
-errors, tool responses, credentials, and task content are excluded. Bounded
+with phase `before-model`, schema version 2, and the adapter identity. Version 2
+adds diagnostics that say which startup state a check ended in:
+
+- `observedStatus` is the last observed `goobers-io` status (`connected`,
+  `pending`, `failed`, `stopped`, `needs-auth`, `disabled` or `not_configured`),
+  `unknown` for a status this build does not recognize, `pending-connection`
+  when the server is only in the host's in-flight connections,
+  `host-uninitialized`, `absent` from an initialized host, or `unobserved` when
+  no server list was obtained.
+- `polls` is the number of server lists taken while waiting for startup.
+- `elapsedMs` is the time from the start of the check to its result.
+- `failedReasonPresent` records whether the MCP host holds a connection failure
+  for `goobers-io`. The failure message itself is never recorded.
+
+Readers accept schema versions 1 and 2. Server errors, tool responses,
+credentials, and task content are excluded. Bounded
 per-stage conditions are projected into the existing read model and status run
 summaries without opening journals. A verified recovery clears an active
 condition; unobservable authorization cannot clear an earlier authorization
@@ -241,15 +279,36 @@ requires a successful native authorization probe.
 
 Claude, Windows Copilot, custom Copilot launchers, and custom Copilot arguments
 retain their existing execution paths and explicitly report
-`check_unobservable`. Their existing post-turn checks remain in place. Direct
-controlled Copilot sessions also inspect their actual server list after the
-turn, because CLI-global lifecycle logs do not reliably describe SDK sessions.
-After any completion-recovery turn, a bounded five-second finalization collects
-session usage and gracefully shuts down the native session before reading
-native captures. The usage RPC preserves per-model accounting even when a
-persistent headless session has not yet written its ordinary CLI shutdown
-record. Missing or invalid usage is not invented; capture/finalization errors
-remain visible to the stage.
+`check_unobservable`. Their existing post-turn checks remain in place. The
+Claude post-turn check reads the CLI's init report. A server that report shows
+as `pending` counts as connected when the turn later made a successful call to
+one of its tools. Without such a call it is reported as `started-no-handshake`,
+which fails the stage as a retryable required-MCP fault. Direct controlled
+Copilot sessions also inspect their actual server list after the turn, because
+CLI-global lifecycle logs do not reliably describe SDK sessions. After any
+completion-recovery turn, a bounded five-second finalization collects session
+usage and gracefully shuts down the native session before reading native
+captures. The usage RPC preserves per-model accounting even when a persistent
+headless session has not yet written its ordinary CLI shutdown record. Missing
+or invalid usage is not invented; capture/finalization errors remain visible to
+the stage.
+
+Codex also reports `check_unobservable`, with source `startup-required`.
+Goobers registers goobers-io with `required = true`, so the Codex CLI refuses
+to start a session without it. A session that starts (its JSONL stream shows
+`thread.started` or `turn.started`) is therefore evidence that goobers-io
+initialized: the adapter records a second `check_unobservable` with
+connection and inventory `ready` and authorization `unobservable`, which
+clears an earlier codex availability failure for the same stage. When the
+first invocation exits without starting a session and its stderr carries the
+CLI's refusal naming goobers-io, the adapter records `transport_failure` from
+the same source. The stage then fails with `HARNESS_REQUIRED_MCP_UNAVAILABLE`
+as an infrastructure failure, the same as a failed Copilot pre-model probe. A
+session that started is never reclassified, whatever its output quotes, and a
+completion-repair resume keeps the ordinary harness error, because the model
+has already run. A declared server's required-startup failure keeps the
+ordinary harness error. Neither the annotation nor the error copies the CLI's
+server error text.
 
 The opt-in read-only live checks send no model prompt:
 

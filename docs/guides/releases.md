@@ -41,6 +41,21 @@ git tag vMAJOR.MINOR.PATCH
 git push origin vMAJOR.MINOR.PATCH
 ```
 
+### Clean publisher source
+
+The official publisher passes `-source-commit` with the authorized full Git SHA.
+Packaging refuses tracked or untracked source changes before compilation and
+after target builds. It reads every archive executable and image operator's Go
+build metadata without executing it, requiring that exact full revision,
+`vcs.modified=false`, command/module identity and target platform. A short
+user-facing version stamp is not a substitute for this full identity check.
+Baseline downloads and image staging live outside the checkout in runner temp;
+ignored generated Portal assets and `dist/` remain normal build outputs.
+No flag forces dirty inputs to appear clean or disables Go VCS metadata.
+Omitting `-source-commit` remains available for diagnostic local packaging; it
+does not establish the official publisher's clean-source guarantee. These checks
+are not a reproducible-build attestation or proof of every dependency's origin.
+
 ### Pre-release tags
 
 A tag may also carry a SemVer 2.0.0 pre-release suffix —

@@ -46,7 +46,7 @@ No new DSL is involved. Each stage is routed by role
   `issue-close-out`, the issue half of `post-merge`, `backlog-assignment`,
   `backlog-health`, `backlog-dedupe`, `check-issue-staleness`, the
   decomposition stages (`select-source`, `validate-plan`, `publish-batch`),
-  `set-milestone`, and the daemon's park, failure and claim-release handlers
+  `set-milestone` run as its own deterministic stage, and the daemon's park, failure and claim-release handlers
   read and write the GitHub issues. Claims are keyed by the backlog provider.
 - **Credentials follow the capability family.** `github:issues:*` and
   `github:milestones:write` are backed by the backlog repository's `repos[]`
@@ -60,6 +60,16 @@ No new DSL is involved. Each stage is routed by role
     for the backlog repository.
   - A stage that would open the ADO repository with a backlog-family
     credential is refused with an error instead of sending it to Azure DevOps.
+  - **Caveat: an explicit `credentials:` entry still wins.** An instance
+    `credentials:` entry for a pull-request or repository capability (for
+    example `github:pr:write` or `repo:push`) replaces the ADO repository's
+    credential for that capability, as it does everywhere else, so stages
+    that declare it send that token to Azure DevOps. Goobers cannot tell
+    from the entry which service issued the token. Use an Azure DevOps
+    credential in such an entry, or remove it so the repository's own
+    credential backs the capability. `validate` warns about each such entry
+    while a gaggle is in topology (b) (CFG012). CFG012 is strict-neutral:
+    `goobers validate --strict` prints it but does not fail on it.
 - **Pull requests name the issue by URL.** On Azure DevOps, `#42` in a pull
   request description or squash commit message means ADO work item 42. So
   `open-pr` writes `Fixes https://github.com/example-org/example-backlog/issues/42`,
@@ -113,7 +123,19 @@ Not yet covered in topology (b):
 - A stage that is not routed by role and opens the Azure DevOps repository
   with a `github:issues:*` or `github:milestones:write` credential. That
   credential belongs to GitHub in topology (b), so the stage stops with the
-  refusal above. Every shipped backlog stage listed above is routed by role.
+  refusal above. Every shipped deterministic backlog stage listed above is
+  routed by role.
+  `pr-remediation`'s `respond-to-findings` is not: it posts its account to
+  the pull request with the `github:issues:write` credential it declares, so
+  in topology (b) it stops with that refusal after the remediated branch is
+  published.
+- Agentic stages that declare `github:issues:*` or `github:milestones:write`,
+  such as the curator in `backlog-curation`. An agentic stage's credentials
+  follow the invocation's repository, which is the Azure DevOps project, so
+  the harness withholds every `github:*` credential from it. The agent cannot
+  label, curate or set milestones on the GitHub backlog, including through
+  `goobers set-milestone`; those calls fail closed. Curate the GitHub backlog
+  by hand until this is covered.
 
 ## One gaggle, two code providers (topology c)
 
@@ -130,6 +152,11 @@ service. Azure DevOps Server (on-premises) is out of scope.
 ## Service-hook triggers
 
 Goobers polls Azure DevOps; it does not consume ADO service-hook events.
+A workflow's `pull_request` webhook trigger therefore never fires on ADO, and
+the shipped `pr-remediation` runs from its `schedule` trigger. On GitHub each
+due tick is sized to the number of eligible pull requests; on ADO it fires one
+run, bounded by the workflow's readiness limits, and a tick with nothing to
+remediate ends as no-work.
 
 ## Iterations (milestones)
 
@@ -144,7 +171,9 @@ so a numeric milestone does not map onto them cleanly.
 The `file-issues` stage files GitHub issues only, so the `work-nomination`
 workflow does not run on ADO. `goobers init --provider=ado` refuses
 `--workflows=work-nomination` with that reason, and its default modules are
-`implementation`, `backlog-curation` and `merge-review`.
+`implementation`, `backlog-curation` and `merge-review`. The browser wizard
+uses the same defaults for an Azure DevOps repository and does not offer
+work nomination.
 
 ## Other non-goals for DSL 2.0
 

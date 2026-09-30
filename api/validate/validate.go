@@ -281,6 +281,16 @@ const (
 	// on upgrade. An ADO backlog for non-ADO code is the hard error CFG010; a
 	// GitHub or Gitea backlog for ADO code is topology (b) and accepted.
 	WarningGaggleMixedProvider WarningCode = "CFG011"
+	// WarningCrossProviderCredentialOverride (CFG012) identifies an explicit
+	// instance credentials: entry for a pull-request or repository capability
+	// while a gaggle has its backlog on GitHub or Gitea and its code on Azure
+	// DevOps (topology (b)). The entry replaces the Azure DevOps repository's
+	// credential for that capability, so stages present its token to Azure
+	// DevOps; nothing in the entry says which service issued it. Honoured, and
+	// warned rather than refused (PO ruling 2026-09-27). Strict-neutral: an
+	// explicit operator choice that validated cleanly before must not turn a
+	// --strict pipeline red on upgrade.
+	WarningCrossProviderCredentialOverride WarningCode = "CFG012"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit

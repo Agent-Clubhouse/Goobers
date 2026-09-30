@@ -20,6 +20,7 @@
     ],
     "offline": "Provision a local file GOPROXY with all selected modules, version lists and metadata, plus cached checksum verification data. Put a compatible Go on PATH and set GOTOOLCHAIN=local. GOPROXY=off alone can fail even for cached go-run tools because their deprecation/version metadata lookup is disabled; a warm source tree alone is not sufficient.",
     "sites": [
+	  "integration-dependency/go:go-modules",
       ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}:go-modules",
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",

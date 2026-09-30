@@ -130,6 +130,26 @@ func withAttribution(body string, attribution Attribution, action string) (strin
 	return body + "\n\n" + marker + "\n" + visible, nil
 }
 
+// StripAttribution removes the attribution marker and its visible "Posted by
+// **Goobers**" footer line from body, then trims surrounding whitespace.
+// Provider writes made under SetAttribution return and store the stamped body,
+// so code that reads back text Goobers itself wrote and compares it with the
+// text it meant to write must compare StripAttribution(stored) against
+// strings.TrimSpace(intended). Other Goobers markers are left untouched, and
+// text a person added after the footer stays on its own line rather than
+// being joined to the line before the footer.
+func StripAttribution(body string) string {
+	return strings.TrimSpace(attributionMarkerPattern.ReplaceAllString(body, "\n"))
+}
+
+// StampAttribution returns body with the attribution footer a provider write
+// under SetAttribution(attribution) would store for action. It lets fixtures
+// model provider-stored bodies exactly as production writes them; a zero
+// attribution returns body unchanged.
+func StampAttribution(body string, attribution Attribution, action string) (string, error) {
+	return withAttribution(body, attribution, action)
+}
+
 // ParseAttribution decodes the versioned attribution marker in body.
 func ParseAttribution(body string) (Attribution, bool, error) {
 	starts := attributionMarkerStartPattern.FindAllStringIndex(body, -1)

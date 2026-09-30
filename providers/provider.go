@@ -34,6 +34,14 @@ func validateCommitFile(file CommitFile) error {
 }
 
 // Provider combines repo, backlog, and trigger operations for a backend.
+//
+// Under SetAttribution (AttributionConfigurer), which every daemon stage
+// applies, a write stores its body with the attribution footer appended, and
+// the bodies returned by write calls and by list and get calls are those
+// stored, stamped bodies. Code that reads back text Goobers wrote and compares
+// it with the text it meant to write must compare StripAttribution(stored)
+// with strings.TrimSpace(intended), never the raw body
+// (attribution_contract_test.go pins this on every stamping provider).
 type Provider interface {
 	RepoProvider
 	BacklogProvider

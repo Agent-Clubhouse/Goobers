@@ -507,9 +507,15 @@ func TestEngineInfrastructureTerminalDoesNotChargeFailureStreak(t *testing.T) {
 	if result.FailureCode != telemetry.ErrCodeInfraFailure {
 		t.Fatalf("scheduler code = %q", result.FailureCode)
 	}
+	if class := engineTerminalFaultClass(cause); class != telemetry.ErrorClassInfra {
+		t.Fatalf("engine fault class = %q, want %q (#5638)", class, telemetry.ErrorClassInfra)
+	}
 	for _, err := range []error{errors.New("GoobersInfrastructureFailure"), temporal.NewApplicationError("pod vanished", engine.FailureTypeStage)} {
 		if code := engineTerminalFailureCode(err); code != engineWalkFailureCode {
 			t.Fatalf("policy/unknown failure became infra: %q", code)
+		}
+		if class := engineTerminalFaultClass(err); class != "" {
+			t.Fatalf("policy/unknown failure classified %q", class)
 		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	capabilitypkg "github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
@@ -51,6 +52,9 @@ type EnvironmentConfig struct {
 	Unset          []string
 	SessionArgs    map[string][]string
 	PreflightArgs  map[string][]string
+	// RequiredMCPSettleTimeout is the instance's required-MCP settle budget;
+	// zero keeps DefaultRequiredMCPSettleTimeout.
+	RequiredMCPSettleTimeout time.Duration
 }
 
 func baseEnv(extra, unset []string) []string {

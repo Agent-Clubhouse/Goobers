@@ -63,8 +63,7 @@ func (p *ADOProvider) ciFailuresFromEvaluations(evals []adoPolicyEvaluation, pro
 		if !adoEvaluationBlocks(ev) || adoPolicyCheckState(ev.Status) != CheckStateFailing {
 			continue
 		}
-		kind := adoPolicyKindOf(ev.Configuration.Type.ID)
-		if kind != adoPolicyCI && kind != adoPolicyOther {
+		if !adoPolicyKindOf(ev.Configuration.Type.ID).gatesCI() {
 			continue
 		}
 		failures = append(failures, CIFailureDetail{

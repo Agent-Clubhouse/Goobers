@@ -217,7 +217,7 @@ func apiReadCacheOptionForSnapshot(schedulerDir, snapshotID string) func(*provid
 }
 
 func newCachedGitHubProvider(root, token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-	return newGitHubProvider(token, append(opts, apiReadCacheOption(root))...)
+	return newStageGitHubProvider(token, append(opts, apiReadCacheOption(root))...)
 }
 
 func invalidateCurrentProviderSnapshot(root string) error {

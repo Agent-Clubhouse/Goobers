@@ -223,6 +223,53 @@ func TestRepassBudgetChargesNothingOnAForwardBranch(t *testing.T) {
 	}
 }
 
+// #5942: a PASS whose branch re-enters an already-completed stage is a forward
+// step, not a repass. implementation's pre-review-gate routes pass into
+// capture-diff, which completed on the first walk, so every repair loop
+// (reviewer needs-changes -> implement, ci-gate fail -> remediate-ci) revisits
+// it through a passing gate. On a production instance one reviewer repair plus
+// three genuine CI repairs recorded capture-diff re-entry counts 0,1,2,3,4 on
+// successive PASSING evaluations, and the fourth escalated a passing gate as
+// REPASS_BUDGET_EXHAUSTED. The repairs themselves are what the budget bounds,
+// and each one charged its own target.
+func TestRepassBudgetNeverChargesOrEscalatesAPassingReentry(t *testing.T) {
+	preReview := apiv1.Gate{Name: "pre-review-gate", Branches: map[string]string{
+		OutcomePass: "capture-diff", OutcomeFail: "implement", wf.BranchEscalate: "park-escalated"}}
+	review := apiv1.Gate{Name: "review", Branches: map[string]string{
+		OutcomePass: "open-pr", string(apiv1.VerdictNeedsChanges): "implement"}}
+	ciGate := apiv1.Gate{Name: "ci-gate", Branches: map[string]string{
+		OutcomePass: "close-out", OutcomeFail: "remediate-ci", wf.BranchEscalate: "park-escalated"}}
+	const maxRepasses = 3
+	var b RepassBudget
+	passPreReview := func(step string, reentry bool) {
+		t.Helper()
+		c := b.Charge(preReview, OutcomePass, "capture-diff", reentry, maxRepasses)
+		if c.Exceeded || c.Attempt != 0 || c.RepassTarget != "" || c.GateAttempt != 0 {
+			t.Fatalf("%s: passing pre-review-gate = %+v, want an uncharged, unescalated forward step", step, c)
+		}
+	}
+	passPreReview("first walk", false)
+	if c := b.Charge(review, string(apiv1.VerdictNeedsChanges), "implement", true, maxRepasses); c.Attempt != 1 || c.Exceeded {
+		t.Fatalf("reviewer repair = %+v, want implement repass 1", c)
+	}
+	passPreReview("after reviewer repair", true)
+	for repair := 1; repair <= maxRepasses; repair++ {
+		if c := b.Charge(ciGate, OutcomeFail, "remediate-ci", true, maxRepasses); c.Attempt != repair || c.Exceeded {
+			t.Fatalf("CI repair %d = %+v, want remediate-ci repass %d within budget", repair, c, repair)
+		}
+		passPreReview("after CI repair", true)
+	}
+	if got := b.RepassAttempts["capture-diff"]; got != 0 {
+		t.Fatalf("capture-diff repass count = %d, want 0 — only passing edges entered it", got)
+	}
+	// The deliberate repair budget is untouched by the fix: a fourth genuine
+	// CI failure still exhausts remediate-ci's budget.
+	if c := b.Charge(ciGate, OutcomeFail, "remediate-ci", true, maxRepasses); !c.Exceeded || c.Attempt != maxRepasses+1 ||
+		c.EscalationReason() != ReasonRepassBudgetExhausted {
+		t.Fatalf("fourth CI repair = %+v, want exhaustion of the remediate-ci budget", c)
+	}
+}
+
 // The per-gate leaf override is resolved inside Charge, so both drivers apply
 // it identically — and it applies to the POLICY budget only. The
 // infrastructure bound is a constant no definition can widen: a gate that

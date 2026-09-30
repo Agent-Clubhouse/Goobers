@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -81,7 +82,10 @@ func TestClassifyProviderError_BranchPolicyProtectedPush(t *testing.T) {
 				t.Fatalf("code = %q, want %q", code, errorCodeBranchPolicyProtected)
 			}
 			if code == errorCodeAuthFailed {
-				t.Fatal("code classified as auth failure, want the distinct branch_policy_protected code")
+				t.Fatal("code classified as auth failure, want the distinct provider_branch_policy_protected code")
+			}
+			if class := telemetry.ClassifyError(code); class != telemetry.ErrorClassProvider {
+				t.Fatalf("telemetry class of %q = %q, want %q", code, class, telemetry.ErrorClassProvider)
 			}
 			if retryable {
 				t.Fatal("retryable = true, want false")

@@ -523,7 +523,9 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
 - **PRL-072 (MUST, Shipped):** *(GitHub and Gitea; **not ADO** — ADO
   source-branch deletion rides on the completion request's own
   `deleteSourceBranch` flag rather than this cleanup path, and `merge-pr` skips
-  the shared cleanup for ADO by construction. #2061. The landing stage still
+  the shared cleanup for ADO by construction. #2061. The flag honours the same
+  stacked exception: it is withheld (`branchCleanup: skipped-stacked`) when an
+  open PR targets the source branch when the landing is requested. The landing stage still
   declares `github:branch:delete` on ADO, and completes with `github:pr:merge`
   or a declared `ado:pr:complete` per PRL-040.)* After an actual merge
   (direct or queue-reported), the merged head branch MUST be deleted unless
@@ -558,9 +560,12 @@ tracked by [#2061](https://github.com/Agent-Clubhouse/Goobers/issues/2061) and
   ADO" annotation was stale: `newProviderForStage`
   (`cmd/goobers/stageprovider.go`) calls `SetMutationRecorder` on every ADO
   stage provider, and the ADO landing/PR-thread/pull-request/work-item paths
-  all route their mutations through it, including ADO-N25's own
-  `deleteSourceBranch` completion PATCH via `prepareLandingIntent`/
-  `recordLandingReceipt`. #2061.)*
+  all route their mutations through it. ADO source-branch deletion is the
+  exception: ADO-N25 requests it on the completion PATCH
+  (`deleteSourceBranch`), so only the attributed landing receipt
+  (`prepareLandingIntent`/`recordLandingReceipt`) is journaled. The deletion
+  is implied by that receipt and is not recorded as a separate branch
+  mutation. #2061.)*
 - **PRL-083 (MUST, Shipped):** Refusals, voids, and no-work outcomes are
   **normal, journaled outcomes** (exit 0 with structured result files), so
   telemetry can distinguish "the machine declined for a stated reason" from a
@@ -616,7 +621,7 @@ therefore have no action row.
 | Clear stale demotion labels after self-healing (`clear-healed-demotions`) | `merge-review/reconcile-post-merge`, `post-merge` | `github:pr:write` | Covered |
 | Record a merge refusal at the current head (`record-merge-refusal`) | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
 | Demote a repeatedly refused lander (`demote-pr`) | `merge-review/record-merge-refusal` | `github:pr:write` | Covered |
-| Update a clean behind-base PR through the provider API (`update-pr-branch`) | `pr-remediation/update-behind-pr` | `github:pr:write` | Covered |
+| Update a clean behind-base PR through the provider API (`update-pr-branch`) | `pr-remediation/update-behind-pr` | `github:pr:write` | Covered; not applicable on ADO, which has no update-branch API (ADO-N15) |
 | Clear a completed remediation handoff (`clear-remediation`) | `pr-remediation/update-behind-pr`, `rebase-pr`, `push-remediated` | `github:issues:write` | Covered |
 | Rebase a PR branch (`rebase-pr`) | `pr-remediation/rebase-pr` | `repo:push` | Covered |
 | Rework a PR from reviewer findings (`rework-pr`) | `pr-remediation/implement` | `repo:push` | Covered |

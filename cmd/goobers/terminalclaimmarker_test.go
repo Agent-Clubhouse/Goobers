@@ -375,6 +375,55 @@ func TestBuildTerminalClaimMarkerReleaseRoutesADOToGaggleBacklog(t *testing.T) {
 	}
 }
 
+// TestTerminalADOClaimMarkerReleaseBuildsProviderOncePerCleanup pins that a
+// terminal cleanup releasing several items builds the ADO credential source
+// once (one az subprocess with azure-cli auth, not one per item), that the
+// next cleanup builds afresh, and that a build error reaches every release in
+// its cleanup so each entry is still journaled.
+func TestTerminalADOClaimMarkerReleaseBuildsProviderOncePerCleanup(t *testing.T) {
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "ado", Owner: "example-org", Project: "example-project", Name: "repo"}}}
+	builds := 0
+	var buildErr error
+	previous := newTerminalADOClaimMarkerProvider
+	newTerminalADOClaimMarkerProvider = func(instance.RepoRef, providers.SecretRegistrar, credentials.StoreResolver) (workItemClaimReleaser, error) {
+		builds++
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		return claimReleaserFunc(func(context.Context, providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+			return providers.WorkItem{}, nil
+		}), nil
+	}
+	t.Cleanup(func() { newTerminalADOClaimMarkerProvider = previous })
+
+	registrar, _ := journal.DefaultScrubber()
+	release, _, err := buildTerminalClaimMarkerRelease(instance.Layout{}, cfg, apiv1.RepoRef{}, registrar, nil)
+	if err != nil {
+		t.Fatalf("build terminal claim-marker release: %v", err)
+	}
+	cleanup := withTerminalReleaseScope(context.Background())
+	for _, id := range []string{"41", "42", "43"} {
+		if _, err := release(cleanup, providers.ClaimWorkItemRequest{ID: id, RunID: "run-1"}); err != nil {
+			t.Fatalf("release %s: %v", id, err)
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("provider builds in one cleanup = %d, want 1", builds)
+	}
+
+	buildErr = errors.New("credential source unavailable")
+	next := withTerminalReleaseScope(context.Background())
+	for _, id := range []string{"44", "45"} {
+		if _, err := release(next, providers.ClaimWorkItemRequest{ID: id, RunID: "run-2"}); err == nil ||
+			!strings.Contains(err.Error(), "credential source unavailable") {
+			t.Fatalf("release %s error = %v, want the cleanup's build error", id, err)
+		}
+	}
+	if builds != 2 {
+		t.Fatalf("provider builds after a second cleanup = %d, want 2 (one per cleanup)", builds)
+	}
+}
+
 // TestBuildTerminalADOClaimMarkerReleaseDefersCredentialFailure pins the
 // best-effort contract at construction time: an ADO credential source that
 // cannot be built must not fail runtime startup — it surfaces as the release

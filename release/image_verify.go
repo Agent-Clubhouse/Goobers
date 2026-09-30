@@ -98,7 +98,7 @@ type copilotAdapterProbeEvidence struct {
 // bypasses unknown-option validation in Copilot. Exercise the real prompt path
 // without credentials or networking and require its specific auth refusal.
 func verifyCopilotAdapterInterface(description dockerImageDescription) (*copilotAdapterProbeEvidence, error) {
-	command := []string{"-p", "Reply with ok.", "--allow-all-tools", "--available-tools=", "--log-level", "all", "--usage-output-file", "/tmp/goobers-usage-probe.json"}
+	command := []string{"-p", "Reply with ok.", "--allow-all-tools", "--available-tools=", "--log-level", "all", "--usage-output-file", "/tmp/goobers-usage-probe.json", "--no-remote-export"}
 	args := imageProbeRunArgs(description)
 	args = append(args, "--env", "COPILOT_GITHUB_TOKEN=", "--env", "GH_TOKEN=", "--env", "GITHUB_TOKEN=", "--workdir", "/tmp",
 		"--entrypoint", "copilot", description.ID)

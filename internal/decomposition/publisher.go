@@ -619,8 +619,12 @@ func childIssueBody(parentID, digest string, child ChildPlan) string {
 		"\n\nParent: #" + parentID + "\n\n" + ChildBatchMarker(parentID, digest, child.Key)
 }
 
+// unmarkedActionBody returns a child body as the plan wrote it: the provider
+// attribution footer added by CreateWorkItem and the idempotency marker lines
+// added by CreateChild are removed before comparison.
 func unmarkedActionBody(body string) string {
-	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	body = providers.StripAttribution(strings.ReplaceAll(body, "\r\n", "\n"))
+	lines := strings.Split(body, "\n")
 	filtered := lines[:0]
 	for _, line := range lines {
 		if strings.HasPrefix(line, actionMarkerPrefix) ||

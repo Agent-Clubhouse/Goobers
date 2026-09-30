@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,6 +164,19 @@ func TestADOPredecessorStateDecidesBlocking(t *testing.T) {
 			name: "categories can admit in-progress states", itemType: "User Story", state: "Resolved",
 			doneStates: &ADODoneStates{Categories: []string{"InProgress", "Completed"}},
 		},
+		{
+			// validate trims names, so the runtime matcher must too.
+			name: "byType type names are trimmed", itemType: "Bug", state: "Resolved",
+			doneStates: &ADODoneStates{ByType: map[string][]string{" Bug ": {"Closed"}}}, wantBlocked: true,
+		},
+		{
+			name: "byType state names are trimmed", itemType: "Bug", state: "Closed",
+			doneStates: &ADODoneStates{Categories: []string{"Removed"}, ByType: map[string][]string{"Bug": {" Closed "}}},
+		},
+		{
+			name: "categories are trimmed", itemType: "Bug", state: "Resolved",
+			doneStates: &ADODoneStates{Categories: []string{"Completed ", " Removed"}}, wantBlocked: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, provider := newADOBlockerFixture(t, []int{41}, adoBlockerItem(41, tc.itemType, tc.state))
@@ -177,6 +191,26 @@ func TestADOPredecessorStateDecidesBlocking(t *testing.T) {
 				t.Fatalf("blocked = %v, want %v", blocked, tc.wantBlocked)
 			}
 		})
+	}
+}
+
+// TestNormalizeADODoneStatesMergesCaseDuplicateTypes pins that byType keys
+// differing only in case are merged into one deterministic entry (the union
+// of their states) instead of depending on map iteration order.
+func TestNormalizeADODoneStatesMergesCaseDuplicateTypes(t *testing.T) {
+	got := normalizeADODoneStates(ADODoneStates{ByType: map[string][]string{
+		"Bug": {"Closed"}, "bug": {"closed", "Verified"}, "BUG ": {""},
+	}})
+	if len(got.ByType) != 1 {
+		t.Fatalf("ByType = %v, want one merged entry", got.ByType)
+	}
+	if states := got.ByType["bug"]; !slices.Equal(states, []string{"Closed", "Verified"}) {
+		t.Fatalf("merged states = %v, want [Closed Verified] (union, case-insensitive dedupe, sorted key order)", states)
+	}
+	for _, state := range []string{"Closed", "Verified"} {
+		if !got.done("Bug", state, "InProgress") {
+			t.Errorf("done(Bug, %s) = false, want true from the merged keys", state)
+		}
 	}
 }
 
