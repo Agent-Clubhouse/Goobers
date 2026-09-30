@@ -158,7 +158,7 @@ func collectValuelessFlowPollIntervalEdits(source []byte, node *yaml.Node, edits
 		return
 	}
 	if node.Kind == yaml.MappingNode && node.Style&yaml.FlowStyle != 0 && node.Line > 0 && node.Column > 0 {
-		start, err := sourceOffset(source, node.Line, node.Column)
+		start, err := nodeContentOffset(source, node)
 		if err != nil {
 			if outErr != nil {
 				*outErr = err
@@ -314,12 +314,9 @@ func scalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, f
 	if node.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
 		return sourceEdit{}, fmt.Errorf("block-style %s is not supported for source-preserving migration", field)
 	}
-	start, err := sourceOffset(source, node.Line, node.Column)
+	start, err := nodeContentOffset(source, node)
 	if err != nil {
 		return sourceEdit{}, err
-	}
-	if node.Style&yaml.TaggedStyle != 0 || node.Anchor != "" {
-		return decoratedScalarReplacementEdit(source, node, replacement, field, start)
 	}
 	end, err := scalarEnd(source, start, node.Style)
 	if err != nil {
@@ -328,50 +325,70 @@ func scalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, f
 	return sourceEdit{start: start, end: end, replacement: replacement}, nil
 }
 
-func decoratedScalarReplacementEdit(source []byte, node *yaml.Node, replacement []byte, field string, start int) (sourceEdit, error) {
-	lineEnd, err := sourceLineEndOffset(source, node.Line)
+func nodeContentOffset(source []byte, node *yaml.Node) (int, error) {
+	if node == nil || node.Line < 1 || node.Column < 1 {
+		return 0, errors.New("YAML node has no source position")
+	}
+	pos, err := sourceOffset(source, node.Line, node.Column)
 	if err != nil {
-		return sourceEdit{}, err
+		return 0, err
 	}
-	if start > lineEnd {
-		return sourceEdit{}, fmt.Errorf("%s source position is after its line end", field)
-	}
-	tokenStart, tokenEnd, err := decoratedScalarTokenSpan(source, start, lineEnd, node, field)
-	if err != nil {
-		return sourceEdit{}, err
-	}
-	return sourceEdit{start: tokenStart, end: tokenEnd, replacement: replacement}, nil
-}
-
-func decoratedScalarTokenSpan(source []byte, start, lineEnd int, node *yaml.Node, field string) (int, int, error) {
-	pos := start
-	for pos < lineEnd {
-		pos = skipInlineYAMLSpaces(source, pos, lineEnd)
-		if pos >= lineEnd || source[pos] == '#' || source[pos] == ',' || source[pos] == '}' || source[pos] == ']' {
-			return 0, 0, fmt.Errorf("%s value token %q was not found before line/comment end", field, node.Value)
+	for pos < len(source) {
+		pos = skipYAMLWhitespaceAndComments(source, pos)
+		if pos >= len(source) {
+			break
 		}
-		if source[pos] == '!' || source[pos] == '&' {
-			next := yamlTokenEnd(source, pos, lineEnd)
-			if next <= pos {
-				return 0, 0, fmt.Errorf("%s decoration token has no end", field)
+		switch source[pos] {
+		case '!':
+			next, err := tagTokenEnd(source, pos)
+			if err != nil {
+				return 0, err
 			}
 			pos = next
 			continue
+		case '&':
+			next := yamlTokenEnd(source, pos, len(source))
+			if next <= pos {
+				return 0, errors.New("YAML anchor token has no end")
+			}
+			pos = next
+			continue
+		default:
+			return pos, nil
 		}
-		end, err := scalarTokenEnd(source, pos, lineEnd)
-		if err != nil {
-			return 0, 0, err
-		}
-		return pos, end, nil
 	}
-	return 0, 0, fmt.Errorf("%s value token %q was not found", field, node.Value)
+	return 0, errors.New("YAML node content start was not found")
 }
 
-func skipInlineYAMLSpaces(source []byte, pos, limit int) int {
-	for pos < limit && (source[pos] == ' ' || source[pos] == '\t') {
-		pos++
+func skipYAMLWhitespaceAndComments(source []byte, pos int) int {
+	for pos < len(source) {
+		switch source[pos] {
+		case ' ', '\t', '\r', '\n':
+			pos++
+		case '#':
+			for pos < len(source) && source[pos] != '\n' {
+				pos++
+			}
+		default:
+			return pos
+		}
 	}
 	return pos
+}
+
+func tagTokenEnd(source []byte, pos int) (int, error) {
+	if pos+1 < len(source) && source[pos+1] == '<' {
+		end := bytes.IndexByte(source[pos+2:], '>')
+		if end < 0 {
+			return 0, errors.New("verbatim YAML tag has no closing '>'")
+		}
+		return pos + 2 + end + 1, nil
+	}
+	next := yamlTokenEnd(source, pos, len(source))
+	if next <= pos {
+		return 0, errors.New("YAML tag token has no end")
+	}
+	return next, nil
 }
 
 func yamlTokenEnd(source []byte, pos, limit int) int {
@@ -381,30 +398,6 @@ func yamlTokenEnd(source []byte, pos, limit int) int {
 	return pos
 }
 
-func scalarTokenEnd(source []byte, pos, limit int) (int, error) {
-	if pos >= limit {
-		return 0, errors.New("scalar token has no start")
-	}
-	if source[pos] == '"' || source[pos] == '\'' {
-		end, err := scalarEnd(source, pos, yamlStyleForQuote(source[pos]))
-		if err != nil {
-			return 0, err
-		}
-		if end > limit {
-			return 0, errors.New("quoted scalar token crosses the source line")
-		}
-		return end, nil
-	}
-	return yamlTokenEnd(source, pos, limit), nil
-}
-
-func yamlStyleForQuote(quote byte) yaml.Style {
-	if quote == '"' {
-		return yaml.DoubleQuotedStyle
-	}
-	return yaml.SingleQuotedStyle
-}
-
 func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, replacement []byte) (sourceEdit, error) {
 	if value.Value != "" {
 		return scalarReplacementEdit(source, value, replacement, "pollIntervalSeconds")
@@ -412,14 +405,11 @@ func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, repla
 	if key == nil || key.Line < 1 || key.Column < 1 {
 		return sourceEdit{}, errors.New("pollIntervalSeconds key has no source position")
 	}
-	lineEnd, err := sourceLineEndOffset(source, key.Line)
+	keyStart, err := nodeContentOffset(source, key)
 	if err != nil {
 		return sourceEdit{}, err
 	}
-	keyStart, err := sourceOffset(source, key.Line, key.Column)
-	if err != nil {
-		return sourceEdit{}, err
-	}
+	lineEnd := sourceLineEndOffsetFromOffset(source, keyStart)
 	searchEnd := lineEnd
 	if searchEnd < keyStart {
 		return sourceEdit{}, errors.New("pollIntervalSeconds key position is after its line end")
@@ -444,7 +434,7 @@ func nullPollIntervalReplacementEdit(source []byte, key, value *yaml.Node, repla
 		replacement = append([]byte{' '}, replacement...)
 	}
 	if value.Column > 0 {
-		valueStart, err := sourceOffset(source, value.Line, value.Column)
+		valueStart, err := nodeContentOffset(source, value)
 		if err == nil && valueStart > colon && valueStart < lineEnd {
 			insert = valueStart
 			replacement = bytes.TrimLeft(replacement, " \t")
@@ -465,11 +455,12 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 		if mapping.Line < 1 || mapping.Column < 1 {
 			return sourceEdit{}, fmt.Errorf("empty target mapping for %s has no source position", line)
 		}
-		lineEnd, err := sourceLineEndOffset(source, mapping.Line)
+		offset, err := nodeContentOffset(source, mapping)
 		if err != nil {
 			return sourceEdit{}, err
 		}
-		indent := strings.Repeat(" ", mapping.Column+1)
+		lineEnd := sourceLineEndOffsetFromOffset(source, offset)
+		indent := indentForOffset(source, offset) + "  "
 		return sourceEdit{start: lineEnd, end: lineEnd, replacement: append(append([]byte{}, eol...), []byte(indent+line)...)}, nil
 	}
 	if edit, ok, err := insertAfterLastSingleLineScalarEdit(source, mapping, line, eol); err != nil || ok {
@@ -479,11 +470,11 @@ func insertMappingScalarEdit(source []byte, mapping *yaml.Node, line string) (so
 	if firstKey.Line < 1 || firstKey.Column < 1 {
 		return sourceEdit{}, fmt.Errorf("target mapping for %s has no source position", line)
 	}
-	offset, err := sourceOffset(source, firstKey.Line, firstKey.Column)
+	offset, err := nodeContentOffset(source, firstKey)
 	if err != nil {
 		return sourceEdit{}, err
 	}
-	indent := strings.Repeat(" ", firstKey.Column-1)
+	indent := indentForOffset(source, offset)
 	insertion := append([]byte(line), eol...)
 	insertion = append(insertion, []byte(indent)...)
 	return sourceEdit{start: offset, end: offset, replacement: insertion}, nil
@@ -507,7 +498,7 @@ func insertAfterLastSingleLineScalarEdit(source []byte, mapping *yaml.Node, line
 	if (lastValue.Style&(yaml.DoubleQuotedStyle|yaml.SingleQuotedStyle) != 0) && strings.Contains(lastValue.Value, "\n") {
 		return sourceEdit{}, false, nil
 	}
-	valueStart, err := sourceOffset(source, lastValue.Line, lastValue.Column)
+	valueStart, err := nodeContentOffset(source, lastValue)
 	if err != nil {
 		return sourceEdit{}, false, err
 	}
@@ -515,18 +506,16 @@ func insertAfterLastSingleLineScalarEdit(source []byte, mapping *yaml.Node, line
 	if err != nil {
 		return sourceEdit{}, false, err
 	}
-	lineEnd, err := sourceLineEndOffset(source, lastValue.Line)
-	if err != nil {
-		return sourceEdit{}, false, err
-	}
+	lineEnd := sourceLineEndOffsetFromOffset(source, valueStart)
 	if valueEnd > lineEnd {
 		return sourceEdit{}, false, nil
 	}
-	offset, hadLineBreak, err := sourceAfterLineOffset(source, lastValue.Line)
+	offset, hadLineBreak := sourceAfterLineOffsetFromOffset(source, valueStart)
+	keyOffset, err := nodeContentOffset(source, lastKey)
 	if err != nil {
 		return sourceEdit{}, false, err
 	}
-	indent := strings.Repeat(" ", lastKey.Column-1)
+	indent := indentForOffset(source, keyOffset)
 	insertion := []byte(indent + line)
 	if hadLineBreak {
 		insertion = append(insertion, eol...)
@@ -540,7 +529,7 @@ func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string)
 	if mapping.Line < 1 || mapping.Column < 1 {
 		return sourceEdit{}, fmt.Errorf("flow target mapping for %s has no source position", line)
 	}
-	start, err := sourceOffset(source, mapping.Line, mapping.Column)
+	start, err := nodeContentOffset(source, mapping)
 	if err != nil {
 		return sourceEdit{}, err
 	}
@@ -567,29 +556,28 @@ func insertFlowMappingScalarEdit(source []byte, mapping *yaml.Node, line string)
 	return sourceEdit{start: start + 1, end: start + 1, replacement: replacement}, nil
 }
 
-func sourceLineEndOffset(source []byte, line int) (int, error) {
-	start, err := sourceOffset(source, line, 1)
-	if err != nil {
-		return 0, err
+func sourceLineEndOffsetFromOffset(source []byte, offset int) int {
+	for offset < len(source) && source[offset] != '\r' && source[offset] != '\n' {
+		offset++
 	}
-	next := start
-	for next < len(source) && source[next] != '\r' && source[next] != '\n' {
-		next++
-	}
-	return next, nil
+	return offset
 }
 
-func sourceAfterLineOffset(source []byte, line int) (int, bool, error) {
-	start, err := sourceOffset(source, line, 1)
-	if err != nil {
-		return 0, false, err
+func indentForOffset(source []byte, offset int) string {
+	start := offset
+	for start > 0 && source[start-1] != '\n' && source[start-1] != '\r' {
+		start--
 	}
-	next := start
+	return string(source[start:offset])
+}
+
+func sourceAfterLineOffsetFromOffset(source []byte, offset int) (int, bool) {
+	next := offset
 	for next < len(source) && source[next] != '\n' {
 		next++
 	}
 	if next >= len(source) {
-		return len(source), false, nil
+		return len(source), false
 	}
-	return next + 1, true, nil
+	return next + 1, true
 }

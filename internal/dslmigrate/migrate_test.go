@@ -205,6 +205,26 @@ func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
 			automated: "{check: ci-status, params: {description: keep}}",
 			want:      "{pollIntervalSeconds: 10, check: ci-status, params: {description: keep}}",
 		},
+		{
+			name:      "anchored flow mapping",
+			automated: "&ci {check: ci-status}",
+			want:      "&ci {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "tagged flow mapping",
+			automated: "!!map {check: ci-status}",
+			want:      "!!map {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "anchor then tag flow mapping",
+			automated: "&ci !!map {check: ci-status}",
+			want:      "&ci !!map {pollIntervalSeconds: 10, check: ci-status}",
+		},
+		{
+			name:      "tag then anchor flow mapping",
+			automated: "!!map &ci {check: ci-status}",
+			want:      "!!map &ci {pollIntervalSeconds: 10, check: ci-status}",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -218,6 +238,37 @@ func TestMigrateTransformEditsFlowAutomatedMapping(t *testing.T) {
 			}
 			if result.After != want {
 				t.Fatalf("flow transform changed bytes beyond the version/poll edits\nwant:\n%s\ngot:\n%s", want, result.After)
+			}
+			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
+				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
+			}
+		})
+	}
+}
+
+func TestMigrateTransformEditsDecoratedBlockAutomatedMapping(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "anchored block mapping", header: "      automated: &ci\n"},
+		{name: "tagged block mapping", header: "      automated: !!map\n"},
+		{name: "anchor then tag block mapping", header: "      automated: &ci !!map\n"},
+		{name: "tag then anchor block mapping", header: "      automated: !!map &ci\n"},
+		{name: "decorator on following line", header: "      automated:\n        &ci\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := workflowWithAutomatedHeader(test.header, "        check: ci-status\n")
+			want := strings.Replace(source, `dslVersion: "1.4"`, `dslVersion: "2.0"`, 1)
+			want = strings.Replace(want, "        check: ci-status\n", "        check: ci-status\n        pollIntervalSeconds: 10\n", 1)
+
+			result, err := Migrate([]byte(source), "2.0")
+			if err != nil {
+				t.Fatalf("Migrate: %v", err)
+			}
+			if result.After != want {
+				t.Fatalf("decorated block mapping changed bytes beyond expected edits\nwant:\n%s\ngot:\n%s", want, result.After)
 			}
 			if got := decodeWorkflow(t, result.After); got.DSLVersion != "2.0" || got.PollIntervalSeconds != 10 {
 				t.Fatalf("decoded migrated workflow = %+v, want dslVersion 2.0 pollIntervalSeconds 10\n%s", got, result.After)
@@ -486,6 +537,10 @@ func TestMigrateLeavesExplicitPositivePollIntervalUntouched(t *testing.T) {
 }
 
 func workflowWithAutomatedBlock(automated string) string {
+	return workflowWithAutomatedHeader("      automated:\n", automated)
+}
+
+func workflowWithAutomatedHeader(header, automated string) string {
 	return `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "1.4"
@@ -503,8 +558,7 @@ spec:
   gates:
     - name: ci
       evaluator: automated
-      automated:
-` + automated + `      branches:
+` + header + automated + `      branches:
         pass: ""
 `
 }
