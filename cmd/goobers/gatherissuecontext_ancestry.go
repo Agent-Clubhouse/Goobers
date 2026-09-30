@@ -49,16 +49,16 @@ func parseIssueAncestryConfig() (issueAncestryConfig, error) {
 		return issueAncestryConfig{}, fmt.Errorf("parentCrossProject must be %q or %q, got %q", providers.AncestryCrossProjectDeny, providers.AncestryCrossProjectAllow, opts.CrossProject)
 	}
 	bounds := []struct {
-		name         string
+		name, raw    string
 		def, ceiling int
 		into         *int
 	}{
-		{"parentMaxDepth", ancestryDefaultMaxDepth, ancestryMaxDepthCeiling, &opts.MaxDepth},
-		{"parentMaxItems", ancestryDefaultMaxItems, ancestryMaxItemsCeiling, &opts.MaxItems},
-		{"parentMaxFieldBytes", ancestryDefaultMaxFieldBytes, ancestryMaxFieldBytesCeiling, &opts.MaxFieldBytes},
+		{"parentMaxDepth", providerInput("parentMaxDepth", ""), ancestryDefaultMaxDepth, ancestryMaxDepthCeiling, &opts.MaxDepth},
+		{"parentMaxItems", providerInput("parentMaxItems", ""), ancestryDefaultMaxItems, ancestryMaxItemsCeiling, &opts.MaxItems},
+		{"parentMaxFieldBytes", providerInput("parentMaxFieldBytes", ""), ancestryDefaultMaxFieldBytes, ancestryMaxFieldBytesCeiling, &opts.MaxFieldBytes},
 	}
 	for _, bound := range bounds {
-		value, err := boundedIntInput(bound.name, providerInput(bound.name, ""), bound.def, bound.ceiling)
+		value, err := boundedIntInput(bound.name, bound.raw, bound.def, bound.ceiling)
 		if err != nil {
 			return issueAncestryConfig{}, err
 		}
