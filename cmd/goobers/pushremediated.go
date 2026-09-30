@@ -254,6 +254,7 @@ func runPushRemediatedCoreWithAuth(
 			"(remediation-checkpoint records it every cycle) — refusing to force-push without one\n", selectedNumber)
 		return 1
 	}
+	lease := remediationLeaseExpectation(root, repo, selectedNumber, state.HeadSHA)
 
 	// Nothing to publish is NOT success. If the branch still sits exactly where
 	// it did before this cycle's agentic chain ran, the chain produced no
@@ -268,10 +269,10 @@ func runPushRemediatedCoreWithAuth(
 		pf(stderr, "error: resolve local head for PR #%d: %v\n", selectedNumber, err)
 		return 1
 	}
-	if localHead == state.HeadSHA {
+	if localHead == lease {
 		pf(stderr, "error: PR #%d's branch is unchanged from its pre-remediation head %s — "+
 			"the remediation produced no commit, so there is nothing to publish and %s stays set\n",
-			selectedNumber, state.HeadSHA, needsRemediationLabel)
+			selectedNumber, lease, needsRemediationLabel)
 		return 1
 	}
 
@@ -286,7 +287,7 @@ func runPushRemediatedCoreWithAuth(
 		return code
 	}
 
-	if err := forcePushWithLeaseWithAuth(ctx, ".", current.Head, state.HeadSHA, gitAuth); err != nil {
+	if err := forcePushWithLeaseWithAuth(ctx, ".", current.Head, lease, gitAuth); err != nil {
 		return failProviderStage(
 			stderr,
 			fmt.Sprintf("force-push remediated PR #%d branch %q", selectedNumber, current.Head),
@@ -301,6 +302,26 @@ func runPushRemediatedCoreWithAuth(
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
 	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
+}
+
+// remediationLeaseExpectation is the SHA the force-with-lease must find on
+// the remote. Normally that is the pre-remediation head remediation-checkpoint
+// recorded. When this run already published once and a stale-feedback repass
+// (#6126) brought it back here, the remote legitimately sits at the run's own
+// published head, so that — recorded in this run's journal, never re-resolved
+// from the remote — becomes the expectation. The lease stays mandatory and
+// non-tautological either way: anything pushed since the recorded SHA still
+// makes it refuse.
+func remediationLeaseExpectation(root string, repo providers.RepositoryRef, selectedNumber int, recorded string) string {
+	runID, _, err := providerRunContext()
+	if err != nil {
+		return recorded
+	}
+	expected, ok, err := loadPRExpectedRevision(root, runID, repo, selectedNumber)
+	if err != nil || !ok || expected.Source != prRevisionSourcePublication {
+		return recorded
+	}
+	return expected.ExpectedHeadSHA
 }
 
 // enforcePushRevision applies the shared revision precondition (#6128) to the

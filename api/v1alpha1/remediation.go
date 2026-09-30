@@ -2,7 +2,7 @@ package v1alpha1
 
 // RemediationBriefVersion is the current remediation-brief wire identifier.
 // Shape changes require a new version.
-const RemediationBriefVersion = "goobers.dev/remediation-brief/v3"
+const RemediationBriefVersion = "goobers.dev/remediation-brief/v4"
 
 // RemediationBrief is the evidence bundle consumed by an agentic PR-remediation
 // stage. GatherPRContext is required; every other evidence section is optional
@@ -22,6 +22,11 @@ type RemediationBrief struct {
 	GatherReviewThreads    *RemediationReviewThreads  `json:"gatherReviewThreads,omitempty"`
 	GatherSiblingContext   *RemediationSiblingContext `json:"gatherSiblingContext,omitempty"`
 	GatherIssueContext     *RemediationIssueContext   `json:"gatherIssueContext,omitempty"`
+	// FeedbackSnapshot (v4, #6126) pins the human feedback this brief carries.
+	// gather-review-threads writes it from the same provider reads it puts in
+	// GatherReviewThreads and GatherPRContext.Comments; later gatherers carry
+	// it forward unchanged. Absent on a brief gathered before v4.
+	FeedbackSnapshot *PRFeedbackSnapshot `json:"feedbackSnapshot,omitempty"`
 }
 
 // RemediationPRContext is the required section owned by gather-pr-context.
@@ -139,11 +144,14 @@ type RemediationIssue struct {
 
 // remediationBriefVersions lists every wire identifier this build can read,
 // newest first. Older briefs are accepted and migrated rather than rejected:
-// a run that produced a v1 or v2 gather artifact before this binary deployed
-// must still resume into a later gatherer, which is the compatibility contract
-// the retained v1/v2 schemas document.
+// a run that produced a v1, v2 or v3 gather artifact before this binary
+// deployed must still resume into a later gatherer, which is the
+// compatibility contract the retained v1/v2/v3 schemas document. A migrated
+// v3 brief simply carries no FeedbackSnapshot, which every consumer treats as
+// "no snapshot recorded" (#6126).
 var remediationBriefVersions = []string{
 	RemediationBriefVersion,
+	"goobers.dev/remediation-brief/v3",
 	"goobers.dev/remediation-brief/v2",
 	"goobers.dev/remediation-brief/v1",
 }

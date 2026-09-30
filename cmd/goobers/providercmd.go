@@ -781,6 +781,17 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 // stage already knows: it writes that code, non-retryable, instead of
 // classifying err as a provider error.
 func failProviderStageWithCode(stderr io.Writer, what string, err error, code, resultFileDefault string) int {
+	return failProviderStageTyped(stderr, what, err, code, false, resultFileDefault)
+}
+
+// failProviderStageRetryable is failProviderStageWithCode for a known,
+// self-clearing condition: the executor routes it to the bounded
+// infrastructure retry instead of failing the stage.
+func failProviderStageRetryable(stderr io.Writer, what string, err error, code, resultFileDefault string) int {
+	return failProviderStageTyped(stderr, what, err, code, true, resultFileDefault)
+}
+
+func failProviderStageTyped(stderr io.Writer, what string, err error, code string, retryable bool, resultFileDefault string) int {
 	pf(stderr, "error: %s: %v\n", what, err)
 	resultFile := providerInput("resultFile", resultFileDefault)
 	if resultFile == "" {
@@ -789,7 +800,7 @@ func failProviderStageWithCode(stderr io.Writer, what string, err error, code, r
 	if werr := writeProviderStageResult(resultFile, map[string]interface{}{
 		executor.OutputErrorCode:      code,
 		executor.OutputErrorMessage:   fmt.Sprintf("%s: %v", what, err),
-		executor.OutputErrorRetryable: false,
+		executor.OutputErrorRetryable: retryable,
 	}); werr != nil {
 		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, werr)
 	}

@@ -40,6 +40,20 @@ func mergeReviewGatherHeadPrefixes(t *testing.T) string {
 // divergence-guard approach TestReferenceWorkflowsCompile takes (#124): a
 // synthetic fixture would happily keep passing while the definition the
 // dogfood instance actually runs drifted.
+// assertStaleFeedbackGate pins #6126's stale-input routing: an empty
+// staleInput continues to pass, a stale one re-enters gather-review-threads
+// (a charged repass), and only an exhausted budget parks.
+func assertStaleFeedbackGate(t *testing.T, m *Machine, name, pass string) {
+	t.Helper()
+	g, ok := m.Gate(name)
+	if !ok || g.Automated == nil || g.Automated.Check != "output-equals" ||
+		g.Automated.Params["key"] != "staleInput" || g.Automated.Params["equals"] != "" ||
+		g.Branches["pass"] != pass || g.Branches["fail"] != "gather-review-threads" ||
+		g.Branches["escalate"] != "park-stale-feedback" {
+		t.Errorf("%s = %+v, want staleInput routing pass->%s fail->gather-review-threads escalate->park-stale-feedback", name, g, pass)
+	}
+}
+
 func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	t.Helper()
 	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
@@ -421,15 +435,21 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		"guard-before-implement":     "warm-module-cache",
 		"guard-before-review":        "review",
 		"guard-before-local-ci":      "local-ci",
-		"guard-before-push":          "push-remediated",
+		"guard-before-push":          "push-feedback-gate",
 	} {
 		guard, ok := m.Task(name)
 		if !ok {
 			t.Errorf("%s not found", name)
 			continue
 		}
-		if guard.Run == nil || !reflect.DeepEqual(guard.Run.Command, []string{"goobers", "pr-claim"}) {
-			t.Errorf("%s command = %v, want PR lifecycle check", name, guard.Run)
+		wantCommand := []string{"goobers", "pr-claim"}
+		if name == "guard-before-push" {
+			// #6126: the last pre-publication guard also verifies the
+			// feedback snapshot.
+			wantCommand = append(wantCommand, "--verify-feedback")
+		}
+		if guard.Run == nil || !reflect.DeepEqual(guard.Run.Command, wantCommand) {
+			t.Errorf("%s command = %v, want %v", name, guard.Run, wantCommand)
 		}
 		if guard.Next != next {
 			t.Errorf("%s next = %q, want %q", name, guard.Next, next)
@@ -700,9 +720,18 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if resolveThreads.Run == nil || !reflect.DeepEqual(resolveThreads.Run.Command, []string{"goobers", "resolve-review-threads"}) {
 		t.Errorf("resolve-review-threads command = %v", resolveThreads.Run)
 	}
-	if resolveThreads.Next != "review-threads-gate" ||
-		!containsString(resolveThreads.ExpectedOutputs, "unresolvedThreadCount") {
+	if resolveThreads.Next != "review-thread-feedback-gate" ||
+		!containsString(resolveThreads.ExpectedOutputs, "unresolvedThreadCount") ||
+		!containsString(resolveThreads.ExpectedOutputs, "staleInput") {
 		t.Errorf("resolve-review-threads routing contract = next %q outputs %v", resolveThreads.Next, resolveThreads.ExpectedOutputs)
+	}
+	assertStaleFeedbackGate(t, m, "push-feedback-gate", "push-remediated")
+	assertStaleFeedbackGate(t, m, "review-thread-feedback-gate", "review-threads-gate")
+	staleThreadsPark, ok := m.Task("park-stale-feedback")
+	if !ok || staleThreadsPark.Next != "release-escalated-claim" || staleThreadsPark.Run == nil ||
+		!containsString(staleThreadsPark.Run.Command, "--escalate") ||
+		!containsString(staleThreadsPark.Run.Command, "budget-exhausted") {
+		t.Errorf("park-stale-feedback = %+v, want a budget-exhausted escalation that releases the claim", staleThreadsPark)
 	}
 	threadGate, ok := m.Gate("review-threads-gate")
 	if !ok || threadGate.Automated == nil ||

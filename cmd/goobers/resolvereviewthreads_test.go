@@ -381,10 +381,18 @@ func TestResolveReviewThreadsRefusesWhenPublishedHeadMoved(t *testing.T) {
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
 	t.Setenv(executor.RepoOwnerEnvVar, "your-org")
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
-	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
 
-	if code, _, stderr := runArgs(t, "resolve-review-threads", root); code == 0 {
-		t.Fatalf("resolve-review-threads succeeded after head drift; stderr=%q", stderr)
+	// #6126/#6128: a head that moved off the published SHA ends the run as a
+	// typed stale-head no-work — nothing published, never a provider failure.
+	code, stdout, stderr := runArgs(t, "resolve-review-threads", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q; want a typed no-work", code, stdout, stderr)
+	}
+	result := readJSONResult(t, filepath.Join(dir, resolveReviewThreadsResultFile))
+	if result["noWork"] != true || result[staleInputOutput] != staleReasonHead || result["liveHeadSha"] != "advanced-sha" {
+		t.Fatalf("result = %v, want a stale-head no-work", result)
 	}
 	if reviewThreadsAccessed {
 		t.Fatal("review threads were accessed after head drift")

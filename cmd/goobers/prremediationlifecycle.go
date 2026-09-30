@@ -27,7 +27,7 @@ type prClaimProvider interface {
 
 const prRemediationLifecycleResultFile = "pr-remediation-lifecycle.json"
 
-const prRemediationLifecycleHelp = "Usage: goobers pr-claim [--release] [path]\n\n" +
+const prRemediationLifecycleHelp = "Usage: goobers pr-claim [--release] [--verify-feedback] [path]\n\n" +
 	"At a pr-remediation stage boundary, verify that this run's claimed pull\n" +
 	"request is still open and still at the exact source revision this run\n" +
 	"selected (or itself published). If it has merged or closed, release the\n" +
@@ -35,6 +35,11 @@ const prRemediationLifecycleHelp = "Usage: goobers pr-claim [--release] [path]\n
 	"head, release the claim and return a distinct stale-selection no-work\n" +
 	"result, so the runner stops the workflow either way. A missing or\n" +
 	"malformed head fails closed.\n" +
+	"With --verify-feedback, also re-read the PR's review threads and comments\n" +
+	"and compare them with the feedback snapshot this run's brief pinned; a\n" +
+	"difference keeps the claim and reports a typed staleInput reason\n" +
+	"(new_feedback, changed_feedback, missing_feedback, changed_thread_state,\n" +
+	"incomplete_collection, stale_head) for the workflow to route on.\n" +
 	"With --release, explicitly release the run's PR claim without querying the\n" +
 	"provider. Releasing an already-released claim is an idempotent success.\n\n" +
 	"Exit codes: 0 = PR current, terminal/stale no-work, or released;\n" +
@@ -70,13 +75,29 @@ type prRemediationLifecycleResult struct {
 	ExpectedHeadSHA string `json:"expectedHeadSha,omitempty"`
 	LiveHeadSHA     string `json:"liveHeadSha,omitempty"`
 	NoWorkReason    string `json:"noWorkReason,omitempty"`
+	// StaleInput is the --verify-feedback verdict a gate routes on: empty
+	// when the live feedback matches this run's snapshot (or none was
+	// recorded), else the highest-priority stale reason (#6126). It is always
+	// written so a gate never reads an absent key as a verdict.
+	StaleInput             string                `json:"staleInput"`
+	StaleReasons           []feedbackStaleReason `json:"staleReasons,omitempty"`
+	FeedbackSnapshotDigest string                `json:"feedbackSnapshotDigest,omitempty"`
+	// FeedbackCheck is current, stale or unrecorded when --verify-feedback ran.
+	FeedbackCheck string `json:"feedbackCheck,omitempty"`
 }
+
+const (
+	prFeedbackCheckCurrent    = "current"
+	prFeedbackCheckStale      = "stale"
+	prFeedbackCheckUnrecorded = "unrecorded"
+)
 
 func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("pr-claim", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "pr-claim")
 	release := fs.Bool("release", false, "release this run's PR claim without checking provider state")
+	verifyFeedback := fs.Bool("verify-feedback", false, "also compare the live PR feedback with this run's recorded feedback snapshot")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -106,12 +127,12 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 			Outcome:  prClaimOutcomeNoClaim,
 		}, stdout, stderr)
 	}
-	return verifyClaimedPullRequest(root, number, stdout, stderr)
+	return verifyClaimedPullRequest(root, number, *verifyFeedback, stdout, stderr)
 }
 
 // verifyClaimedPullRequest is pr-claim's guard: one live read of the claimed
 // PR, compared with the revision this run recorded for it.
-func verifyClaimedPullRequest(root string, number int, stdout, stderr io.Writer) int {
+func verifyClaimedPullRequest(root string, number int, verifyFeedback bool, stdout, stderr io.Writer) int {
 	repo, err := providerRepo(root)
 	if err != nil {
 		return failProviderStage(stderr, "load remediation repository", err, prRemediationLifecycleResultFile)
@@ -144,7 +165,51 @@ func verifyClaimedPullRequest(root string, number int, stdout, stderr io.Writer)
 	}
 	result.Open = true
 	result.Outcome = prClaimOutcomeOpen
+	if verifyFeedback {
+		if err := verifyClaimedFeedback(root, runID, repo, check.Live, &result); err != nil {
+			return failProviderStage(stderr, "verify pull request feedback", err, prRemediationLifecycleResultFile)
+		}
+	}
 	return writePRRemediationLifecycleResult(result, stdout, stderr)
+}
+
+// verifyClaimedFeedback is pr-claim --verify-feedback (#6126): the live PR
+// feedback must still be the feedback this run's latest brief pinned. A
+// mismatch is not a failure and does not release the claim — it sets
+// staleInput, which the workflow's gate routes back to gather-review-threads
+// for a bounded repass. A brief without a snapshot (gathered before v4) has
+// nothing to compare against and passes.
+func verifyClaimedFeedback(root, runID string, repo providers.RepositoryRef, liveHead string, result *prRemediationLifecycleResult) error {
+	brief, err := readLatestRemediationBrief(root, runID)
+	if err != nil {
+		return err
+	}
+	if brief.FeedbackSnapshot == nil {
+		result.FeedbackCheck = prFeedbackCheckUnrecorded
+		return nil
+	}
+	provider, err := reviewThreadStageSurface[reviewThreadResolver](root, repo, false)
+	if err != nil {
+		return err
+	}
+	source, err := newPRFeedbackSource(provider, repo.Provider)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	check, err := checkLiveFeedback(ctx, source, repo, brief.FeedbackSnapshot, feedbackCompareOptions{expectedHead: liveHead})
+	if err != nil {
+		return err
+	}
+	result.FeedbackSnapshotDigest = brief.FeedbackSnapshot.SnapshotDigest
+	result.StaleInput = staleInputCode(check.reasons)
+	result.StaleReasons = check.reasons
+	result.FeedbackCheck = prFeedbackCheckCurrent
+	if check.stale() {
+		result.FeedbackCheck = prFeedbackCheckStale
+	}
+	return nil
 }
 
 // readClaimedPullRequest polls the claimed PR through the narrow surface every
@@ -231,6 +296,11 @@ func writePRRemediationLifecycleResult(result prRemediationLifecycleResult, stdo
 		} else {
 			pf(stdout, "released claim for PR #%s\n", result.SelectedNumber)
 		}
+		return 0
+	}
+	if result.StaleInput != "" {
+		pf(stdout, "claimed PR #%s: feedback changed since it was gathered (%s); routing back to re-gather\n",
+			result.SelectedNumber, describeStaleReasons(result.StaleReasons))
 		return 0
 	}
 	if result.Revision == string(prRevisionCurrent) {

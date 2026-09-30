@@ -2153,13 +2153,17 @@ add native reviews and anchored inline threads to a remediation brief (a workflo
 ~~~text
 Usage: goobers gather-review-threads [path]
 
-Read this run's latest remediation brief and replace only its
-gatherReviewThreads section with native review bodies and inline review
-comments. File, line, side, diff-hunk, resolved, and outdated metadata
-are preserved so the remediator can distinguish live feedback from stale
-threads. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
-context gathered (possibly empty), 1 = business/provider/journal error,
-2 = usage/IO error.
+Read this run's latest remediation brief and replace its gatherReviewThreads
+section with native review bodies and inline review comments, refresh its
+general PR comments from the same read, and pin all of it in an immutable
+feedbackSnapshot (goobers.dev/pr-feedback-snapshot/v1) that later stages
+compare against before acting on the feedback. File, line, side,
+diff-hunk, resolved, and outdated metadata are preserved so the remediator
+can distinguish live feedback from stale threads. A pull request that is
+no longer at this run's selected head ends the run as a stale-selection
+no-work. [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = review
+context gathered (possibly empty) or no-work, 1 = business/provider/journal
+error, 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -2853,7 +2857,7 @@ $ goobers post-merge
 check PR liveness or release its remediation claim (a workflow stage)
 
 ~~~text
-Usage: goobers pr-claim [--release] [path]
+Usage: goobers pr-claim [--release] [--verify-feedback] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
 request is still open and still at the exact source revision this run
@@ -2862,6 +2866,11 @@ claim and return a terminal no-work result; if it moved to a different
 head, release the claim and return a distinct stale-selection no-work
 result, so the runner stops the workflow either way. A missing or
 malformed head fails closed.
+With --verify-feedback, also re-read the PR's review threads and comments
+and compare them with the feedback snapshot this run's brief pinned; a
+difference keeps the claim and reports a typed staleInput reason
+(new_feedback, changed_feedback, missing_feedback, changed_thread_state,
+incomplete_collection, stale_head) for the workflow to route on.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
@@ -3384,8 +3393,14 @@ Usage: goobers resolve-review-threads [path]
 
 Validate the implementer's threadResponses against every gathered live review
 thread, reply to each thread, resolve addressed threads after the reply is
-visible, and re-query the published PR head. Exit codes: 0 = responses
-applied and verified, 1 = business/provider error, 2 = usage/IO error.
+visible, and re-query the published PR head. Before and during publication
+the live feedback is compared with the run's recorded feedback snapshot:
+new, changed or missing feedback, or a thread whose state someone else
+changed, stops publication with a typed staleInput result the workflow
+routes back to gather-review-threads; a head that moved off the published
+SHA ends the run as no-work. Exit codes: 0 = responses applied and
+verified, stale input reported, or no-work; 1 = business/provider error;
+2 = usage/IO error.
 ~~~
 
 **Examples**

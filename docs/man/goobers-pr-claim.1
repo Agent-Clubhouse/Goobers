@@ -6,7 +6,7 @@ goobers pr-claim \- check PR liveness or release its remediation claim (a workfl
 \fBgoobers pr-claim\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers pr-claim [--release] [path]
+Usage: goobers pr-claim [--release] [--verify-feedback] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
 request is still open and still at the exact source revision this run
@@ -15,6 +15,11 @@ claim and return a terminal no-work result; if it moved to a different
 head, release the claim and return a distinct stale-selection no-work
 result, so the runner stops the workflow either way. A missing or
 malformed head fails closed.
+With --verify-feedback, also re-read the PR's review threads and comments
+and compare them with the feedback snapshot this run's brief pinned; a
+difference keeps the claim and reports a typed staleInput reason
+(new_feedback, changed_feedback, missing_feedback, changed_thread_state,
+incomplete_collection, stale_head) for the workflow to route on.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 

@@ -49,7 +49,14 @@ const SecurityAlerts = "security-alerts-v1.schema.json"
 const MissionControlVerdict = "mission-control-verdict-v1alpha1.schema.json"
 
 // RemediationBrief is the current versioned PR-remediation evidence artifact schema.
-const RemediationBrief = "remediation-brief-v3.schema.json"
+const RemediationBrief = "remediation-brief-v4.schema.json"
+
+// RemediationBriefV3 is retained because remediation brief wire versions are immutable.
+const RemediationBriefV3 = "remediation-brief-v3.schema.json"
+
+// PRFeedbackSnapshot is the versioned pull-request feedback snapshot a
+// remediation brief pins (#6126).
+const PRFeedbackSnapshot = "pr-feedback-snapshot-v1.schema.json"
 
 // RemediationBriefV2 is retained because remediation brief wire versions are immutable.
 const RemediationBriefV2 = "remediation-brief-v2.schema.json"

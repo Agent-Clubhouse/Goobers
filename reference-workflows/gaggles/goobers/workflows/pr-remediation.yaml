@@ -592,17 +592,27 @@ spec:
 
     # Local CI can run long enough for the PR to merge or close. Re-check before
     # publishing so a terminal PR releases its claim without pushing or replying.
+    #
+    # This last guard also compares the live review threads and comments with
+    # the feedback snapshot gather-review-threads pinned (#6126): feedback
+    # that changed while the agent, reviewer and local CI ran reports a typed
+    # staleInput, and push-feedback-gate routes it back to re-gather before
+    # anything is published.
     - name: guard-before-push
       type: deterministic
-      goal: Stop remediation and release the claim when the selected PR is no longer open.
+      goal: Stop remediation and release the claim when the selected PR is no longer open or moved, and flag feedback that changed since it was gathered.
       run:
-        command: ["goobers", "pr-claim"]
+        command: ["goobers", "pr-claim", "--verify-feedback"]
         workspace: scratch
+      inputs:
+        resultFile: "pr-remediation-lifecycle.json"
       capabilities:
         - github:pr:write
       policyActions:
         - release-pr-claim
-      next: push-remediated
+      expectedOutputs:
+        - staleInput
+      next: push-feedback-gate
 
     # Publish (issue #392, design doc §5's "re-push -> clear label"). The
     # counterpart to implementation's push-branch: force-push-with-lease to
@@ -683,10 +693,11 @@ spec:
         - selectedNumber
         - publishedHeadSha
         - unresolvedThreadCount
+        - staleInput
       retry:
         maxAttempts: 2
         backoffSeconds: 5
-      next: review-threads-gate
+      next: review-thread-feedback-gate
 
     # Explicit release mirrors backlog-curation's terminal cleanup rather than
     # relying solely on runner finalization. It is idempotent with the early
@@ -800,6 +811,38 @@ spec:
           ]
       inputs:
         resultFile: "finding-response-escalation-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - repo:push
+      policyActions:
+        - record-remediation-checkpoint
+        - escalate-pr
+      expectedOutputs:
+        - escalationOutcome
+        - remediationAttempted
+        - attemptedCauses
+        - escalationReason
+      next: release-escalated-claim
+
+    # Human feedback kept changing under the run: every stale-input repass
+    # re-gathered it and it had changed again by the next publication check.
+    # Park only here, once the repass budget is spent (#6126).
+    - name: park-stale-feedback
+      type: deterministic
+      goal: Park a PR whose human feedback kept changing faster than the in-run repass budget could answer it.
+      run:
+        command:
+          [
+            "goobers",
+            "remediation-checkpoint",
+            "--escalate",
+            "the pull request's human feedback kept changing after it was gathered, and the in-run re-gather budget was exhausted before a publication could answer the current feedback",
+            "--escalation-outcome",
+            "budget-exhausted",
+          ]
+      inputs:
+        resultFile: "stale-feedback-escalation-result.json"
       capabilities:
         - github:pr:write
         - github:issues:write
@@ -931,6 +974,40 @@ spec:
         pass: guard-before-review
         fail: guard-before-implement
         escalate: park-invalid-finding-responses
+
+    # Stale-input routing (#6126). guard-before-push and resolve-review-threads
+    # report staleInput="" when the live feedback still matches the snapshot
+    # (or none was recorded — runs gathered before snapshots existed), else
+    # the typed reason. Stale input is never a failure and never an
+    # immediate park: it re-enters gather-review-threads, whose fresh
+    # snapshot the agent then answers. Re-entering an already-completed stage
+    # charges the run's per-target repass budget, shared by both gates, and
+    # only an exhausted budget escalates. A PR head that moved never reaches
+    # these gates: the guards and stages end the run as a stale-selection /
+    # stale-head no-work instead (#6128).
+    - name: push-feedback-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: staleInput
+          equals: ""
+      branches:
+        pass: push-remediated
+        fail: gather-review-threads
+        escalate: park-stale-feedback
+
+    - name: review-thread-feedback-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: staleInput
+          equals: ""
+      branches:
+        pass: review-threads-gate
+        fail: gather-review-threads
+        escalate: park-stale-feedback
 
     - name: review-threads-gate
       evaluator: automated

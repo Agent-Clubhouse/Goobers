@@ -27,6 +27,8 @@ type adoReviewThread struct {
 	status  string
 	path    string
 	replies []map[string]any
+	// root overrides the reviewer's root comment text ("finding <id>").
+	root string
 }
 
 type fakeADOReviewThreads struct {
@@ -35,6 +37,9 @@ type fakeADOReviewThreads struct {
 	threads  map[int]*adoReviewThread
 	order    []string
 	resolved []int
+	// head, when set, overrides the served source head so a test can move
+	// the PR between stages.
+	head string
 }
 
 func (f *fakeADOReviewThreads) threadsJSON() map[string]any {
@@ -62,8 +67,12 @@ func (f *fakeADOReviewThreads) threadsJSON() map[string]any {
 	}
 	for _, id := range ids {
 		thread := f.threads[id]
+		root := thread.root
+		if root == "" {
+			root = "finding " + strconv.Itoa(id)
+		}
 		comments := []map[string]any{{
-			"id": 1, "parentCommentId": 0, "content": "finding " + strconv.Itoa(id), "commentType": "text",
+			"id": 1, "parentCommentId": 0, "content": root, "commentType": "text",
 			"author":        map[string]string{"id": "reviewer-guid", "displayName": "Reviewer"},
 			"publishedDate": "2026-09-01T10:00:00Z",
 		}}
@@ -84,6 +93,12 @@ func (f *fakeADOReviewThreads) server(repo providers.RepositoryRef, publishedHea
 		writeJSONResp(t, w, map[string]any{"authenticatedUser": map[string]any{"id": "self-guid", "providerDisplayName": "Goobers"}})
 	})
 	mux.HandleFunc(pr, func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		publishedHead := publishedHead
+		if f.head != "" {
+			publishedHead = f.head
+		}
+		f.mu.Unlock()
 		writeJSONResp(t, w, map[string]any{
 			"pullRequestId": 77, "status": "active", "title": "t",
 			"sourceRefName": "refs/heads/goobers/work", "targetRefName": "refs/heads/main",
@@ -200,7 +215,7 @@ func TestGatherReviewThreadsOnADO(t *testing.T) {
 		5: {status: "active", path: "worker.go"},
 		6: {status: "fixed", path: "old.go"},
 	}}
-	server := fake.server(repo, "head-sha")
+	server := fake.server(repo, revisionSelectedSHA)
 	defer server.Close()
 	routeADOStageProvider(t, server.URL)
 	dir := t.TempDir()
