@@ -103,7 +103,11 @@ func AllFeatures() []Feature {
 			features = append(features, converted)
 			return
 		}
-		features[i].DSLVersions = append(features[i].DSLVersions, converted.DSLVersions...)
+		for _, support := range converted.DSLVersions {
+			if !featureDeclaresDSLVersion(features[i], support.Version) {
+				features[i].DSLVersions = append(features[i].DSLVersions, support)
+			}
+		}
 	}
 	for _, feature := range v30.AllFeatures() {
 		merge(v30Feature(feature))
@@ -119,6 +123,15 @@ func AllFeatures() []Feature {
 		return features[i].ID < features[j].ID
 	})
 	return features
+}
+
+func featureDeclaresDSLVersion(feature Feature, version string) bool {
+	for _, support := range feature.DSLVersions {
+		if support.Version == version {
+			return true
+		}
+	}
+	return false
 }
 
 // FeaturesAtDSLVersion filters features to one DSL version.
@@ -290,7 +303,16 @@ func v31ArtifactFeatures() []Feature {
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
-		features = append(features, binaryLayerFeatureForDSL(id, v31InitialFeatureVersion, supportmatrix.V31DSLVersion))
+		features = append(features, Feature{
+			ID:           id,
+			Level:        SupportPreview,
+			SinceVersion: v31InitialFeatureVersion,
+			History:      []SupportTransition{{Level: SupportPreview, SinceVersion: v31InitialFeatureVersion}},
+			DSLVersions: []DSLFeatureSupport{{
+				Version: supportmatrix.V31DSLVersion,
+				Level:   SupportPreview,
+			}},
+		})
 	}
 	return features
 }

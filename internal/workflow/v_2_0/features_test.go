@@ -121,6 +121,9 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	}
 	previewSeen := 0
 	for _, feature := range features {
+		if _, ok := dslVersionLevel(feature, DSLVersion); !ok {
+			continue
+		}
 		wantLevel := SupportGA
 		wantSince := initialFeatureSinceVersion
 		wantHistory := []SupportTransition{{Level: SupportGA, SinceVersion: initialFeatureSinceVersion}}
@@ -223,8 +226,8 @@ func TestFeaturesAtDSLVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(features) != len(AllFeatures()) {
-		t.Fatalf("features for interpreter DSL version = %d, want %d", len(features), len(AllFeatures()))
+	if len(features) != len(featuresAtCurrentDSLVersion(AllFeatures())) {
+		t.Fatalf("features for interpreter DSL version = %d, want %d", len(features), len(featuresAtCurrentDSLVersion(AllFeatures())))
 	}
 }
 
@@ -882,7 +885,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolved feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, got), difference(got, want))
 	}
-	registered := featureIDs(AllFeatures())
+	registered := featureIDs(featuresAtCurrentDSLVersion(AllFeatures()))
 	if !slices.Equal(registered, want) {
 		t.Fatalf("registered feature surface differs from current DSL\nmissing: %v\nextra: %v", difference(want, registered), difference(registered, want))
 	}
@@ -1248,6 +1251,16 @@ func featureIDs(features []Feature) []FeatureID {
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids)
+}
+
+func featuresAtCurrentDSLVersion(features []Feature) []Feature {
+	out := make([]Feature, 0, len(features))
+	for _, feature := range features {
+		if _, ok := dslVersionLevel(feature, DSLVersion); ok {
+			out = append(out, feature)
+		}
+	}
+	return out
 }
 
 func difference(left, right []FeatureID) []FeatureID {
