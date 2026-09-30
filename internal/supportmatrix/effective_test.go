@@ -17,10 +17,9 @@ func TestEffectiveInRecordsActualRemovalWithoutRewritingPromise(t *testing.T) {
 		t.Fatal("the correction must preserve the history already published in beta.2")
 	}
 	for _, release := range []string{"v0.4.0", "v0.5.0"} {
-		matrixForRelease := matrix
-		if release == "v0.4.0" {
-			matrixForRelease = GetDSL()
-			delete(matrixForRelease, V31DSLVersion)
+		matrixForRelease, err := GetDSLForRelease(release)
+		if err != nil {
+			t.Fatalf("release-effective matrix for %s: %v", release, err)
 		}
 		if err := ValidateSupportPolicyForRelease(matrixForRelease, release); err != nil {
 			t.Fatalf("corrected support policy for %s: %v", release, err)

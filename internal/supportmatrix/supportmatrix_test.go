@@ -92,6 +92,27 @@ func TestNewestSupported(t *testing.T) {
 	}
 }
 
+func TestGetDSLForReleaseOmitsFutureVersions(t *testing.T) {
+	v040, err := GetDSLForRelease("v0.4.0")
+	if err != nil {
+		t.Fatalf("GetDSLForRelease(v0.4.0): %v", err)
+	}
+	if _, ok := v040.Lookup(V31DSLVersion); ok {
+		t.Fatalf("v0.4.0 release matrix includes future DSL %s", V31DSLVersion)
+	}
+	if err := ValidateSupportPolicyForRelease(v040, "v0.4.0"); err != nil {
+		t.Fatalf("v0.4.0 release matrix should validate: %v", err)
+	}
+
+	v050, err := GetDSLForRelease("v0.5.0")
+	if err != nil {
+		t.Fatalf("GetDSLForRelease(v0.5.0): %v", err)
+	}
+	if _, ok := v050.Lookup(V31DSLVersion); !ok {
+		t.Fatalf("v0.5.0 release matrix omits DSL %s", V31DSLVersion)
+	}
+}
+
 func TestGetDSLDeclaresCurrentVersion(t *testing.T) {
 	matrix := GetDSL()
 
