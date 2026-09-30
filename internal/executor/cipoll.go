@@ -539,7 +539,7 @@ func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollCon
 		return outcome, nil
 	}
 
-	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckAnnotations(ctx, cfg, result), retryErr)
+	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckEvidence(ctx, cfg, result), retryErr)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
@@ -604,29 +604,43 @@ func (e *CIPollExecutor) attemptFailedChecksRetry(ctx context.Context, cfg CIPol
 	return true, nil
 }
 
-// failingCheckAnnotations resolves annotations for the failing checks, keyed by
-// check name. Called once, on the terminal failing outcome — never on the
-// polling path, so a run that never fails costs no extra provider calls.
+// failingCheckEvidence resolves the evidence for the failing checks. Called
+// once, on the terminal failing outcome — never on the polling path, so a run
+// that never fails costs no extra provider calls. A provider that reports CI
+// per commit (CIFailureLister) is asked for the head SHA and matched by check
+// name; one that reports CI per pull request (Azure DevOps policy
+// evaluations, providers.PullRequestCIFailureReader) is asked for the pull
+// request and matched per check (ciEvidenceForPullRequest).
 //
-// Best-effort by design: annotations enrich the evidence, they are not the
-// outcome. A provider that cannot supply them, or an error fetching them, must
+// Best-effort by design: evidence enriches the artifact, it is not the
+// outcome. A provider that cannot supply it, or an error fetching it, must
 // not turn a determined CI verdict into a stage failure.
-func (e *CIPollExecutor) failingCheckAnnotations(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) map[string][]providers.CheckAnnotation {
-	lister, ok := e.Poller.(CIFailureLister)
-	if !ok || result.HeadSHA == "" {
-		return nil
-	}
-	failures, err := lister.CIFailures(ctx, providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo}, result.HeadSHA)
-	if err != nil {
-		return nil
-	}
-	annotations := make(map[string][]providers.CheckAnnotation, len(failures))
-	for _, failure := range failures {
-		if len(failure.Annotations) > 0 {
-			annotations[failure.Name] = failure.Annotations
+func (e *CIPollExecutor) failingCheckEvidence(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) ciCheckEvidence {
+	repo := providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo}
+	if lister, ok := e.Poller.(CIFailureLister); ok {
+		if result.HeadSHA == "" {
+			return nil
 		}
+		failures, err := lister.CIFailures(ctx, repo, result.HeadSHA)
+		if err != nil {
+			return nil
+		}
+		annotations := make(map[string][]providers.CheckAnnotation, len(failures))
+		for _, failure := range failures {
+			if len(failure.Annotations) > 0 {
+				annotations[failure.Name] = failure.Annotations
+			}
+		}
+		return ciEvidenceByName(annotations)
 	}
-	return annotations
+	if reader, ok := e.Poller.(providers.PullRequestCIFailureReader); ok && cfg.PullID != "" {
+		evidence, err := reader.PullRequestCIFailures(ctx, repo, cfg.PullID)
+		if err != nil {
+			return nil
+		}
+		return ciEvidenceForPullRequest(result.Checks, evidence.Failures)
+	}
+	return nil
 }
 
 // boundCheckAnnotations caps how much of one check's annotation set reaches the
@@ -735,7 +749,12 @@ func boundFailedCheckNames(names []string) string {
 	return string(first) + marker
 }
 
-func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[string][]providers.CheckAnnotation, retryErr error) ([]byte, error) {
+// marshalCIChecksArtifact curates checks into ci-checks.json, with each
+// check's evidence resolved by evidenceFor (nil for none).
+func marshalCIChecksArtifact(checks []providers.CheckDetail, evidenceFor ciCheckEvidence, retryErr error) ([]byte, error) {
+	if evidenceFor == nil {
+		evidenceFor = ciEvidenceByName(nil)
+	}
 	artifact := CIChecksArtifact{
 		Checks: make([]CICheck, 0, min(len(checks), maxCIChecks)),
 	}
@@ -748,9 +767,13 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 			nonPassing++
 		}
 	}
-	appendCheck := func(check providers.CheckDetail) {
+	appendCheck := func(i int, check providers.CheckDetail) {
 		if len(artifact.Checks) == maxCIChecks {
 			return
+		}
+		checkAnnotations, evidenceSummary := evidenceFor(i, check)
+		if strings.TrimSpace(check.Summary) == "" {
+			check.Summary = evidenceSummary
 		}
 		check.Name = strings.ToValidUTF8(check.Name, "\uFFFD")
 		check.URL = strings.ToValidUTF8(check.URL, "\uFFFD")
@@ -764,19 +787,19 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 			HostReproduction: classifyHostReproduction(check.Name, runtime.GOOS),
 		}
 		var annotationsDropped, messagesTruncated int
-		entry.Annotations, annotationsDropped, messagesTruncated = boundCheckAnnotations(annotations[check.Name])
+		entry.Annotations, annotationsDropped, messagesTruncated = boundCheckAnnotations(checkAnnotations)
 		artifact.Metadata.AnnotationsDropped += annotationsDropped
 		artifact.Metadata.AnnotationMessagesTruncated += messagesTruncated
 		artifact.Checks = append(artifact.Checks, entry)
 	}
-	for _, check := range checks {
+	for i, check := range checks {
 		if check.State == providers.CheckStateFailing {
-			appendCheck(check)
+			appendCheck(i, check)
 		}
 	}
-	for _, check := range checks {
+	for i, check := range checks {
 		if check.State != providers.CheckStatePassing && check.State != providers.CheckStateFailing {
-			appendCheck(check)
+			appendCheck(i, check)
 		}
 	}
 	artifact.Metadata.ChecksDropped = nonPassing - len(artifact.Checks)

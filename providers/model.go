@@ -700,7 +700,37 @@ type CIFailureDetail struct {
 	CheckDetail
 	Annotations []CheckAnnotation  `json:"annotations"`
 	Integrity   apiintegrity.Grade `json:"integrity,omitempty"`
+	// Evidence says how complete the failure detail is, for a provider that
+	// collects it from more than one read (Azure DevOps builds, timelines and
+	// logs). Empty means the provider does not grade its evidence.
+	Evidence CIEvidenceState `json:"evidence,omitempty"`
 }
+
+// CIEvidenceState grades one failing check's evidence, so missing, truncated
+// or unsupported detail is explicit rather than an apparently clean empty
+// result.
+type CIEvidenceState string
+
+const (
+	// CIEvidenceComplete means every diagnostic the provider exposes was read
+	// within the collection bounds.
+	CIEvidenceComplete CIEvidenceState = "complete"
+	// CIEvidencePartialBound means diagnostics were dropped or truncated by a
+	// collection bound (failed jobs, tasks, issues or log bytes).
+	CIEvidencePartialBound CIEvidenceState = "partial_bound"
+	// CIEvidencePartialProvider means the provider did not return some diagnostic
+	// it names (no build found, no failed step, an unreadable log).
+	CIEvidencePartialProvider CIEvidenceState = "partial_provider"
+	// CIEvidenceUnsupported means the check is not backed by anything the provider
+	// can read failure detail from (an external status, say).
+	CIEvidenceUnsupported CIEvidenceState = "unsupported"
+	// CIEvidenceFailed means collection failed, or the build found belongs to
+	// another repository or pull request and was rejected.
+	CIEvidenceFailed CIEvidenceState = "failed"
+	// CIEvidenceStale means the evidence describes another source revision than
+	// the one being diagnosed.
+	CIEvidenceStale CIEvidenceState = "stale"
+)
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.
 type PullRequestComment struct {

@@ -2152,9 +2152,15 @@ Usage: goobers gather-ci-failures [path]
 
 Enrich this run's remediation brief with failing check names,
 conclusions, summaries, and annotations. Passing CI leaves the brief
-unchanged and performs no provider API calls. Raw job logs are never
-fetched: their explicit per-check volume bound is 0 bytes. [path] is
-the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:
+unchanged and performs no provider API calls. On GitHub and Gitea raw
+job logs are never fetched: their per-check volume bound is 0 bytes.
+On Azure DevOps each failing build or status policy is traced to its
+build, and the build's failed jobs and tasks are reported with their
+issues and a bounded excerpt of each failed step's log; every check's
+summary grades its evidence (complete, partial_bound, partial_provider,
+unsupported, failed or stale), so an external status or a missing log
+is explicit. [path] is the instance root, defaulting to
+GOOBERS_INSTANCE_ROOT. Exit codes:
 0 = evidence gathered (or passing-CI no-op), 1 = business error,
 2 = usage/IO error.
 ~~~

@@ -52,6 +52,9 @@ type ADOProvider struct {
 	// zero value means the default Resolved, Completed and Removed
 	// categories.
 	doneStates ADODoneStates
+	// ciEvidenceBounds caps CI failure-evidence collection (#5652); the zero
+	// value means defaultADOCIEvidenceBounds.
+	ciEvidenceBounds ADOCIEvidenceBounds
 
 	// requirementTypeMu guards requirementTypes, the per-project cache of the
 	// Requirement category's default work item type (ADO-N27): the create
