@@ -34,6 +34,7 @@ type flagKind uint8
 const (
 	boolFlag flagKind = iota
 	valueFlag
+	optionalValueFlag
 )
 
 var builtinFlagShapes = map[string]map[string]flagKind{
@@ -42,7 +43,7 @@ var builtinFlagShapes = map[string]map[string]flagKind{
 	"backlog-query":          {"debug": boolFlag, "read-only": boolFlag, "claim": boolFlag, "resweep": boolFlag, "reconcile": boolFlag, "release": boolFlag},
 	"docs-churn":             {"since": valueFlag, "buffer-multiplier": valueFlag},
 	"gather-sibling-context": {"no-verdict-cache": boolFlag},
-	"remediation-checkpoint": {"budget": valueFlag, "escalate": valueFlag, "escalation-outcome": valueFlag},
+	"remediation-checkpoint": {"budget": valueFlag, "escalate": optionalValueFlag, "escalation-outcome": valueFlag},
 	"respond-to-findings":    {"check": boolFlag},
 	"security-alerts-query":  {"source": valueFlag, "ref": valueFlag, "severity": valueFlag, "max-results": valueFlag},
 	"self" + "-update":       {"include-prerelease": boolFlag},
@@ -104,6 +105,9 @@ func goobersCommandEffects(command string, args []string) Effects {
 }
 
 func remediationCheckpointEffects(args []string) Effects {
+	if !validBuiltInInvocation("remediation-checkpoint", args) {
+		return Effects{}
+	}
 	for _, arg := range args {
 		switch {
 		case arg == "--escalate":
@@ -131,7 +135,7 @@ func validBuiltInInvocation(command string, args []string) bool {
 
 func flagsMatchShape(args []string, shape map[string]flagKind) bool {
 	for i := 0; i < len(args); i++ {
-		name, hasInlineValue, ok := splitLongFlag(args[i])
+		name, value, hasInlineValue, ok := splitLongFlag(args[i])
 		if !ok {
 			return false
 		}
@@ -139,22 +143,47 @@ func flagsMatchShape(args []string, shape map[string]flagKind) bool {
 		if !ok {
 			return false
 		}
-		if kind == valueFlag && !hasInlineValue {
-			i++
-			if i >= len(args) {
+		switch kind {
+		case boolFlag:
+			if hasInlineValue && !validBoolFlagValue(value) {
 				return false
+			}
+		case valueFlag:
+			if hasInlineValue {
+				if value == "" {
+					return false
+				}
+				continue
+			}
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "--") {
+				return false
+			}
+		case optionalValueFlag:
+			if hasInlineValue {
+				if value == "" {
+					return false
+				}
+				continue
+			}
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				i++
 			}
 		}
 	}
 	return true
 }
 
-func splitLongFlag(arg string) (string, bool, bool) {
+func splitLongFlag(arg string) (string, string, bool, bool) {
 	if !strings.HasPrefix(arg, "--") || arg == "--" {
-		return "", false, false
+		return "", "", false, false
 	}
 	name, value, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
-	return name, value != "" || hasValue, name != ""
+	return name, value, hasValue, name != ""
+}
+
+func validBoolFlagValue(value string) bool {
+	return slices.Contains([]string{"1", "t", "T", "TRUE", "true", "True", "0", "f", "F", "FALSE", "false", "False"}, value)
 }
 
 func gitDiffEffects(cmd []string) Effects {
@@ -198,6 +227,9 @@ func selectionEffects(command string, args []string) Effects {
 			return Effects{Known: true, SelectsPR: true, NoWork: true, Changes: true}
 		}
 	case "backlog-query":
+		if !validBuiltInInvocation(command, args) {
+			return Effects{}
+		}
 		if len(args) == 0 || flagEnabled(args, "claim") {
 			return Effects{Known: true, NoWork: true}
 		}

@@ -288,14 +288,21 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 		task    apiv1.Task
 		known   bool
 		changes bool
+		parks   bool
 	}{
 		{name: "curation feedback", task: shell("check", "", "goobers", "backlog-health", "--feedback"), known: true},
 		{name: "backlog reconcile", task: shell("check", "", "goobers", "backlog-query", "--reconcile"), known: true},
 		{name: "backlog resweep claim", task: shell("check", "", "goobers", "backlog-query", "--claim", "--resweep"), known: true},
+		{name: "backlog claim unknown flag", task: shell("check", "", "goobers", "backlog-query", "--claim", "--unknown"), known: false},
+		{name: "backlog resweep bogus flag", task: shell("check", "", "goobers", "backlog-query", "--resweep", "--bogus"), known: false},
+		{name: "backlog extra positional", task: shell("check", "", "goobers", "backlog-query", "--claim", "extra"), known: false},
 		{name: "open pull request", task: shell("check", "", "goobers", "open-pr"), known: true},
 		{name: "close out issue", task: shell("check", "", "goobers", "issue-close-out"), known: true},
 		{name: "push branch remains subject-changing", task: shell("check", "", "goobers", "push-branch"), known: true, changes: true},
-		{name: "remediation escalation parks", task: shell("check", "", "goobers", "remediation-checkpoint", "--escalate", "review failed"), known: true},
+		{name: "remediation bare escalation parks", task: shell("check", "", "goobers", "remediation-checkpoint", "--escalate"), known: true, parks: true},
+		{name: "remediation escalation reason parks", task: shell("check", "", "goobers", "remediation-checkpoint", "--escalate", "review failed"), known: true, parks: true},
+		{name: "remediation escalation unknown flag", task: shell("check", "", "goobers", "remediation-checkpoint", "--escalate", "review failed", "--bogus"), known: false},
+		{name: "remediation extra positional", task: shell("check", "", "goobers", "remediation-checkpoint", "extra"), known: false},
 		{name: "ci poll kind", task: func() apiv1.Task {
 			task := shell("check", "", "goobers", "ci-poll")
 			task.Inputs = map[string]string{"kind": "ci-poll"}
@@ -307,8 +314,8 @@ func TestSafetyBuiltInStageCommandsAreCovered(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := CommandEffects(tc.task)
-			if got.Known != tc.known || got.Changes != tc.changes {
-				t.Fatalf("CommandEffects(%v) = %+v, want known=%v changes=%v", tc.task.Run.Command, got, tc.known, tc.changes)
+			if got.Known != tc.known || got.Changes != tc.changes || got.Parks != tc.parks {
+				t.Fatalf("CommandEffects(%v) = %+v, want known=%v changes=%v parks=%v", tc.task.Run.Command, got, tc.known, tc.changes, tc.parks)
 			}
 		})
 	}
