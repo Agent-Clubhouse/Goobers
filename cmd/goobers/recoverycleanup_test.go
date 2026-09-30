@@ -95,6 +95,61 @@ func TestRecoveryCleanupTerminalNoWorkTargetWithoutHEAD(t *testing.T) {
 	}
 }
 
+func TestRecoveryCleanupRunningNoWorkTargetWithoutHEAD(t *testing.T) {
+	testdep.Require(t, "git")
+
+	for _, tc := range []struct {
+		name    string
+		dirty   bool
+		wantErr bool
+	}{
+		{name: "empty"},
+		{name: "untracked", dirty: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			layout := instance.NewLayout(initDemo(t))
+			cfg, err := instance.LoadConfig(layout.ConfigFile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository := t.TempDir()
+			runTestGit(t, repository, "init", "--initial-branch=main")
+			if tc.dirty {
+				if err := os.WriteFile(filepath.Join(repository, "evidence.txt"), []byte("preserve me"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			workcopies := t.TempDir()
+			manager, err := worktree.NewManager(workcopies)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const runID = "cleanup-headless-running"
+			startedAt := time.Now().UTC().Add(-time.Hour)
+			run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+				Schema: journal.RunSchema, RunID: runID, Workflow: "merge-review",
+				WorkflowVersion: 1, Gaggle: "example", StartedAt: startedAt,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := run.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			key := (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "owner", Name: "repo"}).CanonicalKey()
+			target := worktree.CleanupTarget{
+				Path: repository, WorktreeID: runID + "-stage", OwnerRunID: runID,
+				BaseRef: "refs/heads/main", CreatedAt: startedAt,
+			}
+			err = recoveryCleanupCurrentTarget(context.Background(), layout, cfg, workcopies, journal.NewRegistryScrubber(), manager, key, target)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("running-run headless cleanup error = %v, wantErr=%t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestRecoveryCleanupTerminalRepositorylessTarget(t *testing.T) {
 	testdep.Require(t, "git")
 

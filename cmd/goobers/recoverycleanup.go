@@ -113,7 +113,12 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 		if err := worktree.VerifyCleanupTargetPreservedByGit(ctx, target); err == nil {
 			return nil
 		}
-	} else if err := worktree.VerifyCleanupTargetEmptyWithoutHEAD(ctx, target); err == nil {
+	}
+	// A checkout that never reached a commit and holds no tracked, staged, or
+	// non-ignored untracked content has nothing a snapshot could capture, in
+	// either phase; Retain would only fail resolving a merge base against the
+	// unborn HEAD and leave the cleanup deferred forever.
+	if err := worktree.VerifyCleanupTargetEmptyWithoutHEAD(ctx, target); err == nil {
 		return nil
 	}
 	_, _, err = recovery.Retain(ctx, request, publication)

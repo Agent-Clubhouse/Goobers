@@ -167,6 +167,21 @@ func TestVerifyCleanupTargetEmptyWithoutHEAD(t *testing.T) {
 		}
 	})
 
+	t.Run("staged-content", func(t *testing.T) {
+		repository := t.TempDir()
+		runTestGit(t, repository, "init", "-b", "main")
+		if err := os.WriteFile(filepath.Join(repository, "staged.txt"), []byte("preserve me"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runTestGit(t, repository, "add", "staged.txt")
+		if err := os.Remove(filepath.Join(repository, "staged.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
+			t.Fatal("staged content was treated as disposable")
+		}
+	})
+
 	t.Run("has-head", func(t *testing.T) {
 		repository := newSourceRepo(t)
 		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
