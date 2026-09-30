@@ -596,6 +596,20 @@ func ResultFile(command string) (string, bool) {
 	return entry.ResultFile, true
 }
 
+// IsDefaultResultFile reports whether name is one of the exact default result
+// file names owned by a guarded provider-stage command.
+func IsDefaultResultFile(name string) bool {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	for _, entry := range commands {
+		if entry.ResultFile == name {
+			return true
+		}
+	}
+	return false
+}
+
 // effectiveSupport resolves c's result-file support: an explicit
 // ResultFileSupport wins, otherwise support is inferred from ResultFile.
 func (c Command) effectiveSupport() ResultFileSupport {

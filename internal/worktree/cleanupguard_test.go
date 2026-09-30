@@ -147,6 +147,78 @@ func TestVerifyCleanupTargetPreservedByGit(t *testing.T) {
 	}
 }
 
+func TestVerifyCleanupTargetEmptyWithoutHEAD(t *testing.T) {
+	t.Run("unborn-head", func(t *testing.T) {
+		repository := t.TempDir()
+		runTestGit(t, repository, "init", "-b", "main")
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err != nil {
+			t.Fatalf("empty unborn repository: %v", err)
+		}
+	})
+
+	t.Run("untracked-content", func(t *testing.T) {
+		repository := t.TempDir()
+		runTestGit(t, repository, "init", "-b", "main")
+		if err := os.WriteFile(filepath.Join(repository, "untracked.txt"), []byte("preserve me"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
+			t.Fatal("untracked content was treated as disposable")
+		}
+	})
+
+	t.Run("staged-content", func(t *testing.T) {
+		repository := t.TempDir()
+		runTestGit(t, repository, "init", "-b", "main")
+		if err := os.WriteFile(filepath.Join(repository, "staged.txt"), []byte("preserve me"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runTestGit(t, repository, "add", "staged.txt")
+		if err := os.Remove(filepath.Join(repository, "staged.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
+			t.Fatal("staged content was treated as disposable")
+		}
+	})
+
+	t.Run("has-head", func(t *testing.T) {
+		repository := newSourceRepo(t)
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
+			t.Fatal("repository with HEAD was treated as a headless no-work target")
+		}
+	})
+
+	t.Run("canceled-context", func(t *testing.T) {
+		repository := t.TempDir()
+		runTestGit(t, repository, "init", "-b", "main")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(ctx, CleanupTarget{Path: repository}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled context error = %v, want context.Canceled", err)
+		}
+		if _, err := os.Stat(repository); err != nil {
+			t.Fatalf("target was not preserved: %v", err)
+		}
+	})
+
+	t.Run("not-a-repository", func(t *testing.T) {
+		repository := t.TempDir()
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
+			t.Fatal("non-repository target was treated as disposable")
+		}
+	})
+
+	t.Run("git-exec-failure", func(t *testing.T) {
+		repository := t.TempDir()
+		runTestGit(t, repository, "init", "-b", "main")
+		t.Setenv("PATH", t.TempDir())
+		if err := VerifyCleanupTargetEmptyWithoutHEAD(context.Background(), CleanupTarget{Path: repository}); err == nil {
+			t.Fatal("git executable failure was treated as disposable")
+		}
+	})
+}
+
 func TestNamedCleanupGuardConcurrentReplacement(t *testing.T) {
 	manager := &Manager{}
 	var calls atomic.Int64

@@ -111,6 +111,54 @@ func VerifyCleanupTargetPreservedByGit(ctx context.Context, target CleanupTarget
 	return nil
 }
 
+// VerifyCleanupTargetEmptyWithoutHEAD proves that a checkout never reached a
+// commit and has no tracked, staged, or untracked content to recover.
+func VerifyCleanupTargetEmptyWithoutHEAD(ctx context.Context, target CleanupTarget) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	status, err := runCleanupGitOutput(ctx, target.Path, "inspect cleanup status", "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot inspect working-tree state: %w", err)
+	}
+	if status != "" {
+		return fmt.Errorf("worktree cleanup target contains unretained changes")
+	}
+	if err := verifyCleanupTargetUnbornHEAD(ctx, target); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyCleanupTargetUnbornHEAD(ctx context.Context, target CleanupTarget) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup HEAD", "rev-parse", "--verify", "--quiet", "HEAD"); err == nil {
+		return fmt.Errorf("worktree cleanup target has HEAD")
+	} else if !isGitMissingRef(err) {
+		return fmt.Errorf("worktree cleanup cannot resolve HEAD: %w", err)
+	}
+	branch, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup symbolic HEAD", "symbolic-ref", "--quiet", "HEAD")
+	if err != nil {
+		return fmt.Errorf("worktree cleanup cannot resolve symbolic HEAD: %w", err)
+	}
+	if !strings.HasPrefix(branch, "refs/heads/") {
+		return fmt.Errorf("worktree cleanup HEAD is not an unborn branch")
+	}
+	if _, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup unborn branch", "show-ref", "--verify", "--quiet", branch); err == nil {
+		return fmt.Errorf("worktree cleanup symbolic HEAD already exists")
+	} else if !isGitMissingRef(err) {
+		return fmt.Errorf("worktree cleanup cannot verify unborn branch: %w", err)
+	}
+	return ctx.Err()
+}
+
+func isGitMissingRef(err error) bool {
+	var gitErr *gitCommandError
+	return errors.As(err, &gitErr) && gitErr.exitCode == 1 && strings.TrimSpace(string(gitErr.output)) == ""
+}
+
 // CleanupTarget identifies the directory about to be destroyed. OwnerRunID
 // comes from its durable marker; an empty value must not be guessed from the
 // worktree ID, since run IDs and stage names can both contain hyphens.
