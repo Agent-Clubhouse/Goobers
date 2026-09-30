@@ -266,6 +266,11 @@ describe("Insight page", () => {
       "#/run/01JZ455ESCALATE",
     );
     const runTable = screen.getByRole("table", { name: "PR #4398 run breakdown" });
+    expect(within(runTable).getByRole("columnheader", { name: "Gaggle / workflow" })).toBeInTheDocument();
+    expect(within(runTable).getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+    expect(within(runTable).getByText("core")).toBeInTheDocument();
+    expect(within(runTable).getByText("implementation")).toBeInTheDocument();
+    expect(within(runTable).getByText("escalated")).toBeInTheDocument();
     expect(
       within(runTable).getByText(
         (_, element) =>
@@ -277,6 +282,13 @@ describe("Insight page", () => {
     expect(within(runTable).getByText("2.5 AIC")).toBeInTheDocument();
     expect(within(runTable).queryByRole("columnheader", { name: "Normalized" })).not.toBeInTheDocument();
     expect(within(runTable).getByText("ai_credits")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close run list" }));
+
+    await user.click(screen.getByRole("button", { name: "View 1 run for Issue #4398" }));
+    const issueRunTable = screen.getByRole("table", { name: "Issue #4398 run breakdown" });
+    expect(within(issueRunTable).getByText("Unknown gaggle")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("Workflow unavailable")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("Status unavailable")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close run list" }));
 
     let rows = within(table).getAllByRole("row").slice(1);
