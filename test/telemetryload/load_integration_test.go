@@ -84,6 +84,83 @@ func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 	checkStartupProbe(t, ctx, root, artifact, daemon, driver)
 }
 
+// Smoke the two lower collection profiles through the real daemon and local
+// receiver. The normal-rate release comparison remains a separate matched
+// 35-minute experiment; these assertions protect the profile signal boundary.
+func TestIntegrationTelemetryLowerCollectionProfiles(t *testing.T) {
+	testdep.Require(t, "go", "git")
+	if runtime.GOOS == "windows" {
+		testdep.Require(t, "powershell.exe")
+	} else {
+		testdep.Require(t, "ps")
+	}
+	repo, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := t.TempDir()
+	ext := ""
+	if runtime.GOOS == "windows" {
+		ext = ".exe"
+	}
+	daemon, driver := filepath.Join(artifact, "goobers"+ext), filepath.Join(artifact, "load"+ext)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	for _, build := range []struct{ output, pkg string }{{daemon, "./cmd/goobers"}, {driver, "./test/telemetryload/testdata/driver"}} {
+		command := exec.CommandContext(ctx, "go", "build", "-o", build.output, build.pkg)
+		command.Dir = repo
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", build.pkg, err, output)
+		}
+	}
+	for _, profile := range []string{"health", "journal"} {
+		t.Run(profile, func(t *testing.T) {
+			outputRoot := filepath.Join(artifact, profile)
+			args := []string{"-bin", daemon, "-out", outputRoot, "-scenario", "enabled",
+				"-duration", "15s", "-workers", "2", "-profile", profile}
+			if runtime.GOOS == "windows" {
+				args = append(args, "-windows-insecure-demo")
+			}
+			command := exec.CommandContext(ctx, driver, args...)
+			command.Dir = repo
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s profile fixture: %v\n%s", profile, err, output)
+			}
+			data, err := os.ReadFile(filepath.Join(outputRoot, "enabled.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Runs, Failures, HealthFailures, ExpectedRunEvents, MissingRunEvents, MetricSampleErrors int
+				ShutdownMS                                                                              float64
+				Records                                                                                 int64
+				Streams                                                                                 map[string]int
+				Replay                                                                                  struct{ AccountingReady bool }
+			}
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.Replay.AccountingReady || result.Runs < 2 || result.Failures != 0 ||
+				result.HealthFailures != 0 || result.MetricSampleErrors != 0 ||
+				result.ShutdownMS > 20000 || result.ExpectedRunEvents == 0 ||
+				result.Streams["diagnostics"] == 0 || result.Records == 0 {
+				t.Fatalf("%s health/workflow/export invariant failed: %s\n%s", profile, data, output)
+			}
+			if result.Streams[""] != 0 {
+				t.Fatalf("%s emitted run/stage traces: %s", profile, data)
+			}
+			if profile == "health" {
+				if result.Streams["journal"] != 0 || result.MissingRunEvents != result.ExpectedRunEvents {
+					t.Fatalf("health exported run journals: %s", data)
+				}
+			} else if result.Streams["journal"] == 0 || result.MissingRunEvents != 0 {
+				t.Fatalf("journal-only profile did not reconcile run journals: %s", data)
+			}
+		})
+	}
+}
+
 // Reuse the daemon/driver built by the existing integration fixture. One pair
 // per mode checks the harness, not a release p95 distribution. The parent's
 // existing three-minute context remains the bound; no timeout is relaxed.
