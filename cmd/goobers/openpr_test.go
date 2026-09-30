@@ -509,8 +509,9 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 		Type: journal.EventStageFinished, Stage: "query-backlog", Attempt: 1, Status: "success",
 		Outputs: map[string]any{
 			"id": "42", "title": "Render rich PR bodies",
-			"body":      "## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
-			"updatedAt": "2026-08-01T12:00:00Z",
+			"body":               "## Problem\nPR bodies lack context.\n\n## Notes\nDone.",
+			"acceptanceCriteria": "- [x] Include journal evidence.",
+			"updatedAt":          "2026-08-01T12:00:00Z",
 		},
 	}); err != nil {
 		t.Fatalf("record claimed issue: %v", err)
@@ -620,7 +621,7 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 			"42",
 			"2026-08-01T12:00:00Z",
 			"Render rich PR bodies",
-			"## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
+			"## Problem\nPR bodies lack context.\n\n## Notes\nDone.\n\n## Acceptance Criteria\n\n- [x] Include journal evidence.",
 		),
 	} {
 		if !strings.Contains(pr.body, want) {

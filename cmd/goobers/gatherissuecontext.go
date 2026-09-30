@@ -87,7 +87,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 			issues = append(issues, apiv1.RemediationIssue{
 				Number:    number,
 				Title:     item.Title,
-				Body:      item.Body,
+				Body:      item.BodyWithAcceptanceCriteria(),
 				URL:       item.URL,
 				Integrity: item.Integrity,
 			})

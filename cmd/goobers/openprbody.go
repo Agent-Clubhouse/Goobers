@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 const maxLocalCIOutputBytes = 12 * 1024
@@ -72,6 +73,7 @@ func renderStructuredPRBody(root, runID, issueID, issueRef, issueTitle string) (
 	var (
 		artifacts      []journalArtifact
 		issueBody      string
+		issueCriteria  string
 		issueUpdatedAt string
 		reviews        []prBodyReview
 		latestCI       *journal.Event
@@ -85,6 +87,7 @@ func renderStructuredPRBody(root, runID, issueID, issueRef, issueTitle string) (
 		if issueBody == "" && ev.Type == journal.EventStageFinished && ev.Outputs != nil {
 			if id, ok := ev.Outputs["id"].(string); ok && id == issueID {
 				issueBody, _ = ev.Outputs["body"].(string)
+				issueCriteria, _ = ev.Outputs["acceptanceCriteria"].(string)
 				// updatedAt (#2340): the claimed WorkItem's UpdatedAt, flattened
 				// into this same stage-output event by mergeResultFileOutputs
 				// (a *time.Time marshals to a JSON string). Pinned into the PR
@@ -146,6 +149,7 @@ func renderStructuredPRBody(root, runID, issueID, issueRef, issueTitle string) (
 		}
 	}
 
+	issueBody = providers.ComposeWorkItemBody(issueBody, issueCriteria)
 	return formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdatedAt, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
 }
 
