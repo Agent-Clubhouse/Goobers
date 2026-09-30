@@ -34,7 +34,7 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 				CostBases:     []string{telemetry.CostBasisVendorReported},
 			}},
 			Runs: []rollup.CostRunAggregate{{
-				RunID: "run-1", StartedAt: since.Add(time.Hour),
+				RunID: "run-1", Gaggle: "core", Workflow: "implementation", Status: "completed", StartedAt: since.Add(time.Hour),
 				UsageAttempts: 3, MeasuredAttempts: 3,
 				NanoAIU: &nanoAIU, CostUSD: &costUSD,
 				BillingModels: []string{telemetry.BillingModelAICredits},
@@ -82,6 +82,8 @@ func TestTelemetryCostsProjectsBoundedAggregateContract(t *testing.T) {
 		t.Fatalf("models = %+v", item.Models)
 	}
 	if len(item.Runs) != 1 || item.Runs[0].RunID != "run-1" ||
+		item.Runs[0].Gaggle != "core" || item.Runs[0].Workflow != "implementation" ||
+		item.Runs[0].Status != "completed" ||
 		len(item.Runs[0].NativeTotals) != 1 || item.Runs[0].NativeTotals[0].Unit != "aiCredits" {
 		t.Fatalf("runs = %+v", item.Runs)
 	}

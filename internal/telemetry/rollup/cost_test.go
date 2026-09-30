@@ -193,6 +193,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	if len(pr.Runs) != 4 || pr.Runs[0].RunID != "run-a" || pr.Runs[3].RunID != "run-d" {
 		t.Fatalf("PR run breakdown = %#v", pr.Runs)
 	}
+	if pr.Runs[0].Gaggle != "test" || pr.Runs[0].Workflow != "implement" || pr.Runs[0].Status != "completed" {
+		t.Fatalf("PR run metadata = %#v", pr.Runs[0])
+	}
 
 	issues, err := db.IssueCosts(context.Background(), "github")
 	if err != nil {
@@ -211,6 +214,9 @@ func TestCostAggregatesRetriesSharedAllocationOrphanAndCoverage(t *testing.T) {
 	}
 	if len(issues[0].Runs) != 4 || len(issues[1].Runs) != 3 {
 		t.Fatalf("issue run breakdown = %#v", issues)
+	}
+	if issues[0].Runs[0].Gaggle != "test" || issues[0].Runs[0].Workflow != "implement" || issues[0].Runs[0].Status != "completed" {
+		t.Fatalf("issue run metadata = %#v", issues[0].Runs[0])
 	}
 }
 
@@ -429,8 +435,8 @@ type costUsage struct {
 func seedCostRow(t *testing.T, db *DB, runID string, started time.Time, refs []costRef, usage []costUsage) {
 	t.Helper()
 	if _, err := db.sql.Exec(`
-		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
-		VALUES (?, 'implement', 1, 'test', ?)`, runID, formatTime(started)); err != nil {
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+		VALUES (?, 'implement', 1, 'test', 'completed', ?)`, runID, formatTime(started)); err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
 	for _, ref := range refs {

@@ -1101,6 +1101,9 @@ export const goWireFixtures = {
         "runs": [
           {
             "runId": "run-123",
+            "gaggle": "goobers",
+            "workflow": "implement",
+            "status": "completed",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 3,
             "measuredAttempts": 3,
@@ -1170,6 +1173,8 @@ export const goWireFixtures = {
         "runs": [
           {
             "runId": "run-124",
+            "gaggle": "goobers",
+            "workflow": "review",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 2,
             "measuredAttempts": 2,
