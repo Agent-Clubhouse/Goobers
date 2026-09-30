@@ -112,6 +112,64 @@ func TestStatusLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
 	}
 }
 
+func TestStatusJSONKeepsProjectedRunsWhenFleetFactsUnavailable(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	startedAt := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "projected-run", Gaggle: "example", Workflow: "default-implement",
+		Phase: journal.PhaseCompleted, Terminal: true, StartedAt: startedAt,
+		LastActivity: startedAt, LastSeq: 1,
+	}}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watermarks.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previousFleetFacts := loadStatusFleetFacts
+	loadStatusFleetFacts = func(context.Context, *readservice.Local) ([]readservice.StatusFleetFact, error) {
+		return nil, errors.New("fleet facts timed out")
+	}
+	t.Cleanup(func() { loadStatusFleetFacts = previousFleetFacts })
+	stubStatusParkedBacklog(t, func(context.Context, *instance.Config) (statusParkedBacklog, error) {
+		return statusParkedBacklog{}, nil
+	})
+
+	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code=%d stderr=%q", code, stderr)
+	}
+	var output statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, stdout)
+	}
+	if len(output.Runs) == 0 || output.Runs[0].RunID != "projected-run" {
+		t.Fatalf("runs = %+v, want projected run preserved despite fleet facts failure", output.Runs)
+	}
+	if output.Collection == nil || output.Collection.State != "partial" ||
+		len(output.Collection.Queries) != 1 ||
+		output.Collection.Queries[0].Name != "fleetFacts" ||
+		!strings.Contains(output.Collection.Queries[0].Error, "fleet facts timed out") {
+		t.Fatalf("collection = %+v, want partial fleetFacts error", output.Collection)
+	}
+}
+
 func TestStatusFallsBackWhenProjectionIsNotAuthoritative(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

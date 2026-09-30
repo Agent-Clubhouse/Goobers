@@ -70,10 +70,11 @@ type statusProjectedCursor struct {
 }
 
 type statusProjectedFrame struct {
-	display []runSummary
-	fleet   []runSummary
-	changed map[string]struct{}
-	cursor  statusProjectedCursor
+	display    []runSummary
+	fleet      []runSummary
+	changed    map[string]struct{}
+	cursor     statusProjectedCursor
+	collection *statusCollection
 }
 
 type statusRunLoader struct {
@@ -83,10 +84,11 @@ type statusRunLoader struct {
 	options   statusOptions
 	needFleet bool
 
-	projected bool
-	fleetRuns []runSummary
-	changed   map[string]struct{}
-	cursor    statusProjectedCursor
+	projected  bool
+	fleetRuns  []runSummary
+	changed    map[string]struct{}
+	cursor     statusProjectedCursor
+	collection *statusCollection
 
 	// afterProjectedQueries is a deterministic race seam for frame-fence tests.
 	afterProjectedQueries func()
@@ -101,6 +103,10 @@ func (l *statusRunLoader) loadChangedRuns(context.Context) (map[string]struct{},
 
 func (l *statusRunLoader) Load() ([]runSummary, error) {
 	ctx := context.Background()
+	l.projected = false
+	l.fleetRuns = nil
+	l.changed = nil
+	l.collection = nil
 	for attempt := 0; attempt < 2; attempt++ {
 		frame, ok := l.loadProjected(ctx)
 		if ok {
@@ -108,6 +114,7 @@ func (l *statusRunLoader) Load() ([]runSummary, error) {
 			l.fleetRuns = frame.fleet
 			l.changed = frame.changed
 			l.cursor = frame.cursor
+			l.collection = frame.collection
 			return frame.display, nil
 		}
 	}
@@ -120,6 +127,15 @@ func (l *statusRunLoader) Load() ([]runSummary, error) {
 	l.changed = nil
 	l.cursor = statusProjectedCursor{}
 	return runs, nil
+}
+
+func (l *statusRunLoader) collectionStatus() *statusCollection {
+	if l == nil || l.collection == nil {
+		return nil
+	}
+	collection := *l.collection
+	collection.Queries = append([]statusCollectionQuery(nil), l.collection.Queries...)
+	return &collection
 }
 
 func (l *statusRunLoader) loadProjected(ctx context.Context) (statusProjectedFrame, bool) {
@@ -153,12 +169,28 @@ func (l *statusRunLoader) loadProjected(ctx context.Context) (statusProjectedFra
 	}
 	fleet := display
 	if l.needFleet {
-		facts, err := reads.StatusFleetFacts(ctx)
+		started := time.Now()
+		facts, err := loadStatusFleetFacts(ctx, reads)
 		if err != nil {
-			return statusProjectedFrame{}, false
+			partial := statusCollectionPartial("fleetFacts", started, err)
+			fleet = display
+			return l.acceptProjectedFrame(ctx, projection, state, cut, before, display, fleet, &partial)
 		}
 		fleet = statusFleetRuns(facts)
 	}
+	return l.acceptProjectedFrame(ctx, projection, state, cut, before, display, fleet, nil)
+}
+
+func (l *statusRunLoader) acceptProjectedFrame(
+	ctx context.Context,
+	projection statusProjection,
+	state readmodel.State,
+	cut uint64,
+	before intake.Fence,
+	display []runSummary,
+	fleet []runSummary,
+	collection *statusCollection,
+) (statusProjectedFrame, bool) {
 	if l.afterProjectedQueries != nil {
 		l.afterProjectedQueries()
 	}
@@ -179,7 +211,7 @@ func (l *statusRunLoader) loadProjected(ctx context.Context) (statusProjectedFra
 		after.Pending != 0 || after.DataVersion != before.DataVersion {
 		return statusProjectedFrame{}, false
 	}
-	return statusProjectedFrame{display: display, fleet: fleet, changed: changed, cursor: cursor}, true
+	return statusProjectedFrame{display: display, fleet: fleet, changed: changed, cursor: cursor, collection: collection}, true
 }
 
 func sameStatusProjectionState(a, b readmodel.State) bool {

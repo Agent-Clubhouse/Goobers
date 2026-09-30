@@ -277,6 +277,9 @@ var (
 	loadStatusPRLabelCounts = queryStatusPRLabelCounts
 	newStatusGitHubProvider = providers.NewGitHubProvider
 	newStatusGiteaProvider  = providers.NewGiteaProvider
+	loadStatusFleetFacts    = func(ctx context.Context, reads *readservice.Local) ([]readservice.StatusFleetFact, error) {
+		return reads.StatusFleetFacts(ctx)
+	}
 )
 
 type statusPRLabelCountCache struct {
@@ -410,7 +413,47 @@ type statusJSONOutput struct {
 	// (#2971) — which target-branch CI failure is holding which subjects.
 	// Omitted when the local baseline store cannot be read.
 	BaselineBlockers *statusBaselineBlockers `json:"baselineBlockers,omitempty"`
+	Collection       *statusCollection       `json:"collection,omitempty"`
 	Runs             []statusJSONSummary     `json:"runs"`
+}
+
+type statusCollection struct {
+	State   string                  `json:"state"`
+	Queries []statusCollectionQuery `json:"queries"`
+}
+
+type statusCollectionQuery struct {
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	DurationMillis int64  `json:"durationMillis"`
+	Error          string `json:"error,omitempty"`
+}
+
+func statusCollectionPartial(name string, started time.Time, err error) statusCollection {
+	return statusCollection{
+		State: "partial",
+		Queries: []statusCollectionQuery{{
+			Name:           name,
+			State:          "failed",
+			DurationMillis: time.Since(started).Milliseconds(),
+			Error:          err.Error(),
+		}},
+	}
+}
+
+func statusCollectionUnavailableText(collection *statusCollection) string {
+	if collection == nil || collection.State != "partial" {
+		return ""
+	}
+	var text strings.Builder
+	for _, query := range collection.Queries {
+		if query.State != "failed" || query.Error == "" {
+			continue
+		}
+		fmt.Fprintf(&text, "Status collection partial: %s unavailable after %s: %s\n",
+			query.Name, time.Duration(query.DurationMillis)*time.Millisecond, query.Error)
+	}
+	return text.String()
 }
 
 func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -1320,6 +1363,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			}
 			renderStatusFleetSummary(&text, summary, now)
 		}
+		text.WriteString(statusCollectionUnavailableText(runLoader.collectionStatus()))
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
@@ -1448,6 +1492,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Summary:                fleetSummary,
 			ParkedBacklog:          parked,
 			BaselineBlockers:       baselineBlockers,
+			Collection:             runLoader.collectionStatus(),
 			Runs:                   statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
