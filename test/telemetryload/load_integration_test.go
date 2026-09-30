@@ -21,6 +21,9 @@ import (
 // and external Azure traffic are explicit release operations, never this test.
 func TestIntegrationTelemetryDaemonReconcilesJournal(t *testing.T) {
 	testdep.Require(t, "go", "git")
+	if runtime.GOOS == "linux" {
+		testdep.RequireUserNamespaces(t)
+	}
 	if runtime.GOOS == "windows" {
 		testdep.Require(t, "powershell.exe")
 	} else {
