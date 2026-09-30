@@ -129,7 +129,7 @@ func TestClosedPRReconciliationIsMergeSafeAndIdempotent(t *testing.T) {
 
 			for observation := 0; observation < 2; observation++ {
 				if err := reconcileClosedUnmergedInReview(
-					context.Background(), issueProvider, prProvider, repo,
+					context.Background(), issueProvider, prProvider, repo, nil,
 				); err != nil {
 					t.Fatalf("observation %d: %v", observation+1, err)
 				}
@@ -178,7 +178,7 @@ func TestClosedPRReconciliationProtectsMergedReplacementAfterMetadataChanges(t *
 	}
 
 	if err := reconcileClosedUnmergedInReview(
-		context.Background(), issueProvider, prProvider, repo,
+		context.Background(), issueProvider, prProvider, repo, nil,
 	); err != nil {
 		t.Fatal(err)
 	}

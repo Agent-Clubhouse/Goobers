@@ -521,7 +521,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
 		}
 		if claim {
-			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo); err != nil {
+			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo, openIssues); err != nil {
 				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
 			}
 		}
@@ -2588,7 +2588,10 @@ func nativeDependencyExclusionReason(
 // each PR's body (PullRequestSummary.Body), so no second round-trip per PR
 // is needed either.
 func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) (map[string]bool, error) {
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace()})
+	// Only the PR bodies are needed here. Without SkipCheckState the list
+	// resolves combined status + check-runs for every open PR: two API calls
+	// per PR on every backlog query.
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true})
 	if err != nil {
 		return nil, err
 	}
@@ -2614,6 +2617,7 @@ func reconcileClosedUnmergedInReview(
 	issueProvider *providers.GitHubProvider,
 	prProvider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
+	openPRIssues map[string]bool,
 ) error {
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: repo,
@@ -2634,6 +2638,12 @@ func reconcileClosedUnmergedInReview(
 	for _, item := range items {
 		if !item.HasLabel(inReviewStatusLabel) ||
 			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+		// An issue an open PR still references cannot be closed-unmerged, and
+		// it is protected anyway. Skipping it avoids a comments read plus a PR
+		// read per in-review issue on every backlog query.
+		if openPRIssues[item.ID] {
 			continue
 		}
 
