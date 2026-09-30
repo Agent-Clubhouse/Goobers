@@ -50,11 +50,6 @@ const (
 	adoBuildAPIVersion      = "7.1"
 )
 
-// WithADOCIEvidenceBounds overrides the CI failure-evidence collection bounds.
-func WithADOCIEvidenceBounds(bounds ADOCIEvidenceBounds) func(*ADOProvider) {
-	return func(p *ADOProvider) { p.ciEvidenceBounds = bounds }
-}
-
 func (p *ADOProvider) evidenceBounds() ADOCIEvidenceBounds {
 	b := p.ciEvidenceBounds
 	d := defaultADOCIEvidenceBounds

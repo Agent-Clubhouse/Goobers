@@ -496,7 +496,7 @@ func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollCon
 		return outcome, nil
 	}
 
-	data, err := marshalCIChecksArtifactWith(result.Checks, e.failingCheckEvidence(ctx, cfg, result), retryErr)
+	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckEvidence(ctx, cfg, result), retryErr)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
@@ -706,13 +706,9 @@ func boundFailedCheckNames(names []string) string {
 	return string(first) + marker
 }
 
-func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[string][]providers.CheckAnnotation, retryErr error) ([]byte, error) {
-	return marshalCIChecksArtifactWith(checks, ciEvidenceByName(annotations), retryErr)
-}
-
-// marshalCIChecksArtifactWith is marshalCIChecksArtifact with the per-check
-// evidence resolved by evidenceFor (nil for none).
-func marshalCIChecksArtifactWith(checks []providers.CheckDetail, evidenceFor ciCheckEvidence, retryErr error) ([]byte, error) {
+// marshalCIChecksArtifact curates checks into ci-checks.json, with each
+// check's evidence resolved by evidenceFor (nil for none).
+func marshalCIChecksArtifact(checks []providers.CheckDetail, evidenceFor ciCheckEvidence, retryErr error) ([]byte, error) {
 	if evidenceFor == nil {
 		evidenceFor = ciEvidenceByName(nil)
 	}

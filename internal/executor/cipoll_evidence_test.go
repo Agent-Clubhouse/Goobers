@@ -111,7 +111,7 @@ func TestCIPollExecutor_PullRequestScopedEvidenceIsBestEffort(t *testing.T) {
 func TestCIEvidenceForPullRequestKeepsOwnSummary(t *testing.T) {
 	checks := []providers.CheckDetail{{Name: "Build", State: providers.CheckStateFailing, Summary: "own"}}
 	failures := []providers.CIFailureDetail{{CheckDetail: providers.CheckDetail{Name: "Build #7", Summary: "evidence"}}}
-	data, err := marshalCIChecksArtifactWith(checks, ciEvidenceForPullRequest(checks, failures), nil)
+	data, err := marshalCIChecksArtifact(checks, ciEvidenceForPullRequest(checks, failures), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
