@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/sharedclaim"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -37,11 +38,14 @@ const (
 
 const (
 	defaultBacklogReconcileScanBudget = 100
+	defaultBacklogReconcileTimeBudget = 4 * time.Minute
 	backlogReconcileCursorSchema      = "goobers.dev/backlog-reconcile-cursor/v1"
 	backlogReconcilePhaseOpen         = "open"
 	backlogReconcilePhaseClosed       = "closed"
 	backlogReconcilePhaseClaims       = "claims"
 )
+
+var errBacklogReconcileBudgetExhausted = errors.New("backlog reconciliation budget exhausted")
 
 type backlogMetadataCorrection struct {
 	addLabels           []string
@@ -52,11 +56,6 @@ type backlogMetadataCorrection struct {
 	claimEpochRunID     string
 	trackingComplete    bool
 	closeTrackingParent bool
-}
-
-type inspectedBacklogItem struct {
-	item       providers.WorkItem
-	correction backlogMetadataCorrection
 }
 
 type backlogReconciliationResult struct {
@@ -101,6 +100,66 @@ type backlogReconcileReservation struct {
 	runID    string
 }
 
+type backlogReconcileBudget struct {
+	limit    int
+	spent    int
+	deadline time.Time
+	now      func() time.Time
+}
+
+func newBacklogReconcileBudget(limit int, startedAt time.Time, now func() time.Time) *backlogReconcileBudget {
+	return &backlogReconcileBudget{
+		limit:    limit,
+		deadline: startedAt.Add(defaultBacklogReconcileTimeBudget),
+		now:      now,
+	}
+}
+
+func (b *backlogReconcileBudget) Remaining() int {
+	if b == nil {
+		return 1 << 30
+	}
+	return b.limit - b.spent
+}
+
+func (b *backlogReconcileBudget) Spent() int {
+	if b == nil {
+		return 0
+	}
+	return b.spent
+}
+
+func (b *backlogReconcileBudget) Available() bool {
+	if b == nil {
+		return true
+	}
+	return b.Remaining() > 0 && b.now().Before(b.deadline)
+}
+
+func (b *backlogReconcileBudget) Consume() error {
+	if b == nil {
+		return nil
+	}
+	if !b.Available() {
+		return errBacklogReconcileBudgetExhausted
+	}
+	b.spent++
+	return nil
+}
+
+func (b *backlogReconcileBudget) PartialReason() string {
+	if b == nil {
+		return ""
+	}
+	if b.Remaining() <= 0 {
+		return "request budget exhausted"
+	}
+	if !b.now().Before(b.deadline) {
+		return "elapsed time budget exhausted"
+	}
+	return ""
+}
+
 func reconcileBacklogMetadataDetailed(
 	ctx context.Context,
 	l instance.Layout,
@@ -120,193 +179,333 @@ func reconcileBacklogMetadataDetailed(
 		return result, fmt.Errorf("recover stale claims before metadata reconciliation: %w", err)
 	}
 	observedAt := now()
-	items, scan, cursorKey, observedCursor, nextCursor, err := listBacklogItemsForReconciliation(ctx, l, provider, repo, trustLabel, stalenessPolicy, observedAt)
-	if err != nil {
-		return result, fmt.Errorf("list trusted backlog items: %w", err)
-	}
-	result.Scan = scan
+	result.Scan = backlogReconcileScan{Budget: backlogReconcileScanBudget()}
+	budget := newBacklogReconcileBudget(backlogReconcileMetadataBudget(result.Scan.Budget), observedAt, now)
+	cursorKey := backlogReconcileCursorKey(repo, providerGaggle(), trustLabel, stalenessPolicy)
 	result.cursorKey = cursorKey
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return result, fmt.Errorf("open scheduler state: %w", err)
+	}
+	observedCursor, err := readBacklogReconcileCursor(ctx, store, cursorKey, repo, providerGaggle(), trustLabel, stalenessPolicy)
+	if err != nil {
+		return result, err
+	}
+	nextCursor := observedCursor
+	nextCursor.Phase = backlogReconcilePhaseOpen
 	result.observedCursor = observedCursor
 	result.nextCursor = nextCursor
-
 	blockedRecords, err := snapshotBlockedRecords(l)
 	if err != nil {
 		return result, fmt.Errorf("snapshot learned block ledger: %w", err)
 	}
 	botLogin := ""
-	inspected := make([]inspectedBacklogItem, 0, len(items))
-	for _, item := range items {
-		// #1911: an item the ledger still records as blocked is inspected even
-		// when it carries no reconciled marker — that is exactly the drifted
-		// state where the label was cleared while the learned block holds.
-		if !hasReconciledMetadataLabel(item) && len(recordedLedgerBlockers(blockedRecords, repo, item.ID)) == 0 {
-			continue
-		}
-		current, err := provider.GetWorkItem(ctx, repo, item.ID)
-		if err != nil {
-			return result, fmt.Errorf("refresh issue #%s: %w", item.ID, err)
-		}
-		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt, stalenessPolicy, blockedRecords)
-		if err != nil {
-			return result, fmt.Errorf("inspect issue #%s: %w", item.ID, err)
-		}
-		botLogin = login
-		if !correction.checkClaim && len(correction.removeLabels) == 0 && len(correction.addLabels) == 0 {
-			continue
-		}
-		inspected = append(inspected, inspectedBacklogItem{item: current, correction: correction})
+	openLimit := (budget.limit + 1) / 2
+	if openLimit < 1 && budget.limit > 0 {
+		openLimit = 1
 	}
-
-	for _, inspectedItem := range inspected {
-		current := inspectedItem.item
-		current, err = provider.GetWorkItem(ctx, repo, current.ID)
-		if err != nil {
-			return result, fmt.Errorf("refresh issue #%s before reconcile: %w", inspectedItem.item.ID, err)
-		}
-		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt, stalenessPolicy, blockedRecords)
-		if err != nil {
-			return result, fmt.Errorf("reinspect issue #%s before reconcile: %w", current.ID, err)
-		}
-		botLogin = login
-		if !correction.checkClaim && len(correction.removeLabels) == 0 && len(correction.addLabels) == 0 {
-			continue
-		}
-		if correction.trackingComplete {
-			correction, err = revalidateCompletedTrackingItem(ctx, provider, repo, current.ID, correction)
-			if err != nil {
-				return result, fmt.Errorf("revalidate tracking issue #%s: %w", current.ID, err)
-			}
-		}
-		var reservation *backlogReconcileReservation
-		if correction.checkClaim {
-			reservation, err = reserveOwnedOrphanedClaim(ctx, l, provider, repo, current.ID, now, &correction)
-			if err != nil {
-				return result, err
-			}
-		}
-		correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
-		correction.addLabels = uniqueSortedLabels(correction.addLabels)
-		if len(correction.removeLabels) == 0 && len(correction.addLabels) == 0 && !correction.closeTrackingParent {
-			continue
-		}
-		comment := reconciliationComment(correction.reasons)
-		state := ""
-		if correction.closeTrackingParent {
-			state = "closed"
-		}
-		var correctionErr error
-		if correction.orphanedClaim {
-			// ReconcileOrphanedWorkItemClaim only removes labels, so any
-			// close or label addition rides the edit that precedes it.
-			if correction.closeTrackingParent || len(correction.addLabels) > 0 {
-				_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-					Repository: repo,
-					ID:         current.ID,
-					AddLabels:  correction.addLabels,
-					State:      state,
-				})
-			}
-			if correctionErr == nil {
-				_, correctionErr = provider.ReconcileOrphanedWorkItemClaim(
-					ctx,
-					repo,
-					current.ID,
-					correction.removeLabels,
-					comment,
-					correction.claimEpochRunID,
-				)
-			}
-		} else {
-			_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-				Repository:   repo,
-				ID:           current.ID,
-				AddLabels:    correction.addLabels,
-				RemoveLabels: correction.removeLabels,
-				State:        state,
-				Comment:      comment,
-			})
-		}
-		if errors.Is(correctionErr, providers.ErrClaimEpochNotOwned) {
-			// A claim this instance does not own appeared after the ownership
-			// check; leaving the item untouched is the correct outcome (#5311).
-			correctionErr = nil
-		} else if correctionErr == nil {
-			result.Reconciled++
-		}
-		if reservation != nil {
-			if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
-				correctionErr = errors.Join(correctionErr, fmt.Errorf("release claim-reconciliation reservation: %w", releaseErr))
-			}
-		}
-		if correctionErr != nil {
-			return result, fmt.Errorf("reconcile issue #%s: %w", current.ID, correctionErr)
-		}
+	open, err := reconcileBacklogMetadataPhase(ctx, l, provider, repo, trustLabel, backlogReconcilePhaseOpen, stalenessPolicy, observedAt, budget, openLimit, observedCursor.Open, blockedRecords, &botLogin, now)
+	result.Reconciled += open.Reconciled
+	result.Scan.Examined += open.Examined
+	result.Scan.OpenExamined += open.Examined
+	result.Scan.Spent = budget.Spent()
+	nextCursor.Open = open.Cursor
+	result.nextCursor = nextCursor
+	if err != nil && !errors.Is(err, errBacklogReconcileBudgetExhausted) {
+		_ = advanceBacklogReconcileCursor(ctx, l, cursorKey, observedCursor, nextCursor)
+		return result, err
 	}
+	if open.Truncated || errors.Is(err, errBacklogReconcileBudgetExhausted) {
+		result.Scan.WorkRemaining = true
+		result.Scan.NextPhase = backlogReconcilePhaseOpen
+		result.Scan.NextCursor = open.Cursor.Cursor
+	}
+	remainingPhaseBudget := budget.limit - budget.Spent()
+	if remainingPhaseBudget > 0 {
+		closed, closedErr := reconcileBacklogMetadataPhase(ctx, l, provider, repo, trustLabel, backlogReconcilePhaseClosed, stalenessPolicy, observedAt, budget, remainingPhaseBudget, observedCursor.Closed, blockedRecords, &botLogin, now)
+		result.Reconciled += closed.Reconciled
+		result.Scan.Examined += closed.Examined
+		result.Scan.ClosedExamined += closed.Examined
+		result.Scan.Spent = budget.Spent()
+		nextCursor.Closed = closed.Cursor
+		result.nextCursor = nextCursor
+		if closedErr != nil && !errors.Is(closedErr, errBacklogReconcileBudgetExhausted) {
+			_ = advanceBacklogReconcileCursor(ctx, l, cursorKey, observedCursor, nextCursor)
+			return result, closedErr
+		}
+		if closed.Truncated || errors.Is(closedErr, errBacklogReconcileBudgetExhausted) {
+			result.Scan.WorkRemaining = true
+			if result.Scan.NextPhase == "" {
+				result.Scan.NextPhase = backlogReconcilePhaseClosed
+				result.Scan.NextCursor = closed.Cursor.Cursor
+			}
+		}
+	} else if result.Scan.NextPhase == "" {
+		result.Scan.WorkRemaining = true
+		result.Scan.NextPhase = backlogReconcilePhaseClosed
+		result.Scan.NextCursor = observedCursor.Closed.Cursor
+	}
+	result.Scan.Complete = !result.Scan.WorkRemaining
 	if err := advanceBacklogReconcileCursor(ctx, l, cursorKey, observedCursor, nextCursor); err != nil {
 		return result, fmt.Errorf("advance backlog reconciliation cursor: %w", err)
 	}
 	return result, nil
 }
 
-func listBacklogItemsForReconciliation(
+type backlogReconcilePhaseResult struct {
+	Cursor     backlogScanCursor
+	Examined   int
+	Reconciled int
+	Truncated  bool
+}
+
+func reconcileBacklogMetadataPhase(
 	ctx context.Context,
 	l instance.Layout,
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
-	trustLabel string,
+	trustLabel, phase string,
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
-) ([]providers.WorkItem, backlogReconcileScan, string, backlogReconcileCursorState, backlogReconcileCursorState, error) {
-	scan := backlogReconcileScan{Budget: backlogReconcileScanBudget()}
-	key := backlogReconcileCursorKey(repo, providerGaggle(), trustLabel, stalenessPolicy)
-	store, err := openStageStateStore(l)
-	if err != nil {
-		return nil, scan, key, backlogReconcileCursorState{}, backlogReconcileCursorState{}, fmt.Errorf("open scheduler state: %w", err)
+	budget *backlogReconcileBudget,
+	phaseBudget int,
+	cursor backlogScanCursor,
+	blockedRecords map[string]blockedRecord,
+	botLogin *string,
+	now func() time.Time,
+) (backlogReconcilePhaseResult, error) {
+	result := backlogReconcilePhaseResult{Cursor: cursor}
+	if phaseBudget <= 0 {
+		result.Truncated = true
+		return result, errBacklogReconcileBudgetExhausted
 	}
-	observed, err := readBacklogReconcileCursor(ctx, store, key, repo, providerGaggle(), trustLabel, stalenessPolicy)
-	if err != nil {
-		return nil, scan, key, observed, backlogReconcileCursorState{}, err
+	state := phase
+	var updatedSince *time.Time
+	if phase == backlogReconcilePhaseClosed {
+		closedSince := observedAt.Add(-stalenessPolicy.threshold())
+		updatedSince = &closedSince
+	} else {
+		state = backlogReconcilePhaseOpen
 	}
-	next := observed
-	next.Phase = backlogReconcilePhaseOpen
-	items := make([]providers.WorkItem, 0, scan.Budget)
-	metadataBudget := backlogReconcileMetadataBudget(scan.Budget)
-	openBudget := (metadataBudget + 1) / 2
-	openItems, openWindow, err := listBacklogReconcilePhaseWindow(ctx, provider, repo, trustLabel, backlogReconcilePhaseOpen, stalenessPolicy, observedAt, openBudget, observed.Open)
-	if err != nil {
-		return nil, scan, key, observed, next, err
-	}
-	items = append(items, openItems...)
-	scan.Examined += openWindow.Examined
-	scan.Spent += openWindow.Spent
-	scan.OpenExamined += openWindow.Examined
-	next.Open = openWindow.Cursor
-	remaining := metadataBudget - openWindow.Spent
-	if openWindow.Truncated {
-		scan.WorkRemaining = true
-		scan.NextPhase = backlogReconcilePhaseOpen
-		scan.NextCursor = openWindow.Cursor.Cursor
-	}
-	if remaining > 0 {
-		closedItems, closedWindow, err := listBacklogReconcilePhaseWindow(ctx, provider, repo, trustLabel, backlogReconcilePhaseClosed, stalenessPolicy, observedAt, remaining, observed.Closed)
-		if err != nil {
-			return nil, scan, key, observed, next, err
+	stopCursor := cursor.Cursor
+	wrapped := false
+	seen := map[string]bool{}
+	phaseStartSpent := budget.Spent()
+	for budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
+		if err := budget.Consume(); err != nil {
+			result.Truncated = true
+			return result, err
 		}
-		items = append(items, closedItems...)
-		scan.Examined += closedWindow.Examined
-		scan.Spent += closedWindow.Spent
-		scan.ClosedExamined += closedWindow.Examined
-		next.Closed = closedWindow.Cursor
-		if closedWindow.Truncated {
-			scan.WorkRemaining = true
-			if scan.NextPhase == "" {
-				scan.NextPhase = backlogReconcilePhaseClosed
-				scan.NextCursor = closedWindow.Cursor.Cursor
+		pageInfo := &providers.ListWorkItemsPageInfo{}
+		items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+			Repository:   repo,
+			Labels:       []string{trustLabel},
+			State:        state,
+			UpdatedSince: updatedSince,
+			Limit:        1,
+			Cursor:       result.Cursor.Cursor,
+			PageInfo:     pageInfo,
+			OldestFirst:  true,
+		})
+		if err != nil {
+			return result, fmt.Errorf("list %s backlog item after cursor %q: %w", phase, result.Cursor.Cursor, err)
+		}
+		if pageInfo.CandidateCount < 0 {
+			return result, fmt.Errorf("provider returned invalid work-item candidate count %d", pageInfo.CandidateCount)
+		}
+		next := backlogScanCursor{}
+		if pageInfo.HasNext {
+			if pageInfo.CandidateCount == 0 || pageInfo.NextCursor == "" {
+				return result, fmt.Errorf("provider returned a non-advancing work-item cursor")
+			}
+			next.Cursor = pageInfo.NextCursor
+		}
+		if len(items) == 0 {
+			if !pageInfo.HasNext {
+				if result.Cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
+					result.Cursor = backlogScanCursor{}
+					wrapped = true
+					continue
+				}
+				return result, nil
+			}
+			result.Cursor = next
+			continue
+		}
+		item := items[0]
+		if seen[item.ID] || (wrapped && backlogReconcileCursorReached(next.Cursor, stopCursor)) {
+			result.Cursor = backlogScanCursor{}
+			return result, nil
+		}
+		seen[item.ID] = true
+		reconciled, err := reconcileBacklogMetadataItem(ctx, l, provider, repo, item, observedAt, stalenessPolicy, blockedRecords, botLogin, budget, now)
+		if err != nil {
+			if errors.Is(err, errBacklogReconcileBudgetExhausted) {
+				result.Truncated = true
+			}
+			return result, err
+		}
+		result.Examined++
+		if reconciled {
+			result.Reconciled++
+		}
+		result.Cursor = next
+		if !pageInfo.HasNext {
+			if cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
+				result.Cursor = backlogScanCursor{}
+				wrapped = true
+				continue
+			}
+			result.Cursor = backlogScanCursor{}
+			return result, nil
+		}
+	}
+	result.Truncated = true
+	if reason := budget.PartialReason(); reason != "" {
+		return result, errBacklogReconcileBudgetExhausted
+	}
+	return result, nil
+}
+
+func reconcileBacklogMetadataItem(
+	ctx context.Context,
+	l instance.Layout,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	observedAt time.Time,
+	stalenessPolicy backlogStalenessPolicy,
+	blockedRecords map[string]blockedRecord,
+	botLogin *string,
+	budget *backlogReconcileBudget,
+	now func() time.Time,
+) (bool, error) {
+	if !hasReconciledMetadataLabel(item) && len(recordedLedgerBlockers(blockedRecords, repo, item.ID)) == 0 {
+		return false, nil
+	}
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	current, err := provider.GetWorkItem(ctx, repo, item.ID)
+	if err != nil {
+		return false, fmt.Errorf("refresh issue #%s: %w", item.ID, err)
+	}
+	correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, budget)
+	if err != nil {
+		return false, fmt.Errorf("inspect issue #%s: %w", item.ID, err)
+	}
+	*botLogin = login
+	if backlogMetadataCorrectionEmpty(correction) {
+		return false, nil
+	}
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	current, err = provider.GetWorkItem(ctx, repo, current.ID)
+	if err != nil {
+		return false, fmt.Errorf("refresh issue #%s before reconcile: %w", item.ID, err)
+	}
+	correction, login, err = inspectBacklogMetadata(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, budget)
+	if err != nil {
+		return false, fmt.Errorf("reinspect issue #%s before reconcile: %w", current.ID, err)
+	}
+	*botLogin = login
+	if backlogMetadataCorrectionEmpty(correction) {
+		return false, nil
+	}
+	if correction.trackingComplete {
+		correction, err = revalidateCompletedTrackingItem(ctx, provider, repo, current.ID, correction, budget)
+		if err != nil {
+			return false, fmt.Errorf("revalidate tracking issue #%s: %w", current.ID, err)
+		}
+	}
+	var reservation *backlogReconcileReservation
+	if correction.checkClaim {
+		reservation, err = reserveOwnedOrphanedClaim(ctx, l, provider, repo, current.ID, now, &correction, budget)
+		if err != nil {
+			return false, err
+		}
+	}
+	correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
+	correction.addLabels = uniqueSortedLabels(correction.addLabels)
+	if backlogMetadataCorrectionNoop(correction) {
+		return false, nil
+	}
+	correctionErr := applyBacklogMetadataCorrection(ctx, provider, repo, current, correction, budget)
+	if errors.Is(correctionErr, providers.ErrClaimEpochNotOwned) {
+		correctionErr = nil
+	}
+	if reservation != nil {
+		if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
+			correctionErr = errors.Join(correctionErr, fmt.Errorf("release claim-reconciliation reservation: %w", releaseErr))
+		}
+	}
+	if correctionErr != nil {
+		return false, fmt.Errorf("reconcile issue #%s: %w", current.ID, correctionErr)
+	}
+	return true, nil
+}
+
+func backlogMetadataCorrectionEmpty(correction backlogMetadataCorrection) bool {
+	return !correction.checkClaim && len(correction.removeLabels) == 0 && len(correction.addLabels) == 0
+}
+
+func backlogMetadataCorrectionNoop(correction backlogMetadataCorrection) bool {
+	return len(correction.removeLabels) == 0 && len(correction.addLabels) == 0 && !correction.closeTrackingParent
+}
+
+func applyBacklogMetadataCorrection(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	current providers.WorkItem,
+	correction backlogMetadataCorrection,
+	budget *backlogReconcileBudget,
+) error {
+	comment := reconciliationComment(correction.reasons)
+	state := ""
+	if correction.closeTrackingParent {
+		state = "closed"
+	}
+	if correction.orphanedClaim {
+		if correction.closeTrackingParent || len(correction.addLabels) > 0 {
+			if err := budget.Consume(); err != nil {
+				return err
+			}
+			if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: repo,
+				ID:         current.ID,
+				AddLabels:  correction.addLabels,
+				State:      state,
+			}); err != nil {
+				return err
 			}
 		}
+		if err := budget.Consume(); err != nil {
+			return err
+		}
+		_, err := provider.ReconcileOrphanedWorkItemClaim(
+			ctx,
+			repo,
+			current.ID,
+			correction.removeLabels,
+			comment,
+			correction.claimEpochRunID,
+		)
+		return err
 	}
-	scan.Complete = !scan.WorkRemaining
-	return items, scan, key, observed, next, nil
+	if err := budget.Consume(); err != nil {
+		return err
+	}
+	_, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository:   repo,
+		ID:           current.ID,
+		AddLabels:    correction.addLabels,
+		RemoveLabels: correction.removeLabels,
+		State:        state,
+		Comment:      comment,
+	})
+	return err
 }
 
 func backlogReconcileMetadataBudget(total int) int {
@@ -316,132 +515,10 @@ func backlogReconcileMetadataBudget(total int) int {
 	return total
 }
 
-type backlogReconcilePhaseWindow struct {
-	Cursor    backlogScanCursor
-	Examined  int
-	Spent     int
-	Truncated bool
-}
-
-func listBacklogReconcilePhaseWindow(
-	ctx context.Context,
-	provider *providers.GitHubProvider,
-	repo providers.RepositoryRef,
-	trustLabel, phase string,
-	stalenessPolicy backlogStalenessPolicy,
-	observedAt time.Time,
-	limit int,
-	cursor backlogScanCursor,
-) ([]providers.WorkItem, backlogReconcilePhaseWindow, error) {
-	window := backlogReconcilePhaseWindow{Cursor: cursor}
-	state := phase
-	var updatedSince *time.Time
-	if phase == backlogReconcilePhaseClosed {
-		closedSince := observedAt.Add(-stalenessPolicy.threshold())
-		updatedSince = &closedSince
-	} else {
-		state = backlogReconcilePhaseOpen
-	}
-	scan := backlogReconcilePhaseScan{items: make([]providers.WorkItem, 0, limit), seen: make(map[string]bool, limit), budget: limit}
-	position, exhausted, err := scan.run(ctx, provider, repo, trustLabel, state, updatedSince, cursor, false, "")
-	if err != nil {
-		return nil, window, err
-	}
-	wrapped := false
-	if exhausted && cursor.Cursor != "" && scan.budget > 0 {
-		wrapped = true
-		position, exhausted, err = scan.run(ctx, provider, repo, trustLabel, state, updatedSince, backlogScanCursor{}, true, cursor.Cursor)
-		if err != nil {
-			return nil, window, err
-		}
-	}
-	if exhausted && cursor.Cursor != "" && scan.budget <= 0 && !wrapped {
-		position = backlogScanCursor{}
-		exhausted = false
-	}
-	window.Examined = len(scan.items)
-	window.Spent = scan.spent
-	window.Truncated = !exhausted
-	window.Cursor = position
-	if exhausted {
-		window.Cursor = backlogScanCursor{}
-	}
-	return scan.items, window, nil
-}
-
-type backlogReconcilePhaseScan struct {
-	items  []providers.WorkItem
-	seen   map[string]bool
-	budget int
-	spent  int
-}
-
-func (s *backlogReconcilePhaseScan) run(
-	ctx context.Context,
-	provider *providers.GitHubProvider,
-	repo providers.RepositoryRef,
-	trustLabel, state string,
-	updatedSince *time.Time,
-	start backlogScanCursor,
-	stopOnOverlap bool,
-	stopCursor string,
-) (backlogScanCursor, bool, error) {
-	cursor := start
-	maxPages := (s.budget+backlogScanPageSize-1)/backlogScanPageSize + 1
-	for page := 0; page < maxPages; page++ {
-		pageLimit := min(backlogScanPageSize, s.budget)
-		pageInfo := &providers.ListWorkItemsPageInfo{}
-		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-			Repository:   repo,
-			Labels:       []string{trustLabel},
-			State:        state,
-			UpdatedSince: updatedSince,
-			Limit:        pageLimit,
-			Cursor:       cursor.Cursor,
-			PageInfo:     pageInfo,
-			OldestFirst:  true,
-		})
-		if err != nil {
-			return cursor, false, err
-		}
-		if pageInfo.CandidateCount < 0 {
-			return cursor, false, fmt.Errorf("provider returned invalid work-item candidate count %d", pageInfo.CandidateCount)
-		}
-		s.spent += pageInfo.CandidateCount
-		s.budget -= pageInfo.CandidateCount
-		overlapped := false
-		for _, item := range pageItems {
-			if s.seen[item.ID] {
-				overlapped = true
-				continue
-			}
-			s.seen[item.ID] = true
-			s.items = append(s.items, item)
-		}
-		if !pageInfo.HasNext {
-			return backlogScanCursor{}, true, nil
-		}
-		if stopOnOverlap && overlapped {
-			return backlogScanCursor{}, true, nil
-		}
-		if pageInfo.CandidateCount == 0 || pageInfo.NextCursor == "" {
-			return cursor, false, fmt.Errorf("provider returned a non-advancing work-item cursor")
-		}
-		cursor.Cursor = pageInfo.NextCursor
-		if stopOnOverlap && backlogReconcileCursorReached(cursor.Cursor, stopCursor) {
-			return backlogScanCursor{}, true, nil
-		}
-		if s.budget <= 0 {
-			return cursor, false, nil
-		}
-	}
-
-	return cursor, false, nil
-}
-
 type invisibleClaimScanResult struct {
 	Restored   int
 	Examined   int
+	Spent      int
 	Complete   bool
 	NextCursor string
 }
@@ -459,7 +536,7 @@ func backlogReconcileCursorReached(cursor, stop string) bool {
 }
 
 func backlogReconcileScanBudget() int {
-	const minBacklogReconcileScanBudget = 3
+	const minBacklogReconcileScanBudget = 10
 	raw := strings.TrimSpace(providerInput("reconcileScanLimit", ""))
 	if raw == "" {
 		return defaultBacklogReconcileScanBudget
@@ -596,6 +673,7 @@ func reserveOwnedOrphanedClaim(
 	itemID string,
 	now func() time.Time,
 	correction *backlogMetadataCorrection,
+	budget *backlogReconcileBudget,
 ) (*backlogReconcileReservation, error) {
 	reservation, acquired, err := reserveBacklogClaimReconciliation(l, repo, itemID, now)
 	if err != nil {
@@ -604,7 +682,7 @@ func reserveOwnedOrphanedClaim(
 	if !acquired {
 		return nil, nil
 	}
-	epochRunID, owned, err := ownedProviderClaimEpoch(ctx, l, provider, repo, itemID)
+	epochRunID, owned, err := ownedProviderClaimEpoch(ctx, l, provider, repo, itemID, budget)
 	if err != nil || !owned {
 		if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
 			err = errors.Join(err, fmt.Errorf("release claim-reconciliation reservation: %w", releaseErr))
@@ -635,7 +713,11 @@ func ownedProviderClaimEpoch(
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	itemID string,
+	budget *backlogReconcileBudget,
 ) (string, bool, error) {
+	if err := budget.Consume(); err != nil {
+		return "", false, err
+	}
 	epochs, err := provider.OpenClaimEpochs(ctx, repo, itemID)
 	if err != nil {
 		return "", false, err
@@ -815,14 +897,19 @@ func inspectBacklogMetadata(
 	now time.Time,
 	stalenessPolicy backlogStalenessPolicy,
 	recs map[string]blockedRecord,
+	budgets ...*backlogReconcileBudget,
 ) (backlogMetadataCorrection, string, error) {
+	var budget *backlogReconcileBudget
+	if len(budgets) > 0 {
+		budget = budgets[0]
+	}
 	correction := backlogMetadataCorrection{}
 	validTracking := false
 	if item.HasLabel(providers.LabelClaimed) {
 		correction.checkClaim = true
 	}
 	if item.HasLabel(providers.LabelTracking) {
-		hasOpenChildren, _, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
+		hasOpenChildren, _, err := trackingItemHasOpenChildrenBudgeted(ctx, provider, repo, item, budget)
 		if err != nil {
 			return correction, botLogin, fmt.Errorf("inspect tracking children: %w", err)
 		}
@@ -841,7 +928,7 @@ func inspectBacklogMetadata(
 	// #1911: the ledger is the machine-readable block record and the label is
 	// the operator-facing mirror of it; they must not disagree. A marker
 	// cleared while the recorded blockers are still open is restored here.
-	driftedBlockers, err := driftedBlockedOnSiblingBlockers(ctx, provider, repo, item, recs)
+	driftedBlockers, err := driftedBlockedOnSiblingBlockersBudgeted(ctx, provider, repo, item, recs, budget)
 	if err != nil {
 		return correction, botLogin, fmt.Errorf("inspect recorded blockers: %w", err)
 	}
@@ -852,7 +939,7 @@ func inspectBacklogMetadata(
 	// #4154: decided BEFORE the ready-coexistence rule below, because an
 	// infrastructure park that is being cleared in this same pass is not a park
 	// that goobers:ready has to yield to.
-	infraParkCleared, err := staleInfrastructureRemediationPark(ctx, provider, repo, item)
+	infraParkCleared, err := staleInfrastructureRemediationParkBudgeted(ctx, provider, repo, item, budget)
 	if err != nil {
 		return correction, botLogin, fmt.Errorf("inspect remediation park: %w", err)
 	}
@@ -874,7 +961,7 @@ func inspectBacklogMetadata(
 	// and fires only on a bot PR merging. Clearing it here is fail-closed by
 	// design: see staleBlockedOnSiblingMarker.
 	if item.HasLabel(blockedOnSiblingLabel) {
-		resolved, err := staleBlockedOnSiblingMarker(ctx, provider, repo, item, recs)
+		resolved, err := staleBlockedOnSiblingMarkerBudgeted(ctx, provider, repo, item, recs, budget)
 		if err != nil {
 			return correction, botLogin, fmt.Errorf("inspect blocked-on-sibling blockers: %w", err)
 		}
@@ -893,10 +980,16 @@ func inspectBacklogMetadata(
 		default:
 			if botLogin == "" {
 				var err error
+				if err := budget.Consume(); err != nil {
+					return correction, botLogin, err
+				}
 				botLogin, err = provider.AuthenticatedLogin(ctx)
 				if err != nil {
 					return correction, botLogin, fmt.Errorf("resolve reconciliation actor: %w", err)
 				}
+			}
+			if err := budget.Consume(); err != nil {
+				return correction, botLogin, err
 			}
 			comments, err := provider.ListComments(ctx, repo, item.ID)
 			if err != nil {
@@ -924,7 +1017,11 @@ func revalidateCompletedTrackingItem(
 	repo providers.RepositoryRef,
 	itemID string,
 	correction backlogMetadataCorrection,
+	budget *backlogReconcileBudget,
 ) (backlogMetadataCorrection, error) {
+	if err := budget.Consume(); err != nil {
+		return correction, err
+	}
 	item, err := provider.GetWorkItem(ctx, repo, itemID)
 	if err != nil {
 		return correction, err
@@ -935,7 +1032,7 @@ func revalidateCompletedTrackingItem(
 		correction.trackingComplete = false
 		return correction, nil
 	}
-	hasOpenChildren, hasUnverifiedChildren, err := trackingItemHasOpenChildren(ctx, provider, repo, item)
+	hasOpenChildren, hasUnverifiedChildren, err := trackingItemHasOpenChildrenBudgeted(ctx, provider, repo, item, budget)
 	if err != nil {
 		return correction, err
 	}
@@ -956,12 +1053,16 @@ func revalidateCompletedTrackingItem(
 	return correction, nil
 }
 
-func trackingItemHasOpenChildren(
+func trackingItemHasOpenChildrenBudgeted(
 	ctx context.Context,
 	provider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
 	item providers.WorkItem,
+	budget *backlogReconcileBudget,
 ) (bool, bool, error) {
+	if err := budget.Consume(); err != nil {
+		return false, false, err
+	}
 	native, err := provider.ListWorkItemChildren(ctx, repo, item.ID)
 	if err != nil {
 		return false, false, err
@@ -977,6 +1078,9 @@ func trackingItemHasOpenChildren(
 	for _, id := range trackingChecklistIssueIDs(item.Body) {
 		if seen[id] {
 			continue
+		}
+		if err := budget.Consume(); err != nil {
+			return false, hasUnverifiedChildren, err
 		}
 		child, err := provider.GetWorkItem(ctx, repo, id)
 		if err != nil {
@@ -1005,6 +1109,162 @@ func trackingChecklistIssueIDs(body string) []string {
 		}
 	}
 	return ids
+}
+
+func staleInfrastructureRemediationParkBudgeted(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	budget *backlogReconcileBudget,
+) (bool, error) {
+	if !item.HasLabel(needsRemediationLabel) || item.HasLabel(providers.LabelNeedsHuman) {
+		return false, nil
+	}
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	comments, err := provider.ListComments(ctx, repo, item.ID)
+	if err != nil {
+		return false, err
+	}
+	return latestParkIsInfrastructure(comments), nil
+}
+
+func driftedBlockedOnSiblingBlockersBudgeted(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	recs map[string]blockedRecord,
+	budget *backlogReconcileBudget,
+) ([]string, error) {
+	if item.HasLabel(blockedOnSiblingLabel) ||
+		item.HasLabel(providers.LabelNeedsHuman) ||
+		!strings.EqualFold(item.State, "open") {
+		return nil, nil
+	}
+	recorded := recordedLedgerBlockers(recs, repo, item.ID)
+	if len(recorded) == 0 {
+		return nil, nil
+	}
+	return liveLedgerBlockersBudgeted(ctx, provider, repo, recorded, budget)
+}
+
+func staleBlockedOnSiblingMarkerBudgeted(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	recs map[string]blockedRecord,
+	budget *backlogReconcileBudget,
+) (bool, error) {
+	if !item.HasLabel(blockedOnSiblingLabel) {
+		return false, nil
+	}
+	recorded := recordedLedgerBlockers(recs, repo, item.ID)
+	if len(recorded) > 0 {
+		live, err := liveLedgerBlockersBudgeted(ctx, provider, repo, recorded, budget)
+		if err != nil {
+			return false, err
+		}
+		if len(live) > 0 {
+			return false, nil
+		}
+	}
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	comments, err := provider.ListComments(ctx, repo, item.ID)
+	if err != nil {
+		return false, err
+	}
+	state, _, found := latestBlockedOnSiblingState(comments)
+	if !found || len(state.Blockers) == 0 {
+		return len(recorded) > 0, nil
+	}
+	live, err := filterLiveBlockedOnSiblingBlockersBudgeted(ctx, provider, repo, state.Blockers, budget)
+	if err != nil {
+		return false, err
+	}
+	return len(live) == 0, nil
+}
+
+func liveLedgerBlockersBudgeted(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blockers []string, budget *backlogReconcileBudget) ([]string, error) {
+	var live []string
+	for _, blocker := range blockers {
+		if err := budget.Consume(); err != nil {
+			return nil, err
+		}
+		blockerItem, err := provider.GetWorkItem(ctx, repo, blockedLookupID(blocker))
+		if err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(blockerItem.State, "open") {
+			live = append(live, blocker)
+		}
+	}
+	return live, nil
+}
+
+func filterLiveBlockedOnSiblingBlockersBudgeted(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blockers []int, budget *backlogReconcileBudget) ([]int, error) {
+	var live []int
+	seen := make(map[int]bool)
+	for _, blocker := range blockers {
+		if seen[blocker] {
+			continue
+		}
+		seen[blocker] = true
+		blocks, err := namedBlockerStillBlocksBudgeted(ctx, provider, repo, blocker, budget)
+		if err != nil {
+			return nil, err
+		}
+		if blocks {
+			live = append(live, blocker)
+		}
+	}
+	return live, nil
+}
+
+func namedBlockerStillBlocksBudgeted(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, blocker int, budget *backlogReconcileBudget) (bool, error) {
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	item, err := provider.GetWorkItem(ctx, repo, strconv.Itoa(blocker))
+	if err != nil {
+		return false, err
+	}
+	if !strings.EqualFold(item.State, "open") {
+		return false, nil
+	}
+	if !item.HasLabel(mergeDemotedLabel) {
+		return true, nil
+	}
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	pr, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(blocker))
+	if err != nil {
+		return false, err
+	}
+	if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {
+		return true, nil
+	}
+	if err := budget.Consume(); err != nil {
+		return false, err
+	}
+	comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+	if err != nil {
+		return false, err
+	}
+	state, _, found := latestMergeDemotionState(comments)
+	if !found || !state.Demoted {
+		return true, nil
+	}
+	if state.HeadSHA != pr.HeadSHA {
+		return false, nil
+	}
+	return true, nil
 }
 
 func withoutString(values []string, reject string) []string {
@@ -1061,6 +1321,7 @@ func restoreInvisibleClaimsWindow(
 		result.NextCursor = cursor
 		return result, nil
 	}
+	budget := newBacklogReconcileBudget(limit, observedAt, now)
 	gaggle := providerGaggle()
 	if gaggle == "" {
 		pf(stderr, "notice: skipping claim-visibility reconciliation: this stage has no gaggle, so the claim namespace cannot be addressed\n")
@@ -1093,6 +1354,7 @@ func restoreInvisibleClaimsWindow(
 		return result, nil
 	}
 	start := 0
+	result.NextCursor = cursor
 	if cursor != "" {
 		start = sort.Search(len(entries), func(i int) bool {
 			return claimEntryItemID(entries[i]) > cursor
@@ -1102,12 +1364,13 @@ func restoreInvisibleClaimsWindow(
 		}
 	}
 	incompleteCursor := ""
-	for offset := 0; offset < len(entries) && result.Examined < limit; offset++ {
+	for offset := 0; offset < len(entries) && budget.Available(); offset++ {
 		entry := entries[(start+offset)%len(entries)]
 		itemID := claimEntryItemID(entry)
 		result.Examined++
 		result.NextCursor = itemID
-		entryResult, err := restoreInvisibleClaimWindowEntry(ctx, l, provider, repo, ledger, entry, gaggle, now, stderr)
+		entryResult, err := restoreInvisibleClaimWindowEntry(ctx, l, provider, repo, ledger, entry, gaggle, now, budget, stderr)
+		result.Spent = budget.Spent()
 		if err != nil {
 			return result, err
 		}
@@ -1119,6 +1382,9 @@ func restoreInvisibleClaimsWindow(
 		}
 	}
 	result.Complete = result.Examined >= len(entries) && incompleteCursor == ""
+	if !budget.Available() && result.Examined < len(entries) {
+		result.Complete = false
+	}
 	if result.Complete {
 		result.NextCursor = ""
 	} else if incompleteCursor != "" {
@@ -1141,6 +1407,7 @@ func restoreInvisibleClaimWindowEntry(
 	entry claimsclient.Entry,
 	gaggle string,
 	now func() time.Time,
+	budget *backlogReconcileBudget,
 	stderr io.Writer,
 ) (invisibleClaimEntryResult, error) {
 	itemID := claimEntryItemID(entry)
@@ -1151,6 +1418,9 @@ func restoreInvisibleClaimWindowEntry(
 				itemID, entry.Verification.ProviderRunID, entry.RunID)
 			return invisibleClaimEntryResult{incomplete: true}, nil
 		}
+	}
+	if err := budget.Consume(); err != nil {
+		return invisibleClaimEntryResult{incomplete: true}, nil
 	}
 	item, err := provider.GetWorkItem(ctx, repo, itemID)
 	if err != nil {
@@ -1171,7 +1441,7 @@ func restoreInvisibleClaimWindowEntry(
 		return invisibleClaimEntryResult{incomplete: true}, nil
 	}
 	recordClaimObservation(ctx, ledger, entry, localscheduler.ClaimVerification{State: "missing", ObservedAt: time.Now()}, stderr)
-	claim, err := restoreClaimVisibility(ctx, l, provider, repo, itemID, entry, stderr)
+	claim, err := restoreClaimVisibility(ctx, l, provider, repo, itemID, entry, budget, stderr)
 	recordProviderClaimObservation(ctx, ledger, entry, repo, claim, err, stderr)
 	if err != nil {
 		pf(stderr, "warning: could not restore the claim marker on item %s held by run %s: %v\n",
@@ -1241,10 +1511,35 @@ func advanceBacklogReconcileClaimCursor(
 		})
 }
 
-func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *providers.GitHubProvider, repo providers.RepositoryRef, itemID string, entry claimsclient.Entry, stderr io.Writer) (providers.ClaimResult, error) {
+func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *providers.GitHubProvider, repo providers.RepositoryRef, itemID string, entry claimsclient.Entry, budget *backlogReconcileBudget, stderr io.Writer) (providers.ClaimResult, error) {
 	if !entry.SharedDeadline.IsZero() {
-		labels := providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo}
+		labels := budgetedSharedClaimVisibility{
+			Visibility: providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo},
+			budget:     budget,
+		}
 		return confirmSharedClaimVisibility(ctx, entry, stageSharedClaimResolver(l), labels, stderr)
 	}
+	if err := budget.Consume(); err != nil {
+		return providers.ClaimResult{}, err
+	}
 	return provider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: itemID, RunID: entry.RunID})
+}
+
+type budgetedSharedClaimVisibility struct {
+	sharedclaim.Visibility
+	budget *backlogReconcileBudget
+}
+
+func (v budgetedSharedClaimVisibility) ReadClaimed(ctx context.Context, key string) (bool, error) {
+	if err := v.budget.Consume(); err != nil {
+		return false, err
+	}
+	return v.Visibility.ReadClaimed(ctx, key)
+}
+
+func (v budgetedSharedClaimVisibility) SetClaimed(ctx context.Context, key string, present bool) error {
+	if err := v.budget.Consume(); err != nil {
+		return err
+	}
+	return v.Visibility.SetClaimed(ctx, key, present)
 }

@@ -2122,7 +2122,7 @@ func performBacklogQueryReconciliation(
 		env.issueRepo(),
 		trustLabel,
 		stalenessPolicy,
-		func() time.Time { return observedAt },
+		func() time.Time { return time.Now().UTC() },
 	)
 	if err != nil {
 		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
@@ -2161,6 +2161,7 @@ func performBacklogQueryReconciliation(
 	} else {
 		result.Reconciled += claims.Restored
 		result.Scan.ClaimExamined = claims.Examined
+		result.Scan.Spent += claims.Spent
 		if !claims.Complete {
 			result.Scan.WorkRemaining = true
 			result.Scan.Complete = false

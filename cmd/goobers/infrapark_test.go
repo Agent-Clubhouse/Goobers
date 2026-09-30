@@ -21,7 +21,7 @@ func TestStaleInfrastructureRemediationPark(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "1"}
 
-		stale, err := staleInfrastructureRemediationPark(context.Background(), provider, repo, item)
+		stale, err := staleInfrastructureRemediationParkBudgeted(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleInfrastructureRemediationPark: %v", err)
 		}
@@ -39,7 +39,7 @@ func TestStaleInfrastructureRemediationPark(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "2", Labels: []string{needsRemediationLabel}}
 
-		stale, err := staleInfrastructureRemediationPark(context.Background(), provider, repo, item)
+		stale, err := staleInfrastructureRemediationParkBudgeted(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleInfrastructureRemediationPark: %v", err)
 		}
@@ -62,7 +62,7 @@ func TestStaleInfrastructureRemediationPark(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "3", Labels: []string{needsRemediationLabel}}
 
-		stale, err := staleInfrastructureRemediationPark(context.Background(), provider, repo, item)
+		stale, err := staleInfrastructureRemediationParkBudgeted(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleInfrastructureRemediationPark: %v", err)
 		}
@@ -78,7 +78,7 @@ func TestStaleInfrastructureRemediationPark(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "4", Labels: []string{needsRemediationLabel}}
 
-		stale, err := staleInfrastructureRemediationPark(context.Background(), provider, repo, item)
+		stale, err := staleInfrastructureRemediationParkBudgeted(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleInfrastructureRemediationPark: %v", err)
 		}
@@ -96,7 +96,7 @@ func TestStaleInfrastructureRemediationPark(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "5", Labels: []string{needsRemediationLabel, providers.LabelNeedsHuman}}
 
-		stale, err := staleInfrastructureRemediationPark(context.Background(), provider, repo, item)
+		stale, err := staleInfrastructureRemediationParkBudgeted(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleInfrastructureRemediationPark: %v", err)
 		}

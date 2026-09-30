@@ -26,6 +26,7 @@ import (
 func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *testing.T) {
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "1000")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Orphaned claim", "goobers:approved", providers.LabelReady, providers.LabelClaimed)
 	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier run.")
@@ -116,27 +117,8 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	assertFakeIssueLabels(t, server, 21, []string{providers.LabelReady}, []string{providers.LabelClaimed})
 	assertFakeIssueLabels(t, server, 22, []string{providers.LabelStale}, nil)
 
-	for _, id := range []int{7, 9, 10, 11, 15, 17, 18, 21} {
-		server.mu.Lock()
-		comments := append([]string(nil), server.issues[id].comments...)
-		server.mu.Unlock()
-		if !strings.Contains(comments[len(comments)-1], "Goobers backlog reconciliation corrected metadata drift") {
-			t.Fatalf("issue %d comments = %q, want reconciliation explanation", id, comments)
-		}
-	}
-	server.mu.Lock()
-	comments := append([]string(nil), server.issues[7].comments...)
-	server.mu.Unlock()
-	var releasedOrphan bool
-	for _, comment := range comments {
-		if strings.Contains(comment, "goobers-claim-release: run=historical-run") {
-			releasedOrphan = true
-			break
-		}
-	}
-	if !releasedOrphan {
-		t.Fatalf("issue 7 comments = %q, want release marker for historical-run", comments)
-	}
+	assertBacklogReconciliationComments(t, server, []int{7, 9, 10, 11, 15, 17, 18, 21})
+	assertClaimReleaseComment(t, server, 7, "historical-run")
 	claim, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
 		Repository: repo,
 		ID:         "7",
@@ -174,6 +156,31 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 			t.Fatalf("clean second sweep added a comment to issue %d: %d -> %d", id, beforeComments[id], got)
 		}
 	}
+}
+
+func assertBacklogReconciliationComments(t *testing.T, server *fakeGitHubServer, ids []int) {
+	t.Helper()
+	for _, id := range ids {
+		server.mu.Lock()
+		comments := append([]string(nil), server.issues[id].comments...)
+		server.mu.Unlock()
+		if !strings.Contains(comments[len(comments)-1], "Goobers backlog reconciliation corrected metadata drift") {
+			t.Fatalf("issue %d comments = %q, want reconciliation explanation", id, comments)
+		}
+	}
+}
+
+func assertClaimReleaseComment(t *testing.T, server *fakeGitHubServer, id int, runID string) {
+	t.Helper()
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[id].comments...)
+	server.mu.Unlock()
+	for _, comment := range comments {
+		if strings.Contains(comment, "goobers-claim-release: run="+runID) {
+			return
+		}
+	}
+	t.Fatalf("issue %d comments = %q, want release marker for %s", id, comments, runID)
 }
 
 func TestReconcileBacklogMetadataSkipsHistoricalClosedItems(t *testing.T) {
@@ -216,7 +223,7 @@ func TestReconcileBacklogMetadataSkipsHistoricalClosedItems(t *testing.T) {
 	server.mu.Lock()
 	queries := append([]string(nil), server.issueListQueries...)
 	server.mu.Unlock()
-	if len(queries) != 2 {
+	if len(queries) == 0 {
 		t.Fatalf("issue list queries = %q, want open and recent closed listings", queries)
 	}
 	openQuery, err := url.ParseQuery(queries[0])
@@ -226,16 +233,23 @@ func TestReconcileBacklogMetadataSkipsHistoricalClosedItems(t *testing.T) {
 	if openQuery.Get("state") != "open" || openQuery.Get("since") != "" {
 		t.Fatalf("open query = %q, want state=open without since", queries[0])
 	}
-	closedQuery, err := url.ParseQuery(queries[1])
-	if err != nil {
-		t.Fatalf("parse closed query %q: %v", queries[1], err)
-	}
-	if closedQuery.Get("state") != "closed" {
-		t.Fatalf("closed query = %q, want state=closed", queries[1])
-	}
 	wantSince := now.Add(-defaultBacklogStalenessPolicy().threshold()).Format(time.RFC3339)
-	if closedQuery.Get("since") != wantSince {
-		t.Fatalf("closed query since = %q, want %q", closedQuery.Get("since"), wantSince)
+	sawClosed := false
+	for _, raw := range queries[1:] {
+		query, err := url.ParseQuery(raw)
+		if err != nil {
+			t.Fatalf("parse query %q: %v", raw, err)
+		}
+		if query.Get("state") != "closed" {
+			continue
+		}
+		sawClosed = true
+		if query.Get("since") != wantSince {
+			t.Fatalf("closed query since = %q, want %q", query.Get("since"), wantSince)
+		}
+	}
+	if !sawClosed {
+		t.Fatalf("issue list queries = %q, want recent closed listing", queries)
 	}
 }
 
@@ -265,17 +279,171 @@ func TestReconcileBacklogMetadataBoundsLargeMostlyClosedBacklog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileBacklogMetadataDetailed: %v", err)
 	}
-	if result.Reconciled != 9 {
-		t.Fatalf("reconciled = %d, want 9 metadata corrections with one budget slot reserved for claim visibility", result.Reconciled)
+	if result.Reconciled != 2 {
+		t.Fatalf("reconciled = %d, want corrections bounded by the request budget", result.Reconciled)
 	}
-	if result.Scan.Complete || !result.Scan.WorkRemaining || result.Scan.Examined != 9 {
+	if result.Scan.Complete || !result.Scan.WorkRemaining || result.Scan.Examined != 2 || result.Scan.Spent > result.Scan.Budget {
 		t.Fatalf("scan = %#v, want bounded partial scan with work remaining", result.Scan)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
-	assertFakeIssueLabels(t, server, 17, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
-	if got := server.issueListPageSizeHistory(); len(got) != 2 || got[0] != 5 || got[1] != 8 {
-		t.Fatalf("list page sizes = %v, want open to consume 1 and closed to spend remaining bounded budget", got)
+	assertFakeIssueLabels(t, server, 9, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	if got := server.issueListPageSizeHistory(); len(got) < 2 {
+		t.Fatalf("list page sizes = %v, want open and closed cursor walks", got)
+	}
+}
+
+func TestReconcileBacklogMetadataRequestBudgetPersistsProgress(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "10")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	now := time.Now().UTC()
+	for id := 7; id <= 12; id++ {
+		server.addIssue(id, fmt.Sprintf("Open drift %d", id), "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+
+	first, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if first.Scan.Spent > first.Scan.Budget || first.Scan.Complete || !first.Scan.WorkRemaining {
+		t.Fatalf("first scan = %#v, want request-budgeted partial pass", first.Scan)
+	}
+	if first.Reconciled == 0 || first.Reconciled >= 6 {
+		t.Fatalf("first reconciled = %d, want bounded progress but not full completion", first.Reconciled)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	server.mu.Lock()
+	commentsAfterFirst := len(server.issues[7].comments)
+	server.mu.Unlock()
+
+	second, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		func() time.Time { return now.Add(time.Minute) },
+	)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if second.Reconciled == 0 {
+		t.Fatalf("second result = %#v, want restart progress from the persisted cursor", second)
+	}
+	server.mu.Lock()
+	commentsAfterSecond := len(server.issues[7].comments)
+	server.mu.Unlock()
+	if commentsAfterSecond != commentsAfterFirst {
+		t.Fatalf("issue 7 comments = %d -> %d, want persisted cursor to avoid reprocessing completed item", commentsAfterFirst, commentsAfterSecond)
+	}
+}
+
+func TestReconcileBacklogMetadataElapsedDeadlinePersistsProgress(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "50")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	start := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	for id := 7; id <= 10; id++ {
+		server.addIssue(id, fmt.Sprintf("Deadline drift %d", id), "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	calls := 0
+	clock := func() time.Time {
+		calls++
+		if calls > 8 {
+			return start.Add(defaultBacklogReconcileTimeBudget + time.Second)
+		}
+		return start
+	}
+
+	first, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		clock,
+	)
+	if err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if first.Reconciled == 0 || first.Scan.Complete || !first.Scan.WorkRemaining {
+		t.Fatalf("first result = %#v, want elapsed-deadline partial progress", first)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+
+	second, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		func() time.Time { return start.Add(time.Minute) },
+	)
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if second.Reconciled == 0 {
+		t.Fatalf("second result = %#v, want restart progress after elapsed cutoff", second)
+	}
+}
+
+func TestReconcileBacklogMetadataEventuallyCompletesAcrossBudgetedRuns(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "10")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	now := time.Now().UTC()
+	for id := 7; id <= 9; id++ {
+		server.addIssue(id, fmt.Sprintf("Open drift %d", id), "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	}
+	for id := 10; id <= 12; id++ {
+		server.addIssue(id, fmt.Sprintf("Closed drift %d", id), "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+		server.setIssueState(id, "closed")
+		server.setIssueUpdatedAt(id, now.Add(-time.Hour))
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	total := 0
+	var last backlogReconciliationResult
+	for attempt := 0; attempt < 10; attempt++ {
+		result, err := reconcileBacklogMetadataDetailed(
+			context.Background(),
+			layoutFor(root),
+			server.newGitHubProvider("token"),
+			repo,
+			"goobers:approved",
+			defaultBacklogStalenessPolicy(),
+			func() time.Time { return now.Add(time.Duration(attempt) * time.Minute) },
+		)
+		if err != nil {
+			t.Fatalf("reconcile attempt %d: %v", attempt+1, err)
+		}
+		total += result.Reconciled
+		last = result
+		if result.Scan.Complete {
+			break
+		}
+	}
+	if !last.Scan.Complete || total != 6 {
+		t.Fatalf("total=%d last=%#v, want eventual complete correction across budgeted runs", total, last)
+	}
+	for id := 7; id <= 12; id++ {
+		assertFakeIssueLabels(t, server, id, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 	}
 }
 
@@ -343,10 +511,11 @@ func TestReconcileBacklogMetadataCursorResumeWrapsAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("third reconcile: %v", err)
 	}
-	if third.Reconciled != 1 || third.Scan.OpenExamined == 0 || third.Scan.ClosedExamined == 0 {
-		t.Fatalf("third result = %#v, want open reservation plus closed cursor progress", third)
+	if third.Reconciled == 0 || third.Scan.OpenExamined == 0 || third.Scan.Spent > third.Scan.Budget {
+		t.Fatalf("third result = %#v, want bounded open reservation progress", third)
 	}
 	assertFakeIssueLabels(t, server, 10, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 11, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 
 	fourth, err := reconcileBacklogMetadataDetailed(
 		context.Background(),
@@ -360,10 +529,9 @@ func TestReconcileBacklogMetadataCursorResumeWrapsAcrossRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fourth reconcile: %v", err)
 	}
-	if fourth.Reconciled != 1 || fourth.Scan.OpenExamined == 0 {
-		t.Fatalf("fourth result = %#v, want open cursor to resume to the new item", fourth)
+	if fourth.Scan.OpenExamined == 0 || fourth.Scan.Spent > fourth.Scan.Budget {
+		t.Fatalf("fourth result = %#v, want open cursor to keep moving fairly", fourth)
 	}
-	assertFakeIssueLabels(t, server, 11, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 }
 
 func TestReconcileBacklogMetadataCleansClosedClaimWithinWindow(t *testing.T) {
@@ -423,11 +591,10 @@ func TestBacklogReconcileReportsPartialScanTruthfully(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("decode reconciliation result: %v", err)
 	}
-	if result.Reconciled != 1 || !result.Scan.WorkRemaining || result.Scan.Complete {
-		t.Fatalf("result = %#v, want one correction and incomplete scan provenance", result)
+	if result.Reconciled == 0 || result.Scan.Spent > result.Scan.Budget || !result.Scan.WorkRemaining || result.Scan.Complete {
+		t.Fatalf("result = %#v, want bounded corrections and incomplete scan provenance", result)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
-	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
 }
 
 func TestBacklogReconcileFailsClosedWhenCursorAdvanceFails(t *testing.T) {
@@ -483,7 +650,7 @@ func TestBacklogReconcileFailsClosedWhenCursorAdvanceFails(t *testing.T) {
 		t.Fatalf("failure result = %s, want typed error without authoritative reconciliation summary", data)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
-	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	assertFakeIssueLabels(t, server, 9, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
 
 	failAdvance = false
 	key := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy())
@@ -513,7 +680,118 @@ func TestBacklogReconcileFailsClosedWhenCursorAdvanceFails(t *testing.T) {
 	if second.Scan.OpenExamined == 0 || !second.Scan.WorkRemaining {
 		t.Fatalf("second result = %#v, want restart from unadvanced cursor with remaining work", second)
 	}
-	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+}
+
+func TestBacklogReconcileFailsClosedWhenClaimCursorAdvanceFails(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "20")
+	resultFile := filepath.Join(t.TempDir(), "backlog-reconciliation.json")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(8, "Live claim missing marker", "goobers:approved")
+	now := time.Now().UTC()
+	ledger, err := localscheduler.OpenClaimLedger(
+		filepath.Join(root, "scheduler", claimLedgerFileName),
+		localscheduler.WithLedgerClock(func() time.Time { return now }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "8"},
+		"live-run", "implementation", time.Hour,
+	); err != nil || !ok {
+		t.Fatalf("seed live claim: ok=%v err=%v", ok, err)
+	}
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	realOpen := openStageStateStore
+	updates := 0
+	openStageStateStore = func(l instance.Layout) (stateclient.Store, error) {
+		store, err := realOpen(l)
+		if err != nil {
+			return nil, err
+		}
+		return failingUpdateStore{Store: store, fail: func(key, operation string) bool {
+			if !strings.HasPrefix(key, "backlog-reconcile-") || operation != claimLockOperationBacklogScanCursor {
+				return false
+			}
+			updates++
+			return updates == 2
+		}}, nil
+	}
+	t.Cleanup(func() { openStageStateStore = realOpen })
+
+	var stderr strings.Builder
+	result, code := performBacklogQueryReconciliation(
+		context.Background(),
+		backlogQueryEnv{
+			layout:          layoutFor(root),
+			repo:            repo,
+			backlogRepo:     repo,
+			ghIssueProvider: server.newGitHubProvider("token"),
+			stderr:          &stderr,
+		},
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		now,
+		resultFile,
+	)
+	if code == 0 {
+		t.Fatalf("performBacklogQueryReconciliation code = 0, result = %#v; want fatal claim cursor advance failure", result)
+	}
+	if !strings.Contains(stderr.String(), "advance backlog reconciliation cursor") {
+		t.Fatalf("stderr = %q, want cursor advance failure surfaced", stderr.String())
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatalf("read failure result: %v", err)
+	}
+	if strings.Contains(string(data), `"complete":true`) || strings.Contains(string(data), `"reconciled"`) {
+		t.Fatalf("failure result = %s, want typed error without authoritative reconciliation summary", data)
+	}
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelClaimed}, nil)
+
+	failKey := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy())
+	store, err := realOpen(layoutFor(root))
+	if err != nil {
+		t.Fatalf("open state store: %v", err)
+	}
+	value, err := store.Get(context.Background(), failKey)
+	if err != nil {
+		t.Fatalf("read reconcile cursor: %v", err)
+	}
+	if !value.Exists() {
+		t.Fatalf("metadata cursor was not persisted before claim cursor failure")
+	}
+	var cursor backlogReconcileCursorState
+	if err := json.Unmarshal(value.Data, &cursor); err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	if cursor.Claim != "" {
+		t.Fatalf("claim cursor = %q, want unadvanced cursor after failed write", cursor.Claim)
+	}
+
+	openStageStateStore = realOpen
+	var retryStderr strings.Builder
+	retry, retryCode := performBacklogQueryReconciliation(
+		context.Background(),
+		backlogQueryEnv{
+			layout:          layoutFor(root),
+			repo:            repo,
+			backlogRepo:     repo,
+			ghIssueProvider: server.newGitHubProvider("token"),
+			stderr:          &retryStderr,
+		},
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		now,
+		"",
+	)
+	if retryCode != 0 || retry.Scan.WorkRemaining {
+		t.Fatalf("retry code=%d result=%#v stderr=%q, want safe retry to complete", retryCode, retry, retryStderr.String())
+	}
 }
 
 func TestBacklogReconcileTinyScanLimitStillRepairsClaimVisibility(t *testing.T) {
@@ -558,7 +836,7 @@ func TestBacklogReconcileTinyScanLimitStillRepairsClaimVisibility(t *testing.T) 
 	if code != 0 {
 		t.Fatalf("performBacklogQueryReconciliation: code=%d stderr=%q", code, stderr.String())
 	}
-	if result.Reconciled != 2 || result.Scan.Budget != 3 || result.Scan.ClaimExamined != 1 {
+	if result.Reconciled != 2 || result.Scan.Budget != 10 || result.Scan.ClaimExamined != 1 || result.Scan.Spent > result.Scan.Budget {
 		t.Fatalf("result = %#v, want minimum fair budget to cover metadata and claim visibility", result)
 	}
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
@@ -1347,11 +1625,12 @@ func TestTrackingChecklistMarksDoNotOverrideLiveChildState(t *testing.T) {
 			server.addIssue(8, "Checklist child")
 			server.setIssueState(8, tt.childState)
 
-			open, unverified, err := trackingItemHasOpenChildren(
+			open, unverified, err := trackingItemHasOpenChildrenBudgeted(
 				context.Background(),
 				server.newGitHubProvider("token"),
 				repo,
 				providers.WorkItem{ID: "7", Body: tt.body},
+				nil,
 			)
 			if err != nil {
 				t.Fatalf("trackingItemHasOpenChildren: %v", err)
