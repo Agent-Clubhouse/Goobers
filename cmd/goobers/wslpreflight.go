@@ -53,7 +53,12 @@ printf '%s\n' 'GOOBERS_WSL_READY=1'
 const wslNetworkPreflightCommand = "__wsl-network-preflight"
 const wslLaunchScript = `exec "$@"`
 
-const wslPreflightHelp = `Usage: goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
+const wslPreflightHelp = `Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--json]]
+       goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
+
+With --instance and --workflow, emit the versioned runtime preflight report for
+one workflow without provider mutation, package installation, repository writes,
+model execution, or external credential/harness probes.
 
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
@@ -130,6 +135,9 @@ func realWSLPreflightDeps() wslPreflightDeps {
 }
 
 func runOnboardingPreflight(args []string, stdout, stderr io.Writer) int {
+	if isRuntimePreflightInvocation(args) {
+		return runRuntimePreflight(args, stdout, stderr)
+	}
 	return runOnboardingPreflightWith(args, stdout, stderr, realWSLPreflightDeps())
 }
 

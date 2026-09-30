@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "instance": {
+    "path": "\u003cinstance-root\u003e",
+    "configDir": "\u003cinstance-config\u003e"
+  },
+  "workflow": {
+    "name": "implement",
+    "gaggle": "example",
+    "dslVersion": "2.0",
+    "source": "gaggles/example/workflows/implement.yaml",
+    "digest": "sha256:\u003cworkflow\u003e",
+    "gooberDigest": "sha256:\u003cgoober\u003e"
+  },
+  "execution": {
+    "identityMode": "actual",
+    "source": {
+      "fidelity": "static",
+      "detail": "instance.yaml and config/ only; no host, provider, credential, sandbox, or harness probe was executed"
+    }
+  },
+  "stages": [
+    {
+      "name": "claim",
+      "kind": "task:deterministic",
+      "requiredCapabilities": [
+        "node@20"
+      ],
+      "credentialCapabilities": [
+        "github:issues:write"
+      ],
+      "runner": {
+        "outcome": "selected",
+        "selected": {
+          "name": "linux-pool",
+          "kind": "image",
+          "host": "ghcr.io/example/goobers-runner:latest",
+          "os": "linux",
+          "capabilities": [
+            "node@20"
+          ]
+        },
+        "eligible": [
+          {
+            "name": "local",
+            "kind": "self",
+            "host": "self",
+            "os": "\u003chost-os\u003e",
+            "capabilities": [
+              "node@20"
+            ]
+          },
+          {
+            "name": "linux-pool",
+            "kind": "image",
+            "host": "ghcr.io/example/goobers-runner:latest",
+            "os": "linux",
+            "capabilities": [
+              "node@20"
+            ]
+          }
+        ],
+        "detail": "selected by the shared solver result and dispatcher.SelectRunner",
+        "source": {
+          "fidelity": "static",
+          "detail": "instance runner inventory, workflow placement requirements, and deterministic dispatcher selection"
+        }
+      },
+      "source": {
+        "fidelity": "static",
+        "detail": "workflow task definition"
+      }
+    },
+    {
+      "name": "implement",
+      "kind": "task:agentic",
+      "goober": "coder",
+      "harness": "copilot",
+      "requiredCapabilities": [
+        "node@20"
+      ],
+      "credentialCapabilities": [
+        "agent:model"
+      ],
+      "runner": {
+        "outcome": "selected",
+        "selected": {
+          "name": "linux-pool",
+          "kind": "image",
+          "host": "ghcr.io/example/goobers-runner:latest",
+          "os": "linux",
+          "capabilities": [
+            "node@20"
+          ]
+        },
+        "eligible": [
+          {
+            "name": "local",
+            "kind": "self",
+            "host": "self",
+            "os": "\u003chost-os\u003e",
+            "capabilities": [
+              "node@20"
+            ]
+          },
+          {
+            "name": "linux-pool",
+            "kind": "image",
+            "host": "ghcr.io/example/goobers-runner:latest",
+            "os": "linux",
+            "capabilities": [
+              "node@20"
+            ]
+          }
+        ],
+        "detail": "selected by the shared solver result and dispatcher.SelectRunner",
+        "source": {
+          "fidelity": "static",
+          "detail": "instance runner inventory, workflow placement requirements, and deterministic dispatcher selection"
+        }
+      },
+      "source": {
+        "fidelity": "static",
+        "detail": "workflow task definition"
+      }
+    }
+  ],
+  "checks": [
+    {
+      "category": "authentication",
+      "code": "authentication_unobservable",
+      "outcome": "unobservable",
+      "detail": "credential presence and sign-in state require an external auth probe, which this report intentionally does not run",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "transport",
+      "code": "transport_unobservable",
+      "outcome": "unobservable",
+      "detail": "provider and harness transport reachability require external network probes, which this report intentionally does not run",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "authorization",
+      "code": "authorization_unobservable",
+      "outcome": "unobservable",
+      "detail": "permission checks require provider authorization probes, which this report intentionally does not run",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "unavailable_tool",
+      "code": "tool_unobservable",
+      "outcome": "unobservable",
+      "detail": "tool availability requires host or harness execution, which this report intentionally does not run",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "path_access",
+      "code": "path_access_unobservable",
+      "outcome": "unobservable",
+      "detail": "runtime workspace path access requires runner execution, which this report intentionally does not run",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "sandbox",
+      "code": "sandbox_unobservable",
+      "outcome": "unobservable",
+      "detail": "sandbox enforcement requires runner probing, which this report intentionally does not run",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "capability_mismatch",
+      "code": "capability_mismatch_unobservable",
+      "outcome": "unobservable",
+      "detail": "runner capability satisfaction requires scheduler/runner inventory evaluation beyond this static report",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "cleanup_guarantee",
+      "code": "cleanup_guarantee_unsupported",
+      "outcome": "unsupported",
+      "detail": "cleanup guarantees are not proven by this report contract slice",
+      "source": {
+        "fidelity": "unsupported",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "unsupported",
+      "code": "external_probe_unsupported",
+      "outcome": "unsupported",
+      "detail": "external credential, harness, MCP, sandbox, lifecycle, and provider probes are outside this report contract slice",
+      "source": {
+        "fidelity": "unsupported",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "unobservable",
+      "code": "unknown_facts_explicit",
+      "outcome": "unobservable",
+      "detail": "unknown facts are explicit and cannot satisfy a required guarantee",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "contract boundary"
+      }
+    },
+    {
+      "category": "capability_mismatch",
+      "code": "stage_capability_satisfaction_unobservable",
+      "outcome": "unobservable",
+      "stage": "claim",
+      "detail": "stage declares runner requirements; this report records them but does not prove a runner satisfies them",
+      "source": {
+        "fidelity": "static",
+        "detail": "workflow stage declaration"
+      }
+    },
+    {
+      "category": "capability_mismatch",
+      "code": "stage_capability_satisfaction_unobservable",
+      "outcome": "unobservable",
+      "stage": "implement",
+      "detail": "stage declares runner requirements; this report records them but does not prove a runner satisfies them",
+      "source": {
+        "fidelity": "static",
+        "detail": "workflow stage declaration"
+      }
+    }
+  ],
+  "mutationBoundary": [
+    "loaded instance.yaml",
+    "loaded config directory",
+    "compiled workflow",
+    "computed workflow and goober digests",
+    "no provider mutation",
+    "no package installation",
+    "no repository write",
+    "no model execution"
+  ]
+}
