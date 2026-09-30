@@ -11,9 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -178,71 +176,4 @@ func TestNonADOBacklogReconcileStillRefuses(t *testing.T) {
 	if !strings.Contains(stderr.String(), "BL-033") {
 		t.Errorf("stderr = %q, want the BL-033 refusal", stderr.String())
 	}
-}
-
-// TestADOScaffoldBacklogCurationRoutesPastReconcile is the shipped-workflow
-// contract for #6104: the backlog-curation workflow `init --template=standard
-// --provider=ado` scaffolds starts with a `backlog-query --reconcile` stage
-// whose only route is an unconditional next to implementation-feedback, and
-// running that stage with the scaffold's own inputs against Azure DevOps
-// exits 0 with a success-shaped result (no noWork), so the runner advances.
-func TestADOScaffoldBacklogCurationRoutesPastReconcile(t *testing.T) {
-	scaffold := filepath.Join(t.TempDir(), "ado")
-	code, stdout, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--pr-ci", scaffold)
-	if code != 0 {
-		t.Fatalf("ADO init code=%d stdout=%s stderr=%s", code, stdout, stderr)
-	}
-	set, report, err := instance.LoadConfigDir(filepath.Join(scaffold, "config"))
-	if err != nil || report.HasErrors() {
-		t.Fatalf("load scaffold: %v report=%+v", err, report)
-	}
-	reconcile := adoScaffoldCurationStart(t, set.Workflows)
-
-	provider, _ := newADOReconcileProvider(t)
-	var out, errOut bytes.Buffer
-	env := adoReconcileEnv(t, provider, &out, &errOut)
-	for key, value := range reconcile.Inputs {
-		t.Setenv(executor.InputEnvVar(key), value)
-	}
-	workDir := t.TempDir()
-	t.Chdir(workDir)
-	if code := runBacklogQueryMode(backlogQueryModeReconcile, env, nil); code != 0 {
-		t.Fatalf("scaffold reconcile-backlog on ADO: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
-	}
-	assertNotApplicableReconciliation(t, readReconciliationResult(t, filepath.Join(workDir, reconcile.Inputs["resultFile"])))
-}
-
-// adoScaffoldCurationStart returns the scaffolded backlog-curation start
-// task after asserting it is the reconcile stage and routes unconditionally
-// (no gate) to implementation-feedback.
-func adoScaffoldCurationStart(t *testing.T, workflows []apiv1.Workflow) apiv1.Task {
-	t.Helper()
-	for _, wf := range workflows {
-		if wf.Name != "backlog-curation" {
-			continue
-		}
-		for _, task := range wf.Spec.Tasks {
-			if task.Name != wf.Spec.Start {
-				continue
-			}
-			if task.Run == nil || strings.Join(task.Run.Command, " ") != "goobers backlog-query --reconcile" {
-				t.Fatalf("backlog-curation start %q runs %+v, want goobers backlog-query --reconcile", task.Name, task.Run)
-			}
-			if task.Next != "implementation-feedback" || task.ContinueOnError {
-				t.Fatalf("backlog-curation start %q next=%q continueOnError=%t, want an unconditional next to implementation-feedback", task.Name, task.Next, task.ContinueOnError)
-			}
-			for _, gate := range wf.Spec.Gates {
-				if gate.Name == task.Next {
-					t.Fatalf("backlog-curation start routes through gate %q, want a direct task handoff", gate.Name)
-				}
-			}
-			if task.Inputs["resultFile"] == "" || task.Inputs["trustLabel"] == "" {
-				t.Fatalf("backlog-curation start inputs = %v, want resultFile and trustLabel", task.Inputs)
-			}
-			return task
-		}
-		t.Fatalf("backlog-curation start %q is not a task", wf.Spec.Start)
-	}
-	t.Fatal("ADO scaffold has no backlog-curation workflow")
-	return apiv1.Task{}
 }

@@ -989,7 +989,7 @@ func writeClaimedBacklogResult(
 	var err error
 	if opts.curationRun {
 		curationItems, err = enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
 		)
 		if err != nil {
 			return failProviderStage(env.stderr, "compute claimed-item staleness", err, "claimed-items.json")
@@ -998,7 +998,7 @@ func writeClaimedBacklogResult(
 			curationItems[index].CurationMode = opts.curationModeByID[curationItems[index].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
 		)
 		if enrichErr != nil {
 			return failProviderStage(env.stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
@@ -1043,6 +1043,22 @@ func marshalClaimedBacklogItems(
 	default:
 		return json.Marshal(claimed)
 	}
+}
+
+// backlogStalenessProvider is the provider claimed-item staleness is read
+// through: the concrete GitHub issue provider exactly as before, otherwise the
+// backlog's own issue provider when it exposes comments (Azure DevOps,
+// Goobers#6104). It returns an untyped nil — never a nil *GitHubProvider in
+// an interface — when neither applies, so enrichment marks the evidence
+// unavailable instead of dereferencing nil.
+func backlogStalenessProvider(env backlogQueryEnv) stalenessCommentProvider {
+	if env.ghIssueProvider != nil {
+		return env.ghIssueProvider
+	}
+	if provider, ok := env.issueProvider.(stalenessCommentProvider); ok && provider != nil {
+		return provider
+	}
+	return nil
 }
 
 func writeClaimedBacklogSummary(stdout io.Writer, claimed, readOnly []providers.WorkItem) {
