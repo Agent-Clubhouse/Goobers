@@ -24,7 +24,7 @@ import (
 
 // blockedOnSiblingLabel marks a PR that's correct in isolation but must wait
 // behind a named sibling (#747) — see verdictLabel's doc comment.
-const blockedOnSiblingLabel = "goobers:blocked-on-sibling"
+const blockedOnSiblingLabel = providers.LabelBlockedOnSibling
 
 const mergeReviewStatusMarker = "<!-- goobers:merge-review-status -->"
 
