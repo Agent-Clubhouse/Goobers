@@ -96,7 +96,7 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 	}
 	event := &replayHealthEvent{Time: now.UTC(), Event: "telemetry.export.health", Status: "warning", Causes: causes,
 		AccountingReady: stats.AccountingReady,
-		PendingRecords: stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
+		PendingRecords:  stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
 		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures, Retried: stats.Retried,
 		PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes, Malformed: stats.Malformed, Queue: loss}
 	if seconds := now.Sub(h.at).Seconds(); !h.at.IsZero() && seconds > 0 {
