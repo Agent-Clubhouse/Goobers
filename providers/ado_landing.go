@@ -222,12 +222,31 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 			awaitingHuman = false
 		}
 		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, Labels: labels, AwaitingHuman: awaitingHuman}, nil
+	case adoCompletionInFlight(detail):
+		// Auto-complete was just consumed by ADO's own completion: the PR is
+		// still active only until the completion job finishes. Reporting
+		// that window as an eviction skipped post-merge for PRs that landed.
+		return PollMergeQueueEntryResult{State: MergeQueueEntryPending, Labels: labels}, nil
 	default:
 		// Active, no auto-complete armed: ADO cleared it (policy
 		// rejection, or a human/other automation cleared it manually) —
 		// the same Evicted outcome as a GitHub queue eviction (§4).
 		return PollMergeQueueEntryResult{State: MergeQueueEntryEvicted, Labels: labels}, nil
 	}
+}
+
+// adoCompletionInFlight reports an active PR whose completion ADO has queued
+// and not failed: the window between ADO clearing AutoCompleteSetBy and
+// setting Status to "completed".
+func adoCompletionInFlight(detail adoPullRequestDetail) bool {
+	if detail.CompletionQueueTime == "" {
+		return false
+	}
+	switch strings.ToLower(detail.MergeStatus) {
+	case "failure", "rejectedbypolicy", "conflicts":
+		return false
+	}
+	return true
 }
 
 // awaitMergeCompletion polls pullID's live detail until its completion job
