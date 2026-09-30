@@ -124,9 +124,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				if aerr := recordAttemptArtifacts(ctx, rec, in, t.Name, int(attempt), class, activityResult); aerr != nil {
 					return apiv1.ResultEnvelope{}, aerr
 				}
-				if retryErr := runner.DeclaredArtifactRetryFailure(res); retryErr != nil {
-					err = temporal.NewApplicationError(retryErr.Error(), FailureTypeStage)
-				}
+				err = declaredArtifactRetryError(ctx, t.Type, res, policyAttempts < policyMaxAttempts)
 			}
 			if err == nil {
 				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)

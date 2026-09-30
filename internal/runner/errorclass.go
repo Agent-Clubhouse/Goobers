@@ -104,18 +104,16 @@ func DeclaredArtifactRetryFailure(result apiv1.ResultEnvelope) error {
 	return codedStageFailure(result.Error.Code, errors.New(message))
 }
 
-func declaredArtifactRetryFailureIfClean(err error, result apiv1.ResultEnvelope) error {
-	if err != nil {
-		return err
+// declaredArtifactRetryError turns a clean dispatch that ended in a retryable
+// declared-artifact failure into a policy-class dispatch error, but only while
+// the stage still has a policy attempt left. The final attempt keeps its
+// ordinary failure result so stage.finished, continueOnError and failure
+// routing see it exactly as they did before retries covered it (#5560).
+func declaredArtifactRetryError(dispatchErr error, result apiv1.ResultEnvelope, policyRetryRemains bool) error {
+	if dispatchErr != nil || !policyRetryRemains {
+		return dispatchErr
 	}
-	if retryErr := DeclaredArtifactRetryFailure(result); retryErr != nil {
-		return retryErr
-	}
-	return nil
-}
-
-func declaredArtifactRetryResult(result apiv1.ResultEnvelope, err error) (apiv1.ResultEnvelope, error) {
-	return result, declaredArtifactRetryFailureIfClean(err, result)
+	return DeclaredArtifactRetryFailure(result)
 }
 
 // classifyDispatchFailure resolves the typed error code and class the runner

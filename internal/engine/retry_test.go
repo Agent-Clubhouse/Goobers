@@ -180,6 +180,81 @@ func TestAgenticNonRetryableDeclaredArtifactFailureDoesNotRetry(t *testing.T) {
 	}
 }
 
+// runAlwaysMissingDeclaredArtifact runs one agentic stage whose goober reports
+// a retryable missing declared artifact on every attempt.
+func runAlwaysMissingDeclaredArtifact(t *testing.T, name string, retry *apiv1.RetryPolicy, continueOnError bool) (RunResult, int, JournalProjection) {
+	t.Helper()
+	var calls int
+	goober := &fakeInvoker{invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+		calls++
+		return apiv1.ResultEnvelope{
+			Status: apiv1.ResultFailure,
+			Error: &apiv1.ErrorInfo{
+				Code:      "missing_declared_artifact",
+				Message:   "declared artifact file missing: output/result.json",
+				Retryable: true,
+			},
+		}, nil
+	}}
+	spec := agenticRetrySpec(retry)
+	spec.Tasks[0].ContinueOnError = continueOnError
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Goober: goober, Workspaces: testWorkspaces(t)})
+	env.ExecuteWorkflow(Run, runInput(name, spec))
+	return laneResult(t, env), calls, laneJournal(t, env)
+}
+
+// assertArtifactFailureFinished: the budget-exhausting attempt is journaled as
+// the stage's ordinary failure result, every earlier one as a policy retry.
+func assertArtifactFailureFinished(t *testing.T, proj JournalProjection, wantAttempts int) {
+	t.Helper()
+	var finished []journal.Event
+	var executorErrors int
+	for _, op := range proj.Ops {
+		if op.Kind != opAppend || op.Event == nil || op.Event.Stage != "implement" {
+			continue
+		}
+		switch {
+		case op.Event.Type == journal.EventStageFinished:
+			finished = append(finished, *op.Event)
+		case op.Event.Type == journal.EventError && op.Event.Error != nil && op.Event.Error.Code == "executor_error":
+			executorErrors++
+		}
+	}
+	if len(finished) != 1 || executorErrors != wantAttempts-1 {
+		t.Fatalf("stage.finished=%d executor errors=%d, want 1 and %d", len(finished), executorErrors, wantAttempts-1)
+	}
+	last := finished[0]
+	if last.Attempt != wantAttempts || last.Status != string(apiv1.ResultFailure) || last.Error == nil || last.Error.Code != "missing_declared_artifact" {
+		t.Fatalf("stage.finished = %+v, want attempt %d failure missing_declared_artifact", last, wantAttempts)
+	}
+}
+
+func TestAgenticDeclaredArtifactRetryExhaustionFinishesAsStageFailure(t *testing.T) {
+	res, calls, proj := runAlwaysMissingDeclaredArtifact(t, "agentic-declared-artifact-exhausted", &apiv1.RetryPolicy{MaxAttempts: 2}, false)
+	if res.Status != StatusFailed || calls != 2 {
+		t.Fatalf("status=%q calls=%d, want failed after two attempts", res.Status, calls)
+	}
+	assertArtifactFailureFinished(t, proj, 2)
+}
+
+func TestAgenticDeclaredArtifactFailureWithoutRetryPolicyDoesNotRetry(t *testing.T) {
+	res, calls, proj := runAlwaysMissingDeclaredArtifact(t, "agentic-declared-artifact-unset", nil, false)
+	if res.Status != StatusFailed || calls != 1 {
+		t.Fatalf("status=%q calls=%d, want failed after one attempt", res.Status, calls)
+	}
+	assertArtifactFailureFinished(t, proj, 1)
+}
+
+func TestAgenticDeclaredArtifactRetryExhaustionHonorsContinueOnError(t *testing.T) {
+	res, calls, proj := runAlwaysMissingDeclaredArtifact(t, "agentic-declared-artifact-continue", &apiv1.RetryPolicy{MaxAttempts: 2}, true)
+	if res.Status != StatusCompleted || calls != 2 {
+		t.Fatalf("status=%q calls=%d, want completed via continueOnError after two attempts", res.Status, calls)
+	}
+	assertArtifactFailureFinished(t, proj, 2)
+}
+
 // TestTaskRetryPolicyExhaustionFailsRun: exhausting the declared policy
 // budget fails the run with the same attempt-count accounting as the local
 // runner.

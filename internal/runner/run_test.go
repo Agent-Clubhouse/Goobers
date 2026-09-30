@@ -4204,6 +4204,120 @@ func TestRunnerDoesNotRetryNonRetryableDeclaredAgentArtifactFailure(t *testing.T
 	}
 }
 
+func missingDeclaredArtifactResult() apiv1.ResultEnvelope {
+	return apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error: &apiv1.ErrorInfo{
+			Code:      "missing_declared_artifact",
+			Message:   "declared artifact file missing: output/result.json",
+			Retryable: true,
+		},
+	}
+}
+
+// runDeclaredArtifactFailureStage runs one agentic stage whose goober reports a
+// retryable missing declared artifact on every attempt, and returns the run
+// result, the dispatch count and the stage's journal events.
+func runDeclaredArtifactFailureStage(t *testing.T, runID string, retry *apiv1.RetryPolicy, continueOnError bool) (Result, int, []journal.Event) {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a declared artifact",
+			Retry: retry, ContinueOnError: continueOnError,
+			Next: workflow.TerminalComplete,
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: runID, Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	failing := missingDeclaredArtifactResult()
+	goober := &sequencedGoober{results: []apiv1.ResultEnvelope{failing, failing, failing, failing}}
+	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+	r, err := New(Config{
+		NewAgentic: func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+			return goober, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var stageEvents []journal.Event
+	for _, event := range readRunEvents(t, runsDir, runID) {
+		if event.Stage == "implement" {
+			stageEvents = append(stageEvents, event)
+		}
+	}
+	return res, goober.callCount(), stageEvents
+}
+
+// assertFinalArtifactFailureFinished: the attempt that exhausts the budget is
+// journaled as the stage's ordinary failure result, not an executor error.
+func assertFinalArtifactFailureFinished(t *testing.T, events []journal.Event, wantAttempts int) {
+	t.Helper()
+	var starts, finishes, executorErrors int
+	var last journal.Event
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventStageStarted:
+			starts++
+		case journal.EventStageFinished:
+			finishes++
+			last = event
+		case journal.EventError:
+			if event.Error != nil && event.Error.Code == "executor_error" {
+				executorErrors++
+			}
+		}
+	}
+	if starts != wantAttempts || executorErrors != wantAttempts-1 || finishes != 1 {
+		t.Fatalf("starts=%d executorErrors=%d finishes=%d, want %d/%d/1: %+v", starts, executorErrors, finishes, wantAttempts, wantAttempts-1, events)
+	}
+	if last.Attempt != wantAttempts || last.Status != string(apiv1.ResultFailure) || last.Error == nil || last.Error.Code != "missing_declared_artifact" {
+		t.Fatalf("final stage.finished = %+v, want attempt %d failure missing_declared_artifact", last, wantAttempts)
+	}
+}
+
+func TestRunnerDeclaredArtifactRetryExhaustionFinishesAsStageFailure(t *testing.T) {
+	res, calls, events := runDeclaredArtifactFailureStage(t, "run-artifact-retry-exhausted", &apiv1.RetryPolicy{MaxAttempts: 2}, false)
+	if res.Phase != journal.PhaseFailed || calls != 2 {
+		t.Fatalf("result=%+v calls=%d, want failed after two attempts", res, calls)
+	}
+	assertFinalArtifactFailureFinished(t, events, 2)
+}
+
+func TestRunnerDeclaredArtifactFailureWithoutRetryPolicyDoesNotRetry(t *testing.T) {
+	res, calls, events := runDeclaredArtifactFailureStage(t, "run-artifact-no-retry-policy", nil, false)
+	if res.Phase != journal.PhaseFailed || calls != 1 {
+		t.Fatalf("result=%+v calls=%d, want failed after one attempt", res, calls)
+	}
+	assertFinalArtifactFailureFinished(t, events, 1)
+}
+
+func TestRunnerDeclaredArtifactRetryExhaustionHonorsContinueOnError(t *testing.T) {
+	res, calls, events := runDeclaredArtifactFailureStage(t, "run-artifact-retry-continue", &apiv1.RetryPolicy{MaxAttempts: 2}, true)
+	if res.Phase != journal.PhaseCompleted || calls != 2 {
+		t.Fatalf("result=%+v calls=%d, want completed via continueOnError after two attempts", res, calls)
+	}
+	assertFinalArtifactFailureFinished(t, events, 2)
+}
+
 func TestRunnerRetriesInfrastructureFailureAndRecovers(t *testing.T) {
 	machine := retryFixtureMachine(t, 1)
 	cause := errors.New("status 503: provider unavailable")
