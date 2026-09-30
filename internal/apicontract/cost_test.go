@@ -237,7 +237,7 @@ func knownCostClass(class CostClass) bool {
 	return false
 }
 
-func TestCancelRunBudgetCoversCancellationTerminalization(t *testing.T) {
+func TestCancelRunBudgetUsesMutationContractBudget(t *testing.T) {
 	route, ok := V1Route(RouteCancelRun)
 	if !ok {
 		t.Fatal("cancel route is not registered")
@@ -245,8 +245,8 @@ func TestCancelRunBudgetCoversCancellationTerminalization(t *testing.T) {
 	if route.Budget != CancelBudget {
 		t.Fatalf("cancelRun budget = %s, want CancelBudget (%s)", route.Budget, CancelBudget)
 	}
-	if CancelBudget <= MutationBudget {
-		t.Fatalf("CancelBudget = %s, want it to exceed generic MutationBudget %s", CancelBudget, MutationBudget)
+	if CancelBudget != MutationBudget {
+		t.Fatalf("CancelBudget = %s, want generic MutationBudget %s", CancelBudget, MutationBudget)
 	}
 }
 
