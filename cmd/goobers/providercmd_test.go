@@ -66,6 +66,7 @@ type fakePR struct {
 	draft              bool
 	labels             []string
 	checkState         string
+	mergeable          *bool
 	files              []fakePRFile
 	reviews            []fakeReview
 	author             string
@@ -1432,7 +1433,7 @@ func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 	}
 	return map[string]interface{}{
 		"number": pr.number, "html_url": s.prHTMLURL(pr.number),
-		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
+		"state": pr.state, "merged": pr.merged, "draft": pr.draft, "mergeable": pr.mergeable,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
 		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
@@ -1547,6 +1548,12 @@ func (s *fakeGitHubServer) setPRCheckState(number int, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].checkState = state
+}
+
+func (s *fakeGitHubServer) setPRMergeable(number int, mergeable bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].mergeable = &mergeable
 }
 
 // setPRClosed models a fixture PR closing without merging between runs.

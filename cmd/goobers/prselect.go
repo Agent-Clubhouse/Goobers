@@ -231,6 +231,17 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, exclusionChecks)
 			continue
 		}
+		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
+			}
+			if cleared {
+				pr = refreshed
+				pf(stdout, "re-queued PR #%d: removed stale %s after checks passed and no prior comments were present\n",
+					pr.Number, abortedRunLabel)
+			}
+		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			exclusions.recordPR(pr.Number, exclusionLabel)
 			continue
@@ -1185,6 +1196,54 @@ func hasPRSelectExclusion(labels, excludeLabels []string) bool {
 		}
 	}
 	return false
+}
+
+func clearStaleRunAbortedPR(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pr providers.PullRequestSummary,
+) (providers.PullRequestSummary, bool, error) {
+	if provider == nil || !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+		return pr, false, nil
+	}
+	if pr.State != "open" || pr.Draft || pr.CheckState != providers.CheckStatePassing {
+		return pr, false, nil
+	}
+	pullID := strconv.Itoa(pr.Number)
+	mergeable, err := provider.PullRequestMergeable(ctx, repo, pullID)
+	if err != nil {
+		return pr, false, fmt.Errorf("read mergeability: %w", err)
+	}
+	if mergeable == nil || !*mergeable {
+		return pr, false, nil
+	}
+	comments, err := provider.ListComments(ctx, repo, pullID)
+	if err != nil {
+		return pr, false, fmt.Errorf("list comments: %w", err)
+	}
+	if len(comments) != 0 {
+		return pr, false, nil
+	}
+	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository:   repo,
+		ID:           pullID,
+		RemoveLabels: []string{abortedRunLabel},
+	}); err != nil {
+		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
+	}
+	pr.Labels = removeLabel(pr.Labels, abortedRunLabel)
+	return pr, true, nil
+}
+
+func removeLabel(labels []string, remove string) []string {
+	filtered := labels[:0]
+	for _, label := range labels {
+		if label != remove {
+			filtered = append(filtered, label)
+		}
+	}
+	return filtered
 }
 
 // scopeGateVerdictStillParks skips only the exact PR state that was already

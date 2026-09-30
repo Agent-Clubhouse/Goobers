@@ -31,3 +31,53 @@ func TestPRSelectAlwaysExcludesRunAbortedLabel(t *testing.T) {
 	}
 	assertNoWorkProviderStageResult(t, resultFile)
 }
+
+func TestPRSelectClearsStaleRunAbortedLabelOnGreenUnreviewedPR(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(5437, "green parked PR", abortedRunLabel)
+	server.addOpenPR(5437, "goobers/implementation/run-5437", "main", "green-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(5437, true)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #5437") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want PR selected after stale run-aborted clear", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, 5437, nil, []string{abortedRunLabel})
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[5437].comments...)
+	server.mu.Unlock()
+	if len(comments) != 0 {
+		t.Fatalf("comments = %q, want stale-label repair to preserve the zero-comment merge-review predicate", comments)
+	}
+}
+
+func TestPRSelectLeavesRunAbortedPRWithCommentsParked(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(5438, "commented parked PR", abortedRunLabel)
+	server.addOpenPR(5438, "goobers/implementation/run-5438", "main", "green-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(5438, true)
+	server.addRawCommentAs(5438, "reviewer", "needs a human decision")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "no work") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work for commented run-aborted PR", code, stdout, stderr)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+	assertFakeIssueLabels(t, server, 5438, []string{abortedRunLabel}, nil)
+}
