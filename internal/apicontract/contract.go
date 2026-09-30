@@ -588,11 +588,10 @@ var v1Routes = []Route{
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{
-	RouteHealth:             {},
-	RouteInstance:           {},
-	RouteRuns:               {},
-	RouteEvents:             {},
-	RouteGaggleBundleExport: {},
+	RouteHealth:   {},
+	RouteInstance: {},
+	RouteRuns:     {},
+	RouteEvents:   {},
 }
 
 // InitiallyRemoteInvocable identifies the bounded first remote-read profile.

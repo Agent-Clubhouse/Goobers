@@ -161,7 +161,7 @@
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/bundle",
       "actionClass": "read-only-navigation",
-      "remoteInvocable": true,
+      "remoteInvocable": false,
       "cost": "bounded",
       "budgetMs": 8000,
       "streaming": false,
