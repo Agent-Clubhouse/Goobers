@@ -137,16 +137,32 @@ func TestAzureReplayDrainWorkIsBounded(t *testing.T) {
 	if err := s.drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	stats := s.stats()
+	stats := indexedReplayWorkStats(t, s)
 	if stats.Delivered != azureReplayDrainLimit*azureReplayBatchRecords || stats.PendingRecords != 5*azureReplayBatchRecords {
 		t.Fatalf("unbounded drain: %+v", stats)
 	}
 	if err := s.drain(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if stats := s.stats(); stats.Delivered != count*azureReplayBatchRecords || stats.PendingRecords != 0 {
+	if stats := indexedReplayWorkStats(t, s); stats.Delivered != count*azureReplayBatchRecords || stats.PendingRecords != 0 {
 		t.Fatalf("incomplete continuation: %+v", stats)
 	}
+}
+
+// This test is about the drainer's work budget, not the best-effort 100 ms
+// live health snapshot. A race-instrumented, shared CI host can miss that
+// short read deadline despite a successful durable drain; give the manifest
+// query its own bounded deadline and require authoritative accounting.
+func indexedReplayWorkStats(t *testing.T, s *azureReplaySpool) AzureReplayStats {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	stats, err := s.index.stats(ctx, s.stream, s.now())
+	if err != nil || !stats.AccountingReady {
+		t.Fatalf("drain accounting unavailable: stats=%+v err=%v", stats, err)
+	}
+	stats.Delivered = s.delivered.Load()
+	return stats
 }
 
 func TestAzureReplayBoundsKeepSendingBatchCharged(t *testing.T) {

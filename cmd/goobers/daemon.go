@@ -59,7 +59,9 @@ type schedulerSetup struct {
 	Runners      map[string]*runner.Runner
 	LegacyRunner *runner.Runner
 	Telemetry    *telemetry.Client
-	RollupDB     *rollup.DB
+	// Shared only by this setup's trace, journal, and diagnostic exporters.
+	TelemetryReplayStart <-chan struct{}
+	RollupDB             *rollup.DB
 	// ReadModel is the portal run read model (read.db). Present but unread at
 	// this stage — see the construction site and design §6.6 step 1.
 	ReadModel *readmodel.Store
@@ -373,7 +375,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}()
 	if cfg.TelemetryEnabled() {
 		reportStartupProgress(options.startupProgress, "opening telemetry state")
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, options.telemetryReplayStart)
 		if err != nil {
 			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
 				return nil, err
@@ -533,6 +535,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Runners:                  definitions.Runners,
 		LegacyRunner:             legacyRunner,
 		Telemetry:                tel,
+		TelemetryReplayStart:     options.telemetryReplayStart,
 		RollupDB:                 rollupDB,
 		ReadModel:                readModel,
 		Watermarks:               watermarks,

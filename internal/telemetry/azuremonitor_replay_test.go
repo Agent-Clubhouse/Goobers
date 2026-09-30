@@ -95,6 +95,78 @@ func TestAzureReplayClientShutdownDoesNotWaitForUnavailableManifest(t *testing.T
 	}
 }
 
+func TestAzureReplayShutdownBoundsStalledUploadAndReplaysAfterRestart(t *testing.T) {
+	cfg := azureReplayConfig{dir: t.TempDir(), maxAge: time.Hour, maxBytes: 1 << 20}
+	entered := make(chan struct{}, 1)
+	first, err := newAzureReplaySpool(cfg, func(ctx context.Context, _ []byte) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	defer func() { _ = first.close(closeCtx) }()
+	payload := []byte("{\"stable\":\"stalled-shutdown-record\"}\n")
+	if err := first.submit(t.Context(), payload); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-closeCtx.Done():
+		t.Fatal("background sender never started")
+	}
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- first.close(closeCtx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stalled final upload error = %v", err)
+		}
+		t.Logf("stalled shutdown completed in %s", time.Since(started))
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("shutdown waited more than two seconds for a stalled remote upload")
+	}
+	if err := closeCtx.Err(); err != nil {
+		t.Fatalf("shutdown exhausted caller's cleanup budget: %v", err)
+	}
+	if stats := first.stats(); stats.PendingRecords != 1 || stats.Delivered != 0 {
+		t.Fatalf("undelivered durable record was not retained: %+v", stats)
+	}
+
+	delivered := make(chan []byte, 4)
+	second, err := newAzureReplaySpool(cfg, func(_ context.Context, body []byte) error {
+		delivered <- append([]byte(nil), body...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.close(closeCtx) }()
+	select {
+	case got := <-delivered:
+		if string(got) != string(payload) {
+			t.Fatalf("replayed payload = %q, want %q", got, payload)
+		}
+	case <-closeCtx.Done():
+		t.Fatal("pending record did not replay after restart")
+	}
+	if err := second.close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	if stats := second.stats(); stats.PendingRecords != 0 || stats.Delivered != 1 {
+		t.Fatalf("restart replay did not finish: %+v", stats)
+	}
+}
+
 func TestAzureReplaySpoolReplaysAfterRestartAndSkipsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	cfg := azureReplayConfig{dir: dir, maxAge: 72 * time.Hour, maxBytes: 1 << 20}

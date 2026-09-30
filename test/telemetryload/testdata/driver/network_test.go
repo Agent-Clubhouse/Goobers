@@ -45,3 +45,19 @@ func TestNetworkValidationRequiresExercisedFaults(t *testing.T) {
 		})
 	}
 }
+
+func TestJournalProfileRequiresRunReconciliation(t *testing.T) {
+	previous := collectionProfile
+	collectionProfile = "journal"
+	defer func() { collectionProfile = previous }()
+	result := Result{Name: "enabled", Runs: 1, ExpectedRunEvents: 1,
+		Replay: telemetry.AzureReplayStats{AccountingReady: true}}
+	validate(result)
+	result.MissingRunEvents = 1
+	defer func() {
+		if recover() == nil {
+			t.Fatal("journal-only profile accepted a missing run event")
+		}
+	}()
+	validate(result)
+}
