@@ -1,10 +1,14 @@
 package harness
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 const (
@@ -58,4 +62,87 @@ func prepareCopilotPreflightEnvironment(env []string, seedStoredAuth bool) ([]st
 	env = removeEnvironment(env, copilotPluginDirOnlyEnv)
 	env = append(env, copilotPluginDirOnlyEnv+"=true")
 	return env, home, cleanup, nil
+}
+
+func shouldRetryCopilotLauncherAuthProbe(ctx context.Context, result ProcessResult, runErr error, launcherProbe bool) bool {
+	if !launcherProbe {
+		return false
+	}
+	if errors.Is(runErr, ErrCanceled) || errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return false
+	}
+	return copilotLauncherAuthProbeLooksTransient(ctx, result, runErr)
+}
+
+func copilotLauncherAuthProbeLooksTransient(ctx context.Context, result ProcessResult, runErr error) bool {
+	if copilotAuthProbeLooksLikeCredentialFailure(result.Transcript) {
+		return false
+	}
+	if errors.Is(runErr, ErrTimeout) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	if result.ExitCode == -1 && copilotLauncherAuthProbeProcessStartError(runErr) {
+		return true
+	}
+	return copilotAuthProbeHasLauncherBootstrapSignal(result.Transcript)
+}
+
+func copilotLauncherAuthProbeProcessStartError(err error) bool {
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return true
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		return false
+	}
+	op := strings.ToLower(pathErr.Op)
+	return strings.Contains(op, "exec") || strings.Contains(op, "createprocess")
+}
+
+func copilotAuthProbeHasLauncherBootstrapSignal(transcript []byte) bool {
+	text := strings.ToLower(string(transcript))
+	for _, marker := range []string{
+		"bootstrap failed",
+		"failed before auth status completed",
+		"failed to start session",
+		"launcher bootstrap",
+		"launcher process failed",
+		"mcp bootstrap",
+		"mcp startup",
+		"session bootstrap",
+		"session startup",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func copilotAuthProbeLooksLikeCredentialFailure(transcript []byte) bool {
+	text := strings.ToLower(string(transcript))
+	for _, marker := range []string{
+		"auth failed",
+		"authentication failed",
+		"credential",
+		"forbidden",
+		"invalid or revoked",
+		"log in",
+		"login",
+		"not authenticated",
+		"not logged in",
+		"not signed in",
+		"sign in",
+		"signed out",
+		"token",
+		"unauthorized",
+		"401",
+		"403",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
