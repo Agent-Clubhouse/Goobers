@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -172,7 +173,15 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 		return ctx.Err()
 	}
 	if err != nil {
-		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", "scheduler refused the accepted trigger", s.dispatch.now())
+		reason := err.Error()
+		var rejected *localscheduler.TriggerRejectedError
+		if errors.As(err, &rejected) {
+			reason = rejected.Reason
+			if rejected.Transient() {
+				return s.queue.Requeue(ctx, record.ID, reason)
+			}
+		}
+		return s.queue.Finish(ctx, record.ID, triggerqueue.Rejected, "", reason, s.dispatch.now())
 	}
 	return s.queue.RecordDispatch(ctx, record.ID, response.RunID)
 }

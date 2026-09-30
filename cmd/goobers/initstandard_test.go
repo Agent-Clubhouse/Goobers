@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflowsafety"
 )
 
 func assertNoStandardMissingSkillWarnings(t *testing.T, report *validate.Report) {
@@ -18,6 +19,16 @@ func assertNoStandardMissingSkillWarnings(t *testing.T, report *validate.Report)
 		if warning.Code == validate.WarningMissingSkillPackage {
 			t.Fatalf("standard scaffold emitted a missing-skill-package warning: %+v", warning)
 		}
+	}
+}
+
+func assertNoStandardBuiltInSafetyCoverageWarnings(t *testing.T, report *validate.Report) {
+	t.Helper()
+	for _, warning := range report.Warnings() {
+		if warning.Code != validate.WarningCode(workflowsafety.CoverageCode) || warning.Safety == nil || warning.Safety.Stage == "local-ci" {
+			continue
+		}
+		t.Fatalf("standard scaffold emitted a built-in stage safety coverage warning: %+v", warning)
 	}
 }
 
@@ -32,6 +43,7 @@ func TestInitStandardNonInteractive(t *testing.T) {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
 	assertNoStandardMissingSkillWarnings(t, report)
+	assertNoStandardBuiltInSafetyCoverageWarnings(t, report)
 	if len(set.Workflows) != 2 || len(set.Goobers) != 3 {
 		t.Fatalf("got %d workflows and %d goobers, want canonical pair and its three personas", len(set.Workflows), len(set.Goobers))
 	}
@@ -66,6 +78,7 @@ func TestInitStandardADO(t *testing.T) {
 		t.Fatalf("load: %v report=%+v", err, report)
 	}
 	assertNoStandardMissingSkillWarnings(t, report)
+	assertNoStandardBuiltInSafetyCoverageWarnings(t, report)
 	if len(set.Gaggles) != 1 || set.Gaggles[0].Spec.Project.Provider != "ado" || set.Gaggles[0].Spec.Project.Project != "your-project" || set.Gaggles[0].Spec.Backlog.Provider != "ado" || set.Gaggles[0].Spec.Backlog.Project != "your-project" {
 		t.Fatalf("ADO identity not preserved: %+v", set.Gaggles)
 	}

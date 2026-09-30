@@ -71,7 +71,9 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"acceptance, before dispatch.\n" +
 	"Without --no-wait, local API callers observe dispatch status then wait\n" +
 	"for the run's terminal journal phase. API failures never silently fall\n" +
-	"back to files. --no-api explicitly selects local execution/file delegation\n" +
+	"back to files. When TLS publishes only a wildcard bind address, the CLI\n" +
+	"reports that no certificate-valid client endpoint exists and uses same-root\n" +
+	"file delegation. --no-api explicitly selects local execution/file delegation\n" +
 	"and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.\n" +
 	"Without a live daemon, workflows with an effective runControls.maxRunDuration\n" +
 	"are rejected before dispatch, including inherited limits and --no-wait runs.\n" +
@@ -1047,7 +1049,10 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] [--req
 	"instead when no daemon is running (that path finalizes a stuck run's\n" +
 	"journal directly).\n" +
 	"A live local daemon is contacted through its HTTP API automatically.\n" +
-	"API failures never silently fall back to file delegation. Use --no-api\n" +
+	"API failures never silently fall back to file delegation. When TLS\n" +
+	"publishes only a wildcard bind address, the CLI reports that no\n" +
+	"certificate-valid client endpoint exists and uses same-root file\n" +
+	"delegation. Use --no-api\n" +
 	"to explicitly select local cancellation/file delegation; this overrides\n" +
 	"$GOOBERS_DAEMON_API and cannot be combined with --api.\n" +
 	"API cancellation uses durable, actor-and-target-bound request identities.\n" +
@@ -1106,8 +1111,10 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if handled, code := tryLocalAPICancel(l, runID, *requestID, *noAPI, stdout, stderr); handled {
+	if handled, fileFallback, code := tryLocalAPICancel(l, runID, *requestID, *noAPI, stdout, stderr); handled {
 		return code
+	} else if fileFallback {
+		*noAPI = true
 	}
 	if *requestID != "" {
 		pf(stderr, "error: --request-id requires daemon API cancellation; no live API selected\n")
