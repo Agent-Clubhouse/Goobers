@@ -138,6 +138,20 @@ func (l *statusRunLoader) collectionStatus() *statusCollection {
 	return &collection
 }
 
+func (l *statusRunLoader) fleetSummaryUnavailable() *statusCollectionQuery {
+	if l == nil || l.collection == nil || l.collection.State != "partial" {
+		return nil
+	}
+	for i := range l.collection.Queries {
+		query := &l.collection.Queries[i]
+		if query.Name == "fleetFacts" && query.State == "failed" {
+			copy := *query
+			return &copy
+		}
+	}
+	return nil
+}
+
 func (l *statusRunLoader) loadProjected(ctx context.Context) (statusProjectedFrame, bool) {
 	projection := openStatusProjection(ctx, l.layout)
 	if projection.readModel == nil || projection.intake == nil {
@@ -173,7 +187,7 @@ func (l *statusRunLoader) loadProjected(ctx context.Context) (statusProjectedFra
 		facts, err := loadStatusFleetFacts(ctx, reads)
 		if err != nil {
 			partial := statusCollectionPartial("fleetFacts", started, err)
-			fleet = display
+			fleet = nil
 			return l.acceptProjectedFrame(ctx, projection, state, cut, before, display, fleet, &partial)
 		}
 		fleet = statusFleetRuns(facts)

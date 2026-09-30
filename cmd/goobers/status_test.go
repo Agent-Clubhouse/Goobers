@@ -128,6 +128,14 @@ func TestStatusJSONKeepsProjectedRunsWhenFleetFactsUnavailable(t *testing.T) {
 		_ = store.Close()
 		t.Fatal(err)
 	}
+	if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+		RunID: "hidden-failed-run", Gaggle: "example", Workflow: "default-implement",
+		Phase: journal.PhaseFailed, Terminal: true, StartedAt: startedAt.Add(-time.Minute),
+		LastActivity: startedAt.Add(-time.Minute), LastSeq: 1,
+	}}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
 	if err := store.MarkReady(context.Background()); err != nil {
 		_ = store.Close()
 		t.Fatal(err)
@@ -150,8 +158,13 @@ func TestStatusJSONKeepsProjectedRunsWhenFleetFactsUnavailable(t *testing.T) {
 	stubStatusParkedBacklog(t, func(context.Context, *instance.Config) (statusParkedBacklog, error) {
 		return statusParkedBacklog{}, nil
 	})
+	previousPRLoader := loadStatusPRLabelCounts
+	loadStatusPRLabelCounts = func(context.Context, *instance.Config) (statusPRLabelCounts, error) {
+		return statusPRLabelCounts{}, nil
+	}
+	t.Cleanup(func() { loadStatusPRLabelCounts = previousPRLoader })
 
-	code, stdout, stderr := runArgs(t, "status", "--json", root)
+	code, stdout, stderr := runArgs(t, "status", "--json", "--workflow=default-implement", "--limit=1", root)
 	if code != 0 {
 		t.Fatalf("status --json: code=%d stderr=%q", code, stderr)
 	}
@@ -159,14 +172,37 @@ func TestStatusJSONKeepsProjectedRunsWhenFleetFactsUnavailable(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
 		t.Fatalf("decode status JSON: %v\n%s", err, stdout)
 	}
-	if len(output.Runs) == 0 || output.Runs[0].RunID != "projected-run" {
+	if len(output.Runs) != 1 || output.Runs[0].RunID != "projected-run" {
 		t.Fatalf("runs = %+v, want projected run preserved despite fleet facts failure", output.Runs)
+	}
+	if output.Summary != nil {
+		t.Fatalf("summary = %+v, want omitted instead of synthesized from filtered/limited display rows", output.Summary)
 	}
 	if output.Collection == nil || output.Collection.State != "partial" ||
 		len(output.Collection.Queries) != 1 ||
 		output.Collection.Queries[0].Name != "fleetFacts" ||
 		!strings.Contains(output.Collection.Queries[0].Error, "fleet facts timed out") {
 		t.Fatalf("collection = %+v, want partial fleetFacts error", output.Collection)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--workflow=default-implement", "--limit=1", root)
+	if code != 0 {
+		t.Fatalf("status: code=%d stderr=%q", code, stderr)
+	}
+	for _, want := range []string{
+		"Workflow summary unavailable: fleetFacts failed",
+		"Status collection partial: fleetFacts unavailable",
+		"projected-run",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+	}
+	if strings.Contains(stdout, "hidden-failed-run") {
+		t.Fatalf("stdout = %q, want display limit/filter preserved", stdout)
+	}
+	if strings.Contains(stdout, "Workflow summary (success rate") {
+		t.Fatalf("stdout = %q, want no synthesized workflow summary", stdout)
 	}
 }
 
