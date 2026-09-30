@@ -21,8 +21,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/telemetry"
+	"gopkg.in/yaml.v3"
 )
 
 var mode atomic.Int32
@@ -174,6 +176,7 @@ func setup(name, url string, enabled bool) (string, string) {
 	// Keep the existing demo definition, adding a second gaggle and five copies per gaggle.
 	raw, err := os.ReadFile(filepath.Join(root, "config/gaggles/demo/workflows/demo.yaml"))
 	must(err)
+	must(checkOfflineDemoFixture(cfg, raw))
 	gag, err := os.ReadFile(filepath.Join(root, "config/gaggles/demo/gaggle.yaml"))
 	must(err)
 	manifest, err := os.ReadFile(filepath.Join(root, "config/manifest.yaml"))
@@ -189,6 +192,32 @@ func setup(name, url string, enabled bool) (string, string) {
 		}
 	}
 	return root, "http://" + addr
+}
+
+// Keep the load fixture independent of GitHub even when the host can reach it
+// (notably the explicit Windows demo exception to network isolation). The
+// project/backlog labels in the demo gaggle are fixture data, not connections.
+func checkOfflineDemoFixture(cfg *instance.Config, raw []byte) error {
+	if len(cfg.Repos) != 0 {
+		return fmt.Errorf("synthetic demo configured %d repository connections", len(cfg.Repos))
+	}
+	var workflow apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		return fmt.Errorf("parse synthetic demo workflow: %w", err)
+	}
+	if len(workflow.Spec.Tasks) != 4 {
+		return fmt.Errorf("synthetic demo has %d stages, expected four offline stages", len(workflow.Spec.Tasks))
+	}
+	for _, task := range workflow.Spec.Tasks {
+		if task.Run == nil || task.Run.Network != apiv1.NetworkNone ||
+			task.Run.Workspace != apiv1.WorkspaceScratch || task.Run.Script != "" ||
+			len(task.Run.Command) != 3 || task.Run.Command[0] != "goobers" ||
+			task.Run.Command[1] != "__demo-provider" || task.Run.Command[2] != task.Name ||
+			len(task.Capabilities) != 0 {
+			return fmt.Errorf("synthetic demo stage %q is not an offline demo-provider command", task.Name)
+		}
+	}
+	return nil
 }
 
 func main() {
