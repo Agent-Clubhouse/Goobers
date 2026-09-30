@@ -1249,6 +1249,13 @@ export interface ExternalRef {
 export interface ErrorDetail {
   code: string;
   message?: string;
+  causes?: ErrorCause[];
+}
+
+export interface ErrorCause {
+  code?: string;
+  class?: string;
+  message?: string;
 }
 
 export interface RedactionInfo {

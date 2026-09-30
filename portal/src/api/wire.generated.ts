@@ -919,7 +919,16 @@ export const goWireFixtures = {
         },
         "error": {
           "code": "review_failed",
-          "message": "review requested changes"
+          "message": "review requested changes",
+          "causes": [
+            {
+              "message": "review gate failed"
+            },
+            {
+              "code": "review_rejected",
+              "message": "review requested changes"
+            }
+          ]
         },
         "redaction": {
           "target": "artifacts/result.json",
