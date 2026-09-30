@@ -409,6 +409,10 @@ profiles do not assert run-journal export. The driver fails on workflow/health
 errors, measurement errors, shutdown over 20 seconds, or unexplained missing
 run/spool records in eligible loopback scenarios. Burst overload tests need a
 separate explicitly justified loss policy, not silently relaxed assertions.
+Result JSON also counts every CLI failure by bounded category (`class_saturated`,
+`accepted_status_unavailable`, `cli_timeout`, or `other`) and counts authoritative
+started/finished run journals. A reported CLI failure can still have a finished
+run; compare both counts before calling it a refusal or retrying the work.
 
 After workload submission stops, eligible scenarios wait up to `-settle-timeout`
 (default two minutes) for all authoritative run sequence keys before shutdown.

@@ -87,6 +87,8 @@ type Result struct {
 	Name                                                string
 	StartupMS, ShutdownMS                               float64
 	Runs, Failures, HealthFailures                      int
+	FailureKinds                                        map[string]int
+	JournalStartedRuns, JournalFinishedRuns             int
 	RunP50MS, RunP95MS, HealthP95MS                     float64
 	MaxRSSKiB                                           int64
 	MeanCPU                                             float64
@@ -109,6 +111,24 @@ func percentile(a []float64, p float64) float64 {
 	sort.Float64s(a)
 	return a[int(float64(len(a)-1)*p)]
 }
+
+// Count every CLI error during burst diagnostics without retaining every
+// response body (which can be large and may contain host-specific details).
+// An accepted trigger with an unavailable status probe is distinct from a
+// request refused before admission: its authoritative run can still finish.
+func classifyRunFailure(output string, timedOut bool) string {
+	if strings.Contains(output, "remains accepted; could not observe dispatch") {
+		return "accepted_status_unavailable"
+	}
+	if strings.Contains(output, "class_saturated: ") {
+		return "class_saturated"
+	}
+	if timedOut {
+		return "cli_timeout"
+	}
+	return "other"
+}
+
 func spool(root string) string { return filepath.Join(root, "telemetry-export", "azure-monitor") }
 
 func prefill(root string, mb, tiny int, legacy bool) {
@@ -416,7 +436,7 @@ func validate(r Result) {
 }
 
 func run(name, root, api string, duration time.Duration) Result {
-	result := Result{Name: name}
+	result := Result{Name: name, FailureKinds: map[string]int{}}
 	streamMu.Lock()
 	streamStart := map[string]int{}
 	for k, v := range streams {
@@ -512,6 +532,7 @@ func run(name, root, api string, duration time.Duration) Result {
 				start := time.Now()
 				workctx, stop := context.WithTimeout(context.Background(), 45*time.Second)
 				b, err := cmd(workctx, "run", "--force", "--gaggle", g, fmt.Sprintf("load%d", worker%5), root).CombinedOutput()
+				timedOut := workctx.Err() == context.DeadlineExceeded
 				stop()
 				mu.Lock()
 				runLatency = append(runLatency, float64(time.Since(start).Microseconds())/1000)
@@ -519,6 +540,7 @@ func run(name, root, api string, duration time.Duration) Result {
 					result.Runs++
 				} else {
 					result.Failures++
+					result.FailureKinds[classifyRunFailure(string(b), timedOut)]++
 					if result.Failures < 5 {
 						write(filepath.Join(out, fmt.Sprintf("%s-failure-%d.txt", name, result.Failures)), string(b))
 					}
@@ -734,10 +756,20 @@ func run(name, root, api string, duration time.Duration) Result {
 		scan := bufio.NewScanner(f)
 		scan.Buffer(make([]byte, 4096), 2<<20)
 		id := filepath.Base(filepath.Dir(path))
+		started, finished := false, false
 		for scan.Scan() {
-			var e struct{ Seq uint64 }
+			var e struct {
+				Seq  uint64
+				Type string
+			}
 			if json.Unmarshal(scan.Bytes(), &e) == nil {
 				result.ExpectedRunEvents++
+				if e.Seq == 1 && e.Type == "run.started" {
+					started = true
+				}
+				if e.Type == "run.finished" {
+					finished = true
+				}
 				if _, ok := journalKeys.Load(fmt.Sprintf("%s:%d", id, e.Seq)); !ok {
 					result.MissingRunEvents++
 					if azureConnectionEnv == "" && name != "baseline" && name != "crash-outage" && collectionProfile != "health" && result.MissingRunEvents <= 20 {
@@ -748,6 +780,12 @@ func run(name, root, api string, duration time.Duration) Result {
 		}
 		must(scan.Err())
 		must(f.Close())
+		if started {
+			result.JournalStartedRuns++
+			if finished {
+				result.JournalFinishedRuns++
+			}
+		}
 	}
 	result.PersistedCheckpointRecords = len(checkpointIDs)
 	for _, id := range checkpointIDs {
