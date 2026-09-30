@@ -90,7 +90,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// under the instance root and honours interventions and the recovery
 		// gate). Same machine-seam class as the rest of the claims plane.
 		"claimRecover":  true,
-		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
+		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "credentialRefresh": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.
