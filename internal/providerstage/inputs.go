@@ -91,6 +91,7 @@ var inputSchemas = map[string][]Input{
 		{Name: "maxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "parkLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "reconcileMetadata", Type: InputBoolean, State: InputCurrent},
+		{Name: "reconcileScanLimit", Type: InputInteger, State: InputCurrent},
 		{Name: "requireLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "respectAssignee", Type: InputBoolean, State: InputCurrent},
 		{Name: "resultFile", Type: InputPath, State: InputCurrent},

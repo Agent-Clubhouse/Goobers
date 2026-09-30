@@ -2078,13 +2078,13 @@ func runReconcileBacklogQuery(
 	if backlogReconcileNotApplicable(env) {
 		return writeBacklogReconciliationNotApplicable(env.issueRepo().Provider, env.stdout, env.stderr)
 	}
-	reconciled, code := performBacklogQueryReconciliation(
+	result, code := performBacklogQueryReconciliation(
 		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json",
 	)
 	if code != 0 {
 		return code
 	}
-	return writeBacklogReconciliationResult(reconciled, env.stdout, env.stderr)
+	return writeBacklogReconciliationResult(result, env.stdout, env.stderr)
 }
 
 func reconcileBacklogQueryMetadata(
@@ -2110,12 +2110,12 @@ func performBacklogQueryReconciliation(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 	resultFile string,
-) (int, int) {
+) (backlogReconciliationResult, int) {
 	if env.ghIssueProvider == nil {
 		err := fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog")
-		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
+		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
-	reconciled, err := reconcileBacklogMetadata(
+	result, err := reconcileBacklogMetadataDetailed(
 		ctx,
 		env.layout,
 		env.ghIssueProvider,
@@ -2125,7 +2125,7 @@ func performBacklogQueryReconciliation(
 		func() time.Time { return observedAt },
 	)
 	if err != nil {
-		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
+		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
 	// #3086: the pass above corrects a claim label with no lease behind it. The
 	// opposite drift — a live lease with no label — is invisible to it, because
@@ -2135,11 +2135,49 @@ func performBacklogQueryReconciliation(
 	// warnings for the same reason: it is scheduled housekeeping, so failing
 	// the stage would discard completed work to report a check that can simply
 	// run again on the next tick.
-	restored, err := restoreInvisibleClaims(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, env.stderr)
+	claimBudget := result.Scan.Budget - result.Scan.Spent
+	if claimBudget <= 0 {
+		result.Scan.WorkRemaining = true
+		result.Scan.Complete = false
+		if result.Scan.NextPhase == "" {
+			result.Scan.NextPhase = backlogReconcilePhaseClaims
+			result.Scan.NextCursor = result.nextCursor.Claim
+		}
+		if result.Scan.WorkRemaining {
+			pf(env.stderr, "notice: backlog reconciliation scanned %d item(s) and stopped at the configured budget; work remains at phase %s cursor %q\n",
+				result.Scan.Examined+result.Scan.ClaimExamined, result.Scan.NextPhase, result.Scan.NextCursor)
+		}
+		return result, 0
+	}
+	claims, err := restoreInvisibleClaimsWindow(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, time.Now, env.stderr, claimBudget, result.nextCursor.Claim)
 	if err != nil {
 		pf(env.stderr, "warning: could not reconcile claim visibility: %v\n", err)
+		result.Scan.WorkRemaining = true
+		result.Scan.Complete = false
+		if result.Scan.NextPhase == "" {
+			result.Scan.NextPhase = backlogReconcilePhaseClaims
+			result.Scan.NextCursor = result.nextCursor.Claim
+		}
+	} else {
+		result.Reconciled += claims.Restored
+		result.Scan.ClaimExamined = claims.Examined
+		if !claims.Complete {
+			result.Scan.WorkRemaining = true
+			result.Scan.Complete = false
+			if result.Scan.NextPhase == "" {
+				result.Scan.NextPhase = backlogReconcilePhaseClaims
+				result.Scan.NextCursor = claims.NextCursor
+			}
+		}
+		if err := advanceBacklogReconcileClaimCursor(ctx, env.layout, result.cursorKey, claims.NextCursor); err != nil {
+			return backlogReconciliationResult{}, failProviderStage(env.stderr, "advance backlog reconciliation cursor", err, resultFile)
+		}
 	}
-	return reconciled + restored, 0
+	if result.Scan.WorkRemaining {
+		pf(env.stderr, "notice: backlog reconciliation scanned %d item(s) and stopped at the configured budget; work remains at phase %s cursor %q\n",
+			result.Scan.Examined+result.Scan.ClaimExamined, result.Scan.NextPhase, result.Scan.NextCursor)
+	}
+	return result, 0
 }
 
 type backlogScanOptions struct {
@@ -2434,8 +2472,8 @@ func writeBacklogReconciliationNotApplicable(provider providers.ProviderKind, st
 	return 0
 }
 
-func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(map[string]int{"reconciled": reconciled})
+func writeBacklogReconciliationResult(result backlogReconciliationResult, stdout, stderr io.Writer) int {
+	data, err := json.Marshal(result)
 	if err != nil {
 		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
 		return 1
@@ -2445,7 +2483,12 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "reconciled %d backlog item(s)\n", reconciled)
+	if result.Scan.WorkRemaining {
+		pf(stdout, "reconciled %d backlog item(s); reconciliation scan incomplete after %d item(s), work remains\n",
+			result.Reconciled, result.Scan.Examined+result.Scan.ClaimExamined)
+		return 0
+	}
+	pf(stdout, "reconciled %d backlog item(s)\n", result.Reconciled)
 	return 0
 }
 

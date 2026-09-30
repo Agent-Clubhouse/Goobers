@@ -33,6 +33,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"backlogquery.go":                {command: "backlog-query"},
 	"backlogquery_adoscope.go":       {command: "backlog-query"},
 	"backlogquery_policy.go":         {command: "backlog-query"},
+	"backlogreconcile.go":            {command: "backlog-query"},
 	"backlogreport.go":               {command: "backlog-query"},
 	"backlogresweep.go":              {command: "backlog-query"},
 	"backlogstaleness.go":            {command: "backlog-query"},
