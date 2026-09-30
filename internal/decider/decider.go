@@ -28,6 +28,7 @@ type Request struct {
 // Kind is a question type.
 type Kind string
 
+// Question kinds on the wire.
 const (
 	KindNoul   Kind = "noul"
 	KindChoice Kind = "choice"

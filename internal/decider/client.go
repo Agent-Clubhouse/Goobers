@@ -18,6 +18,7 @@ const (
 	systemOnePath   = "/v1/systemone"
 	maxResponseSize = 1 << 20
 	maxErrorBody    = 512
+	maxBackoff      = 30 * time.Second
 )
 
 // Config configures a System One HTTP client. BaseURL, APIKey, and Model are
@@ -28,7 +29,8 @@ type Config struct {
 	// APIKey is sent as a bearer token and is never included in errors.
 	APIKey string
 	Model  string
-	// HTTPClient defaults to a client with a 60s timeout.
+	// HTTPClient defaults to a client with a 60s timeout that does not follow
+	// redirects, so the bearer token is never replayed to another URL.
 	HTTPClient *http.Client
 	// MaxAttempts bounds tries on 429/529/5xx and transport errors. Default 3.
 	MaxAttempts int
@@ -71,7 +73,12 @@ func New(cfg Config) (*Client, error) {
 		sleep:    sleepCtx,
 	}
 	if c.http == nil {
-		c.http = &http.Client{Timeout: 60 * time.Second}
+		c.http = &http.Client{
+			Timeout: 60 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 	if c.attempts <= 0 {
 		c.attempts = 3
@@ -129,7 +136,7 @@ func (c *Client) Decide(ctx context.Context, req Request) (Response, error) {
 	var lastErr error
 	for attempt := 0; attempt < c.attempts; attempt++ {
 		if attempt > 0 {
-			if err := c.sleep(ctx, c.backoff<<(attempt-1)); err != nil {
+			if err := c.sleep(ctx, c.delay(attempt)); err != nil {
 				return Response{}, err
 			}
 		}
@@ -143,6 +150,16 @@ func (c *Client) Decide(ctx context.Context, req Request) (Response, error) {
 		}
 	}
 	return Response{}, lastErr
+}
+
+// delay is the wait before retry attempt (1-based), doubling from the base
+// and capped so a large MaxAttempts cannot overflow the shift.
+func (c *Client) delay(attempt int) time.Duration {
+	d := c.backoff
+	for i := 1; i < attempt && d < maxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, maxBackoff)
 }
 
 func (c *Client) once(ctx context.Context, body []byte, asked map[string]Question) (Response, bool, error) {
@@ -162,7 +179,7 @@ func (c *Client) once(ctx context.Context, body []byte, asked map[string]Questio
 		}
 		return Response{}, true, fmt.Errorf("decider: request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(res.Body, maxResponseSize+1))
 	if err != nil {
 		return Response{}, true, fmt.Errorf("decider: read response: %w", err)
@@ -207,7 +224,7 @@ func checkAnswers(out Response, asked map[string]Question) error {
 			if _, known := opts[a.Choice]; !known {
 				return fmt.Errorf("decider: answer %q chose an option that was not offered", id)
 			}
-			if err := checkDistribution(id, a); err != nil {
+			if err := checkDistribution(id, a, opts); err != nil {
 				return err
 			}
 		case KindScore:
@@ -215,7 +232,7 @@ func checkAnswers(out Response, asked map[string]Question) error {
 			if a.Score == nil || *a.Score < 0 || *a.Score > float64(len(levels)-1) {
 				return fmt.Errorf("decider: answer %q has no valid score", id)
 			}
-			if err := checkDistribution(id, a); err != nil {
+			if err := checkDistribution(id, a, levelKeys(len(levels))); err != nil {
 				return err
 			}
 		}
@@ -223,12 +240,27 @@ func checkAnswers(out Response, asked map[string]Question) error {
 	return nil
 }
 
-func checkDistribution(id string, a Answer) error {
+// levelKeys is the set of probability keys a score answer may use: the level
+// indices "0" through n-1.
+func levelKeys(n int) map[string]any {
+	keys := make(map[string]any, n)
+	for i := range n {
+		keys[strconv.Itoa(i)] = nil
+	}
+	return keys
+}
+
+// checkDistribution validates confidence and that probabilities form a
+// distribution over allowed keys only.
+func checkDistribution(id string, a Answer, allowed map[string]any) error {
 	if a.Confidence == nil || *a.Confidence < 0 || *a.Confidence > 1 {
 		return fmt.Errorf("decider: answer %q has no valid confidence", id)
 	}
 	var sum float64
-	for _, p := range a.Probabilities {
+	for k, p := range a.Probabilities {
+		if _, ok := allowed[k]; !ok {
+			return fmt.Errorf("decider: answer %q has a probability for an option that was not offered", id)
+		}
 		if p < 0 || p > 1 {
 			return fmt.Errorf("decider: answer %q has an out-of-range probability", id)
 		}

@@ -3,6 +3,7 @@ package decider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/testdep"
 )
 
 func newTestClient(t *testing.T, h http.HandlerFunc) *Client {
@@ -92,8 +95,8 @@ func TestDoesNotRetryClientErrorsAndHidesKey(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"bad key"}`))
 	})
 	_, err := c.Decide(context.Background(), Request{State: "s", Questions: questions()})
-	se, ok := err.(*StatusError)
-	if !ok || se.StatusCode != 401 || n.Load() != 1 {
+	var se *StatusError
+	if !errors.As(err, &se) || se.StatusCode != 401 || n.Load() != 1 {
 		t.Fatalf("err=%v attempts=%d", err, n.Load())
 	}
 	if strings.Contains(err.Error(), "test-key") {
@@ -110,6 +113,8 @@ func TestRejectsMalformedAnswers(t *testing.T) {
 		"bad distribution":  strings.Replace(goodBody, `"a":0.8,"b":0.2`, `"a":0.1,"b":0.2`, 1),
 		"score off scale":   strings.Replace(goodBody, `"score":1.4`, `"score":7`, 1),
 		"no confidence":     strings.Replace(goodBody, `"confidence":0.7`, `"confidence":null`, 1),
+		"unoffered prob":    strings.Replace(goodBody, `"a":0.8,"b":0.2`, `"a":0.8,"zzz":0.2`, 1),
+		"off-scale prob":    strings.Replace(goodBody, `"1":0.6,"2":0.4`, `"1":0.6,"9":0.4`, 1),
 		"not json":          `<html>`,
 	}
 	for name, body := range cases {
@@ -156,12 +161,45 @@ func TestContextCancelStopsRetries(t *testing.T) {
 	}
 }
 
-// TestLiveEndpoint is a manual smoke test. It runs only when the environment
-// provides an endpoint; nothing here embeds deployment values.
+func TestDefaultClientDoesNotFollowRedirects(t *testing.T) {
+	var leaked atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked.Store(true)
+	}))
+	t.Cleanup(target.Close)
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/systemone", http.StatusTemporaryRedirect)
+	})
+	_, err := c.Decide(context.Background(), Request{State: "s", Questions: questions()})
+	if se := (*StatusError)(nil); !errors.As(err, &se) || se.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("err = %v, want a 307 StatusError", err)
+	}
+	if leaked.Load() {
+		t.Fatal("redirect was followed")
+	}
+}
+
+func TestBackoffIsCapped(t *testing.T) {
+	c := &Client{backoff: 500 * time.Millisecond}
+	if got := c.delay(1); got != 500*time.Millisecond {
+		t.Errorf("delay(1) = %v", got)
+	}
+	if got := c.delay(3); got != 2*time.Second {
+		t.Errorf("delay(3) = %v", got)
+	}
+	if got := c.delay(100); got != maxBackoff {
+		t.Errorf("delay(100) = %v, want %v", got, maxBackoff)
+	}
+}
+
+// TestLiveEndpoint is a manual smoke test against a real deployment. It is
+// double-gated: an explicit opt-in plus the endpoint settings, so ambient
+// credentials alone never send data out. Nothing here embeds deployment values.
 func TestLiveEndpoint(t *testing.T) {
-	base, key, model := os.Getenv("TYPESAFE_BASE_URL"), os.Getenv("TYPESAFE_API_KEY"), os.Getenv("TYPESAFE_DEFAULT_MODEL")
+	testdep.RequireEnv(t, "GOOBERS_DECIDER_LIVE_SMOKE")
+	base, key, model := os.Getenv("GOOBERS_DECIDER_BASE_URL"), os.Getenv("GOOBERS_DECIDER_API_KEY"), os.Getenv("GOOBERS_DECIDER_MODEL")
 	if base == "" || key == "" || model == "" {
-		t.Skip("TYPESAFE_BASE_URL, TYPESAFE_API_KEY, TYPESAFE_DEFAULT_MODEL not set")
+		t.Skip("GOOBERS_DECIDER_BASE_URL, GOOBERS_DECIDER_API_KEY, GOOBERS_DECIDER_MODEL not set")
 	}
 	c, err := New(Config{BaseURL: base, APIKey: key, Model: model})
 	if err != nil {
