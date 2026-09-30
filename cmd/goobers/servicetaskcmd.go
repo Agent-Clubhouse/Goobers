@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/service"
@@ -72,13 +73,21 @@ func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// A failure line already in the log from an earlier run must not be
+	// reported as the cause of this start; allow a little clock slack.
+	startedAt := time.Now().Add(-time.Second)
 	status, err := manager.StartTask(context.Background())
 	if errors.Is(err, service.ErrNotInstalled) {
 		pln(stdout, "scheduled task is not installed")
 		return 1
 	}
 	if err != nil {
-		pf(stderr, "error: start scheduled task: %v\n", err)
+		layout := instance.NewLayout(root)
+		pf(stderr, "error: start scheduled task: %v", err)
+		if failure := latestServiceSupervisorFailure(layout.DaemonLogFile()); failure.Message != "" && !failure.RecordedAt.Before(startedAt) {
+			pf(stderr, "; %s: %s", serviceSupervisorFailureLabel(failure.Kind), failure.Message)
+		}
+		pf(stderr, "; inspect daemon log %s\n", layout.DaemonLogFile())
 		return 1
 	}
 	pf(stdout, "scheduled task running as %s\n", status.Account)
@@ -107,6 +116,7 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: query scheduled task: %v\n", err)
 		return 1
 	}
+	status = enrichTaskStatusWithSupervisorFailure(root, status)
 	if *asJSON {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
@@ -117,12 +127,38 @@ func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
 	} else if !status.Installed {
 		pln(stdout, "scheduled task is not installed")
 	} else {
-		pf(stdout, "scheduled task is %s as %s\n", status.State, status.Account)
+		pf(stdout, "scheduled task is %s as %s", status.State, status.Account)
+		if status.LastFailure != "" {
+			layout := instance.NewLayout(root)
+			pf(stdout, " (last failure: %s", status.LastFailure)
+			if status.SupervisorFailure != nil {
+				pf(stdout, "; %s: %s", serviceSupervisorFailureLabel(status.SupervisorFailure.Kind), status.SupervisorFailure.Message)
+			}
+			pf(stdout, "; inspect daemon log %s)", layout.DaemonLogFile())
+		}
+		pln(stdout, "")
 	}
 	if status.Running {
 		return 0
 	}
 	return 1
+}
+
+func enrichTaskStatusWithSupervisorFailure(root string, status service.Status) service.Status {
+	if !status.Installed || status.LastFailure == "" {
+		return status
+	}
+	layout := instance.NewLayout(root)
+	status.DaemonLogPath = layout.DaemonLogFile()
+	status.SupervisorFailure = latestServiceSupervisorFailure(status.DaemonLogPath).statusPayload()
+	return status
+}
+
+func serviceSupervisorFailureLabel(kind string) string {
+	if kind == serviceSupervisorFailureStartup {
+		return "last startup failure"
+	}
+	return "last supervisor failure"
 }
 
 func runTaskErrorCommand(args []string, stdout, stderr io.Writer, name string, action func(scheduledTaskManager) error, success string) int {
