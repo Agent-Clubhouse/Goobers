@@ -159,24 +159,33 @@ type triggerRequest struct {
 	// from it, so two producers submitting the same logical ask publish to one
 	// path and the atomic rename collapses them. Empty on delegated requests,
 	// whose caller is blocked on a per-id response file.
-	Key       string    `json:"key,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	Deadline  time.Time `json:"deadline,omitempty"`
+	Key        string    `json:"key,omitempty"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Deadline   time.Time `json:"deadline,omitempty"`
+	AcceptedAt time.Time `json:"acceptedAt,omitempty"`
 }
 
 // triggerResponse is what the daemon writes back once it has acted on a
 // triggerRequest — exactly one of RunID/Error is set (mirroring
 // Scheduler.Trigger's own (runID, err) return shape).
 type triggerResponse struct {
-	RunID string `json:"runId,omitempty"`
-	Error string `json:"error,omitempty"`
+	RunID     string `json:"runId,omitempty"`
+	Error     string `json:"error,omitempty"`
+	State     string `json:"state,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
 }
 
 // requestSuffix/responseSuffix name a request/response file pair sharing one
 // request id: "<id>.request.json" / "<id>.response.json".
 const (
-	requestSuffix  = ".request.json"
-	responseSuffix = ".response.json"
+	requestSuffix   = ".request.json"
+	responseSuffix  = ".response.json"
+	ackSuffix       = ".ack.json"
+	activeSuffix    = ".active.json"
+	abandonedSuffix = ".abandoned.json"
+
+	triggerResponseQueued = "queued"
 )
 
 // writeTriggerRequest drops a new delegation request file under
@@ -303,50 +312,104 @@ func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (reques
 // actually picking requests up (e.g. it exited between this process
 // observing up.lock held and writing its request).
 func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (runID string, err error) {
-	respPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
-	deadline := delegationNow().Add(timeout)
 	for {
-		if data, rerr := os.ReadFile(respPath); rerr == nil {
-			// The writer (sweepPendingTriggers / a test responder) publishes via
-			// journal.WriteFileAtomic (hidden temp + rename), so a torn read here
-			// should not occur in practice — this stays tolerant of an unparseable
-			// read as defense in depth rather than failing the whole delegation on
-			// it: consuming (removing) the file before a clean parse would strand
-			// the real response so the next poll could never see it. Only remove
-			// once we have a complete, parseable response. The deadline still
-			// bounds a genuinely stuck writer.
-			var resp triggerResponse
-			if jerr := json.Unmarshal(data, &resp); jerr == nil {
-				_ = os.Remove(respPath)
-				if resp.Error != "" {
-					return "", errors.New(resp.Error)
-				}
-				return resp.RunID, nil
-			}
+		resp, err := pollTriggerResponseEvent(ctx, schedulerDir, requestID, timeout, false)
+		if err != nil {
+			return "", err
+		}
+		if resp.State == triggerResponseQueued {
+			continue
+		}
+		if resp.Error != "" {
+			return "", errors.New(resp.Error)
+		}
+		return resp.RunID, nil
+	}
+}
+
+func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID string, timeout time.Duration, withdrawOnTimeout bool) (triggerResponse, error) {
+	respPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
+	ackPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+ackSuffix)
+	deadline := delegationNow().Add(timeout)
+	awaitingClaimAck := false
+	for {
+		if resp, ok := readTriggerResponseFile(respPath); ok {
+			return resp, nil
+		}
+		if resp, ok := readTriggerResponseFile(ackPath); ok {
+			return resp, nil
 		}
 		if delegationNow().After(deadline) {
+			if withdrawOnTimeout && !awaitingClaimAck {
+				withdrawn, werr := withdrawTriggerRequest(schedulerDir, requestID)
+				if werr != nil {
+					return triggerResponse{}, werr
+				}
+				if !withdrawn {
+					if resp, ok := readTriggerResponseFile(respPath); ok {
+						return resp, nil
+					}
+					if resp, ok := readTriggerResponseFile(ackPath); ok {
+						return resp, nil
+					}
+					awaitingClaimAck = true
+					deadline = delegationNow().Add(triggerClaimAckGrace)
+					continue
+				}
+			}
 			// Reaching here now means the daemon never answered at all, not
 			// merely that it was slow: the wait outlives the request's own
 			// deadline, so a daemon that swept at any point would have written
 			// either a dispatch or a stale refusal. Say which of the two
 			// remaining explanations it is rather than asking the operator
 			// (#2974).
-			return "", fmt.Errorf("delegate: timed out after %s waiting for the `goobers up` daemon to answer the trigger request "+
+			return triggerResponse{}, fmt.Errorf("delegate: timed out after %s waiting for the `goobers up` daemon to answer the trigger request "+
 				"(request left at %s). %s", timeout,
 				filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix),
 				schedulerLivenessEvidence(schedulerDir))
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return triggerResponse{}, ctx.Err()
 		case <-time.After(delegationPollInterval):
 		}
 	}
 }
 
+func readTriggerResponseFile(path string) (triggerResponse, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return triggerResponse{}, false
+	}
+	// The writer publishes via journal.WriteFileAtomic (hidden temp + rename),
+	// so a torn read should not occur in practice. Stay tolerant anyway:
+	// consuming before a clean parse would strand the real response.
+	var resp triggerResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return triggerResponse{}, false
+	}
+	_ = os.Remove(path)
+	return resp, true
+}
+
+func withdrawTriggerRequest(schedulerDir, requestID string) (bool, error) {
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	reqPath := filepath.Join(reqDir, requestID+requestSuffix)
+	abandonedPath := filepath.Join(reqDir, requestID+abandonedSuffix)
+	if err := os.Rename(reqPath, abandonedPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("delegate: withdraw trigger request %s: %w", requestID, err)
+	}
+	return true, nil
+}
+
 // delegationPollInterval bounds how often pollTriggerResponse re-checks for
 // a response file. Var, not const, so tests aren't slow.
 var delegationPollInterval = 100 * time.Millisecond
+
+var triggerClaimAckGrace = 5 * time.Second
 
 // triggerDelegationTimeout bounds pollTriggerResponse's total wait. Var, not
 // const, for the same reason. 30s comfortably exceeds delegationSweepInterval
@@ -381,6 +444,8 @@ func triggerResponseWait() time.Duration {
 
 var delegationNow = time.Now
 
+var acceptedTriggerQueueLifetime = func() time.Duration { return 10 * triggerResponseWait() }
+
 // priorityTriggerTimeout keeps an internally-requested re-tick alive while the
 // source workflow's concurrent runs finish. Unlike an interactive delegation,
 // no client is waiting on a 30-second response deadline.
@@ -409,19 +474,20 @@ func triggerRequestQueueDeadline(req triggerRequest, staleLegacyMissingDeadline 
 		if staleLegacyMissingDeadline {
 			return req.CreatedAt.Add(triggerRequestTimeout(req)), true
 		}
-		return req.CreatedAt.Add(triggerResponseWait()), true
+		return time.Time{}, false
 	}
 	maxDeadline := req.CreatedAt.Add(triggerRequestTimeout(req))
 	if req.Deadline.Before(maxDeadline) {
 		return req.Deadline, true
 	}
-	return req.CreatedAt.Add(triggerResponseWait()), true
+	return time.Time{}, false
 }
 
 func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt time.Time) (context.Context, context.CancelFunc, time.Time) {
 	deadline := startedAt.UTC().Add(triggerRequestTimeout(req))
-	if queueDeadline, ok := triggerRequestQueueDeadline(req, false); ok && queueDeadline.Before(deadline) {
-		deadline = queueDeadline
+	maxDeadline := req.CreatedAt.Add(triggerRequestTimeout(req))
+	if !req.Deadline.IsZero() && req.Deadline.Before(maxDeadline) && req.Deadline.Before(deadline) {
+		deadline = req.Deadline
 	}
 	requestCtx, cancel := context.WithDeadline(ctx, deadline)
 	return requestCtx, cancel, deadline
@@ -429,6 +495,73 @@ func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt ti
 
 type triggerSweepOptions struct {
 	staleLegacyMissingDeadline bool
+}
+
+func claimTriggerRequest(reqDir, requestID string) (string, bool, error) {
+	reqPath := filepath.Join(reqDir, requestID+requestSuffix)
+	activePath := filepath.Join(reqDir, requestID+activeSuffix)
+	if err := os.Rename(reqPath, activePath); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("delegate: claim trigger request %s: %w", requestID, err)
+	}
+	return activePath, true, nil
+}
+
+func writeTriggerResponse(reqDir, requestID string, resp triggerResponse) error {
+	resp.RequestID = requestID
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+responseSuffix), data, 0o644); err != nil {
+		return fmt.Errorf("delegate: write trigger response %s: %w", requestID, err)
+	}
+	return nil
+}
+
+func writeTriggerAck(reqDir, requestID string, resp triggerResponse) error {
+	resp.RequestID = requestID
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("delegate: encode trigger ack %s: %w", requestID, err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+ackSuffix), data, 0o644); err != nil {
+		return fmt.Errorf("delegate: write trigger ack %s: %w", requestID, err)
+	}
+	return nil
+}
+
+func acknowledgeTriggerRequest(reqDir, requestID string, req *triggerRequest, now time.Time) error {
+	if req.Priority || !req.AcceptedAt.IsZero() {
+		return nil
+	}
+	req.AcceptedAt = now.UTC()
+	return writeTriggerAck(reqDir, requestID, triggerResponse{State: triggerResponseQueued})
+}
+
+func acceptedTriggerExpired(req triggerRequest, now time.Time) bool {
+	return !req.Priority && !req.AcceptedAt.IsZero() && !now.Before(req.AcceptedAt.Add(acceptedTriggerQueueLifetime()))
+}
+
+func acceptedTriggerExpiredResponse(requestID string, req triggerRequest) triggerResponse {
+	deadline := req.AcceptedAt.Add(acceptedTriggerQueueLifetime())
+	return triggerResponse{
+		Error: fmt.Sprintf(
+			"delegate: accepted trigger request %s waited until %s without capacity; retry the trigger",
+			requestID, deadline.Format(time.RFC3339Nano),
+		),
+		Retryable: true,
+	}
+}
+
+func requeueTriggerRequest(reqPath string, req triggerRequest) error {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	return journal.WriteFileAtomic(reqPath, data, 0o644)
 }
 
 // sweepPendingTriggers is the daemon-side half of #343's delegation
@@ -513,15 +646,16 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 
 	for _, p := range parsed {
 		requestID, reqPath := p.id, p.path
-		if err := os.Remove(reqPath); err != nil {
-			if !os.IsNotExist(err) {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: consume trigger request %s: %w", requestID, err))
-			}
+		activePath, claimed, err := claimTriggerRequest(reqDir, requestID)
+		if err != nil {
+			sweepErr = errors.Join(sweepErr, err)
+			continue
+		}
+		if !claimed {
 			continue
 		}
 
 		req := p.req
-		data := p.data
 		resp := triggerResponse{}
 		switch {
 		case p.parseErr != nil:
@@ -552,7 +686,15 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 					requestID, requestDeadline.Format(time.RFC3339Nano), req.CreatedAt.Format(time.RFC3339Nano), requestLifetime,
 				)
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
+			} else if acceptedTriggerExpired(req, sweepTime) {
+				resp = acceptedTriggerExpiredResponse(requestID, req)
+				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
+				if err := acknowledgeTriggerRequest(reqDir, requestID, &req, sweepTime); err != nil {
+					sweepErr = errors.Join(sweepErr, err)
+					_ = os.Remove(activePath)
+					continue
+				}
 				requestCtx, cancelRequest, _ := triggerAttemptContext(ctx, req, sweepTime)
 				var runID string
 				var terr error
@@ -595,11 +737,12 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 					// Requeued atomically (hidden temp + rename) so a
 					// concurrent sweep/inspection can never observe a
 					// truncated live request file mid-rewrite.
-					if rerr := journal.WriteFileAtomic(reqPath, data, 0o644); rerr != nil {
+					if rerr := requeueTriggerRequest(reqPath, req); rerr != nil {
 						sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: requeue trigger request %s: %w", requestID, rerr))
 						resp.Error = terr.Error()
 						break
 					}
+					_ = os.Remove(activePath)
 					continue
 				case terr != nil:
 					resp.Error = terr.Error()
@@ -615,16 +758,13 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 		}
 
 		if req.Priority {
+			_ = os.Remove(activePath)
 			continue
 		}
-		respData, err := json.Marshal(resp)
-		if err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err))
-			continue
+		if err := writeTriggerResponse(reqDir, requestID, resp); err != nil {
+			sweepErr = errors.Join(sweepErr, err)
 		}
-		if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+responseSuffix), respData, 0o644); err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: write trigger response %s: %w", requestID, err))
-		}
+		_ = os.Remove(activePath)
 	}
 	return sweepErr
 }

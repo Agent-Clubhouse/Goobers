@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -349,8 +350,8 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	if code != 1 || !strings.Contains(stderr.String(), "timed out") {
-		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want bounded timeout", code, stdout.String(), stderr.String())
+	if code != 0 || !strings.Contains(stdout.String(), "state=queued") {
+		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want queued acceptance", code, stdout.String(), stderr.String())
 	}
 
 	release()
@@ -1167,9 +1168,9 @@ func (b *blockingDelegateStarter) releaseAll() { b.once.Do(func() { close(b.rele
 // second `goobers run` in that window used to come back as a hard error
 // ("run conditions rejected the trigger ... conditions: max-parallel").
 //
-// The sweep must instead put the request back and retry on a later pass. This
-// drives that directly: hold the slot, sweep, and require that the request
-// survives with no response written.
+// The sweep must instead acknowledge the request, put it back, and retry on a
+// later pass. This drives that directly: hold the slot, sweep, and require that
+// the request survives with a queued acknowledgement rather than a hard error.
 func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	blocking := newBlockingDelegateStarter()
 	t.Cleanup(blocking.releaseAll)
@@ -1208,9 +1209,12 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
 		t.Fatalf("contended sweepPendingTriggers: %v", err)
 	}
-	if _, err := os.Stat(respPath); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(respPath)
-		t.Fatalf("capacity refusal answered the client instead of requeueing: response = %q (stat err = %v)", data, err)
+	resp, err := pollTriggerResponseEvent(context.Background(), schedulerDir, contendedID, testResponseWait, false)
+	if err != nil {
+		t.Fatalf("queued acknowledgement: %v", err)
+	}
+	if resp.State != triggerResponseQueued {
+		t.Fatalf("capacity response = %+v, want queued acknowledgement", resp)
 	}
 	if _, err := os.Stat(reqPath); err != nil {
 		t.Fatalf("contended request was consumed rather than requeued: %v", err)
@@ -1229,6 +1233,9 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	}
 	if !requeued.CreatedAt.Equal(originalContended.CreatedAt) {
 		t.Fatalf("requeued CreatedAt = %s, want original queue order timestamp %s preserved", requeued.CreatedAt, originalContended.CreatedAt)
+	}
+	if requeued.AcceptedAt.IsZero() {
+		t.Fatal("requeued request did not record acceptedAt")
 	}
 
 	// Freeing the slot lets an ordinary later sweep dispatch the very same
@@ -1256,7 +1263,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 	}
 }
 
-func TestSweepRefusesCapacityRequeueAfterClientWait(t *testing.T) {
+func TestSweepDispatchesAcknowledgedCapacityRequeueAfterClientWait(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		deadline func(time.Time) time.Time
@@ -1267,12 +1274,12 @@ func TestSweepRefusesCapacityRequeueAfterClientWait(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			testSweepRefusesCapacityRequeueAfterClientWait(t, tt.deadline)
+			testSweepDispatchesAcknowledgedCapacityRequeueAfterClientWait(t, tt.deadline)
 		})
 	}
 }
 
-func testSweepRefusesCapacityRequeueAfterClientWait(t *testing.T, deadline func(time.Time) time.Time) {
+func testSweepDispatchesAcknowledgedCapacityRequeueAfterClientWait(t *testing.T, deadline func(time.Time) time.Time) {
 	t.Helper()
 	blocking := newBlockingDelegateStarter()
 	t.Cleanup(blocking.releaseAll)
@@ -1318,40 +1325,258 @@ func testSweepRefusesCapacityRequeueAfterClientWait(t *testing.T, deadline func(
 	if _, err := os.Stat(reqPath); err != nil {
 		t.Fatalf("contended request was not requeued: %v", err)
 	}
+	resp, err := pollTriggerResponseEvent(context.Background(), schedulerDir, contendedID, testResponseWait, false)
+	if err != nil {
+		t.Fatalf("queued acknowledgement: %v", err)
+	}
+	if resp.State != triggerResponseQueued {
+		t.Fatalf("contended response = %+v, want queued acknowledgement", resp)
+	}
 
 	blocking.releaseAll()
 	expiredAt := queuedAt.Add(triggerResponseWait() + time.Millisecond)
-	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, func() time.Time { return expiredAt }); err != nil {
-		t.Fatalf("expired requeue sweepPendingTriggers: %v", err)
-	}
-	if blocking.count() != 1 {
-		t.Fatalf("stale requeued request dispatched after client timeout; starter calls = %d, want 1", blocking.count())
+	deadlineAt := time.Now().Add(5 * time.Second)
+	for {
+		if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, func() time.Time { return expiredAt }); err != nil {
+			t.Fatalf("expired requeue sweepPendingTriggers: %v", err)
+		}
+		if _, err := os.Stat(reqPath); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadlineAt) {
+			t.Fatal("acknowledged requeued request was never dispatched after the slot freed")
+		}
+		time.Sleep(10 * time.Millisecond) // Polling interval for the scheduler's slot release.
 	}
 	if _, err := os.Stat(reqPath); !os.IsNotExist(err) {
-		t.Fatalf("expired requeued request file survived: %v", err)
+		t.Fatalf("dispatched requeued request file survived: %v", err)
 	}
-	if _, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, testResponseWait); err == nil ||
-		!strings.Contains(err.Error(), "stale trigger request") {
-		t.Fatalf("expired requeued response = %v, want stale trigger request", err)
-	}
-
-	const retryID = "operator-retry"
-	writeTriggerRequestFixture(t, schedulerDir, retryID, triggerRequest{
-		Workflow:  "implement",
-		CreatedAt: expiredAt,
-	})
-	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, func() time.Time { return expiredAt }); err != nil {
-		t.Fatalf("retry sweepPendingTriggers: %v", err)
-	}
-	runID, err := pollTriggerResponse(context.Background(), schedulerDir, retryID, testResponseWait)
+	runID, err := pollTriggerResponse(context.Background(), schedulerDir, contendedID, testResponseWait)
 	if err != nil {
-		t.Fatalf("retry pollTriggerResponse: %v", err)
+		t.Fatalf("requeued pollTriggerResponse: %v", err)
 	}
 	if runID == "" {
-		t.Fatal("retry produced an empty run id")
+		t.Fatal("requeued request produced an empty run id")
 	}
+
 	if blocking.count() != 2 {
-		t.Fatalf("starter calls after retry = %d, want exactly one retry dispatch after stale original", blocking.count())
+		t.Fatalf("starter calls after queued dispatch = %d, want occupying run plus one queued dispatch", blocking.count())
+	}
+}
+
+func TestPollWithdrawsUnacknowledgedTriggerAfterClientWait(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow: "implement",
+		Starter:  starter,
+	}})
+	const requestID = "unacknowledged"
+	writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+		Workflow:  "implement",
+		CreatedAt: time.Now().UTC(),
+	})
+
+	_, err := pollTriggerResponseEvent(context.Background(), schedulerDir, requestID, -time.Nanosecond, true)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("withdraw poll error = %v, want timeout", err)
+	}
+	if _, err := os.Stat(filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix)); !os.IsNotExist(err) {
+		t.Fatalf("request file still dispatchable after withdraw: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(schedulerDir, pendingTriggersDir, requestID+abandonedSuffix)); err != nil {
+		t.Fatalf("abandoned tombstone missing: %v", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, time.Now); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("withdrawn request dispatched; starter calls = %d", starter.count())
+	}
+}
+
+func TestTriggerAckWithdrawRaceHasSingleWinner(t *testing.T) {
+	t.Run("withdraw wins", func(t *testing.T) {
+		schedulerDir := t.TempDir()
+		const requestID = "withdraw-wins"
+		writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+			Workflow: "implement", CreatedAt: time.Now().UTC(),
+		})
+		withdrawn, err := withdrawTriggerRequest(schedulerDir, requestID)
+		if err != nil || !withdrawn {
+			t.Fatalf("withdraw = %v, %v; want success", withdrawn, err)
+		}
+		reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+		if _, claimed, err := claimTriggerRequest(reqDir, requestID); err != nil || claimed {
+			t.Fatalf("claim after withdraw = %v, %v; want no claim", claimed, err)
+		}
+	})
+	t.Run("ack wins", func(t *testing.T) {
+		schedulerDir := t.TempDir()
+		const requestID = "ack-wins"
+		writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+			Workflow: "implement", CreatedAt: time.Now().UTC(),
+		})
+		reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+		activePath, claimed, err := claimTriggerRequest(reqDir, requestID)
+		if err != nil || !claimed {
+			t.Fatalf("claim = %v, %v; want success", claimed, err)
+		}
+		withdrawn, err := withdrawTriggerRequest(schedulerDir, requestID)
+		if err != nil || withdrawn {
+			t.Fatalf("withdraw after claim = %v, %v; want no withdraw", withdrawn, err)
+		}
+		req := triggerRequest{Workflow: "implement", CreatedAt: time.Now().UTC()}
+		if err := acknowledgeTriggerRequest(reqDir, requestID, &req, time.Now().UTC()); err != nil {
+			t.Fatalf("acknowledgeTriggerRequest: %v", err)
+		}
+		_ = os.Remove(activePath)
+		resp, err := pollTriggerResponseEvent(context.Background(), schedulerDir, requestID, testResponseWait, true)
+		if err != nil {
+			t.Fatalf("poll queued ack: %v", err)
+		}
+		if resp.State != triggerResponseQueued {
+			t.Fatalf("response = %+v, want queued ack", resp)
+		}
+	})
+}
+
+func TestPollWaitsForAckWhenClaimWinsWithdrawRace(t *testing.T) {
+	oldNow := delegationNow
+	oldPoll := delegationPollInterval
+	oldGrace := triggerClaimAckGrace
+	base := time.Now().UTC()
+	var calls atomic.Int32
+	graceSet := make(chan struct{})
+	var closeGrace sync.Once
+	delegationNow = func() time.Time {
+		if calls.Add(1) == 3 {
+			closeGrace.Do(func() { close(graceSet) })
+		}
+		return base
+	}
+	delegationPollInterval = time.Millisecond
+	triggerClaimAckGrace = time.Hour
+	t.Cleanup(func() {
+		delegationNow = oldNow
+		delegationPollInterval = oldPoll
+		triggerClaimAckGrace = oldGrace
+	})
+
+	schedulerDir := t.TempDir()
+	const requestID = "claim-wins-before-ack"
+	writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+		Workflow:  "implement",
+		CreatedAt: base,
+	})
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	activePath, claimed, err := claimTriggerRequest(reqDir, requestID)
+	if err != nil || !claimed {
+		t.Fatalf("claim = %v, %v; want success", claimed, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(activePath) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	var got triggerResponse
+	var gotErr error
+	go func() {
+		got, gotErr = pollTriggerResponseEvent(ctx, schedulerDir, requestID, -time.Nanosecond, true)
+		close(done)
+	}()
+
+	select {
+	case <-graceSet:
+	case <-ctx.Done():
+		t.Fatal("poll did not enter claim-ack grace")
+	}
+	req := triggerRequest{Workflow: "implement", CreatedAt: base}
+	if err := acknowledgeTriggerRequest(reqDir, requestID, &req, base); err != nil {
+		t.Fatalf("acknowledgeTriggerRequest: %v", err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("poll did not return queued ack during claim-ack grace")
+	}
+	if gotErr != nil {
+		t.Fatalf("poll error = %v, want queued ack", gotErr)
+	}
+	if got.State != triggerResponseQueued {
+		t.Fatalf("response = %+v, want queued ack", got)
+	}
+}
+
+func TestLateDelegatedPickupGetsFreshValidationBudget(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	sweepAt := time.Now().UTC()
+	queuedAt := sweepAt.Add(-triggerResponseWait() - time.Hour)
+	validationDeadline := make(chan time.Time, 1)
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log, localscheduler.WithTargetedPRValidator(func(ctx context.Context, _ localscheduler.WorkflowEntry, _ int) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("validation context has no deadline")
+		}
+		validationDeadline <- deadline
+		return ctx.Err()
+	}))
+
+	const requestID = "late-pickup"
+	writeTriggerRequestFixture(t, l.SchedulerDir(), requestID, triggerRequest{
+		Workflow:  "merge-review",
+		PR:        3261,
+		CreatedAt: queuedAt,
+	})
+	if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), nil, sched, func() time.Time { return sweepAt }); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	gotDeadline := <-validationDeadline
+	if gotDeadline.Before(sweepAt.Add(triggerDelegationTimeout)) {
+		t.Fatalf("validation deadline = %s, want fresh attempt budget from %s", gotDeadline, sweepAt)
+	}
+}
+
+func TestAcceptedTriggerQueueLifetimeExpiresRetryably(t *testing.T) {
+	oldLifetime := acceptedTriggerQueueLifetime
+	acceptedTriggerQueueLifetime = func() time.Duration { return time.Minute }
+	t.Cleanup(func() { acceptedTriggerQueueLifetime = oldLifetime })
+
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow: "implement",
+		Starter:  starter,
+	}})
+	now := time.Now().UTC()
+	const requestID = "accepted-expired"
+	writeTriggerRequestFixture(t, schedulerDir, requestID, triggerRequest{
+		Workflow:   "implement",
+		CreatedAt:  now.Add(-2 * time.Minute),
+		AcceptedAt: now.Add(-time.Minute - time.Second),
+	})
+	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }); err != nil {
+		t.Fatalf("sweepPendingTriggers: %v", err)
+	}
+	resp, err := pollTriggerResponseEvent(context.Background(), schedulerDir, requestID, testResponseWait, false)
+	if err != nil {
+		t.Fatalf("poll response: %v", err)
+	}
+	if resp.Error == "" || !resp.Retryable {
+		t.Fatalf("response = %+v, want retryable terminal error", resp)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("expired accepted request dispatched; starter calls = %d", starter.count())
 	}
 }
 
