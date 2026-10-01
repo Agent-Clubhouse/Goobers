@@ -340,6 +340,15 @@ type Scheduler struct {
 	refillRandN func(int64) int64
 }
 
+// wallClockNow is the scheduler's default clock: the current time with its
+// monotonic reading stripped. Everything the scheduler records against this
+// clock (budget starts, idle-backoff and backlog-poll deadlines, refill and
+// auth-circuit retries, trigger-stall silence) is a wall-clock deadline or
+// window, and Go's monotonic clock does not advance while a macOS host sleeps
+// — comparing two monotonic readings across a sleep undercounts the elapsed
+// time by the length of the sleep (#6169).
+func wallClockNow() time.Time { return time.Now().Round(0) }
+
 // Option configures a Scheduler.
 type Option func(*Scheduler)
 
@@ -491,7 +500,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		workflows:               make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
 		conditions:              NewConditions(),
 		log:                     log,
-		now:                     time.Now,
+		now:                     wallClockNow,
 		after:                   time.After,
 		demandPollTimeout:       demandPollTimeout,
 		triggers:                make(map[WorkflowIdentity]TriggerState),
