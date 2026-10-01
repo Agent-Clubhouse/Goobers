@@ -51,7 +51,7 @@ func (s *Scheduler) demandPollFailed(ctx context.Context, entry WorkflowEntry, p
 		return 0
 	}
 	if providers.IsAuthenticationError(err) {
-		s.openAuthCircuit(entryIdentity(entry))
+		s.openAuthCircuit(entryIdentity(entry), s.now())
 		s.journalEvent(journal.Event{
 			Type:     journal.EventError,
 			Workflow: entry.Workflow,
