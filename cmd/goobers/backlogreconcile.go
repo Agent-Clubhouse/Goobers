@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -44,6 +45,8 @@ const (
 	backlogReconcilePhaseOpen         = "open"
 	backlogReconcilePhaseClosed       = "closed"
 	backlogReconcilePhaseClaims       = "claims"
+	backlogChildInspectionPhaseVerify = "verify"
+	backlogChildInspectionPhaseDone   = "done"
 )
 
 var errBacklogReconcileBudgetExhausted = errors.New("backlog reconciliation budget exhausted")
@@ -57,6 +60,19 @@ type backlogMetadataCorrection struct {
 	claimEpochRunID     string
 	trackingComplete    bool
 	closeTrackingParent bool
+	childCursor         *backlogChildInspectionCursor
+}
+
+type backlogChildInspectionBudgetError struct {
+	cursor backlogChildInspectionCursor
+}
+
+func (e backlogChildInspectionBudgetError) Error() string {
+	return errBacklogReconcileBudgetExhausted.Error()
+}
+
+func (e backlogChildInspectionBudgetError) Unwrap() error {
+	return errBacklogReconcileBudgetExhausted
 }
 
 type backlogReconciliationResult struct {
@@ -322,6 +338,7 @@ type backlogReconcilePhaseResult struct {
 	Truncated  bool
 }
 
+//complexitygate:allow bounded phase/cursor state machine with explicit budget exits
 func reconcileBacklogMetadataPhase(
 	ctx context.Context,
 	l instance.Layout,
@@ -383,7 +400,15 @@ func reconcileBacklogMetadataPhase(
 		if len(items) == 0 {
 			if !pageInfo.HasNext {
 				if result.Cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
-					result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred}
+					result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred, Child: result.Cursor.Child}
+					wrapped = true
+					continue
+				}
+				return finishBacklogReconcilePhase(result, skippedDeferred), nil
+			}
+			if pageInfo.NextCursor == result.Cursor.Cursor {
+				if result.Cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
+					result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred, Child: result.Cursor.Child}
 					wrapped = true
 					continue
 				}
@@ -396,9 +421,17 @@ func reconcileBacklogMetadataPhase(
 		if result.Cursor.Deferred == item.ID {
 			skippedDeferred = true
 			result.Examined++
+			child := result.Cursor.Child
 			result.Cursor = next
+			if child != nil && child.ParentID == item.ID {
+				result.Cursor.Child = child
+			}
 			if !pageInfo.HasNext {
-				result.Cursor = backlogScanCursor{}
+				result.Cursor = backlogScanCursor{Child: child}
+				return finishBacklogReconcilePhase(result, skippedDeferred), nil
+			}
+			if child != nil && child.ParentID == item.ID && next.Cursor == cursor.Cursor {
+				result.Cursor = backlogScanCursor{Child: child}
 				return finishBacklogReconcilePhase(result, skippedDeferred), nil
 			}
 			continue
@@ -414,11 +447,19 @@ func reconcileBacklogMetadataPhase(
 			result.Truncated = true
 			return result, errBacklogReconcileBudgetExhausted
 		}
-		reconciled, err := reconcileBacklogMetadataItem(ctx, l, provider, repo, item, observedAt, stalenessPolicy, blockedRecords, botLogin, budget, now)
+		childCursor := result.Cursor.Child
+		if childCursor != nil && childCursor.ParentID != item.ID {
+			childCursor = nil
+		}
+		reconciled, err := reconcileBacklogMetadataItem(ctx, l, provider, repo, item, observedAt, stalenessPolicy, blockedRecords, botLogin, budget, now, childCursor)
 		if err != nil {
 			if errors.Is(err, errBacklogReconcileBudgetExhausted) {
 				result.Examined++
 				result.Cursor = deferredBacklogScanCursor(next, item.ID)
+				var childErr backlogChildInspectionBudgetError
+				if errors.As(err, &childErr) {
+					result.Cursor.Child = &childErr.cursor
+				}
 				result.Truncated = true
 			}
 			return result, err
@@ -428,9 +469,12 @@ func reconcileBacklogMetadataPhase(
 			result.Reconciled++
 		}
 		result.Cursor = carryDeferredBacklogCursor(result.Cursor, next)
+		if result.Cursor.Child != nil && result.Cursor.Child.ParentID == item.ID {
+			result.Cursor.Child = nil
+		}
 		if !pageInfo.HasNext {
 			if cursor.Cursor != "" && !wrapped && budget.Available() && budget.Spent()-phaseStartSpent < phaseBudget {
-				result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred}
+				result.Cursor = backlogScanCursor{Deferred: result.Cursor.Deferred, Child: result.Cursor.Child}
 				wrapped = true
 				continue
 			}
@@ -459,6 +503,7 @@ func deferredBacklogScanCursor(next backlogScanCursor, itemID string) backlogSca
 
 func carryDeferredBacklogCursor(current, next backlogScanCursor) backlogScanCursor {
 	next.Deferred = current.Deferred
+	next.Child = current.Child
 	return next
 }
 
@@ -474,6 +519,7 @@ func reconcileBacklogMetadataItem(
 	botLogin *string,
 	budget *backlogReconcileBudget,
 	now func() time.Time,
+	childCursor *backlogChildInspectionCursor,
 ) (bool, error) {
 	if !hasReconciledMetadataLabel(item) && len(recordedLedgerBlockers(blockedRecords, repo, item.ID)) == 0 {
 		return false, nil
@@ -482,7 +528,7 @@ func reconcileBacklogMetadataItem(
 	if err != nil {
 		return false, fmt.Errorf("refresh issue #%s: %w", item.ID, err)
 	}
-	correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, budget)
+	correction, login, err := inspectBacklogMetadataWithChildCursor(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, childCursor, budget)
 	if err != nil {
 		return false, fmt.Errorf("inspect issue #%s: %w", item.ID, err)
 	}
@@ -494,7 +540,7 @@ func reconcileBacklogMetadataItem(
 	if err != nil {
 		return false, fmt.Errorf("refresh issue #%s before reconcile: %w", item.ID, err)
 	}
-	correction, login, err = inspectBacklogMetadata(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, budget)
+	correction, login, err = inspectBacklogMetadataWithChildCursor(ctx, provider, repo, current, *botLogin, observedAt, stalenessPolicy, blockedRecords, childCursor, budget)
 	if err != nil {
 		return false, fmt.Errorf("reinspect issue #%s before reconcile: %w", current.ID, err)
 	}
@@ -503,7 +549,7 @@ func reconcileBacklogMetadataItem(
 		return false, nil
 	}
 	if correction.trackingComplete {
-		correction, err = revalidateCompletedTrackingItem(ctx, provider, repo, current.ID, correction, budget)
+		correction, err = revalidateCompletedTrackingItem(ctx, provider, repo, current.ID, correction, budget, childCursor)
 		if err != nil {
 			return false, fmt.Errorf("revalidate tracking issue #%s: %w", current.ID, err)
 		}
@@ -523,6 +569,14 @@ func reconcileBacklogMetadataItem(
 	correctionErr := applyBacklogMetadataCorrection(ctx, provider, repo, current, correction, budget)
 	if errors.Is(correctionErr, providers.ErrClaimEpochNotOwned) {
 		correctionErr = nil
+	}
+	if errors.Is(correctionErr, errBacklogReconcileBudgetExhausted) && correction.childCursor != nil {
+		cursor := *correction.childCursor
+		if cursor.Phase == backlogChildInspectionPhaseDone {
+			cursor.Phase = backlogChildInspectionPhaseVerify
+			cursor.NextIndex = 0
+		}
+		correctionErr = backlogChildInspectionBudgetError{cursor: cursor}
 	}
 	if reservation != nil {
 		if releaseErr := releaseBacklogClaimReconciliation(l, *reservation); releaseErr != nil {
@@ -754,7 +808,7 @@ func advanceBacklogReconcileCursor(
 			if err != nil {
 				return nil, false, err
 			}
-			if current != observed {
+			if !reflect.DeepEqual(current, observed) {
 				return nil, false, nil
 			}
 			data, err := json.Marshal(next)
@@ -1016,6 +1070,21 @@ func inspectBacklogMetadata(
 	recs map[string]blockedRecord,
 	budgets ...*backlogReconcileBudget,
 ) (backlogMetadataCorrection, string, error) {
+	return inspectBacklogMetadataWithChildCursor(ctx, provider, repo, item, botLogin, now, stalenessPolicy, recs, nil, budgets...)
+}
+
+func inspectBacklogMetadataWithChildCursor(
+	ctx context.Context,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	item providers.WorkItem,
+	botLogin string,
+	now time.Time,
+	stalenessPolicy backlogStalenessPolicy,
+	recs map[string]blockedRecord,
+	childCursor *backlogChildInspectionCursor,
+	budgets ...*backlogReconcileBudget,
+) (backlogMetadataCorrection, string, error) {
 	var budget *backlogReconcileBudget
 	if len(budgets) > 0 {
 		budget = budgets[0]
@@ -1026,10 +1095,11 @@ func inspectBacklogMetadata(
 		correction.checkClaim = true
 	}
 	if item.HasLabel(providers.LabelTracking) {
-		hasOpenChildren, _, err := trackingItemHasOpenChildrenBudgeted(ctx, provider, repo, item, budget)
+		hasOpenChildren, _, progress, err := trackingItemHasOpenChildrenBudgeted(ctx, provider, repo, item, budget, childCursor)
 		if err != nil {
 			return correction, botLogin, fmt.Errorf("inspect tracking children: %w", err)
 		}
+		correction.childCursor = progress
 		if hasOpenChildren {
 			validTracking = true
 			if item.HasLabel(providers.LabelReady) {
@@ -1129,6 +1199,7 @@ func revalidateCompletedTrackingItem(
 	itemID string,
 	correction backlogMetadataCorrection,
 	budget *backlogReconcileBudget,
+	childCursor *backlogChildInspectionCursor,
 ) (backlogMetadataCorrection, error) {
 	item, err := provider.GetWorkItem(ctx, repo, itemID)
 	if err != nil {
@@ -1140,10 +1211,11 @@ func revalidateCompletedTrackingItem(
 		correction.trackingComplete = false
 		return correction, nil
 	}
-	hasOpenChildren, hasUnverifiedChildren, err := trackingItemHasOpenChildrenBudgeted(ctx, provider, repo, item, budget)
+	hasOpenChildren, hasUnverifiedChildren, progress, err := trackingItemHasOpenChildrenBudgeted(ctx, provider, repo, item, budget, childCursor)
 	if err != nil {
 		return correction, err
 	}
+	correction.childCursor = progress
 	if hasOpenChildren {
 		correction.removeLabels = withoutString(correction.removeLabels, providers.LabelTracking)
 		correction.reasons = withoutString(correction.reasons, trackingCompleteReason)
@@ -1167,36 +1239,92 @@ func trackingItemHasOpenChildrenBudgeted(
 	repo providers.RepositoryRef,
 	item providers.WorkItem,
 	budget *backlogReconcileBudget,
-) (bool, bool, error) {
+	cursor *backlogChildInspectionCursor,
+) (bool, bool, *backlogChildInspectionCursor, error) {
 	native, err := provider.ListWorkItemChildren(ctx, repo, item.ID)
 	if err != nil {
-		return false, false, err
+		return false, false, nil, err
 	}
 	seen := make(map[string]bool, len(native))
 	for _, child := range native {
 		seen[child.ID] = true
 		if strings.EqualFold(child.State, "open") {
-			return true, false, nil
+			return true, false, nil, nil
 		}
 	}
+	checklistIDs := trackingChecklistIssueIDs(item.Body)
+	fingerprint := trackingChildInspectionFingerprint(native, checklistIDs)
+	start := 0
+	phase := ""
+	if cursor != nil && cursor.ParentID == item.ID && cursor.Fingerprint == fingerprint {
+		phase = cursor.Phase
+		start = min(cursor.NextIndex, len(checklistIDs))
+	}
 	hasUnverifiedChildren := false
-	for _, id := range trackingChecklistIssueIDs(item.Body) {
+	for i, id := range checklistIDs {
+		if i < start {
+			continue
+		}
 		if seen[id] {
 			continue
 		}
 		child, err := provider.GetWorkItem(ctx, repo, id)
 		if err != nil {
+			if errors.Is(err, errBacklogReconcileBudgetExhausted) {
+				return false, hasUnverifiedChildren, nil, backlogChildInspectionBudgetError{cursor: backlogChildInspectionCursor{
+					ParentID:    item.ID,
+					Fingerprint: fingerprint,
+					NextIndex:   i,
+					Phase:       phase,
+				}}
+			}
 			if providers.IsNotFoundError(err) {
 				hasUnverifiedChildren = true
 				continue
 			}
-			return false, hasUnverifiedChildren, err
+			return false, hasUnverifiedChildren, nil, err
 		}
 		if strings.EqualFold(child.State, "open") {
-			return true, hasUnverifiedChildren, nil
+			return true, hasUnverifiedChildren, nil, nil
 		}
 	}
-	return false, hasUnverifiedChildren, nil
+	if start > 0 && phase != backlogChildInspectionPhaseVerify && phase != backlogChildInspectionPhaseDone {
+		return false, hasUnverifiedChildren, nil, backlogChildInspectionBudgetError{cursor: backlogChildInspectionCursor{
+			ParentID:    item.ID,
+			Fingerprint: fingerprint,
+			Phase:       backlogChildInspectionPhaseVerify,
+		}}
+	}
+	var progress *backlogChildInspectionCursor
+	if phase == backlogChildInspectionPhaseVerify || phase == backlogChildInspectionPhaseDone {
+		progress = &backlogChildInspectionCursor{
+			ParentID:    item.ID,
+			Fingerprint: fingerprint,
+			NextIndex:   len(checklistIDs),
+			Phase:       backlogChildInspectionPhaseDone,
+		}
+	}
+	return false, hasUnverifiedChildren, progress, nil
+}
+
+func trackingChildInspectionFingerprint(native []providers.WorkItem, checklistIDs []string) string {
+	hash := sha256.New()
+	nativeKeys := make([]string, 0, len(native))
+	for _, child := range native {
+		nativeKeys = append(nativeKeys, child.ID+"\x00"+child.State)
+	}
+	sort.Strings(nativeKeys)
+	for _, key := range nativeKeys {
+		hash.Write([]byte("native\x00"))
+		hash.Write([]byte(key))
+		hash.Write([]byte{0})
+	}
+	for _, id := range checklistIDs {
+		hash.Write([]byte("checklist\x00"))
+		hash.Write([]byte(id))
+		hash.Write([]byte{0})
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func trackingChecklistIssueIDs(body string) []string {

@@ -430,6 +430,62 @@ func TestReconcileBacklogMetadataDefersOverBudgetTrackingInspection(t *testing.T
 	assertFakeIssueLabels(t, server, 7, []string{providers.LabelTracking, providers.LabelReady}, nil)
 }
 
+func TestReconcileBacklogMetadataResumesOversizedTrackingChildren(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	t.Setenv("GOOBERS_INPUT_RECONCILESCANLIMIT", "20")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	now := time.Now().UTC()
+	server.addIssue(7, "Oversized closed tracking parent", "goobers:approved", providers.LabelTracking, providers.LabelReady)
+	var body strings.Builder
+	for id := 100; id < 120; id++ {
+		server.addIssue(id, fmt.Sprintf("Closed child %d", id))
+		server.setIssueState(id, "closed")
+		fmt.Fprintf(&body, "- [x] #%d\n", id)
+	}
+	server.mu.Lock()
+	server.issues[7].body = body.String()
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	var final backlogReconciliationResult
+	history := make([]string, 0, 16)
+	for attempt := 0; attempt < 16; attempt++ {
+		result, err := reconcileBacklogMetadataDetailed(
+			context.Background(),
+			layoutFor(root),
+			server.newGitHubProvider("token"),
+			repo,
+			"goobers:approved",
+			defaultBacklogStalenessPolicy(),
+			func() time.Time { return now.Add(time.Duration(attempt) * time.Minute) },
+		)
+		if err != nil {
+			t.Fatalf("reconcile attempt %d: %v", attempt+1, err)
+		}
+		if result.Scan.Spent > result.Scan.Budget {
+			t.Fatalf("attempt %d result = %#v, exceeded budget", attempt+1, result)
+		}
+		final = result
+		child := result.nextCursor.Open.Child
+		childState := "<nil>"
+		if child != nil {
+			childState = fmt.Sprintf("%s/%s/%d/%s", child.ParentID, child.Fingerprint[:min(8, len(child.Fingerprint))], child.NextIndex, child.Phase)
+		}
+		history = append(history, fmt.Sprintf("%d: rec=%d spent=%d cursor=%q deferred=%q child=%s", attempt+1, result.Reconciled, result.Scan.Spent, result.nextCursor.Open.Cursor, result.nextCursor.Open.Deferred, childState))
+		if !server.issueHasLabel(7, providers.LabelTracking) {
+			break
+		}
+	}
+	if server.issueHasLabel(7, providers.LabelTracking) {
+		t.Fatalf("tracking label still present after budgeted retries; final result = %#v\nhistory:\n%s", final, strings.Join(history, "\n"))
+	}
+	if final.Reconciled == 0 {
+		t.Fatalf("final result = %#v, want tracking correction after resumed child inspection", final)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelTracking})
+}
+
 func TestReconcileBacklogMetadataHTTPBudgetCountsPaginatedChildrenAndUpdate(t *testing.T) {
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
@@ -1900,11 +1956,12 @@ func TestTrackingChecklistMarksDoNotOverrideLiveChildState(t *testing.T) {
 			server.addIssue(8, "Checklist child")
 			server.setIssueState(8, tt.childState)
 
-			open, unverified, err := trackingItemHasOpenChildrenBudgeted(
+			open, unverified, _, err := trackingItemHasOpenChildrenBudgeted(
 				context.Background(),
 				server.newGitHubProvider("token"),
 				repo,
 				providers.WorkItem{ID: "7", Body: tt.body},
+				nil,
 				nil,
 			)
 			if err != nil {
@@ -1917,6 +1974,52 @@ func TestTrackingChecklistMarksDoNotOverrideLiveChildState(t *testing.T) {
 				t.Fatalf("has open children = %t, want %t for body %q with live child state %q", open, tt.wantOpen, tt.body, tt.childState)
 			}
 		})
+	}
+}
+
+func TestTrackingChildCursorVerifiesSkippedChecklistPrefix(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+	server.addIssue(7, "Tracking parent")
+	var body strings.Builder
+	for id := 100; id < 108; id++ {
+		server.addIssue(id, fmt.Sprintf("Closed child %d", id))
+		server.setIssueState(id, "closed")
+		fmt.Fprintf(&body, "- [x] #%d\n", id)
+	}
+	provider := server.newGitHubProvider("token")
+	budget := newBacklogReconcileBudget(5, time.Now().UTC(), time.Now)
+	restoreClient := installBacklogReconcileBudget(provider, budget)
+	_, _, _, err := trackingItemHasOpenChildrenBudgeted(context.Background(), provider, repo, providers.WorkItem{ID: "7", Body: body.String()}, budget, nil)
+	restoreClient()
+	var childErr backlogChildInspectionBudgetError
+	if !errors.As(err, &childErr) || childErr.cursor.NextIndex == 0 {
+		t.Fatalf("trackingItemHasOpenChildrenBudgeted err = %v, want child cursor budget error", err)
+	}
+
+	server.setIssueState(100, "open")
+	provider = server.newGitHubProvider("token")
+	budget = newBacklogReconcileBudget(50, time.Now().UTC(), time.Now)
+	restoreClient = installBacklogReconcileBudget(provider, budget)
+	open, _, _, err := trackingItemHasOpenChildrenBudgeted(context.Background(), provider, repo, providers.WorkItem{ID: "7", Body: body.String()}, budget, &childErr.cursor)
+	restoreClient()
+	if err == nil || !errors.As(err, &childErr) || childErr.cursor.Phase != backlogChildInspectionPhaseVerify {
+		t.Fatalf("resume err = %v, cursor = %#v, want verification cursor before authoritative completion", err, childErr.cursor)
+	}
+	if open {
+		t.Fatal("resume open = true before verification phase, want deferred verification")
+	}
+
+	provider = server.newGitHubProvider("token")
+	budget = newBacklogReconcileBudget(50, time.Now().UTC(), time.Now)
+	restoreClient = installBacklogReconcileBudget(provider, budget)
+	open, _, _, err = trackingItemHasOpenChildrenBudgeted(context.Background(), provider, repo, providers.WorkItem{ID: "7", Body: body.String()}, budget, &childErr.cursor)
+	restoreClient()
+	if err != nil {
+		t.Fatalf("verify tracking children: %v", err)
+	}
+	if !open {
+		t.Fatal("verify open = false, want reopened skipped child detected")
 	}
 }
 
