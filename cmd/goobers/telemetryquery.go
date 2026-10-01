@@ -553,7 +553,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	result, err := detectCandidateFindingsWithCausalCredit(
-		db, creditStore, *window, since, root, queryGaggle, *workflow,
+		context.Background(), db, creditStore, *window, since, root, queryGaggle, *workflow,
 		aggregates, learningActions, thresholds,
 	)
 	if err != nil {
@@ -588,6 +588,7 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 }
 
 func detectCandidateFindingsWithCausalCredit(
+	ctx context.Context,
 	db *rollup.DB,
 	creditStore *readmodel.Store,
 	window time.Duration,
@@ -602,7 +603,7 @@ func detectCandidateFindingsWithCausalCredit(
 	if thresholds == (rollup.Thresholds{}) {
 		thresholds = rollup.DefaultThresholds()
 	}
-	findings, err := db.Detect(context.Background(), rollup.DetectRequest{
+	findings, err := db.Detect(ctx, rollup.DetectRequest{
 		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
 	})
@@ -611,7 +612,7 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 	correlationalValues := map[string]float64{}
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{
+		credits, creditErr := creditStore.CreditAssignment(ctx, readmodel.CreditOptions{
 			Gaggle: gaggle, Since: since,
 		})
 		if creditErr != nil {
@@ -629,7 +630,7 @@ func detectCandidateFindingsWithCausalCredit(
 			if previous, ok := correlationalValues[node]; !ok || failureShare > previous {
 				correlationalValues[node] = failureShare
 			}
-			runIDs, runErr := creditStore.CreditAssignmentRunIDs(context.Background(), readmodel.CreditOptions{
+			runIDs, runErr := creditStore.CreditAssignmentRunIDs(ctx, readmodel.CreditOptions{
 				Gaggle: gaggle, Since: since,
 			}, credit, thresholds.MaxFlaggedRuns)
 			if runErr != nil {
@@ -691,7 +692,7 @@ func detectCandidateFindingsWithCausalCredit(
 	if err != nil {
 		return candidateFindingsArtifact{}, err
 	}
-	result.CausalCredit, err = creditStore.CausalCredit(context.Background(), readmodel.CausalOptions{
+	result.CausalCredit, err = creditStore.CausalCredit(ctx, readmodel.CausalOptions{
 		Gaggle: gaggle, Workflow: workflowName, Since: since, WorkflowGraph: graph,
 	})
 	if err != nil {
@@ -727,14 +728,14 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		cohorts, err := readservice.StoredAttributionCohorts(context.Background(), root, creditStore, readservice.StoredAttributionQuery{
+		cohorts, err := readservice.StoredAttributionCohorts(ctx, root, creditStore, readservice.StoredAttributionQuery{
 			Gaggle: gaggle, Workflow: workflowName, Since: since,
 		})
 		if err != nil {
 			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
 		}
 		result.AttributionCohorts = cohorts
-		audit, err := readservice.StoredFaultAudit(context.Background(), root, creditStore, readservice.StoredAttributionQuery{
+		audit, err := readservice.StoredFaultAudit(ctx, root, creditStore, readservice.StoredAttributionQuery{
 			Gaggle: gaggle, Workflow: workflowName, Since: since,
 		}, creditgraph.FaultAuditConfig{})
 		if err != nil {
@@ -872,7 +873,7 @@ func runTelemetryQueryOverPlane(
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefectAggregateTimeout)
 	defer cancel()
 	response, err := client.DefectAggregates(ctx, telemetryclient.DefectAggregateRequest{
 		Gaggle:     request.gaggle,

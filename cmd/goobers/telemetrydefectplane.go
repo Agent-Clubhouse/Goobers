@@ -122,7 +122,7 @@ func (s *daemonTelemetryDefectAggregateService) DefectAggregates(
 		return telemetryclient.DefectAggregateResponse{}, err
 	}
 	artifact, err := detectCandidateFindingsWithCausalCredit(
-		db, creditStore,
+		ctx, db, creditStore,
 		// Window is not used by the derivation itself — Since is the bound
 		// that matters — and the answer carries the caller's own window.
 		time.Since(request.Since), request.Since,
