@@ -126,10 +126,13 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 				if pin.SpecDigest != "" {
 					// A pin from before work items carried acceptance criteria
 					// (#6093) digests the plain body; it still matches an
-					// unchanged item (#6190).
+					// unchanged item (#6190). The legacy description match
+					// applies only when criteria were composed into the body,
+					// and an empty description is a valid legacy body (#6194):
+					// an item whose criteria live only in the criteria field.
 					stale = issueSpecDigest(item.Title, item.BodyWithAcceptanceCriteria()) != pin.SpecDigest &&
 						issueSpecDigest(item.Title, item.Body) != pin.SpecDigest &&
-						(item.Description == "" || issueSpecDigest(item.Title, item.Description) != pin.SpecDigest)
+						(item.AcceptanceCriteria == "" || issueSpecDigest(item.Title, item.Description) != pin.SpecDigest)
 				} else {
 					stale = item.UpdatedAt != nil && item.UpdatedAt.After(pinnedAt)
 				}
