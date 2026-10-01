@@ -66,7 +66,7 @@ func distinctIssueRefs(pattern *regexp.Regexp, body string) []string {
 	return out
 }
 
-const needsRemediationLabel = "goobers:needs-remediation"
+const needsRemediationLabel = providers.LabelNeedsRemediation
 
 type siblingTriage struct {
 	Reason           string

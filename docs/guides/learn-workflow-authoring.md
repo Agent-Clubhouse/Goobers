@@ -174,6 +174,7 @@ tasks:
     inputs:
       trustLabel: "goobers:approved"
       requireLabels: "goobers:ready"
+      excludeLabels: "goobers/status:in-review"
       maxItems: "1"
       resultFile: "claimed-item.json"
     capabilities:

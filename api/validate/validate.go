@@ -31,6 +31,7 @@ import (
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
+	"github.com/goobers/goobers/internal/lifecycle"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/strictyaml"
@@ -397,6 +398,7 @@ const (
 	errorTutorScopeTarget         WarningCode = "TUT001"
 	warningPRLifecycleBaseDrift   WarningCode = "PRB001"
 	errorContextFromDuplicate     WarningCode = "CTX001"
+	errorLifecycleLabelContract   WarningCode = "LCL001"
 )
 
 const acknowledgeManualOnlyAnnotation = "goobers.dev/acknowledge-manual-only"
@@ -2445,7 +2447,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckStageRequiredInputs(def) {
 		r.add(errorStageRequiredInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
-	checkProviderInputsAndTimeouts(r, def, file, w)
+	checkProviderInputsTimeoutsAndLifecycle(r, def, file, w)
 	// A stage's own subprocess can carry a longer wall-clock ceiling than the
 	// stage's budget — e.g. `make ci` shelling out to `go test -timeout 30m`
 	// under a 25-minute stage timeout. Warning, not error: detection only
@@ -2463,18 +2465,270 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// internal/workflow's stage-contract test).
 }
 
-func checkProviderInputsAndTimeouts(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
 	// Provider-stage input lifecycle (#4879). Runtime parsers retain their
 	// defensive refusals, but a retired input is visible in the workflow and
 	// must be rejected here before the stage can claim work and fail a run.
 	for _, msg := range wf.CheckProviderStageInputs(def) {
 		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	checkLifecycleLabelContracts(r, w, file)
 	// Bounded waits must finish before the executor can terminate their stage;
 	// command-specific clamps are modeled by the workflow check itself.
 	for _, msg := range wf.CheckStageTimeoutCoherence(def) {
 		r.add(errorStageTimeout, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+}
+
+func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
+	for _, task := range w.Spec.Tasks {
+		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" {
+			continue
+		}
+		command := task.Run.Command[1]
+		switch command {
+		case "backlog-health":
+			checkLifecycleLabelInput(r, file, w, task, "readyLabel", task.Inputs["readyLabel"], lifecycle.LabelReady)
+			if builtInBacklogHealthConsumer(w, task) {
+				checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			} else {
+				checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			}
+		case "backlog-query":
+			checkBacklogQueryLifecycleLabelContracts(r, file, w, task)
+		default:
+			checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+		}
+	}
+}
+
+func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Workflow, task apiv1.Task) {
+	inputs := task.Inputs
+	args := task.Run.Command[2:]
+	claim := commandHasArg(args, "--claim")
+	readOnly := commandHasArg(args, "--read-only")
+	resweep := commandHasArg(args, "--resweep")
+	curation := strings.EqualFold(strings.TrimSpace(inputs["curation"]), "true")
+	builtInReady := builtInReadyConsumer(w, task)
+	builtInRemediation := builtInRemediationConsumer(w, task)
+
+	if !resweep && !curation && !builtInReady && !builtInRemediation {
+		checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+	}
+	checkLifecycleLabelListNearMisses(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsRemediation)
+	checkLifecycleLabelListNearMisses(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsHuman, lifecycle.LabelNeedsRemediation, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
+	checkLifecycleLabelListNearMisses(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelNeedsRemediation, lifecycle.LabelBlockedOnSibling)
+
+	if resweep {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelInput(r, file, w, task, "resweepReadyLabel", inputs["resweepReadyLabel"], lifecycle.LabelReady)
+		checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady)
+		checkLifecycleLabelListContains(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelNeedsRemediation)
+		return
+	}
+	if curation {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady)
+		checkLifecycleLabelListContains(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelNeedsRemediation)
+		return
+	}
+	if builtInReady {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelListContains(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady)
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+	if builtInRemediation {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+		checkLifecycleLabelListContains(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelNeedsRemediation)
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+	requireLabels := splitLifecycleLabelList(inputs["requireLabels"])
+	if containsLifecycleLabel(requireLabels, lifecycle.LabelReady) {
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+	if containsLifecycleLabel(requireLabels, lifecycle.LabelNeedsRemediation) && (claim || readOnly) {
+		if claim {
+			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
+		}
+		return
+	}
+}
+
+func builtInBacklogHealthConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	switch w.Name {
+	case "backlog-curation":
+		return task.Name == "implementation-feedback" || task.Name == "sample-ready-pool"
+	default:
+		return false
+	}
+}
+
+func builtInReadyConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	if task.Name != "query-backlog" {
+		return false
+	}
+	switch w.Name {
+	case "implementation", "implementation-pre-review-experiment", "backlog-assignment", "quickstart":
+		return true
+	default:
+		return false
+	}
+}
+
+func builtInRemediationConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	switch w.Name {
+	case "implementation-recovery":
+		return task.Name == "query-backlog"
+	case "parked-item-report":
+		return task.Name == "report-candidates"
+	default:
+		return false
+	}
+}
+
+func checkRequiredLifecycleLabelInput(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	if strings.TrimSpace(configured) == expected {
+		return
+	}
+	addLifecycleLabelContractIssue(r, file, w, task, input, configured, expected)
+}
+
+func checkLifecycleLabelInput(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	if strings.TrimSpace(configured) == "" || strings.TrimSpace(configured) == expected {
+		return
+	}
+	addLifecycleLabelContractIssue(r, file, w, task, input, configured, expected)
+}
+
+func checkLifecycleLabelListContains(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured string, expected ...string) {
+	labels := splitLifecycleLabelList(configured)
+	for _, label := range expected {
+		if containsLifecycleLabel(labels, label) {
+			continue
+		}
+		addLifecycleLabelContractIssue(r, file, w, task, input, configured, label)
+	}
+}
+
+func checkLifecycleLabelNearMisses(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured string, expected ...string) {
+	value := strings.TrimSpace(configured)
+	if value == "" {
+		return
+	}
+	for _, label := range expected {
+		if lifecycleLabelNearMiss(value, label) {
+			addLifecycleLabelContractIssue(r, file, w, task, input, value, label)
+			return
+		}
+	}
+}
+
+func checkLifecycleLabelListNearMisses(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured string, expected ...string) {
+	for _, value := range splitLifecycleLabelList(configured) {
+		for _, label := range expected {
+			if lifecycleLabelNearMiss(value, label) {
+				addLifecycleLabelContractIssue(r, file, w, task, input, value, label)
+				return
+			}
+		}
+	}
+}
+
+func lifecycleLabelNearMiss(value, expected string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == expected {
+		return false
+	}
+	return lifecycleLabelEditDistanceAtMost(value, expected, 1)
+}
+
+func lifecycleLabelEditDistanceAtMost(value, expected string, maxDistance int) bool {
+	if value == expected {
+		return true
+	}
+	if len(value)-len(expected) > maxDistance || len(expected)-len(value) > maxDistance {
+		return false
+	}
+	edits := 0
+	i, j := 0, 0
+	for i < len(value) && j < len(expected) {
+		if value[i] == expected[j] {
+			i++
+			j++
+			continue
+		}
+		edits++
+		if edits > maxDistance {
+			return false
+		}
+		switch {
+		case len(value) > len(expected):
+			i++
+		case len(value) < len(expected):
+			j++
+		default:
+			i++
+			j++
+		}
+	}
+	edits += len(value) - i
+	edits += len(expected) - j
+	return edits <= maxDistance
+}
+
+func splitLifecycleLabelList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	labels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		label := strings.TrimSpace(part)
+		if label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+func containsLifecycleLabel(labels []string, expected string) bool {
+	for _, label := range labels {
+		if label == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func commandHasArg(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func addLifecycleLabelContractIssue(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	r.add(
+		errorLifecycleLabelContract,
+		Error,
+		file,
+		"Workflow",
+		w.Name,
+		"workflow %q task %q input %q configured lifecycle label %q; expected %q",
+		w.Name,
+		task.Name,
+		input,
+		configured,
+		expected,
+	)
 }
 
 func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {

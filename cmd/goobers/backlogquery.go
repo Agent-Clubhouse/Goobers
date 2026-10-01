@@ -96,7 +96,7 @@ const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 // single, unambiguous signal to filter or alert on.
 const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
 
-const inReviewStatusLabel = "goobers/status:in-review"
+const inReviewStatusLabel = providers.LabelStatusInReview
 
 const (
 	backlogFailureDeprioritizeThreshold = 3

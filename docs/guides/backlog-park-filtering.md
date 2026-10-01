@@ -22,7 +22,19 @@ Both inputs are task input strings, not instance or gaggle schema fields.
 `parkLabels` defaults to an empty list, preserving existing custom workflows.
 To migrate an older copied curation workflow, move only its park markers out of
 `excludeLabels` into `parkLabels`; labels left in `excludeLabels` always exclude,
-even if they also occur in `parkLabels`. Custom park-label names are supported.
+even if they also occur in `parkLabels`.
+
+The shipped Goobers lifecycle uses reserved labels with code-defined semantics:
+`goobers:approved`, `goobers:ready`, `goobers:claimed`,
+`goobers:needs-human`, `goobers:needs-remediation`,
+`goobers:blocked-on-sibling`, and `goobers/status:in-review`. Built-in lifecycle
+stages validate that their protected inputs keep these exact values: for
+example curation `parkLabels`, `readyLabel`, resweep `resweepReadyLabel`,
+implementation `requireLabels: "goobers:ready"`, recovery
+`requireLabels: "goobers:needs-remediation"`, and the in-review exclusion.
+Custom non-lifecycle selector labels are still supported in generic selectors
+such as `requireLabels: "goobers:ready,area:backend"` or partition labels such
+as `goobers:cloud`; do not replace a reserved lifecycle value itself.
 
 For diagnosis, invoke `backlog-query --debug` with the same task inputs supplied
 through `GOOBERS_INPUT_PARKLABELS`, `GOOBERS_INPUT_FILTERPARKLABELS`, and the other

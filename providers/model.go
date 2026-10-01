@@ -11,6 +11,7 @@ import (
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
+	"github.com/goobers/goobers/internal/lifecycle"
 )
 
 // ProviderKind identifies a concrete provider backend.
@@ -30,15 +31,22 @@ const (
 // existing vocabulary — #539's convention; also applied when a stage reports
 // blocked, #544).
 const (
-	LabelApproved   = "goobers:approved"
-	LabelClaimed    = "goobers:claimed"
-	LabelReady      = "goobers:ready"
-	LabelCritical   = "goobers:critical"
-	LabelNeedsHuman = "goobers:needs-human"
-	LabelNominated  = "goobers:nominated"
-	LabelAutoClose  = "goobers:auto-close"
-	LabelStale      = "stale"
-	LabelTracking   = "tracking"
+	LabelApproved         = lifecycle.LabelApproved
+	LabelClaimed          = lifecycle.LabelClaimed
+	LabelReady            = lifecycle.LabelReady
+	LabelCritical         = "goobers:critical"
+	LabelNeedsHuman       = lifecycle.LabelNeedsHuman
+	LabelNeedsRemediation = lifecycle.LabelNeedsRemediation
+	LabelBlockedOnSibling = lifecycle.LabelBlockedOnSibling
+	LabelNominated        = "goobers:nominated"
+	LabelAutoClose        = "goobers:auto-close"
+	LabelStale            = "stale"
+	LabelTracking         = "tracking"
+)
+
+// Work-item status labels with Goobers-defined lifecycle semantics.
+const (
+	LabelStatusInReview = lifecycle.LabelStatusInReview
 )
 
 // WorkItemStatus is the Goobers processing status mirrored to backlog items.
