@@ -1502,6 +1502,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	triggerSweep := daemonTriggerSweep(ctx, l, setup.InstanceLog, durableTriggers, sched, &lastTriggerSweepAtNanos, triggerSweepOptions{})
 	startupTriggerSweep := daemonTriggerSweep(ctx, l, setup.InstanceLog, durableTriggers, sched, &lastTriggerSweepAtNanos, triggerSweepOptions{
 		staleLegacyMissingDeadline: true,
+		recoverActiveRequests:      true,
 	})
 	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", startupTriggerSweep))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")

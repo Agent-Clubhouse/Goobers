@@ -502,6 +502,21 @@ func writeTriggerRequestFixture(t *testing.T, schedulerDir, requestID string, re
 	}
 }
 
+func writeTriggerStateFixture(t *testing.T, schedulerDir, requestID, suffix string, req triggerRequest) {
+	t.Helper()
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(reqDir, requestID+suffix), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSweepRefusesStaleRequestAndJournalsNote(t *testing.T) {
 	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
@@ -683,32 +698,124 @@ func TestSweepCollectsExpiredOrphanResponse(t *testing.T) {
 	if err := os.MkdirAll(reqDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	oldPath := filepath.Join(reqDir, "old"+responseSuffix)
-	freshPath := filepath.Join(reqDir, "fresh"+responseSuffix)
-	for _, path := range []string{oldPath, freshPath} {
+	oldResponsePath := filepath.Join(reqDir, "old"+responseSuffix)
+	freshResponsePath := filepath.Join(reqDir, "fresh"+responseSuffix)
+	oldAckPath := filepath.Join(reqDir, "old"+ackSuffix)
+	freshAckPath := filepath.Join(reqDir, "fresh"+ackSuffix)
+	oldAbandonedPath := filepath.Join(reqDir, "old"+abandonedSuffix)
+	freshAbandonedPath := filepath.Join(reqDir, "fresh"+abandonedSuffix)
+	for _, path := range []string{oldResponsePath, freshResponsePath} {
 		if err := os.WriteFile(path, []byte(`{"runId":"orphan"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{oldAckPath, freshAckPath} {
+		if err := os.WriteFile(path, []byte(`{"state":"queued"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{oldAbandonedPath, freshAbandonedPath} {
+		if err := os.WriteFile(path, []byte(`{"workflow":"implement"}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-triggerDelegationTimeout - time.Second)
 	fresh := now.Add(-triggerDelegationTimeout + time.Second)
-	if err := os.Chtimes(oldPath, old, old); err != nil {
-		t.Fatal(err)
+	for _, path := range []string{oldResponsePath, oldAckPath, oldAbandonedPath} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.Chtimes(freshPath, fresh, fresh); err != nil {
-		t.Fatal(err)
+	for _, path := range []string{freshResponsePath, freshAckPath, freshAbandonedPath} {
+		if err := os.Chtimes(path, fresh, fresh); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }); err != nil {
 		t.Fatalf("sweepPendingTriggers: %v", err)
 	}
 
-	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expired orphan response stat error = %v, want not exist", err)
+	for _, path := range []string{oldResponsePath, oldAckPath, oldAbandonedPath} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expired orphan artifact %s stat error = %v, want not exist", filepath.Base(path), err)
+		}
 	}
-	if _, err := os.Stat(freshPath); err != nil {
-		t.Fatalf("fresh response was removed: %v", err)
+	for _, path := range []string{freshResponsePath, freshAckPath, freshAbandonedPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("fresh artifact %s was removed: %v", filepath.Base(path), err)
+		}
+	}
+}
+
+func TestPollFinalResponseRemovesQueuedAck(t *testing.T) {
+	schedulerDir := t.TempDir()
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "final-before-ack"
+	ackPath := filepath.Join(reqDir, requestID+ackSuffix)
+	if err := os.WriteFile(ackPath, []byte(`{"state":"queued"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	responsePath := filepath.Join(reqDir, requestID+responseSuffix)
+	if err := os.WriteFile(responsePath, []byte(`{"runId":"run-final"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := pollTriggerResponseEvent(context.Background(), schedulerDir, requestID, testResponseWait, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RunID != "run-final" {
+		t.Fatalf("runID = %q, want run-final", resp.RunID)
+	}
+	if _, err := os.Stat(ackPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ack stat error = %v, want removed with terminal response", err)
+	}
+}
+
+func TestStartupSweepRecoversAcknowledgedActiveTrigger(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow: "implement",
+		Starter:  starter,
+	}})
+	now := time.Now().UTC()
+	const requestID = "acked-active"
+	writeTriggerStateFixture(t, schedulerDir, requestID, activeSuffix, triggerRequest{
+		Workflow:   "implement",
+		CreatedAt:  now.Add(-time.Second),
+		AcceptedAt: now.Add(-500 * time.Millisecond),
+	})
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	ackPath := filepath.Join(reqDir, requestID+ackSuffix)
+	if err := os.WriteFile(ackPath, []byte(`{"state":"queued"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sweepPendingTriggersWithOptions(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }, triggerSweepOptions{
+		recoverActiveRequests: true,
+	}); err != nil {
+		t.Fatalf("startup sweep recovery: %v", err)
+	}
+	runID, err := pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
+	if err != nil {
+		t.Fatalf("poll recovered response: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("recovered active trigger returned an empty run id")
+	}
+	if starter.count() != 1 {
+		t.Fatalf("starter calls = %d, want recovered dispatch", starter.count())
+	}
+	for _, suffix := range []string{requestSuffix, activeSuffix, ackSuffix} {
+		path := filepath.Join(reqDir, requestID+suffix)
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s stat error = %v, want removed after recovered terminal response", filepath.Base(path), err)
+		}
 	}
 }
 

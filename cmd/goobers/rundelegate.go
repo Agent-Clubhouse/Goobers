@@ -112,6 +112,11 @@ type pendingTriggerRequest struct {
 	parseErr error
 }
 
+type pendingTriggerCandidate struct {
+	id   string
+	path string
+}
+
 // suppressExcessOutstanding returns the request ids among parsed that exceed
 // maxOutstandingTriggerRequestsPerIdentity within their identity group — the
 // oldest (by CreatedAt) requests in each group are kept, so a caller
@@ -334,6 +339,7 @@ func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID strin
 	awaitingClaimAck := false
 	for {
 		if resp, ok := readTriggerResponseFile(respPath); ok {
+			_ = os.Remove(ackPath)
 			return resp, nil
 		}
 		if resp, ok := readTriggerResponseFile(ackPath); ok {
@@ -500,6 +506,7 @@ func triggerAttemptContext(ctx context.Context, req triggerRequest, startedAt ti
 
 type triggerSweepOptions struct {
 	staleLegacyMissingDeadline bool
+	recoverActiveRequests      bool
 }
 
 func claimTriggerRequest(reqDir, requestID string) (string, bool, error) {
@@ -523,6 +530,7 @@ func writeTriggerResponse(reqDir, requestID string, resp triggerResponse) error 
 	if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+responseSuffix), data, 0o644); err != nil {
 		return fmt.Errorf("delegate: write trigger response %s: %w", requestID, err)
 	}
+	_ = os.Remove(filepath.Join(reqDir, requestID+ackSuffix))
 	return nil
 }
 
@@ -569,6 +577,36 @@ func requeueTriggerRequest(reqPath string, req triggerRequest) error {
 	return journal.WriteFileAtomic(reqPath, data, 0o644)
 }
 
+func recoverActiveTriggerRequest(reqDir, requestID string) (bool, error) {
+	activePath := filepath.Join(reqDir, requestID+activeSuffix)
+	requestPath := filepath.Join(reqDir, requestID+requestSuffix)
+	responsePath := filepath.Join(reqDir, requestID+responseSuffix)
+	if _, err := os.Stat(responsePath); err == nil {
+		_ = os.Remove(filepath.Join(reqDir, requestID+ackSuffix))
+		_ = os.Remove(activePath)
+		return false, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("delegate: inspect active trigger response %s: %w", requestID, err)
+	}
+	if err := os.Rename(activePath, requestPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if errors.Is(err, os.ErrExist) {
+			_ = os.Remove(activePath)
+			return false, nil
+		}
+		return false, fmt.Errorf("delegate: recover active trigger request %s: %w", requestID, err)
+	}
+	return true, nil
+}
+
+func removeExpiredTriggerArtifact(path string, info os.FileInfo, now time.Time) {
+	if now.Sub(info.ModTime()) > triggerDelegationTimeout {
+		_ = os.Remove(path)
+	}
+}
+
 // sweepPendingTriggers is the daemon-side half of #343's delegation
 // protocol, called at startup and periodically from runUpContext's sweep
 // goroutine
@@ -599,22 +637,43 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 		return fmt.Errorf("delegate: read pending triggers: %w", err)
 	}
 	var sweepErr error
-	var requestEntries []os.DirEntry
+	var requestEntries []pendingTriggerCandidate
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		if strings.HasSuffix(e.Name(), responseSuffix) {
+		switch {
+		case strings.HasSuffix(e.Name(), responseSuffix), strings.HasSuffix(e.Name(), ackSuffix), strings.HasSuffix(e.Name(), abandonedSuffix):
 			info, err := e.Info()
-			if err == nil && now().Sub(info.ModTime()) > triggerDelegationTimeout {
-				_ = os.Remove(filepath.Join(reqDir, e.Name()))
+			if err == nil {
+				removeExpiredTriggerArtifact(filepath.Join(reqDir, e.Name()), info, now())
 			}
 			continue
-		}
-		if !strings.HasSuffix(e.Name(), requestSuffix) {
+		case strings.HasSuffix(e.Name(), activeSuffix):
+			if !options.recoverActiveRequests {
+				continue
+			}
+			requestID := strings.TrimSuffix(e.Name(), activeSuffix)
+			recovered, err := recoverActiveTriggerRequest(reqDir, requestID)
+			if err != nil {
+				sweepErr = errors.Join(sweepErr, err)
+				continue
+			}
+			if recovered {
+				requestEntries = append(requestEntries, pendingTriggerCandidate{
+					id:   requestID,
+					path: filepath.Join(reqDir, requestID+requestSuffix),
+				})
+			}
+			continue
+		case strings.HasSuffix(e.Name(), requestSuffix):
+			requestID := strings.TrimSuffix(e.Name(), requestSuffix)
+			requestEntries = append(requestEntries, pendingTriggerCandidate{
+				id:   requestID,
+				path: filepath.Join(reqDir, e.Name()),
+			})
 			continue
 		}
-		requestEntries = append(requestEntries, e)
 	}
 	// Total depth is reported from the entries this sweep already read, so the
 	// visibility costs no extra directory walk, and BEFORE the per-cycle bound
@@ -634,8 +693,8 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 	// across the whole batch, not just entries seen so far.
 	parsed := make([]*pendingTriggerRequest, 0, len(requestEntries))
 	for _, e := range requestEntries {
-		requestID := strings.TrimSuffix(e.Name(), requestSuffix)
-		reqPath := filepath.Join(reqDir, e.Name())
+		requestID := e.id
+		reqPath := e.path
 		data, err := os.ReadFile(reqPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
