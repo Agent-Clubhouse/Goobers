@@ -49,6 +49,35 @@ type versionedInterpreter struct {
 	gateLimits                      func(apiv1.Gate) apiv1.Limits
 }
 
+// CompileDiagnostic carries one compiler finding with enough source identity
+// for callers that still have the authoring YAML tree to attach a field-level
+// location.
+type CompileDiagnostic struct {
+	Message       string
+	TaskName      string
+	ArtifactInput string
+	SlotTaskName  string
+	SlotName      string
+}
+
+// CompileError is returned for compiler checks that can preserve structured
+// diagnostic identity alongside the traditional aggregate error string.
+type CompileError struct {
+	Workflow    string
+	Diagnostics []CompileDiagnostic
+}
+
+func (e *CompileError) Error() string {
+	if e == nil {
+		return ""
+	}
+	messages := make([]string, 0, len(e.Diagnostics))
+	for _, diagnostic := range e.Diagnostics {
+		messages = append(messages, diagnostic.Message)
+	}
+	return fmt.Sprintf("invalid workflow %q: %s", e.Workflow, strings.Join(messages, "; "))
+}
+
 // preV30SurfaceProblems is the checkRunsOnPlacement arm for every interpreter
 // BEFORE 3.0: the runsOn/repoFrom/commitsRepo surface — on tasks AND on gates
 // (decision 001) — does not exist in those versions, and the frozen packages
@@ -436,16 +465,16 @@ func compileV30(def Definition, config compileConfig) (*Machine, error) {
 }
 
 func compileV31(def Definition, config compileConfig) (*Machine, error) {
-	if problems := artifactContractProblems(def); len(problems) > 0 {
-		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	if diagnostics := artifactContractDiagnostics(def); len(diagnostics) > 0 {
+		return nil, &CompileError{Workflow: def.Name, Diagnostics: diagnostics}
 	}
 	machine, err := compileV30Base(def, config)
 	if err != nil {
 		return nil, err
 	}
-	bindings, problems := lowerArtifactBindings(machine)
-	if len(problems) > 0 {
-		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	bindings, diagnostics := lowerArtifactBindings(machine)
+	if len(diagnostics) > 0 {
+		return nil, &CompileError{Workflow: def.Name, Diagnostics: diagnostics}
 	}
 	machine.SetArtifactBindings(bindings)
 	return machine, nil
@@ -511,16 +540,45 @@ func preV31ArtifactSurfaceProblems(def Definition, version string) []string {
 }
 
 func artifactContractProblems(def Definition) []string {
-	_, problems := collectArtifactContracts(def)
-	if len(problems) > 0 {
-		return problems
+	return artifactDiagnosticMessages(artifactContractDiagnostics(def))
+}
+
+// ArtifactContractDiagnostics reports DSL 3.1 semantic artifact contract
+// findings with source identity for validators that still have authoring YAML.
+func ArtifactContractDiagnostics(def Definition) []CompileDiagnostic {
+	if def.DSLVersion != supportmatrix.V31DSLVersion {
+		return nil
+	}
+	return artifactContractDiagnostics(def)
+}
+
+func artifactContractDiagnostics(def Definition) []CompileDiagnostic {
+	_, diagnostics := collectArtifactContracts(def)
+	if len(diagnostics) > 0 {
+		return diagnostics
 	}
 	machine, buildProblems := artifactCheckMachine(def)
 	if len(buildProblems) > 0 {
-		return buildProblems
+		return diagnosticMessages(buildProblems)
 	}
-	_, problems = lowerArtifactBindings(machine)
-	return problems
+	_, diagnostics = lowerArtifactBindings(machine)
+	return diagnostics
+}
+
+func artifactDiagnosticMessages(diagnostics []CompileDiagnostic) []string {
+	messages := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		messages = append(messages, diagnostic.Message)
+	}
+	return messages
+}
+
+func diagnosticMessages(messages []string) []CompileDiagnostic {
+	diagnostics := make([]CompileDiagnostic, 0, len(messages))
+	for _, message := range messages {
+		diagnostics = append(diagnostics, CompileDiagnostic{Message: message})
+	}
+	return diagnostics
 }
 
 type artifactContractIndex struct {
@@ -528,35 +586,40 @@ type artifactContractIndex struct {
 	taskNames map[string]struct{}
 }
 
-func collectArtifactContracts(def Definition) (artifactContractIndex, []string) {
+func collectArtifactContracts(def Definition) (artifactContractIndex, []CompileDiagnostic) {
 	index := artifactContractIndex{
 		slots:     make(map[string]map[string]apiv1.ArtifactSlot, len(def.Spec.Tasks)),
 		taskNames: make(map[string]struct{}, len(def.Spec.Tasks)),
 	}
 	taskNames := make(map[string]struct{}, len(def.Spec.Tasks))
-	var problems []string
+	var diagnostics []CompileDiagnostic
 	for _, task := range def.Spec.Tasks {
 		taskNames[task.Name] = struct{}{}
 		index.taskNames[task.Name] = struct{}{}
 		slots := make(map[string]apiv1.ArtifactSlot, len(task.ArtifactSlots))
 		for _, slot := range task.ArtifactSlots {
 			if !validArtifactContractName(slot.Name) {
-				problems = append(problems, fmt.Sprintf("task %q artifactSlots contains invalid slot name %q", task.Name, slot.Name))
+				diagnostics = append(diagnostics, slotDiagnostic(task.Name, slot.Name,
+					"task %q artifactSlots contains invalid slot name %q", task.Name, slot.Name))
 				continue
 			}
 			if _, exists := slots[slot.Name]; exists {
-				problems = append(problems, fmt.Sprintf("task %q artifactSlots repeats slot %q", task.Name, slot.Name))
+				diagnostics = append(diagnostics, slotDiagnostic(task.Name, slot.Name,
+					"task %q artifactSlots repeats slot %q", task.Name, slot.Name))
 				continue
 			}
 			slots[slot.Name] = slot
 			if strings.TrimSpace(slot.MediaType) != slot.MediaType {
-				problems = append(problems, fmt.Sprintf("task %q artifact slot %q has a blank mediaType", task.Name, slot.Name))
+				diagnostics = append(diagnostics, slotDiagnostic(task.Name, slot.Name,
+					"task %q artifact slot %q has a blank mediaType", task.Name, slot.Name))
 			}
 			if strings.TrimSpace(slot.SchemaPath) != slot.SchemaPath {
-				problems = append(problems, fmt.Sprintf("task %q artifact slot %q schemaPath must not have leading or trailing whitespace", task.Name, slot.Name))
+				diagnostics = append(diagnostics, slotDiagnostic(task.Name, slot.Name,
+					"task %q artifact slot %q schemaPath must not have leading or trailing whitespace", task.Name, slot.Name))
 			}
 			if slot.MaxSize < 0 {
-				problems = append(problems, fmt.Sprintf("task %q artifact slot %q maxSize must be non-negative", task.Name, slot.Name))
+				diagnostics = append(diagnostics, slotDiagnostic(task.Name, slot.Name,
+					"task %q artifact slot %q maxSize must be non-negative", task.Name, slot.Name))
 			}
 		}
 		if len(slots) > 0 {
@@ -566,63 +629,69 @@ func collectArtifactContracts(def Definition) (artifactContractIndex, []string) 
 	for _, task := range def.Spec.Tasks {
 		for local, ref := range task.ArtifactInputs {
 			if !validArtifactContractName(local) {
-				problems = append(problems, fmt.Sprintf("task %q artifactInputs contains invalid local input name %q", task.Name, local))
+				diagnostics = append(diagnostics, inputDiagnostic(task.Name, local,
+					"task %q artifactInputs contains invalid local input name %q", task.Name, local))
 			}
 			producer, slot, ok := splitArtifactInputRef(ref.From)
 			if !ok {
-				problems = append(problems, fmt.Sprintf("task %q artifact input %q must reference a producer slot as producer.slot", task.Name, local))
+				diagnostics = append(diagnostics, inputDiagnostic(task.Name, local,
+					"task %q artifact input %q must reference a producer slot as producer.slot", task.Name, local))
 				continue
 			}
 			if _, exists := taskNames[producer]; !exists {
-				problems = append(problems, fmt.Sprintf("task %q artifact input %q references unknown producer task %q", task.Name, local, producer))
+				diagnostics = append(diagnostics, inputDiagnostic(task.Name, local,
+					"task %q artifact input %q references unknown producer task %q", task.Name, local, producer))
 				continue
 			}
 			producerSlots := index.slots[producer]
 			producerSlot, exists := producerSlots[slot]
 			if !exists {
-				problems = append(problems, fmt.Sprintf("task %q artifact input %q references unknown artifact slot %q on producer %q", task.Name, local, slot, producer))
+				diagnostics = append(diagnostics, inputDiagnostic(task.Name, local,
+					"task %q artifact input %q references unknown artifact slot %q on producer %q", task.Name, local, slot, producer))
 			}
-			problems = append(problems, artifactInputContractProblems(task.Name, local, ref, producer, slot, producerSlot, exists)...)
+			diagnostics = append(diagnostics, artifactInputContractProblems(task.Name, local, ref, producer, slot, producerSlot, exists)...)
 		}
 	}
-	sort.Strings(problems)
-	return index, problems
+	sortDiagnostics(diagnostics)
+	return index, diagnostics
 }
 
-func artifactInputContractProblems(taskName, local string, ref apiv1.ArtifactInputRef, producer, slot string, producerSlot apiv1.ArtifactSlot, slotExists bool) []string {
-	var problems []string
+func artifactInputContractProblems(taskName, local string, ref apiv1.ArtifactInputRef, producer, slot string, producerSlot apiv1.ArtifactSlot, slotExists bool) []CompileDiagnostic {
+	var diagnostics []CompileDiagnostic
 	if strings.TrimSpace(ref.MediaType) != ref.MediaType {
-		problems = append(problems, fmt.Sprintf("task %q artifact input %q has a blank mediaType", taskName, local))
+		diagnostics = append(diagnostics, inputDiagnostic(taskName, local,
+			"task %q artifact input %q has a blank mediaType", taskName, local))
 	}
 	if strings.TrimSpace(ref.SchemaPath) != ref.SchemaPath {
-		problems = append(problems, fmt.Sprintf("task %q artifact input %q schemaPath must not have leading or trailing whitespace", taskName, local))
+		diagnostics = append(diagnostics, inputDiagnostic(taskName, local,
+			"task %q artifact input %q schemaPath must not have leading or trailing whitespace", taskName, local))
 	}
 	if !slotExists {
-		return problems
+		return diagnostics
 	}
 	if ref.MediaType != "" {
 		if producerSlot.MediaType == "" {
-			problems = append(problems, fmt.Sprintf(
+			diagnostics = append(diagnostics, inputDiagnostic(taskName, local,
 				"task %q artifact input %q expects mediaType %q, but producer %q slot %q declares no mediaType",
 				taskName, local, ref.MediaType, producer, slot))
 		} else if ref.MediaType != producerSlot.MediaType {
-			problems = append(problems, fmt.Sprintf(
+			diagnostics = append(diagnostics, inputDiagnostic(taskName, local,
 				"task %q artifact input %q expects mediaType %q, but producer %q slot %q declares %q",
 				taskName, local, ref.MediaType, producer, slot, producerSlot.MediaType))
 		}
 	}
 	if ref.SchemaPath != "" {
 		if producerSlot.SchemaPath == "" {
-			problems = append(problems, fmt.Sprintf(
+			diagnostics = append(diagnostics, inputDiagnostic(taskName, local,
 				"task %q artifact input %q expects schemaPath %q, but producer %q slot %q declares no schemaPath",
 				taskName, local, ref.SchemaPath, producer, slot))
 		} else if ref.SchemaPath != producerSlot.SchemaPath {
-			problems = append(problems, fmt.Sprintf(
+			diagnostics = append(diagnostics, inputDiagnostic(taskName, local,
 				"task %q artifact input %q expects schemaPath %q, but producer %q slot %q declares %q",
 				taskName, local, ref.SchemaPath, producer, slot, producerSlot.SchemaPath))
 		}
 	}
-	return problems
+	return diagnostics
 }
 
 func artifactCheckMachine(def Definition) (*Machine, []string) {
@@ -645,10 +714,10 @@ func artifactCheckMachine(def Definition) (*Machine, []string) {
 	return machine, nil
 }
 
-func lowerArtifactBindings(machine *Machine) (map[string]map[string]model.ArtifactBinding, []string) {
-	index, problems := collectArtifactContracts(machine.Def)
-	if len(problems) > 0 {
-		return nil, problems
+func lowerArtifactBindings(machine *Machine) (map[string]map[string]model.ArtifactBinding, []CompileDiagnostic) {
+	index, diagnostics := collectArtifactContracts(machine.Def)
+	if len(diagnostics) > 0 {
+		return nil, diagnostics
 	}
 	bindings := make(map[string]map[string]model.ArtifactBinding)
 	for _, task := range machine.Def.Spec.Tasks {
@@ -663,13 +732,13 @@ func lowerArtifactBindings(machine *Machine) (map[string]map[string]model.Artifa
 				continue
 			}
 			if producer == task.Name {
-				problems = append(problems, fmt.Sprintf(
+				diagnostics = append(diagnostics, inputDiagnostic(task.Name, local,
 					"task %q artifact input %q references itself; artifactInputs must name an upstream producer",
 					task.Name, local))
 				continue
 			}
 			if !artifactProducerDominatesConsumer(machine, producer, task.Name) {
-				problems = append(problems, fmt.Sprintf(
+				diagnostics = append(diagnostics, inputDiagnostic(task.Name, local,
 					"task %q artifact input %q references producer %q, but %q does not run on every successful path before %q",
 					task.Name, local, producer, producer, task.Name))
 				continue
@@ -688,8 +757,30 @@ func lowerArtifactBindings(machine *Machine) (map[string]map[string]model.Artifa
 			}
 		}
 	}
-	sort.Strings(problems)
-	return bindings, problems
+	sortDiagnostics(diagnostics)
+	return bindings, diagnostics
+}
+
+func inputDiagnostic(taskName, localName, format string, args ...interface{}) CompileDiagnostic {
+	return CompileDiagnostic{
+		Message:       fmt.Sprintf(format, args...),
+		TaskName:      taskName,
+		ArtifactInput: localName,
+	}
+}
+
+func slotDiagnostic(taskName, slotName, format string, args ...interface{}) CompileDiagnostic {
+	return CompileDiagnostic{
+		Message:      fmt.Sprintf(format, args...),
+		SlotTaskName: taskName,
+		SlotName:     slotName,
+	}
+}
+
+func sortDiagnostics(diagnostics []CompileDiagnostic) {
+	sort.Slice(diagnostics, func(i, j int) bool {
+		return diagnostics[i].Message < diagnostics[j].Message
+	})
 }
 
 func sortedArtifactInputNames(inputs map[string]apiv1.ArtifactInputRef) []string {
