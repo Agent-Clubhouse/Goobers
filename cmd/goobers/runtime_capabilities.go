@@ -796,6 +796,18 @@ func init() {
 			withSynopsis(synopsisByID["pr-select"]).
 			withHelp("select one managed or advisory open PR for merge-review (a workflow stage)", prSelectHelp).
 			withExamples("goobers pr-select"),
+		stageCommand("advisory-pr-select", apicontract.ActionWorkflowExecution, runAdvisoryPRSelect).
+			withSynopsis(synopsisByID["advisory-pr-select"]).
+			withHelp("select one open PR for a private-disposition advisory review", advisorySelectHelp).
+			withExamples("goobers advisory-pr-select"),
+		stageCommand("advisory-pr-publish", apicontract.ActionWorkflowExecution, runAdvisoryPRPublish).
+			withSynopsis(synopsisByID["advisory-pr-publish"]).
+			withHelp("publish an advisory observation or record a permanent private skip", advisoryPublishHelp).
+			withExamples("goobers advisory-pr-publish"),
+		coreCommand("advisory-pr-reset", apicontract.ActionMaintenance, runAdvisoryPRReset).
+			withSynopsis(synopsisByID["advisory-pr-reset"]).
+			withHelp("clear one private advisory disposition by explicit operator action", advisoryResetHelp).
+			withExamples("goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance"),
 		stageCommand("cancel-pending-ci", apicontract.ActionWorkflowExecution, runCancelPendingCI).
 			withSynopsis(synopsisByID["cancel-pending-ci"]).
 			withHelp("cancel pending provider CI for an exact reviewed PR head (a workflow stage)", cancelPendingCIHelp).

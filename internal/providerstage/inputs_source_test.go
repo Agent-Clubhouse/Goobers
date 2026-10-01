@@ -26,6 +26,7 @@ type inputSourceOwner struct {
 // file must declare its command owner; a new call in an existing file is
 // checked automatically.
 var providerInputSourceOwners = map[string]inputSourceOwner{
+	"advisorypr.go":                  {command: "advisory-pr-publish", shared: map[string][]string{"reviewType": {"advisory-pr-select"}, "resultFile": {"advisory-pr-select"}}},
 	"applyverdict.go":                {command: "apply-verdict"},
 	"backlogassignment.go":           {command: "backlog-assignment"},
 	"backlogdedupe.go":               {command: "backlog-dedupe"},

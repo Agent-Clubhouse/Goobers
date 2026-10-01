@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "28872d39dc2e506bd0c3008932a77e1b27627ebf13717ebc5cd3d68011fd2fc3",
+  "snapshotSha256": "ff5fb1eed6eb4ac15979833bd36f7965f0514a35e76a23c5c8059604247e2984",
   "changes": [
     {
       "version": 1,
@@ -56,6 +56,10 @@
     {
       "version": 14,
       "description": "Reword the consequence text of open-pr's optional ado:work-items:write use (#5925): native Azure Boards linking is best-effort, so without the capability the pull request opens with a text reference only, and the Azure DevOps repository credential backs the capability when declared. Text only: no capability, optional bit, flag or result-file field changes, so every shipped config's admission is unchanged."
+    },
+    {
+      "version": 15,
+      "description": "Add advisory-pr-select and advisory-pr-publish as separate workflow commands (#6184). Selection requires the exact github:pr:read credential and acquires a private lease; publication requires github:pr:write and owns the only public comment path. The addition changes no existing command requirement, result file, or claim behavior, so existing workflows retain their admission contract."
     }
   ]
 }
