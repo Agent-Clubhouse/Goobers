@@ -72,6 +72,31 @@ func TestGooberInvocationActivatesAssetPathGuardBeforeCall(t *testing.T) {
 	}
 }
 
+func TestOperatorMessageAddressForAttemptUsesStageStartSequence(t *testing.T) {
+	const runID = "run-operator-address"
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "workflow", WorkflowVersion: 1,
+		Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	startedSeq := run.Seq()
+
+	got := operatorMessageAddressForAttempt(run, runID, "implement", 1, "coder")
+	want, err := journal.StageAgentAddress(runID, "implement", 1, "coder", startedSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want.String() {
+		t.Fatalf("operatorMessageAddressForAttempt = %q, want %q", got, want.String())
+	}
+}
+
 type gateHeartbeatJournalStub struct{}
 
 func (gateHeartbeatJournalStub) Append(journal.Event) error  { return nil }

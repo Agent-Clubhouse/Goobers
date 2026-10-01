@@ -76,6 +76,7 @@ type assetBundleGoober interface {
 type gooberInvocation struct {
 	invoke.Goober
 	activateAssetPathGuard func() error
+	operatorMessageAddress string
 	invoked                bool
 }
 
@@ -84,6 +85,7 @@ func (g *gooberInvocation) Invoke(ctx context.Context, env apiv1.InvocationEnvel
 		return apiv1.ResultEnvelope{}, err
 	}
 	g.invoked = true
+	defer g.registerOperatorMessageTarget()()
 	return g.Goober.Invoke(ctx, env)
 }
 
@@ -92,6 +94,7 @@ func (g *gooberInvocation) Review(ctx context.Context, env apiv1.InvocationEnvel
 		return apiv1.Verdict{}, err
 	}
 	g.invoked = true
+	defer g.registerOperatorMessageTarget()()
 	return g.Goober.Review(ctx, env)
 }
 
@@ -109,4 +112,45 @@ func (g *gooberInvocation) prepare() error {
 func (g *gooberInvocation) materializedAssets() bool {
 	assets, ok := g.Goober.(assetBundleGoober)
 	return g.invoked && ok && assets.HasAssetBundle()
+}
+
+func (g *gooberInvocation) registerOperatorMessageTarget() func() {
+	target, ok := g.Goober.(invoke.OperatorMessageTarget)
+	if !ok || g.operatorMessageAddress == "" {
+		return func() {}
+	}
+	return DefaultOperatorMessageDeliveryRegistry.Register(g.operatorMessageAddress, target)
+}
+
+func newGooberInvocation(goober invoke.Goober, activateAssetPathGuard func() error, jr executionJournal, runID, stage string, attempt int, agent string) *gooberInvocation {
+	return &gooberInvocation{
+		Goober:                 goober,
+		activateAssetPathGuard: activateAssetPathGuard,
+		operatorMessageAddress: operatorMessageAddressForAttempt(jr, runID, stage, attempt, agent),
+	}
+}
+
+func operatorMessageAddressForAttempt(jr executionJournal, runID, stage string, attempt int, agent string) string {
+	reader, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		return ""
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return ""
+	}
+	var startedSeq uint64
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted && event.Stage == stage && event.Attempt == attempt {
+			startedSeq = event.Seq
+		}
+	}
+	if startedSeq == 0 {
+		return ""
+	}
+	address, err := journal.StageAgentAddress(runID, stage, attempt, agent, startedSeq)
+	if err != nil {
+		return ""
+	}
+	return address.String()
 }

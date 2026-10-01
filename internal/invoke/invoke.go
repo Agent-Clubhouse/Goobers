@@ -61,6 +61,28 @@ type Goober interface {
 	Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error)
 }
 
+// Operator-message delivery modes are selected by the local runner before a
+// durable operator message is journaled.
+const (
+	OperatorMessageModeBetweenTurn          = "between-turn"
+	OperatorMessageModeInterruptAndContinue = "interrupt-and-continue"
+	OperatorMessageModeNextAttempt          = "next-attempt"
+)
+
+// OperatorMessageDeliveryRequest is the live adapter handoff for a durable
+// operator message.
+type OperatorMessageDeliveryRequest struct {
+	Message       apiv1.OperatorMessageRequest
+	TargetAddress string
+}
+
+// OperatorMessageTarget is implemented by live agentic runtimes that can
+// accept operator messages without using stdin or other unrecorded channels.
+type OperatorMessageTarget interface {
+	OperatorMessageDeliveryModes() []string
+	DeliverOperatorMessage(context.Context, OperatorMessageDeliveryRequest) error
+}
+
 // Deterministic executes a deterministic (code-driven) task — a separate seam so
 // the engine never embeds a process/exec implementation.
 type Deterministic interface {

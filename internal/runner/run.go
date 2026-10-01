@@ -5303,10 +5303,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
-		agentInvocation = &gooberInvocation{
-			Goober:                 ag,
-			activateAssetPathGuard: workspace.ActivateAssetPathGuard,
-		}
+		agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, t.Name, attempt, t.Goober)
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err)
 		}

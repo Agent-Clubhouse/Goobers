@@ -26,6 +26,21 @@ type AgentAddress struct {
 	AgentID string
 }
 
+// StageAgentAddress returns the portable address for an agent observed during
+// one stage attempt that began at startedSeq.
+func StageAgentAddress(runID, stage string, attempt int, agentID string, startedSeq uint64) (AgentAddress, error) {
+	address := AgentAddress{
+		RunID:   runID,
+		Stage:   stage,
+		Attempt: attempt,
+		AgentID: encodeJournalAgentToken(agentID, startedSeq),
+	}
+	if err := address.Validate(); err != nil {
+		return AgentAddress{}, err
+	}
+	return address, nil
+}
+
 // Validate rejects malformed or incomplete addresses before resolution.
 func (a AgentAddress) Validate() error {
 	if !apiv1.ValidRunID(a.RunID) {
@@ -50,6 +65,16 @@ func (a AgentAddress) String() string {
 		url.PathEscape(a.Stage) + "/" +
 		strconv.Itoa(a.Attempt) + "/" +
 		url.PathEscape(a.AgentID)
+}
+
+// StageStartedSeq returns the stage-start sequence embedded in the address
+// token.
+func (a AgentAddress) StageStartedSeq() (uint64, error) {
+	token, err := parseJournalAgentToken(a.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	return token.startedSeq, nil
 }
 
 // ParseAgentAddress decodes the portable run/stage/attempt/agent identifier.

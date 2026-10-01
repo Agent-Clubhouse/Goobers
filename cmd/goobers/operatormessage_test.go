@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/converter"
 
@@ -20,7 +21,9 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 type operatorMessageCommitSink struct {
@@ -339,6 +342,132 @@ func TestOperatorMessageSubmissionDoesNotMutateInvocationAuthority(t *testing.T)
 	}
 }
 
+func TestDaemonOperatorMessageDeliversLiveBetweenTurnToSelectedAgentOnly(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	addressA := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-a", 2)
+	addressB := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-b", 2)
+	targetA := registerOperatorMessageTarget(t, addressA, []string{invoke.OperatorMessageModeBetweenTurn}, nil)
+	targetB := registerOperatorMessageTarget(t, addressB, []string{invoke.OperatorMessageModeBetweenTurn}, nil)
+	service := newDaemonRunJournalService(layout, nil)
+
+	request := operatorMessageRequest("target-run", "key-live",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	request.TargetAddress = addressA
+	record, err := service.SubmitOperatorMessage(context.Background(), request)
+	if err != nil {
+		t.Fatalf("submit live message: %v", err)
+	}
+	if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeBetweenTurn ||
+		record.Record.Outcome == nil || record.Record.Outcome.Status != apiv1.OperatorMessageDelivered {
+		t.Fatalf("live delivery record = %+v", record)
+	}
+	if len(targetA.deliveries) != 1 || targetA.deliveries[0].TargetAddress != addressA ||
+		targetA.deliveries[0].Message.Content.Text != "please review" {
+		t.Fatalf("target A deliveries = %+v", targetA.deliveries)
+	}
+	if len(targetB.deliveries) != 0 {
+		t.Fatalf("sibling target received delivery: %+v", targetB.deliveries)
+	}
+}
+
+func TestDaemonOperatorMessageDeliversNestedSelectionThroughStageTarget(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	startedSeq := seedOperatorMessageLiveAgent(t, layout, crossRunTestGaggle, "target-run", "implement", 1, "worker-child")
+	stageAddress := operatorMessageAgentAddress(t, "target-run", "implement", 1, "coder", startedSeq)
+	nestedAddress := operatorMessageAgentAddress(t, "target-run", "implement", 1, "worker-child", startedSeq)
+	target := registerOperatorMessageTarget(t, stageAddress, []string{invoke.OperatorMessageModeBetweenTurn}, nil)
+	service := newDaemonRunJournalService(layout, nil)
+
+	request := operatorMessageRequest("target-run", "key-nested-live",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	request.TargetAddress = nestedAddress
+	record, err := service.SubmitOperatorMessage(context.Background(), request)
+	if err != nil {
+		t.Fatalf("submit nested live message: %v", err)
+	}
+	if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeBetweenTurn ||
+		record.Record.Outcome == nil || record.Record.Outcome.Status != apiv1.OperatorMessageDelivered {
+		t.Fatalf("nested live delivery record = %+v", record)
+	}
+	if len(target.deliveries) != 1 || target.deliveries[0].TargetAddress != nestedAddress {
+		t.Fatalf("stage target deliveries = %+v", target.deliveries)
+	}
+}
+
+func TestDaemonOperatorMessageRejectsForeignRunAgentAddress(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	service := newDaemonRunJournalService(layout, nil)
+	request := operatorMessageRequest("target-run", "key-foreign-address",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	request.TargetAddress = operatorMessageAgentAddress(t, "other-run", "implement", 1, "agent-a", 2)
+
+	if _, err := service.SubmitOperatorMessage(context.Background(), request); !isInterventionStatus(err, http.StatusBadRequest) {
+		t.Fatalf("foreign target address error = %v, want bad request", err)
+	}
+}
+
+func TestDaemonOperatorMessageRecordsUnsupportedModesWithoutLiveSuccess(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	addressInterrupt := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-interrupt", 2)
+	interruptTarget := registerOperatorMessageTarget(t, addressInterrupt, []string{invoke.OperatorMessageModeInterruptAndContinue}, nil)
+	service := newDaemonRunJournalService(layout, nil)
+
+	request := operatorMessageRequest("target-run", "key-interrupt",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	request.TargetAddress = addressInterrupt
+	record, err := service.SubmitOperatorMessage(context.Background(), request)
+	if err != nil {
+		t.Fatalf("submit interrupt-mode message: %v", err)
+	}
+	if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeInterruptAndContinue ||
+		record.Record.Outcome != nil || len(interruptTarget.deliveries) != 0 {
+		t.Fatalf("interrupt fallback record = %+v deliveries = %+v", record, interruptTarget.deliveries)
+	}
+
+	request = operatorMessageRequest("target-run", "key-next",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	request.TargetAddress = operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-missing", 2)
+	record, err = service.SubmitOperatorMessage(context.Background(), request)
+	if err != nil {
+		t.Fatalf("submit next-attempt message: %v", err)
+	}
+	if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeNextAttempt ||
+		record.Record.Outcome != nil {
+		t.Fatalf("next-attempt record = %+v", record)
+	}
+}
+
+func TestDaemonOperatorMessageLiveDeliveryCancellationIsTypedAndIdempotent(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	address := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-a", 2)
+	target := registerOperatorMessageTarget(t, address, []string{invoke.OperatorMessageModeBetweenTurn}, context.Canceled)
+	service := newDaemonRunJournalService(layout, nil)
+
+	request := operatorMessageRequest("target-run", "key-cancel",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	request.TargetAddress = address
+	record, err := service.SubmitOperatorMessage(context.Background(), request)
+	if err != nil {
+		t.Fatalf("submit canceled message: %v", err)
+	}
+	if record.Record.Outcome == nil || record.Record.Outcome.Status != apiv1.OperatorMessageFailed ||
+		record.Record.Outcome.Code != "delivery_canceled" {
+		t.Fatalf("canceled delivery record = %+v", record)
+	}
+	record, err = service.SubmitOperatorMessage(context.Background(), request)
+	if err != nil {
+		t.Fatalf("retry canceled message: %v", err)
+	}
+	if record.Accepted || len(target.deliveries) != 1 {
+		t.Fatalf("duplicate retry accepted=%v deliveries=%d", record.Accepted, len(target.deliveries))
+	}
+}
+
 type invocationAuthoritySnapshot struct {
 	envelope             apiv1.InvocationEnvelope
 	Capabilities         []string
@@ -413,4 +542,60 @@ func seedOperatorMessageRun(t *testing.T, layout instance.Layout, gaggle, runID 
 	if err := run.Close(); err != nil {
 		t.Fatalf("close run %s: %v", runID, err)
 	}
+}
+
+func seedOperatorMessageLiveAgent(t *testing.T, layout instance.Layout, gaggle, runID, stage string, attempt int, agentID string) uint64 {
+	t.Helper()
+	run, _, err := journal.Recover(filepath.Join(layout.ForGaggle(gaggle).RunsDir(), runID))
+	if err != nil {
+		t.Fatalf("recover run %s: %v", runID, err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: stage, Attempt: attempt}); err != nil {
+		t.Fatalf("append stage start: %v", err)
+	}
+	startedSeq := run.Seq()
+	now := time.Now().UTC()
+	if err := run.Append(journal.Event{
+		Type: journal.EventAgentLifecycle, Stage: stage, Attempt: attempt,
+		Agent: &journal.AgentProvenance{
+			Schema: "goobers.dev/journal/agent/v1", ID: agentID, RunID: runID, Stage: stage, Attempt: attempt,
+			Lifecycle: journal.AgentWaiting, StartedAt: now, UpdatedAt: now, Fidelity: journal.AgentFidelityFull,
+		},
+	}); err != nil {
+		t.Fatalf("append agent lifecycle: %v", err)
+	}
+	return startedSeq
+}
+
+type fakeOperatorMessageTarget struct {
+	modes      []string
+	err        error
+	deliveries []invoke.OperatorMessageDeliveryRequest
+}
+
+func (f *fakeOperatorMessageTarget) OperatorMessageDeliveryModes() []string {
+	return append([]string(nil), f.modes...)
+}
+
+func (f *fakeOperatorMessageTarget) DeliverOperatorMessage(_ context.Context, req invoke.OperatorMessageDeliveryRequest) error {
+	f.deliveries = append(f.deliveries, req)
+	return f.err
+}
+
+func registerOperatorMessageTarget(t *testing.T, address string, modes []string, err error) *fakeOperatorMessageTarget {
+	t.Helper()
+	target := &fakeOperatorMessageTarget{modes: modes, err: err}
+	unregister := runner.DefaultOperatorMessageDeliveryRegistry.Register(address, target)
+	t.Cleanup(unregister)
+	return target
+}
+
+func operatorMessageAgentAddress(t *testing.T, runID, stage string, attempt int, agent string, startedSeq uint64) string {
+	t.Helper()
+	address, err := journal.StageAgentAddress(runID, stage, attempt, agent, startedSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return address.String()
 }
