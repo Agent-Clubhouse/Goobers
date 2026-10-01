@@ -98,8 +98,8 @@ func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := providers.PullRequestReviewThreads{InlineComments: tc.comments}
-			if got := reviewThreadHasReply(snapshot, "run-1", "T1"); got != tc.want {
-				t.Fatalf("reviewThreadHasReply = %v, want %v", got, tc.want)
+			if _, got := reviewThreadReplyID(snapshot, "run-1", "T1"); got != tc.want {
+				t.Fatalf("reviewThreadReplyID found = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -71,6 +71,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"remediationcheckpoint.go":  {command: "remediation-checkpoint"},
 	"reportprstatus.go":         {command: "report-pr-status"},
 	"resolvereviewthreads.go":   {command: "resolve-review-threads"},
+	"reviewthreadreceipt.go":    {command: "resolve-review-threads"},
 	"respondtofindings.go":      {command: "respond-to-findings"},
 	"securityalerts.go":         {command: "security-alerts-query"},
 	"selectsource.go":           {command: "select-source"},

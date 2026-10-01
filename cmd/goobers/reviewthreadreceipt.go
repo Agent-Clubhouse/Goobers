@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -223,18 +222,6 @@ func reconcileResolution(entry *apiv1.ReviewThreadReceipt, before apiv1.ReviewTh
 			Detail: "reopened after this run resolved it"}, false
 	}
 	return feedbackStaleReason{}, true
-}
-
-// reviewThreadReplyID returns the provider id of this run's reply on
-// threadID, matched by its response marker.
-func reviewThreadReplyID(listing providers.PullRequestReviewThreads, runID, threadID string) (string, bool) {
-	marker := reviewThreadResponseMarker(runID, threadID)
-	for _, comment := range listing.InlineComments {
-		if comment.ThreadID == threadID && bodyHasMarkerLine(comment.Body, marker) {
-			return strconv.FormatInt(comment.ID, 10), true
-		}
-	}
-	return "", false
 }
 
 // verifyReceiptComplete checks every intended mutation against the final

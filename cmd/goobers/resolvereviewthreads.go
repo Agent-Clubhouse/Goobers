@@ -558,18 +558,19 @@ func renderReviewThreadReply(runID, headSHA string, response reviewThreadDisposi
 	}
 }
 
-// reviewThreadHasReply reports whether threadID already carries this run's
-// reply. It matches the response marker on a line of its own rather than the
-// whole body: providers append run attribution to the text they post, so the
-// body read back does not equal the body the stage rendered.
-func reviewThreadHasReply(snapshot providers.PullRequestReviewThreads, runID, threadID string) bool {
+// reviewThreadReplyID returns the provider id of this run's reply on
+// threadID, if the thread already carries one. It matches the response
+// marker on a line of its own rather than the whole body: providers append
+// run attribution to the text they post, so the body read back does not
+// equal the body the stage rendered.
+func reviewThreadReplyID(snapshot providers.PullRequestReviewThreads, runID, threadID string) (string, bool) {
 	marker := reviewThreadResponseMarker(runID, threadID)
 	for _, comment := range snapshot.InlineComments {
 		if comment.ThreadID == threadID && bodyHasMarkerLine(comment.Body, marker) {
-			return true
+			return strconv.FormatInt(comment.ID, 10), true
 		}
 	}
-	return false
+	return "", false
 }
 
 func bodyHasMarkerLine(body, marker string) bool {
