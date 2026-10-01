@@ -41,8 +41,8 @@ func TestDistroDependencyJobsUseUbuntuSources(t *testing.T) {
 			settings = append(settings, line)
 		}
 	}
-	want := "Dir::Etc::sourcelist \"/etc/apt/sources.list.d/ubuntu.sources\";\nDir::Etc::sourceparts \"-\";"
+	want := "Dir::Etc::sourcelist \"/etc/apt/sources.list.d/ubuntu.sources\";\nDir::Etc::sourceparts \"-\";\nDPkg::Lock::Timeout \"120\";"
 	if strings.Join(settings, "\n") != want {
-		t.Fatalf("apt config must only select sources, without weakening authentication: %q", settings)
+		t.Fatalf("apt config must only select sources and wait for the dpkg lock, without weakening authentication: %q", settings)
 	}
 }
