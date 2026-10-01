@@ -52,6 +52,8 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "journal redact", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "claims list", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "claims release", apicontract.ActionMaintenance)
+	assertActionClass(t, cliSurfaceActions(), "harness auth copilot status", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "harness auth copilot login", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "status", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "escalations", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "escalations show", apicontract.ActionReadOnlyNavigation)

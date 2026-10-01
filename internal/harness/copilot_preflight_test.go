@@ -116,6 +116,23 @@ func TestPreflightProbeErrorReportsTimeoutBeforeExitCode(t *testing.T) {
 	}
 }
 
+func TestCopilotAuthProbeErrorCarriesStableAuthRequiredCode(t *testing.T) {
+	err := copilotAuthProbeError(context.Background(), "sign-in check", ProcessResult{ExitCode: 1, Transcript: []byte("not signed in")}, nil, false)
+	if !IsHarnessAuthRequired(err) {
+		t.Fatalf("err = %v, want HARNESS_AUTH_REQUIRED", err)
+	}
+	if !strings.Contains(err.Error(), HarnessAuthRequiredCode) || !strings.Contains(err.Error(), "goobers harness auth copilot login") {
+		t.Fatalf("auth-required error is not actionable: %v", err)
+	}
+}
+
+func TestCopilotAuthProbeErrorLeavesNonAuthFailuresUntyped(t *testing.T) {
+	err := copilotAuthProbeError(context.Background(), "sign-in check", ProcessResult{ExitCode: 1, Transcript: []byte("unknown flag: --available-tools")}, nil, false)
+	if IsHarnessAuthRequired(err) {
+		t.Fatalf("err = %v, want non-auth preflight failure to remain untyped", err)
+	}
+}
+
 func TestCopilotPreflightPreservesInterruptedAuthProbeBeforeExitCode(t *testing.T) {
 	program, err := os.Executable()
 	if err != nil {

@@ -343,7 +343,8 @@ _goobers_completion()
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
-                candidates=("${(@f)$(command goobers __complete examples 2>/dev/null)}")
+                candidates=()
+                candidates+=("${(@f)$(command goobers __complete examples 2>/dev/null)}")
                 _describe -V 'command' candidates
                 return
             fi
@@ -369,6 +370,21 @@ _goobers_completion()
                 return
             fi
             ;;
+        harness)
+            if (( CURRENT == 3 )); then
+                candidates=(auth)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "auth" ]] && (( CURRENT == 4 )); then
+                candidates=(copilot)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "auth" ]] && [[ "${words[4]:-}" == "copilot" ]] && (( CURRENT == 5 )); then
+                candidates=(status login logout)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         agent-kit)
             if (( CURRENT == 3 )); then
                 candidates=(install check update)
@@ -386,6 +402,10 @@ _goobers_completion()
         config)
             if (( CURRENT == 3 )); then
                 candidates=(templates diff materialize show)
+                _describe -V 'command' candidates
+                return
+            elif [[ "${words[3]:-}" == "templates" ]] && (( CURRENT == 4 )); then
+                candidates=(import update backprop check status)
                 _describe -V 'command' candidates
                 return
             fi
@@ -418,7 +438,8 @@ _goobers_completion()
                 _describe -V 'workflow' candidates
                 return
             elif [[ "${words[3]:-}" == "abort" ]] && (( CURRENT == 4 )); then
-                candidates=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
+                candidates=()
+                candidates+=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
                 _describe -V 'run id' candidates
                 return
             fi
@@ -429,7 +450,8 @@ _goobers_completion()
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
-                candidates=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
+                candidates=()
+                candidates+=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
                 _describe -V 'workflow' candidates
                 return
             fi
@@ -483,11 +505,13 @@ _goobers_completion()
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
-                candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
+                candidates=()
+                candidates+=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
                 _describe -V 'escalated run id' candidates
                 return
             elif [[ "${words[3]:-}" == "resolve" ]] && (( CURRENT == 4 )); then
-                candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
+                candidates=()
+                candidates+=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
                 _describe -V 'escalated run id' candidates
                 return
             fi

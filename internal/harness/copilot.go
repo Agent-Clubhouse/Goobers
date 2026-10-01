@@ -756,8 +756,39 @@ func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResu
 	case launcherProbe && copilotLauncherAuthProbeLooksTransient(ctx, result, runErr):
 		return preflightProbeError(probe, result, runErr, "a forwarding launcher failed before completing its lightweight authentication check; inspect the launcher/session bootstrap diagnostics")
 	default:
-		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+		err := preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+		if !copilotAuthProbeLooksLikeCredentialFailure(result.Transcript) {
+			return err
+		}
+		return &AuthRequiredError{Remediation: "goobers harness auth copilot login", Err: err}
 	}
+}
+
+// AuthStatus reports Copilot authentication using the same configured command,
+// environment filtering, launcher contract, and credential precedence as an
+// agentic startup preflight.
+func (c *CopilotAdapter) AuthStatus(ctx context.Context) (AuthInfo, error) {
+	info := AuthInfo{
+		Status:      AuthStatusUnknown,
+		Executable:  strings.Join(resolveHarnessCommand(c.Command), " "),
+		Runner:      "local",
+		Remediation: "goobers harness auth copilot login",
+	}
+	if home, ok := copilotConfigHome(baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)); ok {
+		info.ProfileDir = home
+	}
+	preflight, err := c.Preflight(ctx)
+	if err == nil {
+		info.Status = AuthStatusAuthenticated
+		info.Version = preflight.Version
+		info.Remediation = ""
+		return info, nil
+	}
+	if IsHarnessAuthRequired(err) {
+		info.Status = AuthStatusSignedOut
+		return info, nil
+	}
+	return info, err
 }
 
 func verifyCopilotSessionTranscript(path string) error {

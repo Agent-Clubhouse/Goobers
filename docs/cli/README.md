@@ -87,6 +87,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers gaggle`](#goobers-gaggle) | export or import sanitized portable gaggle bundles |
 | [`goobers gaggle export`](#goobers-gaggle-export) | export a sanitized portable gaggle bundle |
 | [`goobers gaggle import`](#goobers-gaggle-import) | atomically create a gaggle from a validated bundle |
+| [`goobers harness`](#goobers-harness) | inspect or manage harness lifecycle operations |
+| [`goobers harness auth`](#goobers-harness-auth) | inspect or manage harness authentication |
+| [`goobers harness auth copilot`](#goobers-harness-auth-copilot) | inspect or manage Copilot harness authentication |
+| [`goobers harness auth copilot login`](#goobers-harness-auth-copilot-login) | delegate to the native Copilot login flow |
+| [`goobers harness auth copilot logout`](#goobers-harness-auth-copilot-logout) | report whether native Copilot logout is supported |
+| [`goobers harness auth copilot status`](#goobers-harness-auth-copilot-status) | report Copilot harness authentication without exposing credentials |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
@@ -2318,6 +2324,139 @@ error, 2 = usage/IO error.
 
 ~~~console
 $ goobers gather-sibling-context
+~~~
+
+## `goobers harness`
+
+inspect or manage harness lifecycle operations
+
+~~~text
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers harness auth copilot status
+$ goobers harness auth copilot login
+~~~
+
+## `goobers harness auth`
+
+inspect or manage harness authentication
+
+~~~text
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+~~~
+
+## `goobers harness auth copilot`
+
+inspect or manage Copilot harness authentication
+
+~~~text
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+~~~
+
+## `goobers harness auth copilot login`
+
+delegate to the native Copilot login flow
+
+~~~text
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers harness auth copilot login
+~~~
+
+## `goobers harness auth copilot logout`
+
+report whether native Copilot logout is supported
+
+~~~text
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers harness auth copilot logout
+~~~
+
+## `goobers harness auth copilot status`
+
+report Copilot harness authentication without exposing credentials
+
+~~~text
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers harness auth copilot status
 ~~~
 
 ## `goobers help`

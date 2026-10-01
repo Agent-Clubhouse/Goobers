@@ -136,6 +136,33 @@ func diagnosticsCLICommand() cliCommand {
 		withExamples("goobers diagnostics bundle ./my-instance", "goobers diagnostics triage --run 8f2c --json ./my-instance")
 }
 
+func harnessCLICommand() cliCommand {
+	return groupCommand(
+		"harness",
+		runHarness,
+		groupCommand(
+			"auth",
+			runHarnessAuth,
+			groupCommand(
+				"copilot",
+				runHarnessAuthCopilot,
+				subcommand("harness auth copilot status", "status", apicontract.ActionReadOnlyNavigation, runHarnessAuthCopilotStatus).
+					withHelp("report Copilot harness authentication without exposing credentials", harnessAuthHelp).
+					withExamples("goobers harness auth copilot status"),
+				subcommand("harness auth copilot login", "login", apicontract.ActionMaintenance, runHarnessAuthCopilotLogin).
+					withHelp("delegate to the native Copilot login flow", harnessAuthHelp).
+					withExamples("goobers harness auth copilot login"),
+				subcommand("harness auth copilot logout", "logout", apicontract.ActionMaintenance, runHarnessAuthCopilotLogout).
+					withHelp("report whether native Copilot logout is supported", harnessAuthHelp).
+					withExamples("goobers harness auth copilot logout"),
+			).withHelp("inspect or manage Copilot harness authentication", harnessAuthHelp),
+		).withHelp("inspect or manage harness authentication", harnessAuthHelp),
+	).
+		withSynopsis(synopsisByID["harness"]).
+		withHelp("inspect or manage harness lifecycle operations", harnessAuthHelp).
+		withExamples("goobers harness auth copilot status", "goobers harness auth copilot login")
+}
+
 func init() {
 	cliCommands = []cliCommand{
 		groupCommand("roots", runRoots,
@@ -251,6 +278,7 @@ func init() {
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
 		gaggleCLICommand(),
 		diagnosticsCLICommand(),
+		harnessCLICommand(),
 		groupCommand(
 			"agent-kit",
 			runAgentKit,
