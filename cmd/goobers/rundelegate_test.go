@@ -640,6 +640,7 @@ func TestSweepGivesQueuedTargetedValidationAFreshAttemptBudget(t *testing.T) {
 	if gotDeadline.Before(sweepAt.Add(triggerDelegationTimeout)) {
 		t.Fatalf("validation deadline = %s, want a fresh attempt budget from sweep time %s", gotDeadline, sweepAt)
 	}
+	sched.Wait()
 	if starter.count() != 1 {
 		t.Fatalf("starter calls = %d, want dispatch after fresh validation budget", starter.count())
 	}
