@@ -289,7 +289,12 @@ type Scheduler struct {
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
 	refillLastCheck  map[WorkflowIdentity]time.Time
-	idleBackoffs     map[WorkflowIdentity][]idleBackoffState
+	// backlogQueueSnapshots and refillQueueSnapshots retain the last observed
+	// provider-backed queue sizes for metric reporting between bounded polls.
+	// They are never used for dispatch decisions.
+	backlogQueueSnapshots map[WorkflowIdentity]queueMetricSnapshot
+	refillQueueSnapshots  map[WorkflowIdentity]queueMetricSnapshot
+	idleBackoffs          map[WorkflowIdentity][]idleBackoffState
 	// webhookBackoffs tracks idle-backoff state for webhook-triggered
 	// dispatch (#4262), one state per workflow identity — unlike
 	// idleBackoffs, which is indexed per-schedule, a workflow's
@@ -529,6 +534,8 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		admittedRuns:            make(map[string]runAdmission),
 		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
 		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
+		backlogQueueSnapshots:   make(map[WorkflowIdentity]queueMetricSnapshot),
+		refillQueueSnapshots:    make(map[WorkflowIdentity]queueMetricSnapshot),
 		idleBackoffs:            make(map[WorkflowIdentity][]idleBackoffState),
 		webhookBackoffs:         make(map[WorkflowIdentity]idleBackoffState),
 		pendingScheduleDemand:   make(map[WorkflowIdentity]scheduledDemand),
@@ -940,10 +947,12 @@ type tickCandidate struct {
 	backlogPollDue     bool
 	backlogRemaining   int
 	backlogEnqueuedAt  time.Time
+	backlogObserved    bool
 	refillRemaining    int
 	refillPollDue      bool
 	refillEligible     int
 	refillEnqueuedAt   time.Time
+	refillObserved     bool
 	poolSkips          int
 	dispatchedThisTick bool
 	stopped            bool
@@ -1241,8 +1250,14 @@ const (
 )
 
 type queueMetricAggregate struct {
-	depth  int
-	oldest time.Time
+	depth            int
+	oldest           time.Time
+	missingAgeSource bool
+}
+
+type queueMetricSnapshot struct {
+	depth      int
+	enqueuedAt time.Time
 }
 
 func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tickCandidate, now time.Time) {
@@ -1261,15 +1276,29 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 		}
 		current := byKind[kind]
 		current.depth += depth
-		if depth > 0 && !enqueuedAt.IsZero() && (current.oldest.IsZero() || enqueuedAt.Before(current.oldest)) {
-			current.oldest = enqueuedAt
+		if depth > 0 {
+			if enqueuedAt.IsZero() {
+				current.missingAgeSource = true
+			} else if current.oldest.IsZero() || enqueuedAt.Before(current.oldest) {
+				current.oldest = enqueuedAt
+			}
 		}
 		byKind[kind] = current
 	}
 	for _, candidate := range candidates {
 		add(queueKindSchedule, candidate.scheduleRemaining, candidate.scheduleEnqueuedAt)
-		add(queueKindBacklog, candidate.backlogRemaining, candidate.backlogEnqueuedAt)
-		add(queueKindRefill, candidate.refillRemaining, candidate.refillEnqueuedAt)
+		if candidate.backlogObserved {
+			s.storeQueueSnapshot(queueKindBacklog, entryIdentity(candidate.entry), candidate.backlogRemaining, candidate.backlogEnqueuedAt)
+			add(queueKindBacklog, candidate.backlogRemaining, candidate.backlogEnqueuedAt)
+		} else if snapshot, ok := s.queueSnapshot(queueKindBacklog, entryIdentity(candidate.entry)); ok {
+			add(queueKindBacklog, snapshot.depth, snapshot.enqueuedAt)
+		}
+		if candidate.refillObserved {
+			s.storeQueueSnapshot(queueKindRefill, entryIdentity(candidate.entry), candidate.refillRemaining, candidate.refillEnqueuedAt)
+			add(queueKindRefill, candidate.refillRemaining, candidate.refillEnqueuedAt)
+		} else if snapshot, ok := s.queueSnapshot(queueKindRefill, entryIdentity(candidate.entry)); ok {
+			add(queueKindRefill, snapshot.depth, snapshot.enqueuedAt)
+		}
 	}
 	samples := []telemetry.QueueSaturationSample{
 		queueSample(queueKindSchedule, byKind[queueKindSchedule], now),
@@ -1284,12 +1313,46 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 }
 
 func queueSample(kind string, aggregate queueMetricAggregate, observedAt time.Time) telemetry.QueueSaturationSample {
+	oldest := aggregate.oldest
+	if aggregate.depth > 0 && aggregate.missingAgeSource {
+		oldest = time.Time{}
+	}
 	return telemetry.QueueSaturationSample{
 		QueueKind:        kind,
 		OperatingSystem:  runtime.GOOS,
 		Depth:            aggregate.depth,
-		OldestEnqueuedAt: aggregate.oldest,
+		OldestEnqueuedAt: oldest,
 		ObservedAt:       observedAt,
+	}
+}
+
+func (s *Scheduler) storeQueueSnapshot(kind string, identity WorkflowIdentity, depth int, enqueuedAt time.Time) {
+	if depth < 0 {
+		depth = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := queueMetricSnapshot{depth: depth, enqueuedAt: enqueuedAt}
+	switch kind {
+	case queueKindBacklog:
+		s.backlogQueueSnapshots[identity] = snapshot
+	case queueKindRefill:
+		s.refillQueueSnapshots[identity] = snapshot
+	}
+}
+
+func (s *Scheduler) queueSnapshot(kind string, identity WorkflowIdentity) (queueMetricSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch kind {
+	case queueKindBacklog:
+		snapshot, ok := s.backlogQueueSnapshots[identity]
+		return snapshot, ok
+	case queueKindRefill:
+		snapshot, ok := s.refillQueueSnapshots[identity]
+		return snapshot, ok
+	default:
+		return queueMetricSnapshot{}, false
 	}
 }
 
@@ -1466,6 +1529,7 @@ type demandPoll struct {
 type demandSnapshot struct {
 	ready         int
 	oldestReadyAt time.Time
+	observed      bool
 }
 
 type scheduledDemand struct {
@@ -1920,10 +1984,12 @@ func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot
 	if poll.refill {
 		poll.candidate.refillEligible = ready
 		poll.candidate.refillEnqueuedAt = snapshot.oldestReadyAt
+		poll.candidate.refillObserved = snapshot.observed
 		return
 	}
 	poll.candidate.backlogRemaining = ready
 	poll.candidate.backlogEnqueuedAt = snapshot.oldestReadyAt
+	poll.candidate.backlogObserved = snapshot.observed
 }
 
 func (s *Scheduler) consumePendingScheduleDemand(entry WorkflowEntry) {
@@ -1995,7 +2061,7 @@ func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll de
 	if snapshot.Count < 0 {
 		snapshot.Count = 0
 	}
-	return demandSnapshot{ready: snapshot.Count, oldestReadyAt: snapshot.OldestReadyAt}
+	return demandSnapshot{ready: snapshot.Count, oldestReadyAt: snapshot.OldestReadyAt, observed: true}
 }
 
 func eligibleSnapshot(ctx context.Context, counter BacklogCounter) (BacklogSnapshot, error) {

@@ -262,6 +262,62 @@ func TestTickRecordsQueueSaturationWithoutOldestAgeWhenDemandLacksSource(t *test
 	}
 }
 
+func TestTickRetainsBacklogQueueSnapshotBetweenPolls(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	counter := &fakeBacklogCounter{count: 2}
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "backlog",
+		BacklogCounter: counter,
+		Starter:        starter,
+	}}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("initial backlog depth = %d, want 2", depth)
+	}
+
+	counter.setCount(0)
+	scheduler.Tick(context.Background(), base.Add(time.Second))
+	if polls := counter.polls(); polls != 1 {
+		t.Fatalf("backlog polls = %d, want no repoll inside backlogPollInterval", polls)
+	}
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("retained backlog depth = %d, want last observed depth 2", depth)
+	}
+	scheduler.Wait()
+}
+
+func TestTickOmitsBacklogOldestAgeWhenAnyContributorLacksSource(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:       "known-age",
+			BacklogCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 3, OldestReadyAt: base.Add(-10 * time.Minute)}},
+			Starter:        starter,
+		},
+		{
+			Workflow:       "unknown-age",
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        starter,
+		},
+	}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	scheduler.Wait()
+
+	backlog := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog)
+	if backlog.Depth != 5 {
+		t.Fatalf("mixed-source backlog depth = %d, want 5", backlog.Depth)
+	}
+	if !backlog.OldestEnqueuedAt.IsZero() {
+		t.Fatalf("mixed-source backlog oldest enqueue = %s, want omitted when any non-empty contributor lacks a source", backlog.OldestEnqueuedAt)
+	}
+}
+
 func TestTickRecordsQueueSaturationDrainingQueueDepthToZero(t *testing.T) {
 	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	block := make(chan struct{})
