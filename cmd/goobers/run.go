@@ -708,24 +708,25 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 			pf(stdout, "inspect with: goobers status %s\n", root)
 			return 0
 		}
-		finalResp, err := pollTriggerResponseEvent(ctx, l.SchedulerDir(), requestID, triggerResponseWait(), false)
-		if err != nil {
-			if !strings.Contains(err.Error(), "timed out after") {
+		for {
+			finalResp, err := pollTriggerResponseEvent(ctx, l.SchedulerDir(), requestID, triggerResponseWait(), false)
+			if err != nil {
+				if strings.Contains(err.Error(), "timed out after") && ctx.Err() == nil {
+					continue
+				}
 				pf(stderr, "error: %v\n", err)
 				return 1
 			}
-			pf(stdout, "trigger request %s is still queued; inspect with: goobers status %s\n", requestID, root)
-			return 0
+			if finalResp.Error != "" {
+				pf(stderr, "error: %s\n", finalResp.Error)
+				return 1
+			}
+			if finalResp.State == triggerResponseQueued {
+				continue
+			}
+			resp = finalResp
+			break
 		}
-		if finalResp.Error != "" {
-			pf(stderr, "error: %s\n", finalResp.Error)
-			return 1
-		}
-		if finalResp.State == triggerResponseQueued {
-			pf(stdout, "trigger request %s is still queued; inspect with: goobers status %s\n", requestID, root)
-			return 0
-		}
-		resp = finalResp
 	}
 	runID := resp.RunID
 	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, target.Workflow)

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,6 +181,162 @@ func TestRunDelegatedWaitsForJournalCreation(t *testing.T) {
 	if !strings.Contains(stdout.String(), "phase=completed") {
 		t.Fatalf("stdout = %q, want completed phase", stdout.String())
 	}
+}
+
+func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
+	oldDelegationInterval := delegationPollInterval
+	oldRunInterval := runPollInterval
+	oldTimeout := triggerDelegationTimeout
+	oldGrace := triggerResponseGrace
+	oldNow := delegationNow
+	oldTimeoutHook := triggerResponseTimeoutHook
+	delegationPollInterval = 0
+	runPollInterval = 0
+	triggerDelegationTimeout = 10 * time.Millisecond
+	triggerResponseGrace = 0
+	now := time.Now().UTC()
+	var hookMu sync.Mutex
+	hookRequestID := ""
+	hookEnabled := false
+	finalWaitClockStarted := false
+	delegationNow = func() time.Time {
+		hookMu.Lock()
+		enabled := hookEnabled
+		if enabled && !finalWaitClockStarted {
+			finalWaitClockStarted = true
+			hookMu.Unlock()
+			return now
+		}
+		hookMu.Unlock()
+		if enabled {
+			return now.Add(triggerResponseWait() + time.Millisecond)
+		}
+		return now
+	}
+	t.Cleanup(func() {
+		delegationPollInterval = oldDelegationInterval
+		runPollInterval = oldRunInterval
+		triggerDelegationTimeout = oldTimeout
+		triggerResponseGrace = oldGrace
+		delegationNow = oldNow
+		triggerResponseTimeoutHook = oldTimeoutHook
+	})
+
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	const runID = "delegated-queued-final-failed"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	finalPublished := make(chan error, 1)
+	var finalOnce sync.Once
+	triggerResponseTimeoutHook = func(requestID string) {
+		hookMu.Lock()
+		enabled := hookEnabled && requestID == hookRequestID
+		hookMu.Unlock()
+		if !enabled {
+			return
+		}
+		finalOnce.Do(func() {
+			finalPublished <- writeDelegatedRunResponseWithPhase(l, requestID, runID, "default-implement", journal.PhaseFailed)
+		})
+	}
+
+	var stdout, stderr bytes.Buffer
+	codeDone := make(chan int, 1)
+	go func() {
+		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, &stdout, &stderr)
+	}()
+
+	requestID := waitForDelegatedRequestID(t, ctx, l.SchedulerDir())
+	ackData, err := json.Marshal(triggerResponse{State: triggerResponseQueued})
+	if err != nil {
+		cancel()
+		<-codeDone
+		t.Fatal(err)
+	}
+	if err := journal.WriteFileAtomic(filepath.Join(l.SchedulerDir(), pendingTriggersDir, requestID+ackSuffix), ackData, 0o644); err != nil {
+		cancel()
+		<-codeDone
+		t.Fatal(err)
+	}
+
+	hookMu.Lock()
+	hookRequestID = requestID
+	hookEnabled = true
+	hookMu.Unlock()
+
+	var code int
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		cancel()
+		<-codeDone
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case err := <-finalPublished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if code != 1 {
+		t.Fatalf("code = %d, want failed run exit 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "still queued") {
+		t.Fatalf("stdout = %q, synchronous run returned queued success instead of waiting for final response", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "phase=failed") {
+		t.Fatalf("stdout = %q, want final failed phase", stdout.String())
+	}
+}
+
+func waitForDelegatedRequestID(t *testing.T, ctx context.Context, schedulerDir string) string {
+	t.Helper()
+	requestDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	for {
+		entries, err := os.ReadDir(requestDir)
+		if err == nil {
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), requestSuffix) {
+					return strings.TrimSuffix(entry.Name(), requestSuffix)
+				}
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func writeDelegatedRunResponseWithPhase(l instance.Layout, requestID, runID, workflow string, phase journal.RunPhase) error {
+	run, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID:     runID,
+		Workflow:  workflow,
+		Gaggle:    "example",
+		StartedAt: time.Now(),
+	}, nil)
+	if err == nil && phase != journal.PhaseRunning {
+		err = run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)})
+	}
+	if run != nil {
+		err = errors.Join(err, run.Close())
+	}
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(triggerResponse{RunID: runID})
+	if err != nil {
+		return err
+	}
+	return journal.WriteFileAtomic(filepath.Join(l.SchedulerDir(), pendingTriggersDir, requestID+responseSuffix), data, 0o644)
 }
 
 func respondToDelegatedRequest(ctx context.Context, schedulerDir, runID string) error {

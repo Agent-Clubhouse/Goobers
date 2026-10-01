@@ -363,6 +363,9 @@ func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID strin
 			// either a dispatch or a stale refusal. Say which of the two
 			// remaining explanations it is rather than asking the operator
 			// (#2974).
+			if triggerResponseTimeoutHook != nil {
+				triggerResponseTimeoutHook(requestID)
+			}
 			return triggerResponse{}, fmt.Errorf("delegate: timed out after %s waiting for the `goobers up` daemon to answer the trigger request "+
 				"(request left at %s). %s", timeout,
 				filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix),
@@ -445,6 +448,8 @@ func triggerResponseWait() time.Duration {
 var delegationNow = time.Now
 
 var acceptedTriggerQueueLifetime = func() time.Duration { return 10 * triggerResponseWait() }
+
+var triggerResponseTimeoutHook func(requestID string)
 
 // priorityTriggerTimeout keeps an internally-requested re-tick alive while the
 // source workflow's concurrent runs finish. Unlike an interactive delegation,
