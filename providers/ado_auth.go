@@ -368,7 +368,7 @@ func NewAzureCLIADOCredentialSource(runner CommandRunner, tenant string) ADOCred
 		}
 		out, err := runner.Run(ctx, "az", args...)
 		if err != nil {
-			return adoBearerToken{}, azureCLICommandError(ctx, err)
+			return adoBearerToken{}, azureCLICommandError(ctx, err, out)
 		}
 		return parseAzureCLIAccessToken(out)
 	})
