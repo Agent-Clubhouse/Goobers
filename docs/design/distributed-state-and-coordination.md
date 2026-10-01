@@ -500,6 +500,9 @@ per-stage pods would multiply that blast radius by pod count. v1 inverts it (DS9
   structurally the most exposed — it polls precisely because CI is slow), the injected value is not
   final: the stage re-resolves through the same plane on an auth failure (one re-resolve-and-retry on
   401) and stage `timeoutSeconds` ceases to be silently bounded by token life.
+  *As built (#6120 phase 1):* the stage child never holds the pod token, so the re-resolve is
+  authorized by a separate stage credential-refresh grant the plane mints at stage start, accepted
+  only by `POST /v1/credentials/refresh`; local stages get the same grant from the local runner.
 
 ## 12. Relationship to the blobstore and GC (D6)
 
@@ -561,8 +564,12 @@ Not re-opened decisions — implementation questions the design deliberately lea
   at which renewal load stays negligible.
 - **Outage-window bound**: the v1 number (pod reschedule + volume reattach on the reference
   substrate) is measured during the smoke, not promised in advance.
-- **Mid-stage credential refresh cadence** vs on-401-only re-resolve, pending #3489's confirmation
-  evidence (mint-timestamp check; second occurrence in a long-poll stage).
+- ~~**Mid-stage credential refresh cadence** vs on-401-only re-resolve~~ — **resolved (#6120
+  phase 1): both.** A deterministic stage re-resolves proactively within five minutes of the
+  delivered expiry and once on a 401, through a stage credential-refresh grant (run + stage +
+  attempt + exactly the expiring declared capabilities, TTL = stage timeout + margin) presented to
+  `POST /v1/credentials/refresh`. Local stages use the same route on the loopback API. Agentic
+  stages (harness-held tokens) are phase 2.
 - **File-seam deprecation schedule** for modes 1/2 (`pending-triggers`, `pending-claims`) once the
   loopback API path is proven equivalent.
 - **`runner.*` provenance event schema** details (journal event schema changes are versioned) and the

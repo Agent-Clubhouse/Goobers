@@ -23,7 +23,6 @@ type stageProviderConfig struct {
 	readOnly     bool
 	capability   capability.Capability
 	token        string
-	tokenSource  providers.TokenSource
 	cached       bool
 	mutationKind string
 	// mutationRecorder is an explicitly supplied journal mutation recorder.
@@ -39,6 +38,7 @@ type stageProviderConfig struct {
 	// it; see withStageProviderConfiguredADOAuth.
 	configuredADOAuth bool
 	noRetries         bool
+	tokenSource       providers.TokenSource
 	observeToken      func(string)
 	quota             *localscheduler.ProviderQuotaState
 }
@@ -57,6 +57,9 @@ func withStageProviderToken(token string) stageProviderOption {
 	}
 }
 
+// withStageProviderTokenSource makes the GitHub provider resolve its token per
+// request from source (nil: the static token). For an in-process caller that
+// holds its own refreshing source, such as the pod's ci-poll (Goobers#6120).
 func withStageProviderTokenSource(source providers.TokenSource) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.tokenSource = source
@@ -364,17 +367,11 @@ func stageProviderToken(cfg stageProviderConfig) (string, error) {
 }
 
 func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
-	token := ""
-	var opts []func(*providers.GitHubProvider)
-	if cfg.tokenSource != nil {
-		opts = append(opts, providers.WithTokenSource(cfg.tokenSource))
-	} else {
-		var err error
-		token, err = stageProviderToken(cfg)
-		if err != nil {
-			return nil, err
-		}
+	token, err := stageProviderToken(cfg)
+	if err != nil {
+		return nil, err
 	}
+	var opts []func(*providers.GitHubProvider)
 	// Under GitHub App auth the minted installation token cannot self-report
 	// its login (GET /user is PAT-only), so every trusted-comment check —
 	// claim markers first among them — needs the login declared in config
@@ -385,6 +382,7 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	// refuse, which leaves a provider whose stage never asks for a login
 	// working exactly as before.
 	opts = append(opts, stageProviderConfiguredLogin(cfg.root, cfg.repo).options()...)
+	opts = append(opts, stageGitHubTokenSource(cfg, token)...)
 	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
 		opts = append(opts, providers.WithMutationRecorder(recorder))
 	}
@@ -402,6 +400,25 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 		return newCachedGitHubProvider(cfg.root, token, opts...), nil
 	}
 	return newGitHubProvider(token, opts...), nil
+}
+
+// stageGitHubTokenSource resolves the GitHub provider's token per request from
+// the stage's refreshing source when it holds a credential-refresh grant for
+// the delivered value (Goobers#6120): refreshed ahead of its stated expiry,
+// and re-resolved once after a 401. An explicit caller token, a PAT and a
+// stage without a grant keep the static token.
+func stageGitHubTokenSource(cfg stageProviderConfig, token string) []func(*providers.GitHubProvider) {
+	if cfg.tokenSource != nil {
+		return []func(*providers.GitHubProvider){providers.WithTokenSource(cfg.tokenSource)}
+	}
+	if cfg.token != "" {
+		return nil
+	}
+	refreshing := stageRefreshingToken(cfg.capability, token)
+	if refreshing == nil {
+		return nil
+	}
+	return []func(*providers.GitHubProvider){providers.WithTokenSource(refreshing)}
 }
 
 // newRegisteredADOProviderForStage builds a stage's Azure DevOps provider from

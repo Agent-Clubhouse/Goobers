@@ -103,6 +103,12 @@ func stageADOCredentialSource(cap capability.Capability, token string) (provider
 	if err != nil {
 		return nil, err
 	}
+	if refreshing := stageRefreshingToken(cap, token); refreshing != nil {
+		// The stage holds a credential-refresh grant (Goobers#6120): the
+		// provider's 401 path re-resolves this value once, and it is
+		// refreshed ahead of its stated expiry.
+		return providers.NewADORefreshingDeliveredCredentialSource(kind, string(cap), refreshing)
+	}
 	expiresAt, _ := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
 	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
 }

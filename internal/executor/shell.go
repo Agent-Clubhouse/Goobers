@@ -282,6 +282,11 @@ type ShellExecutor struct {
 	// to a stage pod. Empty for every other provider, and by default, which
 	// stamps nothing.
 	RepoAuthScheme string
+	// CredentialGrants mints the stage credential-refresh grant a
+	// goobers-CLI stage with an expiring credential receives (Goobers#6120,
+	// appendCredentialGrant). Nil — every caller but the daemon's own local
+	// runner — delivers no grant, which is the pre-grant behavior.
+	CredentialGrants StageCredentialGrants
 }
 
 type builtinErrorReport struct {
@@ -822,10 +827,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	//
-	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
-	// WRAPS the goobers CLI in another process (command[0] names the
-	// wrapper, not "goobers") but still needs the same context its nested
-	// invocation does — declared per-stage rather than guessed from argv[0].
+	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that WRAPS the goobers CLI
+	// (command[0] names the wrapper) but needs the same context its nested invocation does.
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
@@ -840,6 +843,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
 	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
+	stageEnv, revokeGrant := e.appendCredentialGrant(stageEnv, env, injectRunContext, resolvedTimeout.Duration, registry)
+	defer revokeGrant()
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}
