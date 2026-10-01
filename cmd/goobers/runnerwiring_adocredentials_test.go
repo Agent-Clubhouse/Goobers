@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -272,6 +274,69 @@ func TestADORepositoryTokenSourceRetriesAFailedConstruction(t *testing.T) {
 	}
 	if builds != 2 {
 		t.Fatalf("source built %d times, want a retry after the failure and reuse after success", builds)
+	}
+}
+
+// adoTestFailingAzureRunner answers `az account get-access-token` the way a
+// failed CLI does: combined output plus a nonzero exit.
+type adoTestFailingAzureRunner struct{ out string }
+
+func (r adoTestFailingAzureRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	return []byte(r.out), &exec.ExitError{}
+}
+
+// TestADORepositoryTokenSourceCarriesAzureCLIFailureClassification pins the
+// stage-env credential path: an expired az login and an offline host each
+// reach the token-ref error and its journal cause chain as a fixed
+// classification and code, never as Azure CLI output.
+func TestADORepositoryTokenSourceCarriesAzureCLIFailureClassification(t *testing.T) {
+	const canary = "az-output-canary-0123456789"
+	for _, tc := range []struct {
+		name, out, detail, code string
+	}{
+		{
+			name:   "expired login",
+			out:    "ERROR: AADSTS700082: The refresh token has expired due to inactivity. Trace ID: " + canary,
+			detail: `credentials: token ref "ado-repo": azure CLI get-access-token: Azure CLI sign-in expired or requires interaction`,
+			code:   "azure_cli_sign_in_required",
+		},
+		{
+			name:   "offline host",
+			out:    "HTTPSConnectionPool(host='" + canary + "'): Max retries exceeded (Failed to establish a new connection: [Errno 8] nodename nor servname provided)",
+			detail: `credentials: token ref "ado-repo": azure CLI get-access-token: Azure CLI could not reach the network`,
+			code:   "azure_cli_network_unreachable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubADOCredentialSource(t, func(repo instance.RepoRef, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+				return adoauth.Source(repo, adoTestFailingAzureRunner{out: tc.out}, stores)
+			})
+			mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI}, instance.TokenRef{}), nil, nil)
+			if err != nil {
+				t.Fatalf("newADORepositoryTokenSource: %v", err)
+			}
+			resolver, err := credentials.NewResolverWithExpiring(nil, nil, nil, map[string]credentials.ExpiringResolveFunc{"ado-repo": mint})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolver.Resolve(context.Background(), "ado-repo")
+			if err == nil || !strings.HasPrefix(err.Error(), tc.detail) {
+				t.Fatalf("error = %v, want prefix %q", err, tc.detail)
+			}
+			detail := journal.ErrorDetailFor("credential_resolve_failed", err)
+			encoded, marshalErr := json.Marshal(detail)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if !strings.Contains(string(encoded), `"code":"`+tc.code+`"`) {
+				t.Fatalf("journal error detail lacks cause code %q: %s", tc.code, encoded)
+			}
+			for _, leak := range []string{canary, "AADSTS", "Errno", "HTTPSConnectionPool", "Max retries"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("journal error detail echoed Azure CLI output %q: %s", leak, encoded)
+				}
+			}
+		})
 	}
 }
 
