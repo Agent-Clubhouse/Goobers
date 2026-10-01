@@ -63,3 +63,35 @@ func TestCapDescriptionWithFooterDoesNotSplitRunes(t *testing.T) {
 		t.Fatalf("result length %d exceeds cap %d", n, adoMaxPRDescriptionChars)
 	}
 }
+
+// A long body is trimmed from the end, which is where the closing reference
+// lives. Post-merge reads that reference to transition the work item, so it
+// must survive the cap (an ADO PR otherwise merged without closing its item).
+func TestCapDescriptionWithFooterKeepsClosingReferences(t *testing.T) {
+	body := "## Summary\n\nImplements #1561.\n\n" + strings.Repeat("local-ci case output line\n", 400) +
+		"\nFixes #1561\nCloses https://example.test/org/project/_workitems/edit/77\n"
+	got := capDescriptionWithFooter(body, "run-7", adoMaxPRDescriptionChars)
+	if n := utf8.RuneCountInString(got); n > adoMaxPRDescriptionChars {
+		t.Fatalf("result length %d exceeds cap %d", n, adoMaxPRDescriptionChars)
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Fatalf("expected the body to be truncated:\n%s", got)
+	}
+	for _, ref := range []string{"Fixes #1561", "Closes https://example.test/org/project/_workitems/edit/77"} {
+		if strings.Count(got, ref) != 1 {
+			t.Fatalf("closing reference %q appears %d times, want 1:\n%s", ref, strings.Count(got, ref), got)
+		}
+	}
+	if !strings.HasSuffix(got, runFooter("run-7")) {
+		t.Fatalf("footer must remain at the very end:\n%s", got)
+	}
+}
+
+// A closing reference that survives trimming is not repeated after the marker.
+func TestCapDescriptionWithFooterDoesNotRepeatKeptClosingReference(t *testing.T) {
+	body := "Fixes #9\n\n" + strings.Repeat("filler line of output\n", 400)
+	got := capDescriptionWithFooter(body, "run-8", adoMaxPRDescriptionChars)
+	if c := strings.Count(got, "Fixes #9"); c != 1 {
+		t.Fatalf("closing reference appears %d times, want 1:\n%s", c, got)
+	}
+}
