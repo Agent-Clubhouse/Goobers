@@ -217,6 +217,18 @@ func (p *GitHubProvider) resolveToken(ctx context.Context) (string, error) {
 	return p.Token, nil
 }
 
+// RefreshCIPollCredential lets ci-poll distinguish a refreshable credential
+// source from a static token when a long poll receives 401. The next request
+// resolves through the source again; a static-token provider reports that no
+// refresh path exists so the caller preserves the terminal auth failure.
+func (p *GitHubProvider) RefreshCIPollCredential(ctx context.Context) (bool, error) {
+	if p.tokenSource == nil {
+		return false, nil
+	}
+	_, err := p.tokenSource.Token(ctx)
+	return err == nil, err
+}
+
 func (p *GitHubProvider) recordExternalRef(ctx context.Context, ref ExternalRef) {
 	if p.recorder != nil {
 		p.recorder.RecordExternalRef(ctx, ref)

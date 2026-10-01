@@ -14,7 +14,7 @@ _goobers_completion()
         commands=(
             'version:print build version, commit, and date (--json for structured output)'
             'init:scaffold an instance root'
-            'connect:connect an instance to your own GitHub repository'
+            'connect:connect an instance to your own GitHub or Azure DevOps repository'
             'examples:browse canonical workflow examples embedded in the binary'
             'scaffold:scaffold a goober, workflow, or gaggle'
             'validate:validate an instance or checked-in config source tree'

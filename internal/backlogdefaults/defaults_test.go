@@ -179,6 +179,32 @@ func TestApplyLeavesDeclaredInputsAlone(t *testing.T) {
 	}
 }
 
+func TestApplyBacklogScopeConjoinsDeclaredSelectors(t *testing.T) {
+	declared := map[string]string{
+		"requireLabels":  "goobers:ready",
+		"labelPredicate": `"size:s" in labels`,
+	}
+	got := ApplyBacklogScope(backlogQueryTask, declared, "area:web,goobers:ready", `"team:web" in labels`)
+	want := map[string]string{
+		"requireLabels":  "area:web,goobers:ready",
+		"labelPredicate": `("team:web" in labels) && ("size:s" in labels)`,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inputs = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(declared, map[string]string{"requireLabels": "goobers:ready", "labelPredicate": `"size:s" in labels`}) {
+		t.Fatalf("declared task inputs were mutated: %#v", declared)
+	}
+}
+
+func TestApplyBacklogScopeNarrowsExplicitRequireLabels(t *testing.T) {
+	got := ApplyBacklogScope(backlogQueryTask, map[string]string{"requireLabels": "goobers:ready"}, "area:web", "")
+	want := map[string]string{"requireLabels": "area:web,goobers:ready"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inputs = %#v, want %#v", got, want)
+	}
+}
+
 // TestApplyIsANoOpWithoutDefaults pins the zero-configuration invariance every
 // type-1/type-2 instance depends on: no gaggle defaults means the SAME map
 // back, not a copy of it, byte for byte as before this package existed.

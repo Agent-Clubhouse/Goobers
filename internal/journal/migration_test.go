@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -646,6 +647,9 @@ func TestRecoverRevalidatesSchemaAfterWriterLock(t *testing.T) {
 }
 
 func TestJournalProtectionMigratesBeforeTakingWriterLock(t *testing.T) {
+	restoreLockTimeout := SetLockTimeoutForTest(500*time.Millisecond, 10*time.Millisecond)
+	defer restoreLockTimeout()
+
 	for _, test := range []struct {
 		name string
 		run  func(string) error
@@ -669,18 +673,62 @@ func TestJournalProtectionMigratesBeforeTakingWriterLock(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := copyLegacyJournalFixture(t)
-			done := make(chan error, 1)
-			go func() { done <- test.run(dir) }()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatal(err)
+			if err := runLegacyJournalLockOrderProbe(t, dir, test.run); err != nil {
+				if errors.Is(err, ErrLockTimeout) {
+					t.Fatalf("operation took the writer lock before migrating the legacy journal: %v", err)
 				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("operation deadlocked while migrating a legacy journal")
+				t.Fatal(err)
+			}
+			info, exists, err := readSchemaInfo(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !exists || info.Version != CurrentSchemaVersion {
+				t.Fatalf("schema after operation = %+v, exists=%t, want current schema %d", info, exists, CurrentSchemaVersion)
 			}
 		})
 	}
+}
+
+func runLegacyJournalLockOrderProbe(t *testing.T, dir string, run func(string) error) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- run(dir) }()
+
+	const watchdog = 3 * time.Minute
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(watchdog):
+		t.Fatalf("operation exceeded %s while migrating a legacy journal; lock-order regressions should fail earlier via ErrLockTimeout\n%s", watchdog, legacyJournalLockDiagnostics(dir))
+		return nil
+	}
+}
+
+func legacyJournalLockDiagnostics(dir string) string {
+	var b strings.Builder
+	b.WriteString("journal path: ")
+	b.WriteString(dir)
+	for _, name := range []string{fileSchema, fileSchemaLock, fileLock, filePruning} {
+		path := filepath.Join(dir, name)
+		_, err := os.Stat(path)
+		b.WriteString("\n")
+		b.WriteString(name)
+		b.WriteString(": ")
+		switch {
+		case err == nil:
+			b.WriteString("present")
+		case errors.Is(err, os.ErrNotExist):
+			b.WriteString("missing")
+		default:
+			b.WriteString(err.Error())
+		}
+	}
+	stack := make([]byte, 1<<20)
+	n := runtime.Stack(stack, true)
+	b.WriteString("\ngoroutines:\n")
+	b.Write(stack[:n])
+	return b.String()
 }
 
 func TestReserveTerminalForPruneRejectsFutureSchemaWithoutMutation(t *testing.T) {

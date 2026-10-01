@@ -279,9 +279,10 @@ func TestGitHubRunListerReadsScheduledRuns(t *testing.T) {
 			t.Error(err)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	lister := newRunLister("token", server.URL, "acme/app")
+	cleanupRunLister(t, lister)
 	runs, err := lister.ScheduledRuns(context.Background(), "stress.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -308,9 +309,10 @@ func TestGitHubRunListerHandlesMissingAndFailingEndpoints(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(status)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	lister := newRunLister("token", server.URL+"/", "acme/app")
+	cleanupRunLister(t, lister)
 	runs, err := lister.ScheduledRuns(context.Background(), "never-ran.yml")
 	if err != nil || runs != nil {
 		t.Fatalf("ScheduledRuns(404) = %v, %v; want no runs and no error", runs, err)
@@ -319,6 +321,15 @@ func TestGitHubRunListerHandlesMissingAndFailingEndpoints(t *testing.T) {
 	if _, err := lister.ScheduledRuns(context.Background(), "stress.yml"); err == nil {
 		t.Fatal("ScheduledRuns() accepted a 500 response")
 	}
+}
+
+func cleanupRunLister(t *testing.T, lister runLister) {
+	t.Helper()
+	closer, ok := lister.(interface{ CloseIdleConnections() })
+	if !ok {
+		return
+	}
+	t.Cleanup(closer.CloseIdleConnections)
 }
 
 func TestRunRequiresCredentialsAndValidArguments(t *testing.T) {

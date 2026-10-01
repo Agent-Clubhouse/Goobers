@@ -152,7 +152,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, "record repository identity", recordErr, "selection.json")
 		}
 
-		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.Body, decompositionDigestLabels(item.Labels), item.State)
+		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.BodyWithAcceptanceCriteria(), decompositionDigestLabels(item.Labels), item.State)
 		if digestErr != nil {
 			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
 				pf(stderr, "error: release claim %s after digest failure: %v\n", item.ID, releaseErr)

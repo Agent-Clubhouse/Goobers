@@ -984,10 +984,14 @@ const telemetryErrorsCTE = `
 // are included in unscoped and time-scoped queries and excluded when a
 // workflow or gaggle filter is present. limit<=0 defaults to 20.
 func (db *DB) TopErrorSignatures(ctx context.Context, req StatsRequest, limit int) ([]ErrorSignature, error) {
+	return db.topErrorSignatures(ctx, req, limit, nil)
+}
+
+func (db *DB) topErrorSignatures(ctx context.Context, req StatsRequest, limit int, excludedCodes []string) ([]ErrorSignature, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	where, args := errorSignaturesWhere(req)
+	where, args := errorSignaturesWhere(req, excludedCodes)
 	query := fmt.Sprintf(telemetryErrorsCTE+`
 		SELECT e.code, e.error_class, COUNT(*) AS cnt, MAX(e.occurred_at) AS last_seen
 		FROM telemetry_errors e
@@ -1023,7 +1027,7 @@ func (db *DB) TopErrorSignatures(ctx context.Context, req StatsRequest, limit in
 
 	// The example row must respect the same scope/window filter as the
 	// aggregate query above.
-	exampleWhere, exampleArgs := errorSignaturesWhere(req)
+	exampleWhere, exampleArgs := errorSignaturesWhere(req, excludedCodes)
 	exampleFilter := "e.code = ? AND COALESCE(e.error_class, '') = ?"
 	if exampleWhere != "" {
 		exampleFilter = strings.TrimPrefix(exampleWhere, "WHERE ") + " AND " + exampleFilter
@@ -1045,11 +1049,19 @@ func (db *DB) TopErrorSignatures(ctx context.Context, req StatsRequest, limit in
 	return sigs, nil
 }
 
-func errorSignaturesWhere(req StatsRequest) (string, []any) {
+func errorSignaturesWhere(req StatsRequest, excludedCodes []string) (string, []any) {
 	clauses, args := statsClauses("e.workflow", "e.gaggle", "e.occurred_at", req)
 	if req.Stage != "" {
 		clauses = append(clauses, "e.stage = ?")
 		args = append(args, req.Stage)
+	}
+	if len(excludedCodes) > 0 {
+		placeholders := make([]string, len(excludedCodes))
+		for i, code := range excludedCodes {
+			placeholders[i] = "?"
+			args = append(args, code)
+		}
+		clauses = append(clauses, "e.code NOT IN ("+strings.Join(placeholders, ",")+")")
 	}
 	return whereClause(clauses), args
 }

@@ -83,8 +83,11 @@ type WorkItem struct {
 	Type       string       `json:"type,omitempty"`
 	Title      string       `json:"title"`
 	Body       string       `json:"body,omitempty"`
-	Labels     []string     `json:"labels,omitempty"`
-	State      string       `json:"state,omitempty"`
+	// AcceptanceCriteria carries Azure Boards' dedicated acceptance criteria
+	// field separately from System.Description so agent inputs can include both.
+	AcceptanceCriteria string   `json:"acceptanceCriteria,omitempty"`
+	Labels             []string `json:"labels,omitempty"`
+	State              string   `json:"state,omitempty"`
 	// StateReason is the provider's own reason a closed item is closed (e.g.
 	// GitHub's "completed" vs. "not_planned"). Empty for a provider with no
 	// such concept or for an item that is not closed — callers that need to
@@ -121,6 +124,20 @@ type WorkItemLabel struct {
 	Description string `json:"description,omitempty"`
 }
 
+// ClaimMetadataDriftError reports that the authoritative provider claim
+// receipt/epoch was written, but the provider's label projection did not
+// converge before the bounded confirmation window ended.
+type ClaimMetadataDriftError struct {
+	Provider ProviderKind
+	ItemID   string
+	RunID    string
+	Label    string
+}
+
+func (e *ClaimMetadataDriftError) Error() string {
+	return fmt.Sprintf("claim metadata drift for %s item %s: run %s claim succeeded but label %q is not visible", e.Provider, e.ItemID, e.RunID, e.Label)
+}
+
 // EnsureWorkItemLabelsResult reports which labels were created or already present.
 type EnsureWorkItemLabelsResult struct {
 	Created []string `json:"created"`
@@ -135,6 +152,86 @@ func (w WorkItem) HasLabel(label string) bool {
 		}
 	}
 	return false
+}
+
+// BodyWithAcceptanceCriteria renders the provider's description plus any
+// separate acceptance criteria as the task text an agent should read.
+func (w WorkItem) BodyWithAcceptanceCriteria() string {
+	return ComposeWorkItemBody(w.Body, w.AcceptanceCriteria)
+}
+
+// ComposeWorkItemBody renders a provider description plus any separate
+// acceptance criteria as the task text an agent should read.
+func ComposeWorkItemBody(description, acceptanceCriteria string) string {
+	body := strings.TrimRight(description, "\n")
+	criteria := strings.TrimSpace(acceptanceCriteria)
+	if criteria == "" {
+		return description
+	}
+	if strings.TrimSpace(body) == "" {
+		return "## Acceptance Criteria\n\n" + criteria
+	}
+	if start, end, ok := acceptanceCriteriaSectionBounds(body); ok {
+		section := strings.TrimSpace(strings.Join(strings.Split(body, "\n")[start+1:end], "\n"))
+		if strings.Contains(section, criteria) {
+			return description
+		}
+		return insertIntoAcceptanceCriteriaSection(body, start, end, criteria)
+	}
+	return body + "\n\n## Acceptance Criteria\n\n" + criteria
+}
+
+func acceptanceCriteriaSectionBounds(body string) (int, int, bool) {
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		level := markdownHeadingLevel(trimmed)
+		if level == 0 {
+			continue
+		}
+		heading := strings.TrimSpace(trimmed[level:])
+		if !strings.EqualFold(heading, "Acceptance Criteria") {
+			continue
+		}
+		end := len(lines)
+		for next := index + 1; next < len(lines); next++ {
+			nextLevel := markdownHeadingLevel(strings.TrimSpace(lines[next]))
+			if nextLevel > 0 && nextLevel <= level {
+				end = next
+				break
+			}
+		}
+		return index, end, true
+	}
+	return 0, 0, false
+}
+
+func markdownHeadingLevel(line string) int {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level == len(line) || line[level] != ' ' {
+		return 0
+	}
+	return level
+}
+
+func insertIntoAcceptanceCriteriaSection(body string, start, end int, criteria string) string {
+	lines := strings.Split(body, "\n")
+	insert := make([]string, 0, 3)
+	if end == start+1 || strings.TrimSpace(lines[end-1]) != "" {
+		insert = append(insert, "")
+	}
+	insert = append(insert, criteria)
+	if end < len(lines) {
+		insert = append(insert, "")
+	}
+	out := make([]string, 0, len(lines)+len(insert))
+	out = append(out, lines[:end]...)
+	out = append(out, insert...)
+	out = append(out, lines[end:]...)
+	return strings.Join(out, "\n")
 }
 
 // AssigneeMatches reports whether this work item's current assignee

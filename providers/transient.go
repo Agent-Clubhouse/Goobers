@@ -51,6 +51,28 @@ func IsAuthenticationError(err error) bool {
 		!hasRateLimitRetryGuidance(message)
 }
 
+// IsUnauthorizedError reports whether err carries an HTTP 401 provider
+// response. It does not imply retryability: most callers should keep treating
+// 401 as a permanent authentication failure, but long-running read pollers can
+// use the signal to re-resolve short-lived credentials within their own
+// bounded retry budget.
+func IsUnauthorizedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var responseErr *providerResponseError
+	if errors.As(err, &responseErr) {
+		return responseErr.statusCode == http.StatusUnauthorized
+	}
+	message := strings.ToLower(err.Error())
+	match := statusCodePattern.FindStringSubmatch(message)
+	if match == nil {
+		return false
+	}
+	code, convErr := strconv.Atoi(match[1])
+	return convErr == nil && code == http.StatusUnauthorized
+}
+
 // IsTransientError reports whether err looks like a transient/retryable
 // provider failure — a network hiccup, a 5xx server error, or an exhausted
 // rate-limit backoff — rather than a persistent one (auth, not-found,
@@ -78,6 +100,10 @@ func IsTransientError(err error) bool {
 	if errors.As(err, &rl) {
 		return true
 	}
+	var claimDrift *ClaimMetadataDriftError
+	if errors.As(err, &claimDrift) {
+		return true
+	}
 	var urlErr *url.Error
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.As(err, &urlErr) && urlErr.Timeout()
@@ -100,6 +126,9 @@ func IsTransientError(err error) bool {
 		}
 	}
 	if strings.Contains(message, "send request:") && strings.HasSuffix(strings.TrimSpace(message), ": eof") {
+		return true
+	}
+	if strings.Contains(message, "claim metadata drift") {
 		return true
 	}
 	for _, fragment := range transientMessageFragments {

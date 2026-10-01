@@ -29,6 +29,44 @@ func TestVanishedThreadOnlyAcceptsInvalidParameter(t *testing.T) {
 	}
 }
 
+func TestIdentityStateDistinguishesPresentAndGone(t *testing.T) {
+	selfStarted, ok := startTime(os.Getpid())
+	if !ok {
+		t.Fatal("current process start time was not readable")
+	}
+	if got := identityStateForPID(os.Getpid(), selfStarted); got != identityStatePresent {
+		t.Fatalf("identityStateForPID(current) = %v, want present", got)
+	}
+	if got := identityStateForPID(os.Getpid(), selfStarted.Add(time.Nanosecond)); got != identityGone {
+		t.Fatalf("identityStateForPID(current with different start) = %v, want gone", got)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=short")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var started time.Time
+	ok = false
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		started, ok = startTime(cmd.Process.Pid)
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if !ok {
+		t.Fatal("helper process start time was not readable")
+	}
+	if got := identityStateForPID(cmd.Process.Pid, started); got != identityGone {
+		t.Fatalf("identityStateForPID(exited) = %v, want gone", got)
+	}
+}
+
 func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
@@ -146,6 +184,43 @@ func TestKillTerminatesJobDescendants(t *testing.T) {
 	}
 }
 
+func TestKillIsIdempotentAfterJobClose(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=marker", "GOOBERS_PROC_HELPER_MARKER="+filepath.Join(t.TempDir(), "started"))
+	tree, err := Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = tree.Kill()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("first Kill: %v", err)
+	}
+	_ = cmd.Wait()
+	if err := tree.Kill(); err != nil {
+		t.Fatalf("second Kill: %v", err)
+	}
+}
+
+func TestIdentifyDescendantsIgnoresUnreadableParentage(t *testing.T) {
+	started := time.Unix(123, 0)
+	got := identifyDescendantsWithStartTime(10, map[int][]int{
+		10: {20, 30},
+		20: {40},
+	}, func(pid int) (time.Time, bool) {
+		if pid == 20 {
+			return started, true
+		}
+		return time.Time{}, false
+	})
+	if len(got) != 1 || got[0].pid != 20 || !got[0].startTime.Equal(started) {
+		t.Fatalf("identifyDescendantsWithStartTime = %+v, want only pid 20", got)
+	}
+}
+
 func TestProcessTreeHelper(t *testing.T) {
 	role := os.Getenv("GOOBERS_PROC_HELPER_ROLE")
 	if role == "" {
@@ -161,6 +236,9 @@ func TestProcessTreeHelper(t *testing.T) {
 		if err := os.WriteFile(os.Getenv("GOOBERS_PROC_HELPER_MARKER"), []byte("started"), 0600); err != nil {
 			t.Fatal(err)
 		}
+	case "short":
+		time.Sleep(2 * time.Second)
+		return
 	case "root":
 		cmd := exec.Command(os.Args[0], "-test.run=TestProcessTreeHelper")
 		cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=child")

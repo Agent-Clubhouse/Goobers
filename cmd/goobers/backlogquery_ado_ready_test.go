@@ -30,6 +30,7 @@ func TestADOBacklogQueryClaimDerivesReadyAtFromTagHistory(t *testing.T) {
 			"fields": map[string]any{
 				"System.WorkItemType": "Issue",
 				"System.Title":        "ADO ready item",
+				"System.Description":  "Implement ready item.",
 				"System.State":        "Active",
 				"System.Tags":         tags,
 			},
@@ -132,6 +133,7 @@ func TestADOBacklogQueryClaimDerivesReadyAtFromTagHistory(t *testing.T) {
 	}
 	var claimed struct {
 		ID      string     `json:"id"`
+		Body    string     `json:"body"`
 		ReadyAt *time.Time `json:"readyAt"`
 	}
 	if err := json.Unmarshal(data, &claimed); err != nil {
@@ -139,6 +141,9 @@ func TestADOBacklogQueryClaimDerivesReadyAtFromTagHistory(t *testing.T) {
 	}
 	if claimed.ID != "42" || claimed.ReadyAt == nil || !claimed.ReadyAt.Equal(readyAt) {
 		t.Fatalf("claimed item = %s, want item 42 with readyAt %s", data, readyAt.Format(time.RFC3339))
+	}
+	if claimed.Body != "Implement ready item." {
+		t.Fatalf("claimed body = %q, want description unchanged when acceptance criteria are empty: %s", claimed.Body, data)
 	}
 	if !strings.Contains(strings.ToLower(tags), providers.LabelClaimed) {
 		t.Fatalf("ADO tags = %q, want visible claim marker", tags)

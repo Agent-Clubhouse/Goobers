@@ -236,6 +236,42 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 	}
 }
 
+func TestTaskExecutor_ClassifiesRefreshablePersistentUnauthorizedAsInfrastructure(t *testing.T) {
+	shell, _ := newTestExecutor(t, nil)
+	unauthorized := errors.New("GET /pulls/9 failed: status 401: bad credentials")
+	poller := &refreshableSequencedPoller{sequencedPoller: sequencedPoller{steps: []pollStep{
+		{err: unauthorized},
+		{err: unauthorized},
+	}}}
+	ciPoll, err := NewCIPollExecutor(poller, newFakeRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciPoll.MaxConsecutivePollErrors = 1
+	ciPoll.Sleep = noSleep
+	te := newRegisteredTaskExecutor(t, shell, ciPoll)
+
+	env := apiv1.InvocationEnvelope{
+		TaskID:       "poll",
+		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
+		Capabilities: []string{string(capability.ProviderPRWrite)},
+		Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
+	}
+	result, runErr := te.Run(context.Background(), env, apiv1.DeterministicRun{})
+	if !invoke.IsInfrastructureFailure(runErr) {
+		t.Fatalf("Run error = %v, want infrastructure failure", runErr)
+	}
+	if result.Status != "" {
+		t.Fatalf("result = %+v, want no terminal failure result", result)
+	}
+	if poller.calls != 1 {
+		t.Fatalf("expected 2 poll calls (initial 401 + one refresh retry), got %d", poller.calls+1)
+	}
+	if poller.refreshes != 1 {
+		t.Fatalf("credential refreshes = %d, want 1", poller.refreshes)
+	}
+}
+
 type testKindExecutor struct {
 	called bool
 }

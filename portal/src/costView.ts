@@ -60,6 +60,9 @@ export function filterExternalCostRows(
       ...row.models,
       ...row.runs.flatMap((run) => [
         run.runId,
+        run.gaggle ?? "",
+        run.workflow ?? "",
+        run.status ?? "",
         run.startedAt,
         ...run.billingModels,
         ...run.models.map((model) => model.model),

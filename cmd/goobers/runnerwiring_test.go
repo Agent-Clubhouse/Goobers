@@ -3414,6 +3414,47 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 }
 
+func TestCIPollCredentialSourceReResolvesPerPoll(t *testing.T) {
+	calls := 0
+	resolver, err := credentials.NewResolverWithSources(nil, map[string]credentials.ResolveFunc{
+		"ci-poll": func(context.Context) (string, error) {
+			calls++
+			return fmt.Sprintf("ci-poll-token-%d", calls), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResolverWithSources: %v", err)
+	}
+	reg := &escTestRegistrar{}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: string(capability.ProviderPRWrite),
+		Ref:        "ci-poll",
+	}}, reg)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	source := ciPollCapabilityTokenSource{
+		injector:     injector,
+		capabilities: []string{string(capability.ProviderPRWrite)},
+		capability:   string(capability.ProviderPRWrite),
+	}
+
+	first, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("first Token: %v", err)
+	}
+	second, err := source.Token(context.Background())
+	if err != nil {
+		t.Fatalf("second Token: %v", err)
+	}
+	if first != "ci-poll-token-1" || second != "ci-poll-token-2" {
+		t.Fatalf("tokens = %q, %q; want two independently resolved values", first, second)
+	}
+	if len(reg.registered) != 2 || string(reg.registered[0]) != first || string(reg.registered[1]) != second {
+		t.Fatalf("registered secrets = %q, want both resolved ci-poll tokens", reg.registered)
+	}
+}
+
 type escFakeCommenter struct {
 	gotReq providers.UpdateWorkItemRequest
 }

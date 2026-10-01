@@ -1480,6 +1480,71 @@ func TestRunnerThreadsInputsFromUpstreamOutputs(t *testing.T) {
 	}
 }
 
+func TestRunnerInputsFromCannotReplaceGaggleBacklogScope(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{
+				Name: "select", Type: apiv1.TaskDeterministic, Goal: "select labels",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "query-backlog",
+			},
+			{
+				Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "query backlog",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}},
+				Capabilities: []string{"github:issues:write"},
+				InputsFrom: map[string]string{
+					"requireLabels":  "requireLabels",
+					"labelPredicate": "labelPredicate",
+				},
+			},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "backlog-scope-inputs-from", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile fixture machine: %v", err)
+	}
+	det := &outputCapturingDeterministic{byTask: map[string]stubTaskResult{
+		"run-scope:select": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"requireLabels":  "goobers:ready",
+			"labelPredicate": `"size:s" in labels`,
+		}},
+		"run-scope:query-backlog": {status: apiv1.ResultSuccess},
+	}}
+	r, _ := newTestRunnerWithDeterministic(t, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+		det.rec = rec
+		return det, nil
+	}, gate.NewAutomatedEvaluator())
+	r.cfg.BacklogQueryBacklogLabels = "area:web"
+	r.cfg.BacklogQueryLabelPredicate = `"team:web" in labels`
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-scope",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+	env, ok := det.received["run-scope:query-backlog"]
+	if !ok {
+		t.Fatal("query-backlog never dispatched")
+	}
+	if got, want := env.Inputs["requireLabels"], "area:web,goobers:ready"; got != want {
+		t.Fatalf("requireLabels = %q, want %q", got, want)
+	}
+	if got, want := env.Inputs["labelPredicate"], `("team:web" in labels) && ("size:s" in labels)`; got != want {
+		t.Fatalf("labelPredicate = %q, want %q", got, want)
+	}
+}
+
 func TestRunnerPopulatesDeclaredTaskAndGateLimits(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "acme-web",

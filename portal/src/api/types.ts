@@ -1332,6 +1332,9 @@ export interface TelemetryCostModelAggregate {
 
 export interface TelemetryCostRunAggregate {
   runId: string;
+  gaggle?: string;
+  workflow?: string;
+  status?: string;
   startedAt: string;
   usageAttempts: number;
   measuredAttempts: number;

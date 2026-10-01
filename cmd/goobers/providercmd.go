@@ -498,6 +498,13 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if code, ok := classifyLandingRefusal(err); ok {
 		return code, false, nil
 	}
+	var claimDrift *providers.ClaimMetadataDriftError
+	if errors.As(err, &claimDrift) {
+		return "claim_metadata_drift", true, nil
+	}
+	if strings.Contains(message, "claim metadata drift") {
+		return "claim_metadata_drift", true, nil
+	}
 	// Checked ahead of IsAuthenticationError (ADO-N26): a policy-protected
 	// push's underlying git failure carries no HTTP status a credential
 	// classifier could recognize, but its message text alone must never be

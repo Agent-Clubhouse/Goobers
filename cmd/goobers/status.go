@@ -181,6 +181,14 @@ func renderSchedulerStatus(
 	now time.Time,
 ) {
 	renderStatusFleetSummary(text, summary, now)
+	renderSchedulerStatusSignals(text, status, now)
+}
+
+func renderSchedulerStatusSignals(
+	text *strings.Builder,
+	status readservice.SchedulerStatus,
+	now time.Time,
+) {
 	text.WriteString(daemonRestartStatusLine(status, now))
 	text.WriteString(providerQuotaStatusLine(status, now))
 	text.WriteString(maintenanceStatusLine(status))
@@ -277,6 +285,9 @@ var (
 	loadStatusPRLabelCounts = queryStatusPRLabelCounts
 	newStatusGitHubProvider = providers.NewGitHubProvider
 	newStatusGiteaProvider  = providers.NewGiteaProvider
+	loadStatusFleetFacts    = func(ctx context.Context, reads *readservice.Local) ([]readservice.StatusFleetFact, error) {
+		return reads.StatusFleetFacts(ctx)
+	}
 )
 
 type statusPRLabelCountCache struct {
@@ -410,7 +421,55 @@ type statusJSONOutput struct {
 	// (#2971) — which target-branch CI failure is holding which subjects.
 	// Omitted when the local baseline store cannot be read.
 	BaselineBlockers *statusBaselineBlockers `json:"baselineBlockers,omitempty"`
+	Collection       *statusCollection       `json:"collection,omitempty"`
 	Runs             []statusJSONSummary     `json:"runs"`
+}
+
+type statusCollection struct {
+	State   string                  `json:"state"`
+	Queries []statusCollectionQuery `json:"queries"`
+}
+
+type statusCollectionQuery struct {
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	DurationMillis int64  `json:"durationMillis"`
+	Error          string `json:"error,omitempty"`
+}
+
+func statusCollectionPartial(name string, started time.Time, err error) statusCollection {
+	return statusCollection{
+		State: "partial",
+		Queries: []statusCollectionQuery{{
+			Name:           name,
+			State:          "failed",
+			DurationMillis: time.Since(started).Milliseconds(),
+			Error:          err.Error(),
+		}},
+	}
+}
+
+func statusCollectionUnavailableText(collection *statusCollection) string {
+	if collection == nil || collection.State != "partial" {
+		return ""
+	}
+	var text strings.Builder
+	for _, query := range collection.Queries {
+		if query.State != "failed" || query.Error == "" {
+			continue
+		}
+		fmt.Fprintf(&text, "Status collection partial: %s unavailable after %s: %s\n",
+			query.Name, time.Duration(query.DurationMillis)*time.Millisecond, query.Error)
+	}
+	return text.String()
+}
+
+func statusFleetSummaryUnavailableText(query *statusCollectionQuery) string {
+	if query == nil {
+		return ""
+	}
+	return fmt.Sprintf("Workflow summary unavailable: %s failed after %s: %s\n\n",
+		query.Name, time.Duration(query.DurationMillis)*time.Millisecond, query.Error)
 }
 
 func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -807,13 +866,16 @@ func newStatusFleetSummaryLoader(
 	layout instance.Layout,
 	runLoader *statusRunLoader,
 	location *time.Location,
-) func([]apiv1.Workflow, []runSummary, readservice.SchedulerStatus, time.Time) (statusFleetSummary, error) {
+) statusFleetSummaryLoader {
 	return func(
 		workflows []apiv1.Workflow,
 		runs []runSummary,
 		schedulerStatus readservice.SchedulerStatus,
 		now time.Time,
 	) (statusFleetSummary, error) {
+		if query := runLoader.fleetSummaryUnavailable(); query != nil {
+			return statusFleetSummary{}, fmt.Errorf("workflow summary unavailable: %s failed: %s", query.Name, query.Error)
+		}
 		if runLoader.projected {
 			runs = runLoader.fleetRuns
 		}
@@ -827,6 +889,61 @@ func newStatusFleetSummaryLoader(
 		}
 		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, location)
 	}
+}
+
+type statusFleetSummaryLoader func(
+	[]apiv1.Workflow,
+	[]runSummary,
+	readservice.SchedulerStatus,
+	time.Time,
+) (statusFleetSummary, error)
+
+func appendStatusFleetSummaryText(
+	text *strings.Builder,
+	runLoader *statusRunLoader,
+	loadFleetSummary statusFleetSummaryLoader,
+	workflows []apiv1.Workflow,
+	runs []runSummary,
+	status readservice.SchedulerStatus,
+	statusAvailable bool,
+	now time.Time,
+) error {
+	if query := runLoader.fleetSummaryUnavailable(); query != nil {
+		text.WriteString(statusFleetSummaryUnavailableText(query))
+		if statusAvailable {
+			renderSchedulerStatusSignals(text, status, now)
+		}
+		return nil
+	}
+	summary, err := loadFleetSummary(workflows, runs, status, now)
+	if err != nil {
+		return err
+	}
+	if statusAvailable {
+		renderSchedulerStatus(text, summary, status, now)
+	} else {
+		renderStatusFleetSummary(text, summary, now)
+	}
+	return nil
+}
+
+func optionalStatusFleetSummary(
+	runLoader *statusRunLoader,
+	loadFleetSummary statusFleetSummaryLoader,
+	workflows []apiv1.Workflow,
+	runs []runSummary,
+	status readservice.SchedulerStatus,
+	supportsWatch bool,
+	now time.Time,
+) (*statusFleetSummary, error) {
+	if !supportsWatch || runLoader.fleetSummaryUnavailable() != nil {
+		return nil, nil
+	}
+	summary, err := loadFleetSummary(workflows, runs, status, now)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
 }
 
 func statusWorkflowLastEvals(
@@ -1307,19 +1424,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
 		}
 		status, err := reads.SchedulerStatus(context.Background())
-		if err == nil {
-			summary, summaryErr := loadFleetSummary(textWorkflows, runs, status, now)
-			if summaryErr != nil {
-				return "", summaryErr
-			}
-			renderSchedulerStatus(&text, summary, status, now)
-		} else {
-			summary, summaryErr := loadFleetSummary(textWorkflows, runs, readservice.SchedulerStatus{}, now)
-			if summaryErr != nil {
-				return "", summaryErr
-			}
-			renderStatusFleetSummary(&text, summary, now)
+		if err != nil {
+			status = readservice.SchedulerStatus{}
 		}
+		if summaryErr := appendStatusFleetSummaryText(&text, runLoader, loadFleetSummary, textWorkflows, runs, status, err == nil, now); summaryErr != nil {
+			return "", summaryErr
+		}
+		text.WriteString(statusCollectionUnavailableText(runLoader.collectionStatus()))
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
@@ -1390,12 +1501,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if statusErr != nil {
 			status = readservice.SchedulerStatus{}
 		}
-		summary, err := loadFleetSummary(set.Workflows, allRuns, status, now)
+		fleetSummary, err = optionalStatusFleetSummary(runLoader, loadFleetSummary, set.Workflows, allRuns, status, supportsWatch, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
-		fleetSummary = &summary
 	}
 	runs, olderRuns := selectStatusRuns(allRuns, options)
 	if *jsonOutput {
@@ -1448,6 +1558,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Summary:                fleetSummary,
 			ParkedBacklog:          parked,
 			BaselineBlockers:       baselineBlockers,
+			Collection:             runLoader.collectionStatus(),
 			Runs:                   statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
