@@ -128,18 +128,18 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		claimed[entry.ItemID] = true
 	}
 
-	repo, err := providerRepo(root)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
+		return 1
+	}
+	backlogRepo := env.backlogRepoRef()
+	issueProvider, ctx, cancel, err := openBacklogProviderAs[providers.BacklogProvider](
+		env, true, withStageProviderCache(),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
-	issueProvider, err := backlogDedupeProvider(root, backlogProviderRepo(repo, backlogRepo))
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	ctx, cancel := providerCommandContext()
 	defer cancel()
 
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
@@ -194,7 +194,9 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 }
 
 func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return newProviderForStage(root, repo, true, withStageProviderCache())
+	return providerForEnvAs[providers.BacklogProvider](
+		stageCommandEnv{root: root, repo: repo}, true, withStageProviderCache(),
+	)
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

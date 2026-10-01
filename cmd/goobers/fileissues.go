@@ -190,11 +190,11 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	if !findingsSummary.Available {
 		pf(stderr, "warning: %s; no nomination can be approved\n", findingsSummary.Reason)
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repoRef()
 	if repo.Provider != providers.ProviderGitHub {
 		pf(stderr, "error: file-issues does not support repository provider %q\n", repo.Provider)
 		return 1

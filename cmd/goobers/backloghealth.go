@@ -139,28 +139,30 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
-	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
 	}
 	scanOpts, ok := resolveBacklogHealthScanOptions(stderr)
 	if !ok {
 		return 2
 	}
-	root := providerStageRoot(pathArg)
-	repo, err := providerRepo(root)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
+		return 1
+	}
+	backlogRepo := env.backlogRepoRef()
+	provider, ctx, cancel, err := openBacklogProviderAs[providers.Provider](
+		env, !*feedback, withStageProviderCache(), withStageProviderMutations("issue"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
-	issueProvider, err := newBacklogHealthProvider(root, backlogProviderRepo(repo, backlogRepo), !*feedback)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	defer cancel()
+	issueProvider, ok := provider.(backlogHealthProvider)
+	if !ok {
+		pf(stderr, "error: backlog-health does not support repository provider %q\n", env.repoRef().Provider)
 		return 1
 	}
 	trustLabel := providerInput("trustLabel", "")
@@ -187,8 +189,6 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	// declared explicitly on the stage.
 	labels = append(labels, requireLabels...)
 
-	ctx, cancel := providerCommandContext()
-	defer cancel()
 	if *feedback {
 		if err := invalidateCurrentProviderSnapshot(root); err != nil {
 			pf(stderr, "error: invalidate provider snapshot before implementation feedback: %v\n", err)
@@ -321,7 +321,12 @@ func backlogHealthScanReasonSuffix(scan backlogHealthScan) string {
 }
 
 func newBacklogHealthProvider(root string, repo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
-	provider, err := newProviderForStage(root, repo, readOnly, withStageProviderCache(), withStageProviderMutations("issue"))
+	provider, err := providerForEnvAs[providers.Provider](
+		stageCommandEnv{root: root, repo: repo},
+		readOnly,
+		withStageProviderCache(),
+		withStageProviderMutations("issue"),
+	)
 	if err != nil {
 		return nil, err
 	}
