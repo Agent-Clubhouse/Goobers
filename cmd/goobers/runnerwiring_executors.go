@@ -50,6 +50,20 @@ var newAgenticAdapter func(gooberName string, envCaps map[string]string) harness
 // providers.GitHubProvider over the resolved repo token.
 var newPRPoller func(token string) executor.PRPoller
 
+type ciPollCapabilityTokenSource struct {
+	injector     *credentials.Injector
+	capabilities []string
+	capability   string
+}
+
+func (s ciPollCapabilityTokenSource) Token(ctx context.Context) (string, error) {
+	set, err := s.injector.Materialize(ctx, s.capabilities)
+	if err != nil {
+		return "", err
+	}
+	return set.Token(ctx, s.capability)
+}
+
 // credentialGrantEnv is the environment variable the Copilot CLI reads most
 // credentialed capabilities' tokens from (internal/harness.CopilotAdapter's
 // EnvCapabilities convention — matches internal/harness/copilot_test.go's
@@ -680,18 +694,19 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		}
 		poller = providers.NewGiteaProvider(e.giteaRepo.BaseURL, token)
 	default:
-		set, err := e.injector.Materialize(ctx, env.Capabilities)
-		if err != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
+		source := ciPollCapabilityTokenSource{
+			injector:     e.injector,
+			capabilities: env.Capabilities,
+			capability:   string(capability.ProviderPRWrite),
 		}
-		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
+		token, err := source.Token(ctx)
 		if err != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
 		}
 		if newPRPoller != nil {
 			poller = newPRPoller(token)
 		} else {
-			poller = providers.NewGitHubProvider(token)
+			poller = providers.NewGitHubProvider("", providers.WithTokenSource(source))
 		}
 	}
 	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)

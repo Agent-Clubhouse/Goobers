@@ -23,6 +23,7 @@ type stageProviderConfig struct {
 	readOnly     bool
 	capability   capability.Capability
 	token        string
+	tokenSource  providers.TokenSource
 	cached       bool
 	mutationKind string
 	// mutationRecorder is an explicitly supplied journal mutation recorder.
@@ -53,6 +54,12 @@ func withStageProviderCapability(cap capability.Capability) stageProviderOption 
 func withStageProviderToken(token string) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.token = token
+	}
+}
+
+func withStageProviderTokenSource(source providers.TokenSource) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.tokenSource = source
 	}
 }
 
@@ -357,11 +364,17 @@ func stageProviderToken(cfg stageProviderConfig) (string, error) {
 }
 
 func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {
-	token, err := stageProviderToken(cfg)
-	if err != nil {
-		return nil, err
-	}
+	token := ""
 	var opts []func(*providers.GitHubProvider)
+	if cfg.tokenSource != nil {
+		opts = append(opts, providers.WithTokenSource(cfg.tokenSource))
+	} else {
+		var err error
+		token, err = stageProviderToken(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Under GitHub App auth the minted installation token cannot self-report
 	// its login (GET /user is PAT-only), so every trusted-comment check —
 	// claim markers first among them — needs the login declared in config

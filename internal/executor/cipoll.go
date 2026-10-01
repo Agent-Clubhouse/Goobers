@@ -156,8 +156,9 @@ const (
 	DefaultPollTimeout     = boundedwait.DefaultPollTimeout
 )
 
-// DefaultMaxConsecutivePollErrors bounds how many transient poll errors
-// (providers.IsTransientError) CIPollExecutor absorbs back-to-back before
+// DefaultMaxConsecutivePollErrors bounds how many retryable poll errors
+// (provider transients, plus ci-poll-scoped 401s from expired short-lived
+// credentials) CIPollExecutor absorbs back-to-back before
 // giving up — without this bound, a poller that fails transiently forever
 // (e.g. a PR whose CI checks were permanently misconfigured to 503) would
 // poll until the overall Timeout regardless, silently burning the full 30
@@ -172,12 +173,32 @@ type PRPoller interface {
 	PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
 }
 
+type ciPollCredentialRefresher interface {
+	RefreshCIPollCredential(context.Context) (bool, error)
+}
+
 type ciPollProviderError struct {
 	cause error
 }
 
 func (e *ciPollProviderError) Error() string { return e.cause.Error() }
 func (e *ciPollProviderError) Unwrap() error { return e.cause }
+
+type ciPollInfrastructureError struct {
+	cause error
+}
+
+func (e *ciPollInfrastructureError) Error() string { return e.cause.Error() }
+func (e *ciPollInfrastructureError) Unwrap() error { return e.cause }
+
+// IsCIPollInfrastructureError reports whether ci-poll exhausted a bounded
+// recovery path for an infrastructure-shaped provider condition. These errors
+// should fail this stage attempt as infrastructure without being converted into
+// a terminal task failure result.
+func IsCIPollInfrastructureError(err error) bool {
+	var infraErr *ciPollInfrastructureError
+	return errors.As(err, &infraErr)
+}
 
 // CIPollConfig configures one ci-poll stage invocation.
 type CIPollConfig struct {
@@ -322,7 +343,7 @@ type CIPollExecutor struct {
 	Interval    time.Duration
 	MaxInterval time.Duration
 	Timeout     time.Duration
-	// MaxConsecutivePollErrors bounds back-to-back transient poll errors
+	// MaxConsecutivePollErrors bounds back-to-back retryable poll errors
 	// before Run gives up early rather than waiting out the full Timeout.
 	// Defaults to DefaultMaxConsecutivePollErrors when <= 0.
 	MaxConsecutivePollErrors int
@@ -407,6 +428,8 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	}
 
 	consecutiveErrors := 0
+	consecutiveUnauthorized := 0
+	refresher, canRefreshCredential := e.Poller.(ciPollCredentialRefresher)
 	retriesUsed := 0
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
@@ -415,13 +438,32 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
 				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
-			if !providers.IsTransientError(err) {
+			if providers.IsUnauthorizedError(err) {
+				if !canRefreshCredential {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
+				}
+				consecutiveErrors = 0
+				consecutiveUnauthorized++
+				if consecutiveUnauthorized > maxConsecutiveErrors {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollInfrastructureError{cause: err})
+				}
+				refreshed, refreshErr := refresher.RefreshCIPollCredential(ctx)
+				if refreshErr != nil {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: refresh ci-poll credential after unauthorized response: %w", &ciPollInfrastructureError{cause: refreshErr})
+				}
+				if !refreshed {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
+				}
+			} else if providers.IsTransientError(err) {
+				consecutiveUnauthorized = 0
+				consecutiveErrors++
+				if consecutiveErrors > maxConsecutiveErrors {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
+				}
+			} else {
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
 			}
-			consecutiveErrors++
-			if consecutiveErrors > maxConsecutiveErrors {
-				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
-			}
+
 			if now().After(deadline) {
 				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
@@ -434,6 +476,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			continue
 		}
 		consecutiveErrors = 0
+		consecutiveUnauthorized = 0
 		// The pull request's own lifecycle is asked FIRST, because a closed PR
 		// can go on reporting pending checks forever (#2786).
 		if outcome, stop := ciPollLifecycleOutcome(result, cfg.PullID); stop {
