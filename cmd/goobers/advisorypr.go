@@ -321,6 +321,75 @@ func failAdvisoryArtifact(stderr io.Writer, resultFile, message string) int {
 	return 1
 }
 
+func loadAdvisoryPublishArtifacts(root, resultFile, reviewType string, repo providers.RepositoryRef, stderr io.Writer) (advisorySelection, advisoryReview, bool) {
+	selection, err := readDecompositionInput[advisorySelection](root, advisorySelectionFile, advisorySelectionFile,
+		providerInput("selectionStage", "select-pr"), "/"+advisorySelectionFile)
+	if err != nil {
+		failAdvisoryArtifact(stderr, resultFile, fmt.Sprintf("read selector artifact: %v", err))
+		return advisorySelection{}, advisoryReview{}, false
+	}
+	if selection.Repository != advisoryScope(repo) || selection.ReviewType != reviewType || selection.SelectedHeadSHA == "" {
+		failAdvisoryArtifact(stderr, resultFile, "selector artifact identity differs from this review lane")
+		return advisorySelection{}, advisoryReview{}, false
+	}
+	number, err := strconv.Atoi(selection.SelectedNumber)
+	if err != nil || number <= 0 {
+		failAdvisoryArtifact(stderr, resultFile, "selector artifact has invalid PR number")
+		return advisorySelection{}, advisoryReview{}, false
+	}
+	raw, err := readDecompositionInput[json.RawMessage](root, advisoryReviewFile, advisoryReviewFile,
+		providerInput("reviewerStage", "review"), "/"+advisoryReviewFile)
+	if err != nil {
+		failAdvisoryArtifact(stderr, resultFile, fmt.Sprintf("read reviewer artifact: %v", err))
+		return advisorySelection{}, advisoryReview{}, false
+	}
+	review, err := strictAdvisoryReview(raw)
+	if err != nil {
+		failAdvisoryArtifact(stderr, resultFile, fmt.Sprintf("malformed reviewer artifact: %v", err))
+		return advisorySelection{}, advisoryReview{}, false
+	}
+	if review.ReviewType != reviewType || review.Number != number || review.HeadSHA != selection.SelectedHeadSHA {
+		failAdvisoryArtifact(stderr, resultFile, "reviewer artifact differs from selected PR/head/type")
+		return advisorySelection{}, advisoryReview{}, false
+	}
+	return selection, review, true
+}
+
+func advisoryClaimHeld(ctx context.Context, root, runID string, repo providers.RepositoryRef, reviewType string, number int) (bool, error) {
+	ledger, err := openStageClaimLedger(instance.NewLayout(root))
+	if err != nil {
+		return false, fmt.Errorf("open claim ledger: %w", err)
+	}
+	held, err := ledger.ForRunAll(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("verify advisory claim: %w", err)
+	}
+	claim := advisoryClaimKey(repo, reviewType, number)
+	for _, entry := range held {
+		if claimsclient.KeyForEntry(entry) == claim && entry.ExpiresAt.After(time.Now()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func persistAdvisorySkip(ctx context.Context, store stateclient.Store, key string) error {
+	return store.Update(ctx, key, "advisory-pr.skip", func(value stateclient.Value) ([]byte, bool, error) {
+		var next advisoryDisposition
+		if len(value.Data) > 0 {
+			if err := json.Unmarshal(value.Data, &next); err != nil {
+				return nil, false, err
+			}
+		}
+		if !next.SkippedAt.IsZero() {
+			return nil, false, nil
+		}
+		next.SkippedAt = time.Now().UTC()
+		data, err := json.Marshal(next)
+		return data, true, err
+	})
+}
+
 func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("advisory-pr-publish", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -352,49 +421,16 @@ func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	resultFile := providerInput("resultFile", advisoryResultFile)
-	selection, err := readDecompositionInput[advisorySelection](root, advisorySelectionFile, advisorySelectionFile,
-		providerInput("selectionStage", "select-pr"), "/"+advisorySelectionFile)
-	if err != nil {
-		return failAdvisoryArtifact(stderr, resultFile, fmt.Sprintf("read selector artifact: %v", err))
-	}
-	if selection.Repository != advisoryScope(repo) || selection.ReviewType != reviewType || selection.SelectedHeadSHA == "" {
-		return failAdvisoryArtifact(stderr, resultFile, "selector artifact identity differs from this review lane")
-	}
-	number, err := strconv.Atoi(selection.SelectedNumber)
-	if err != nil || number <= 0 {
-		return failAdvisoryArtifact(stderr, resultFile, "selector artifact has invalid PR number")
-	}
-	raw, err := readDecompositionInput[json.RawMessage](root, advisoryReviewFile, advisoryReviewFile,
-		providerInput("reviewerStage", "review"), "/"+advisoryReviewFile)
-	if err != nil {
-		return failAdvisoryArtifact(stderr, resultFile, fmt.Sprintf("read reviewer artifact: %v", err))
-	}
-	review, err := strictAdvisoryReview(raw)
-	if err != nil {
-		return failAdvisoryArtifact(stderr, resultFile, fmt.Sprintf("malformed reviewer artifact: %v", err))
-	}
-	if review.ReviewType != reviewType || review.Number != number || review.HeadSHA != selection.SelectedHeadSHA {
-		return failAdvisoryArtifact(stderr, resultFile, "reviewer artifact differs from selected PR/head/type")
-	}
-	ledger, err := openStageClaimLedger(instance.NewLayout(root))
-	if err != nil {
-		pf(stderr, "error: open claim ledger: %v\n", err)
+	selection, review, valid := loadAdvisoryPublishArtifacts(root, resultFile, reviewType, repo, stderr)
+	if !valid {
 		return 1
 	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	claim := advisoryClaimKey(repo, reviewType, number)
-	held, err := ledger.ForRunAll(ctx, runID)
+	owned, err := advisoryClaimHeld(ctx, root, runID, repo, reviewType, review.Number)
 	if err != nil {
-		pf(stderr, "error: verify advisory claim: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
-	}
-	owned := false
-	for _, entry := range held {
-		if claimsclient.KeyForEntry(entry) == claim && entry.ExpiresAt.After(time.Now()) {
-			owned = true
-			break
-		}
 	}
 	if !owned {
 		pf(stderr, "error: this run no longer holds the selected advisory claim\n")
@@ -405,7 +441,7 @@ func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: open private advisory state: %v\n", err)
 		return 1
 	}
-	key := advisoryKey(repo, reviewType, number)
+	key := advisoryKey(repo, reviewType, review.Number)
 	record, err := readAdvisoryDisposition(ctx, store, key)
 	if err != nil {
 		pf(stderr, "error: read private advisory state: %v\n", err)
@@ -428,26 +464,20 @@ func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 		return writeAdvisoryResult(resultFile, map[string]any{"outcome": "stale-or-closed"}, stdout, stderr)
 	}
 	if review.Decision == "skip" {
-		err = store.Update(ctx, key, "advisory-pr.skip", func(value stateclient.Value) ([]byte, bool, error) {
-			var next advisoryDisposition
-			if len(value.Data) > 0 {
-				if err := json.Unmarshal(value.Data, &next); err != nil {
-					return nil, false, err
-				}
-			}
-			if !next.SkippedAt.IsZero() {
-				return nil, false, nil
-			}
-			next.SkippedAt = time.Now().UTC()
-			data, err := json.Marshal(next)
-			return data, true, err
-		})
-		if err != nil {
+		if err := persistAdvisorySkip(ctx, store, key); err != nil {
 			pf(stderr, "error: persist private skip: %v\n", err)
 			return 1
 		}
 		return writeAdvisoryResult(resultFile, map[string]any{"outcome": "skipped-privately"}, stdout, stderr)
 	}
+	return publishInterestingAdvisory(ctx, provider, repo, selection, review, store, key, record,
+		reviewType, resultFile, stdout, stderr)
+}
+
+func publishInterestingAdvisory(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef,
+	selection advisorySelection, review advisoryReview, store stateclient.Store, key string, record advisoryDisposition,
+	reviewType, resultFile string, stdout, stderr io.Writer,
+) int {
 	expectedAuthor := providerInput("expectedAuthor", "")
 	if expectedAuthor == "" {
 		pf(stderr, "error: expectedAuthor is required for advisory publication\n")
@@ -483,7 +513,7 @@ func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 	if !found {
 		// Recheck immediately before the only public mutation. A new head or a
 		// closed PR remains retryable and creates no public trace.
-		current, err = provider.GetPullRequest(ctx, repo, selection.SelectedNumber)
+		current, err := provider.GetPullRequest(ctx, repo, selection.SelectedNumber)
 		if err != nil {
 			return failProviderStage(stderr, "recheck PR before comment", err, resultFile)
 		}
@@ -495,7 +525,15 @@ func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, "post advisory comment", err, resultFile)
 		}
 	}
-	err = store.Update(ctx, key, "advisory-pr.receipt", func(value stateclient.Value) ([]byte, bool, error) {
+	if err := persistAdvisoryReceipt(ctx, store, key, marker, review.HeadSHA); err != nil {
+		pf(stderr, "error: persist advisory receipt: %v\n", err)
+		return 1
+	}
+	return writeAdvisoryResult(resultFile, map[string]any{"outcome": "published", "marker": marker}, stdout, stderr)
+}
+
+func persistAdvisoryReceipt(ctx context.Context, store stateclient.Store, key, marker, headSHA string) error {
+	return store.Update(ctx, key, "advisory-pr.receipt", func(value stateclient.Value) ([]byte, bool, error) {
 		var next advisoryDisposition
 		if len(value.Data) > 0 {
 			if err := json.Unmarshal(value.Data, &next); err != nil {
@@ -510,14 +548,9 @@ func runAdvisoryPRPublish(args []string, stdout, stderr io.Writer) int {
 				return nil, false, nil
 			}
 		}
-		next.HeadSHA = review.HeadSHA
+		next.HeadSHA = headSHA
 		next.Receipts = append(next.Receipts, marker)
 		data, err := json.Marshal(next)
 		return data, true, err
 	})
-	if err != nil {
-		pf(stderr, "error: persist advisory receipt: %v\n", err)
-		return 1
-	}
-	return writeAdvisoryResult(resultFile, map[string]any{"outcome": "published", "marker": marker}, stdout, stderr)
 }
