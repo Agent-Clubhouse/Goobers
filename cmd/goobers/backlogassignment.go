@@ -98,21 +98,21 @@ func runBacklogAssignmentWithMutationHook(
 		return 1
 	}
 
-	repo, err := providerRepo(root)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
+		return 1
+	}
+	backlogRepo := env.backlogRepoRef()
+	assigner, ctx, cancel, err := openBacklogProviderAs[providers.BacklogProvider](
+		env, false, withStageProviderCache(), withStageProviderMutations("issue"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
-	assigner, err := assignmentProvider(root, backlogProviderRepo(repo, backlogRepo))
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	defer cancel()
 
 	labels := append([]string{trustLabel}, labelFilter.RequiredLabels()...)
-	ctx, cancel := providerCommandContext()
-	defer cancel()
 	items, _, err := listBacklogScanWindow(
 		ctx, assigner, backlogRepo, labels, labelFilter.Labels(), "", fieldFilter, 0, backlogScanCursor{}, true,
 	)
@@ -237,10 +237,6 @@ func parseAssignmentMaxItems(raw string) (int, error) {
 		return 0, fmt.Errorf("maxItems must be a positive integer")
 	}
 	return maxItems, nil
-}
-
-func assignmentProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
 }
 
 func assignmentEligibleItems(

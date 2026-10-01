@@ -256,13 +256,12 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return runBacklogQueryRelease(env)
 	}
 
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	stageEnv, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
-	env.repo = repo
-	env.backlogRepo = backlogRepoRefForStage(root, repo)
+	env.repo = stageEnv.repoRef()
+	env.backlogRepo = stageEnv.backlogRepoRef()
 	if code := env.openProvider(mode == backlogQueryModeReadOnly); code != 0 {
 		return code
 	}
@@ -344,7 +343,8 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
 	}
-	provider, err := newProviderForStage(env.root, env.issueRepo(), readOnly, opts...)
+	stageEnv := stageCommandEnv{root: env.root, repo: env.issueRepo()}
+	provider, err := providerForEnvAs[providers.Provider](stageEnv, readOnly, opts...)
 	if err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1

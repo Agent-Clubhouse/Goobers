@@ -558,11 +558,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repoRef()
 	provider, err := newApplyVerdictProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -1609,7 +1609,7 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	default:
 		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
 	}
-	return newMergeReviewProvider(root, repo, false, opts...)
+	return providerForEnvAs[providers.Provider](stageCommandEnv{root: root, repo: repo}, false, opts...)
 }
 
 // adoPassVerdictPublisher is the ADO surface publishADOPassVerdict writes to:
