@@ -361,8 +361,8 @@ func (s *Sweeper) reconcile(ctx context.Context, dir, runID string) error {
 
 	// The unpublished memo. 27% of directories on the live instance have no
 	// run.yaml and can never be ingested; remembering them keyed by mtime turns
-	// each into one stat rather than an open. Writing run.yaml bumps the
-	// directory mtime, so promotion is detected rather than cached forever.
+	// each into one stat rather than an open. Mtime changes detect promotion
+	// immediately; the memo's age bound catches same-tick publication later.
 	remembered, err := s.store.IsUnpublished(ctx, runID, info.ModTime())
 	if err != nil {
 		return err

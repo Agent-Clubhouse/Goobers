@@ -345,8 +345,9 @@ func TestResumeOverridesTheFloor(t *testing.T) {
 //
 // 10,906 of 40,665 directories on the live instance have no run.yaml and can
 // never be ingested. Remembering them makes each cost one stat per cycle. The
-// mtime key is what stops that being permanent: writing run.yaml bumps the
-// directory mtime, so a promoted run no longer matches its memo.
+// mtime key makes an ordinary promotion visible immediately. Force a distinct
+// mtime below because filesystems can reuse one timestamp for rapid writes;
+// the equal-mtime recovery path has its own test.
 func TestUnpublishedIsRememberedByMtimeAndForgottenOnPromotion(t *testing.T) {
 	ctx := context.Background()
 	store := openStore(t)
@@ -372,12 +373,19 @@ func TestUnpublishedIsRememberedByMtimeAndForgottenOnPromotion(t *testing.T) {
 	if !remembered {
 		t.Fatal("the unpublished memo was not written; the 27% would cost an open every cycle")
 	}
+	before := dirMtime(t, dir)
 
 	// Promote it: writing run.yaml is exactly what a publish does, and it bumps
 	// the directory's mtime. Written directly rather than via journal.Create,
 	// which refuses a directory that already exists — the promotion case is
 	// precisely "this directory was here before it was a run".
 	promoteDirectory(t, root, runID)
+	if dirMtime(t, dir).Equal(before) {
+		changed := before.Add(time.Second)
+		if err := os.Chtimes(dir, changed, changed); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if remembered, err := store.IsUnpublished(ctx, runID, dirMtime(t, dir)); err != nil {
 		t.Fatal(err)
@@ -391,6 +399,41 @@ func TestUnpublishedIsRememberedByMtimeAndForgottenOnPromotion(t *testing.T) {
 	}
 	if _, ok, _ := store.GetRun(ctx, runID); !ok {
 		t.Error("a directory promoted from unpublished was never projected")
+	}
+}
+
+func TestUnpublishedMemoExpiresAfterEqualMtimePromotion(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	now := time.Now().UTC()
+	store.SetClock(func() time.Time { return now })
+	root := t.TempDir()
+	runID := fmt.Sprintf("%032x", 18)
+	dir := filepath.Join(root, runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10}).Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := dirMtime(t, dir)
+	promoteDirectory(t, root, runID)
+	// Reproduce a filesystem timestamp tick that did not advance during publish.
+	if err := os.Chtimes(dir, before, before); err != nil {
+		t.Fatal(err)
+	}
+	if remembered, err := store.IsUnpublished(ctx, runID, dirMtime(t, dir)); err != nil || !remembered {
+		t.Fatalf("memo before expiry = %t, %v; want remembered", remembered, err)
+	}
+	now = now.Add(time.Hour + time.Second)
+	if remembered, err := store.IsUnpublished(ctx, runID, dirMtime(t, dir)); err != nil || remembered {
+		t.Fatalf("memo after expiry = %t, %v; want stale", remembered, err)
+	}
+	if err := New(store, store, nil, Options{RunsDirs: []string{root}, BatchSize: 10}).Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetRun(ctx, runID); err != nil || !ok {
+		t.Fatalf("promoted run after memo expiry = %t, %v; want projected", ok, err)
 	}
 }
 
