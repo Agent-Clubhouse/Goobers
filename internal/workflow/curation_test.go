@@ -196,7 +196,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
 	// #2386: read-only sampling and dedupe use issue-read rather than issue-write.
 	// #2399 moves re-sweep scheduling into its own workflow.
-	const wantDigest = "sha256:210d91e2273b5087ad7aac7df6bafbc376ac339ba76f12060d947b03c49ce933"
+	// #5337: empty forward-curation claims continue to the curator with an
+	// empty artifact instead of terminal no-work.
+	const wantDigest = "sha256:65fec3bb32a4ce5ac123b61bbe6b6af35919b37320686032f0065a86a544d721"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

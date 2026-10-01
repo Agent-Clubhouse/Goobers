@@ -183,6 +183,9 @@ spec:
         Curate forward items and re-check selected ready items for drift using
         each item's deterministic staleness signal and the ranked duplicate
         candidates as evidence. Treat in-flight re-sweep items as read-only.
+        If the claim artifact is empty because the deterministic claim path found
+        no claimable item, continue from the approved, non-ready backlog and
+        promote only items that are unclaimed and safe to mutate.
         Unclaimed candidate members are read-only except for narrowly scoped
         roadmap maintenance on directly linked tracking parents.
         Dedupe, handle staleness, tag, split oversized items, maintain milestone

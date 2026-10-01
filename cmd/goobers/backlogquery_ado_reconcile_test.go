@@ -128,8 +128,9 @@ func TestADOBacklogReconcileIsNotApplicable(t *testing.T) {
 // TestADOCurationClaimSkipsMetadataReconcile pins the second caller of the
 // same pass: backlog-curation's query-backlog stage (`--claim` with
 // curation: "true") reconciles metadata inline before scanning. On Azure
-// DevOps that inline pass is skipped, so the scan runs; an empty backlog ends
-// in the ordinary noWork result rather than the BL-033 failure.
+// DevOps that inline pass is skipped, so the scan runs; an empty forward
+// curation backlog writes a continuation artifact rather than the BL-033
+// failure or terminal noWork.
 func TestADOCurationClaimSkipsMetadataReconcile(t *testing.T) {
 	provider, _ := newADOReconcileProvider(t)
 	var stdout, stderr bytes.Buffer
@@ -151,8 +152,15 @@ func TestADOCurationClaimSkipsMetadataReconcile(t *testing.T) {
 		t.Errorf("stderr = %q, want no BL-033 refusal", stderr.String())
 	}
 	result := readReconciliationResult(t, filepath.Join(workDir, "claimed-items.json"))
-	if result[executor.OutputNoWork] != true {
-		t.Errorf("claimed-items.json = %v, want the empty-backlog noWork result", result)
+	if _, ok := result[executor.OutputNoWork]; ok {
+		t.Errorf("claimed-items.json = %v, must not carry noWork because curate is downstream", result)
+	}
+	if result["claimed"] != false {
+		t.Errorf("claimed-items.json = %v, want claimed:false", result)
+	}
+	items, ok := result["claimed-items"].([]any)
+	if !ok || len(items) != 0 {
+		t.Errorf("claimed-items.json = %v, want empty claimed-items array", result)
 	}
 }
 
