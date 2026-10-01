@@ -30,6 +30,15 @@ func TestDistroDependencyJobsUseUbuntuSources(t *testing.T) {
 			}
 		})
 	}
+	t.Run("checks waits for boot-time apt work", func(t *testing.T) {
+		script := w.Jobs["checks"].step(t, "Install Portal dependencies and pinned Chromium").Run
+		wait := strings.Index(script, "for _ in $(seq 1 60); do")
+		probe := strings.Index(script, "pgrep -x 'apt|apt-.*|dpkg|unattended-upgr' >/dev/null || break")
+		chromium := strings.Index(script, "playwright install --with-deps chromium")
+		if wait < 0 || probe <= wait || chromium <= probe {
+			t.Fatal("checks must wait, with a finite bound, for runner apt/dpkg work to exit before the Playwright --with-deps install")
+		}
+	})
 	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "apt", "ubuntu-only.conf"))
 	if err != nil {
 		t.Fatal(err)
@@ -41,8 +50,8 @@ func TestDistroDependencyJobsUseUbuntuSources(t *testing.T) {
 			settings = append(settings, line)
 		}
 	}
-	want := "Dir::Etc::sourcelist \"/etc/apt/sources.list.d/ubuntu.sources\";\nDir::Etc::sourceparts \"-\";"
+	want := "Dir::Etc::sourcelist \"/etc/apt/sources.list.d/ubuntu.sources\";\nDir::Etc::sourceparts \"-\";\nDPkg::Lock::Timeout \"60\";"
 	if strings.Join(settings, "\n") != want {
-		t.Fatalf("apt config must only select sources, without weakening authentication: %q", settings)
+		t.Fatalf("apt config must only select sources and wait for the dpkg lock, without weakening authentication: %q", settings)
 	}
 }
