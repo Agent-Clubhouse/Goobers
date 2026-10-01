@@ -180,6 +180,50 @@ Both can move while it runs, so both are pinned and re-checked.
   comments, empty review bodies, review state and the outdated flag. The
   digest includes the head and collection completeness.
 
+#### D1.3 — Review-thread publication receipts (#6131)
+
+`resolve-review-threads`' result file is a versioned receipt,
+`goobers.dev/review-thread-publication/v1`
+(`api/schemas/review-thread-publication-v1.schema.json`). It names the pull
+request, the published head, the feedback snapshot digest, an overall
+`status` (`in_progress`, `complete`, `partial`, `failed`, `stale`), and one
+entry per answered thread with its disposition, `replyState`,
+`resolutionState`, the provider's reply id and the last error. The scalar
+outputs the workflow routes on (`selectedNumber`, `publishedHeadSha`,
+`unresolvedThreadCount`, `staleInput`) are unchanged.
+
+- **Incremental.** The receipt is written atomically before the first
+  mutation and again after every verified reply and every verified
+  resolution. Every exit, including errors and stale input, rewrites it with
+  the outcome. The executor journals the result file on every exit as the
+  stage's `<stage>/result` artifact. That journal record is what survives a
+  stage retry, a daemon restart or a crash-resume. The scratch workspace does
+  not.
+- **Reconciliation.** A new attempt loads the newest receipt its own run
+  journal holds for the same pull request, published head and feedback
+  snapshot. A receipt for another head or snapshot belongs to an earlier pass
+  and is not resumed. Before any mutation, the head and feedback checks run
+  first, then the threads are re-read and the receipt is reconciled with that
+  read. Provider state is authoritative. A verified entry the provider still
+  shows is `receipt_confirmed`. A mutation the provider shows (this run's
+  reply marker, or the resolution) that no receipt recorded is
+  `provider_adopted`, as after an attempt interrupted between the mutation and
+  the receipt write. Neither is published again.
+- **Divergence.** A verified entry the provider no longer shows (this run's
+  reply was deleted, or a thread it resolved was reopened) is someone else's
+  mutation. It is never silently redone. Publication stops as
+  `staleInput=changed_thread_state` naming the thread, and the feedback gate
+  re-gathers.
+- **Completion.** `complete` is written only after a final read shows every
+  intended reply and every addressed thread's resolution. A receipt never
+  stands in for that read.
+- **No restoration.** `restoration` is always `unsupported`. Published replies
+  are human-visible and are never deleted on a generic failure, so a partial
+  publication is preserved and reported as `partial` with the typed error.
+- **Providers.** The contract is provider-neutral. GitHub and Azure DevOps
+  publish through it. Gitea cannot reply to or resolve review threads, so the
+  stage refuses before any receipt is written.
+
 ### D2 — Remediation policy declared in the DSL, not compiled into Go
 
 Today the scope of remediation is a hardcoded disjunction:

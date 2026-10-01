@@ -48,6 +48,10 @@ func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 			schema: schemas.RemediationBrief,
 			value:  completeRemediationBrief(),
 		},
+		"review-thread-publication": {
+			schema: schemas.ReviewThreadPublication,
+			value:  completeReviewThreadPublication(),
+		},
 		// journal-event is not in schemas.Envelope (it's schemas.Journal, a
 		// distinct wire contract — ARCHITECTURE.md §4), but the same
 		// producer/schema drift this guard exists to prevent applies to it
@@ -262,6 +266,36 @@ func completeVerdict() apiv1.Verdict {
 		SourceRunID:    "review-run",
 		OverlapCluster: true,
 		Elected:        true,
+	}
+}
+
+func completeReviewThreadPublication() apiv1.ReviewThreadPublication {
+	return apiv1.ReviewThreadPublication{
+		Schema:                 apiv1.ReviewThreadPublicationVersion,
+		Integrity:              apiv1.IntegrityUnapproved,
+		PullRequest:            "42",
+		SelectedNumber:         "42",
+		PublishedHeadSHA:       strings.Repeat("a", 40),
+		FeedbackSnapshotDigest: "sha256:" + strings.Repeat("f", 64),
+		Status:                 apiv1.ReviewThreadPublicationStale,
+		ResumedFromReceipt:     true,
+		Restoration:            apiv1.ReviewThreadRestorationUnsupported,
+		UnresolvedThreadCount:  "1",
+		StaleInput:             "stale_head",
+		StaleReasons:           []apiv1.PRFeedbackStaleReason{{Code: "stale_head", Kind: "head", ID: "head", Detail: "moved"}},
+		Threads: []apiv1.ReviewThreadReceipt{{
+			ThreadID: "T1", Disposition: "addressed", ContentDigest: "sha256:" + strings.Repeat("d", 64),
+			ReplyState: apiv1.ReviewThreadMutationVerified, ResolutionState: apiv1.ReviewThreadMutationFailed,
+			ProviderReplyID: "501", Recovery: apiv1.ReviewThreadRecoveryReceiptConfirmed, LastError: "resolve failed",
+		}},
+		NoWork:         true,
+		NoWorkReason:   "stale head",
+		Outcome:        "stale_head",
+		LiveHeadSHA:    strings.Repeat("b", 40),
+		ErrorCode:      "github_rate_limited",
+		ErrorMessage:   "rate limited",
+		ErrorRetryable: true,
+		RateLimitReset: "2026-09-30T00:00:00Z",
 	}
 }
 

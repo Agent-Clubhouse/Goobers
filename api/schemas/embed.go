@@ -58,6 +58,10 @@ const RemediationBriefV3 = "remediation-brief-v3.schema.json"
 // remediation brief pins (#6126).
 const PRFeedbackSnapshot = "pr-feedback-snapshot-v1.schema.json"
 
+// ReviewThreadPublication is the versioned per-thread publication receipt
+// resolve-review-threads writes (#6131).
+const ReviewThreadPublication = "review-thread-publication-v1.schema.json"
+
 // RemediationBriefV2 is retained because remediation brief wire versions are immutable.
 const RemediationBriefV2 = "remediation-brief-v2.schema.json"
 

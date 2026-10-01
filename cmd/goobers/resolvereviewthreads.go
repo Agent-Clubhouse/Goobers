@@ -31,9 +31,12 @@ const resolveReviewThreadsHelp = "Usage: goobers resolve-review-threads [path]\n
 	"new, changed or missing feedback, or a thread whose state someone else\n" +
 	"changed, stops publication with a typed staleInput result the workflow\n" +
 	"routes back to gather-review-threads; a head that moved off the published\n" +
-	"SHA ends the run as no-work. Exit codes: 0 = responses applied and\n" +
-	"verified, stale input reported, or no-work; 1 = business/provider error;\n" +
-	"2 = usage/IO error.\n"
+	"SHA ends the run as no-work. The result file is a versioned publication\n" +
+	"receipt (goobers.dev/review-thread-publication/v1), rewritten after every\n" +
+	"verified reply and resolution; a retry reconciles the run's newest matching\n" +
+	"receipt with re-read provider state and never publishes a mutation twice.\n" +
+	"Exit codes: 0 = responses applied and verified, stale input reported, or\n" +
+	"no-work; 1 = business/provider error; 2 = usage/IO error.\n"
 
 type reviewThreadDisposition struct {
 	ThreadID    string `json:"threadId"`
@@ -47,8 +50,8 @@ type gatheredReviewThread struct {
 }
 
 // reviewThreadPublication is one resolve-review-threads invocation: the
-// validated responses, the provider it publishes through, and what it
-// compares live state against.
+// validated responses, the provider it publishes through, what it compares
+// live state against, and the durable receipt it keeps (#6131).
 type reviewThreadPublication struct {
 	root, runID   string
 	repo          providers.RepositoryRef
@@ -63,8 +66,12 @@ type reviewThreadPublication struct {
 	snapshot       *apiv1.PRFeedbackSnapshot
 	threads        map[string]gatheredReviewThread
 	responses      []reviewThreadDisposition
-	stdout         io.Writer
-	stderr         io.Writer
+	// receipt is this attempt's transaction record; prior is the newest
+	// receipt an earlier attempt of the same transaction left in the journal.
+	receipt apiv1.ReviewThreadPublication
+	prior   *apiv1.ReviewThreadPublication
+	stdout  io.Writer
+	stderr  io.Writer
 }
 
 func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
@@ -118,6 +125,10 @@ func newReviewThreadPublication(root string, stdout, stderr io.Writer) (*reviewT
 	if brief.FeedbackSnapshot != nil {
 		p.prePublishHead = brief.FeedbackSnapshot.HeadSHA
 	}
+	p.receipt = newReviewThreadReceipt(p.pullID, publishedHead, p.snapshot, responses)
+	if p.prior, err = loadPriorReviewThreadReceipt(root, runID, reviewThreadReceiptStage(), p.receipt); err != nil {
+		return nil, p.fail("read this run's review-thread publication receipt", err), false
+	}
 	if code, ok := p.connect(); !ok {
 		return nil, code, false
 	}
@@ -156,6 +167,9 @@ func (p *reviewThreadPublication) run(ctx context.Context) int {
 	if code, stop := p.checkBeforePublication(ctx); stop {
 		return code
 	}
+	if code, stop := p.reconcile(ctx); stop {
+		return code
+	}
 	for _, response := range p.responses {
 		if code, stop := p.publish(ctx, response); stop {
 			return code
@@ -181,13 +195,13 @@ func (p *reviewThreadPublication) checkBeforePublication(ctx context.Context) (i
 	if p.snapshot == nil {
 		current, err := p.provider.GetPullRequest(ctx, p.repo, p.pullID)
 		if err != nil {
-			return failProviderStage(p.stderr, "read published pull request head", err, resolveReviewThreadsResultFile), true
+			return p.fail("read published pull request head", err), true
 		}
 		return p.checkHead(current.HeadSHA, "before review threads could be reconciled")
 	}
 	check, err := checkLiveFeedback(ctx, p.source, p.repo, p.snapshot, p.compareOptions())
 	if err != nil {
-		return failProviderStage(p.stderr, "re-read pull request feedback before publication", err, resolveReviewThreadsResultFile), true
+		return p.fail("re-read pull request feedback before publication", err), true
 	}
 	if check.stale() && check.reasons[0].Code == staleReasonHead {
 		if code, stop := p.checkHead(check.evidence.pr.HeadSHA, "before review threads could be reconciled"); stop {
@@ -198,6 +212,21 @@ func (p *reviewThreadPublication) checkBeforePublication(ctx context.Context) (i
 		return p.reportStale(check.reasons, countLiveUnresolvedReviewThreads(check.evidence.threads)), true
 	}
 	return 0, false
+}
+
+// reconcile folds an earlier attempt's receipt and a fresh provider read into
+// this attempt's receipt, then makes it durable before the first mutation.
+// A verified mutation the provider no longer shows stops publication as
+// stale input rather than being silently redone.
+func (p *reviewThreadPublication) reconcile(ctx context.Context) (int, bool) {
+	listing, code, stop := p.listThreads(ctx, "read review threads before publication")
+	if stop {
+		return code, true
+	}
+	if diverged := p.reconcileReceipt(listing); len(diverged) > 0 {
+		return p.reportStale(diverged, countLiveUnresolvedReviewThreads(listing)), true
+	}
+	return p.checkpoint()
 }
 
 // checkHead enforces the published-head precondition. An empty head fails
@@ -218,9 +247,9 @@ func (p *reviewThreadPublication) checkHead(live, when string) (int, bool) {
 		// view has not caught up with the push yet (Azure DevOps updates the
 		// PR's source commit asynchronously). That is weather, not a moved
 		// PR, so it takes the bounded infrastructure retry.
-		return failProviderStageRetryable(p.stderr, "read published pull request head",
+		return p.failTyped("read published pull request head",
 			fmt.Errorf("PR #%s still reports pre-publication head %s instead of published %s", p.pullID, live, p.publishedHead),
-			errorCodePublishedHeadNotVisible, resolveReviewThreadsResultFile), true
+			errorCodePublishedHeadNotVisible, true, ""), true
 	}
 	pf(p.stderr, "PR #%s head moved from published SHA %s to %s %s\n", p.pullID, p.publishedHead, live, when)
 	return p.endStaleHead(live), true
@@ -228,20 +257,18 @@ func (p *reviewThreadPublication) checkHead(live, when string) (int, bool) {
 
 func (p *reviewThreadPublication) endStaleHead(live string) int {
 	if err := releasePRRemediationClaim(p.root); err != nil {
-		return failProviderStage(p.stderr, "release remediation PR claim", err, resolveReviewThreadsResultFile)
+		return p.fail("release remediation PR claim", err)
 	}
 	reason := fmt.Sprintf("stale head: PR #%s moved from this run's published head %s to %s", p.pullID, p.publishedHead, live)
 	pf(p.stdout, "no work: %s; no further review-thread replies published, claim released\n", reason)
-	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), map[string]interface{}{
-		"selectedNumber":      p.pullID,
-		"publishedHeadSha":    p.publishedHead,
-		"liveHeadSha":         live,
-		executor.OutputNoWork: true,
-		"noWorkReason":        reason,
-		"outcome":             staleReasonHead,
-		staleInputOutput:      staleReasonHead,
-	}); err != nil {
-		pf(p.stderr, "error: write review-thread resolution result: %v\n", err)
+	p.receipt.Status = apiv1.ReviewThreadPublicationStale
+	p.receipt.StaleInput = staleReasonHead
+	p.receipt.NoWork = true
+	p.receipt.NoWorkReason = reason
+	p.receipt.Outcome = staleReasonHead
+	p.receipt.LiveHeadSHA = live
+	if err := p.persistReceipt(); err != nil {
+		pf(p.stderr, "error: %v\n", err)
 		return 2
 	}
 	return 0
@@ -251,19 +278,16 @@ func (p *reviewThreadPublication) endStaleHead(live string) int {
 // exits 0 on purpose: the stage did its job — it refused to answer feedback
 // that is no longer the feedback on the PR — and the workflow's gate routes
 // the result back to gather-review-threads rather than treating it as a
-// provider failure.
+// provider failure. The receipt records exactly which mutations had completed.
 func (p *reviewThreadPublication) reportStale(reasons []feedbackStaleReason, unresolved int) int {
 	pf(p.stdout, "PR #%s: feedback changed since it was gathered (%s); no further review-thread replies published\n",
 		p.pullID, describeStaleReasons(reasons))
-	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), map[string]interface{}{
-		"selectedNumber":                  p.pullID,
-		"publishedHeadSha":                p.publishedHead,
-		unresolvedReviewThreadCountOutput: strconv.Itoa(unresolved),
-		staleInputOutput:                  staleInputCode(reasons),
-		staleReasonsOutput:                reasons,
-		feedbackSnapshotDigestOutput:      p.snapshot.SnapshotDigest,
-	}); err != nil {
-		pf(p.stderr, "error: write review-thread resolution result: %v\n", err)
+	p.receipt.Status = apiv1.ReviewThreadPublicationStale
+	p.receipt.UnresolvedThreadCount = strconv.Itoa(unresolved)
+	p.receipt.StaleInput = staleInputCode(reasons)
+	p.receipt.StaleReasons = reasons
+	if err := p.persistReceipt(); err != nil {
+		pf(p.stderr, "error: %v\n", err)
 		return 2
 	}
 	return 0
@@ -282,22 +306,34 @@ func describeStaleReasons(reasons []feedbackStaleReason) string {
 }
 
 // publish replies to one thread and, for an addressed thread, resolves it,
-// verifying each mutation by reading it back. The thread listing it already
-// re-reads around each mutation doubles as the per-mutation freshness check.
+// verifying each mutation by reading it back and checkpointing the receipt
+// after each verified one. The thread listing it already re-reads around each
+// mutation doubles as the per-mutation freshness check, and provider state —
+// not the receipt — decides whether a mutation is still needed.
 func (p *reviewThreadPublication) publish(ctx context.Context, response reviewThreadDisposition) (int, bool) {
+	entry := p.receiptThread(response.ThreadID)
 	listing, code, stop := p.listThreads(ctx, "read review threads before reply")
 	if stop {
 		return code, true
 	}
-	if !reviewThreadHasReply(listing, p.runID, response.ThreadID) {
-		if listing, code, stop = p.reply(ctx, response); stop {
+	if replyID, ok := reviewThreadReplyID(listing, p.runID, response.ThreadID); ok {
+		if entry.ReplyState != apiv1.ReviewThreadMutationVerified {
+			entry.ReplyState, entry.ProviderReplyID = apiv1.ReviewThreadMutationVerified, replyID
+			entry.Recovery = apiv1.ReviewThreadRecoveryProviderAdopted
+		}
+	} else {
+		if listing, code, stop = p.reply(ctx, response, entry); stop {
 			return code, true
 		}
 	}
-	if response.Disposition != "addressed" || reviewThreadResolved(listing, response.ThreadID) {
+	if response.Disposition != "addressed" {
 		return 0, false
 	}
-	return p.resolve(ctx, response.ThreadID)
+	if reviewThreadResolved(listing, response.ThreadID) {
+		entry.ResolutionState = apiv1.ReviewThreadMutationVerified
+		return p.checkpoint()
+	}
+	return p.resolve(ctx, entry)
 }
 
 // listThreads re-lists the PR's review threads and applies the per-mutation
@@ -305,7 +341,7 @@ func (p *reviewThreadPublication) publish(ctx context.Context, response reviewTh
 func (p *reviewThreadPublication) listThreads(ctx context.Context, what string) (providers.PullRequestReviewThreads, int, bool) {
 	listing, err := p.provider.ListPullRequestReviewThreads(ctx, p.repo, p.pullID)
 	if err != nil {
-		return listing, failProviderStage(p.stderr, what, err, resolveReviewThreadsResultFile), true
+		return listing, p.fail(what, err), true
 	}
 	if reasons := checkThreadFeedback(p.snapshot, listing, p.compareOptions()); len(reasons) > 0 {
 		return listing, p.reportStale(reasons, countLiveUnresolvedReviewThreads(listing)), true
@@ -313,66 +349,78 @@ func (p *reviewThreadPublication) listThreads(ctx context.Context, what string) 
 	return listing, 0, false
 }
 
-func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThreadDisposition) (providers.PullRequestReviewThreads, int, bool) {
+func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThreadDisposition, entry *apiv1.ReviewThreadReceipt) (providers.PullRequestReviewThreads, int, bool) {
 	thread := p.threads[response.ThreadID]
 	body := renderReviewThreadReply(p.runID, p.publishedHead, response)
 	if _, err := p.mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
 		Repository: p.repo, PullID: p.pullID, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
 	}); err != nil {
-		return providers.PullRequestReviewThreads{}, failProviderStage(p.stderr, fmt.Sprintf("reply to review thread %s", response.ThreadID), err, resolveReviewThreadsResultFile), true
+		// The provider may or may not have applied it; the next attempt's
+		// read decides, by this run's marker, never by this error.
+		entry.ReplyState, entry.LastError = apiv1.ReviewThreadMutationFailed, err.Error()
+		return providers.PullRequestReviewThreads{}, p.fail(fmt.Sprintf("reply to review thread %s", response.ThreadID), err), true
 	}
 	listing, code, stop := p.listThreads(ctx, "verify review-thread reply")
 	if stop {
 		return listing, code, true
 	}
-	if !reviewThreadHasReply(listing, p.runID, response.ThreadID) {
-		pf(p.stderr, "error: reply to review thread %s is not visible after publication\n", response.ThreadID)
-		return listing, 1, true
+	replyID, ok := reviewThreadReplyID(listing, p.runID, response.ThreadID)
+	if !ok {
+		entry.ReplyState, entry.LastError = apiv1.ReviewThreadMutationFailed, "reply not visible after publication"
+		return listing, p.failTyped("verify review-thread reply",
+			fmt.Errorf("reply to review thread %s is not visible after publication", response.ThreadID),
+			errorCodeReviewThreadUnverified, false, ""), true
+	}
+	entry.ReplyState, entry.ProviderReplyID, entry.LastError = apiv1.ReviewThreadMutationVerified, replyID, ""
+	if code, stop := p.checkpoint(); stop {
+		return listing, code, true
 	}
 	return listing, 0, false
 }
 
-func (p *reviewThreadPublication) resolve(ctx context.Context, threadID string) (int, bool) {
+func (p *reviewThreadPublication) resolve(ctx context.Context, entry *apiv1.ReviewThreadReceipt) (int, bool) {
+	threadID := entry.ThreadID
 	if err := p.mutator.ResolvePullRequestReviewThread(ctx, p.repo, threadID); err != nil {
-		return failProviderStage(p.stderr, fmt.Sprintf("resolve review thread %s", threadID), err, resolveReviewThreadsResultFile), true
+		entry.ResolutionState, entry.LastError = apiv1.ReviewThreadMutationFailed, err.Error()
+		return p.fail(fmt.Sprintf("resolve review thread %s", threadID), err), true
 	}
 	listing, code, stop := p.listThreads(ctx, "verify review-thread resolution")
 	if stop {
 		return code, true
 	}
 	if !reviewThreadResolved(listing, threadID) {
-		pf(p.stderr, "error: review thread %s remains unresolved after resolution\n", threadID)
-		return 1, true
+		entry.ResolutionState, entry.LastError = apiv1.ReviewThreadMutationFailed, "thread unresolved after resolution"
+		return p.failTyped("verify review-thread resolution",
+			fmt.Errorf("review thread %s remains unresolved after resolution", threadID),
+			errorCodeReviewThreadUnverified, false, ""), true
 	}
-	return 0, false
+	entry.ResolutionState, entry.LastError = apiv1.ReviewThreadMutationVerified, ""
+	return p.checkpoint()
 }
 
-// finish re-queries the threads and the head after the last mutation and
-// writes the stage result.
+// finish re-queries the threads and the head after the last mutation, proves
+// every intended mutation from that final read, and writes the complete
+// receipt.
 func (p *reviewThreadPublication) finish(ctx context.Context) int {
 	final, code, stop := p.listThreads(ctx, "re-query unresolved review threads")
 	if stop {
 		return code
 	}
+	unresolved := countLiveUnresolvedReviewThreads(final)
+	p.receipt.UnresolvedThreadCount = strconv.Itoa(unresolved)
+	if err := p.verifyReceiptComplete(final); err != nil {
+		return p.failTyped("verify review-thread publication", err, errorCodeReviewThreadUnverified, false, "")
+	}
 	verifiedHead, err := p.provider.GetPullRequest(ctx, p.repo, p.pullID)
 	if err != nil {
-		return failProviderStage(p.stderr, "verify published pull request head", err, resolveReviewThreadsResultFile)
+		return p.fail("verify published pull request head", err)
 	}
 	if code, stop := p.checkHead(verifiedHead.HeadSHA, "while review threads were reconciled"); stop {
 		return code
 	}
-	unresolved := countLiveUnresolvedReviewThreads(final)
-	result := map[string]interface{}{
-		"selectedNumber":                  p.pullID,
-		"publishedHeadSha":                p.publishedHead,
-		unresolvedReviewThreadCountOutput: strconv.Itoa(unresolved),
-		staleInputOutput:                  "",
-	}
-	if p.snapshot != nil {
-		result[feedbackSnapshotDigestOutput] = p.snapshot.SnapshotDigest
-	}
-	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), result); err != nil {
-		pf(p.stderr, "error: write review-thread resolution result: %v\n", err)
+	p.receipt.Status = apiv1.ReviewThreadPublicationComplete
+	if err := p.persistReceipt(); err != nil {
+		pf(p.stderr, "error: %v\n", err)
 		return 2
 	}
 	pf(p.stdout, "PR #%s: replied to %d review thread(s); %d unresolved live thread(s) remain\n", p.pullID, len(p.responses), unresolved)

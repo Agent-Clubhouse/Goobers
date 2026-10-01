@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/review-thread-publication-v1.schema.json",
+  "title": "ReviewThreadPublicationV1",
+  "description": "Durable per-thread receipt for review-thread publication (#6131). resolve-review-threads writes it as its result file before its first mutation and again after every verified one, so whatever stops the stage leaves exact evidence of what completed. It is transaction history, not authority: a retry re-reads provider state before trusting any entry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "integrity",
+    "pullRequest",
+    "selectedNumber",
+    "publishedHeadSha",
+    "feedbackSnapshotDigest",
+    "status",
+    "resumedFromReceipt",
+    "restoration",
+    "staleInput",
+    "threads"
+  ],
+  "properties": {
+    "schema": {
+      "const": "goobers.dev/review-thread-publication/v1",
+      "description": "Receipt wire version."
+    },
+    "integrity": {
+      "type": "string",
+      "enum": ["trusted", "maintainer", "unapproved", "derived"],
+      "description": "Provenance grade of the receipt's provider-derived content."
+    },
+    "pullRequest": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Pull request the replies are published on."
+    },
+    "selectedNumber": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "description": "Same as pullRequest, under the stage's existing routing output name."
+    },
+    "publishedHeadSha": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Head this run published and every reply describes."
+    },
+    "feedbackSnapshotDigest": {
+      "type": "string",
+      "description": "snapshotDigest of the feedback the replies answer; empty for a run gathered before feedback snapshots existed."
+    },
+    "status": {
+      "enum": ["in_progress", "complete", "partial", "failed", "stale"],
+      "description": "complete only when every intended mutation was read back after publication; in_progress while publication runs (left behind only by an interrupted attempt); partial or failed when an error stopped publication with or without verified mutations; stale when the head or the feedback changed."
+    },
+    "resumedFromReceipt": {
+      "type": "boolean",
+      "description": "Whether an earlier attempt's receipt for the same pull request, published head and feedback snapshot was reconciled."
+    },
+    "restoration": {
+      "const": "unsupported",
+      "description": "No provider-side rollback is attempted: published, human-visible replies are never deleted on a generic failure, so a partial publication is preserved and reported."
+    },
+    "unresolvedThreadCount": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "Live unresolved, non-outdated threads at the last thread listing; absent until one was read."
+    },
+    "staleInput": {
+      "type": "string",
+      "description": "Highest-priority stale reason code, or empty when publication was not stopped by stale input."
+    },
+    "staleReasons": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/staleReason"},
+      "description": "Every structured stale reason when status is stale."
+    },
+    "threads": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/thread"},
+      "description": "One entry per answered thread, in response order."
+    },
+    "noWork": {
+      "type": "boolean",
+      "description": "Set when the pull-request head moved off the published SHA and the run ends as no-work."
+    },
+    "noWorkReason": {
+      "type": "string",
+      "description": "Why the run ended as no-work."
+    },
+    "outcome": {
+      "type": "string",
+      "description": "Typed terminal outcome, such as stale_head."
+    },
+    "liveHeadSha": {
+      "type": "string",
+      "description": "The head the pull request moved to, for a stale_head outcome."
+    },
+    "errorCode": {
+      "type": "string",
+      "description": "Typed stage failure code when the stage failed."
+    },
+    "errorMessage": {
+      "type": "string",
+      "description": "Typed stage failure message."
+    },
+    "errorRetryable": {
+      "type": "boolean",
+      "description": "Whether the failure takes the bounded infrastructure retry."
+    },
+    "rateLimitReset": {
+      "type": "string",
+      "description": "Provider rate-limit reset time for a rate-limited failure."
+    }
+  },
+  "$defs": {
+    "staleReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "kind"],
+      "properties": {
+        "code": {
+          "enum": ["stale_head", "incomplete_collection", "new_feedback", "changed_feedback", "missing_feedback", "changed_thread_state"],
+          "description": "Stale reason code."
+        },
+        "kind": {
+          "type": "string",
+          "description": "What changed: head, collection, generalComment, review, reviewThread or reviewThreadComment."
+        },
+        "id": {
+          "type": "string",
+          "description": "Provider-stable id of the changed item."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Human-readable detail, such as the enclosing thread."
+        }
+      }
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadId", "disposition", "replyState", "resolutionState"],
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-stable review thread id."
+        },
+        "disposition": {
+          "enum": ["addressed", "obsolete", "blocked"],
+          "description": "The implementer's disposition for the thread."
+        },
+        "contentDigest": {
+          "type": "string",
+          "description": "Feedback snapshot contentDigest of the thread the reply answers."
+        },
+        "replyState": {
+          "enum": ["pending", "verified", "failed"],
+          "description": "Reply state; verified only after the reply was read back from the provider."
+        },
+        "resolutionState": {
+          "enum": ["pending", "verified", "failed", "not_applicable"],
+          "description": "Resolution state. Addressed threads resolve only after a verified reply; obsolete and blocked threads stay unresolved (not_applicable)."
+        },
+        "providerReplyId": {
+          "type": "string",
+          "description": "Provider-stable id of the verified reply."
+        },
+        "recovery": {
+          "enum": ["receipt_confirmed", "provider_adopted"],
+          "description": "How a retry accounted for a mutation it did not make itself: receipt_confirmed when an earlier attempt's receipt recorded it and provider state still shows it; provider_adopted when provider state shows this run's reply marker or resolution but no receipt recorded it, as after an attempt interrupted between mutation and receipt write."
+        },
+        "lastError": {
+          "type": "string",
+          "description": "Last error, or the divergence between the receipt and provider state, for this thread."
+        }
+      }
+    }
+  }
+}

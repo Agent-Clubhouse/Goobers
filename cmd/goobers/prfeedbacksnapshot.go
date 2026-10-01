@@ -80,12 +80,7 @@ var staleReasonPriority = map[string]int{
 
 // feedbackStaleReason is one structured reason a live read differs from the
 // recorded snapshot.
-type feedbackStaleReason struct {
-	Code   string `json:"code"`
-	Kind   string `json:"kind"`
-	ID     string `json:"id,omitempty"`
-	Detail string `json:"detail,omitempty"`
-}
+type feedbackStaleReason = apiv1.PRFeedbackStaleReason
 
 // prFeedbackSource is the provider-neutral read surface a snapshot needs.
 type prFeedbackSource interface {

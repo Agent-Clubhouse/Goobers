@@ -27,6 +27,15 @@ type feedbackWorld struct {
 	editThread  func(body string)
 	replies     func() int
 	resolved    func() bool
+	// arm injects a one-shot fault at a mutation boundary (#6131):
+	// "reply" / "resolve" fail before the provider applies the mutation,
+	// "reply-applied" / "resolve-applied" apply it and then fail, the way a
+	// lost response does. Mutating providers only.
+	arm func(fault string)
+	// deleteOwnReplies removes this run's replies, as a human might.
+	deleteOwnReplies func()
+	// reopen marks the thread unresolved again, as a human might.
+	reopen func()
 }
 
 func newFeedbackWorld(t *testing.T, kind providers.ProviderKind) feedbackWorld {
@@ -51,6 +60,18 @@ type githubFeedbackFake struct {
 	replies  []map[string]any
 	general  []map[string]any
 	nextID   int64
+	fault    string
+}
+
+// takeFault consumes the armed fault when it is one of kinds.
+func (f *githubFeedbackFake) takeFault(kinds ...string) string {
+	for _, kind := range kinds {
+		if f.fault == kind {
+			f.fault = ""
+			return kind
+		}
+	}
+	return ""
 }
 
 func (f *githubFeedbackFake) serve(t *testing.T) *httptest.Server {
@@ -68,11 +89,20 @@ func (f *githubFeedbackFake) serve(t *testing.T) *httptest.Server {
 			comments := []map[string]any{{"id": 101, "body": f.rootBody, "path": "a.go", "user": map[string]any{"login": "reviewer"}}}
 			writeFakeJSON(w, append(comments, f.replies...))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/replies"):
+			fault := f.takeFault("reply", "reply-applied")
+			if fault == "reply" {
+				http.Error(w, `{"message":"injected fault"}`, http.StatusBadRequest)
+				return
+			}
 			var request map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&request)
 			f.nextID++
 			reply := map[string]any{"id": f.nextID, "body": request["body"], "path": "a.go", "in_reply_to_id": 101, "user": map[string]any{"login": "goobers-bot"}}
 			f.replies = append(f.replies, reply)
+			if fault != "" {
+				http.Error(w, `{"message":"injected fault after apply"}`, http.StatusBadRequest)
+				return
+			}
 			writeFakeJSON(w, reply)
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			f.serveGraphQL(w, r)
@@ -89,7 +119,16 @@ func (f *githubFeedbackFake) serveGraphQL(w http.ResponseWriter, r *http.Request
 	}
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	if strings.Contains(request.Query, "mutation") {
+		fault := f.takeFault("resolve", "resolve-applied")
+		if fault == "resolve" {
+			http.Error(w, `{"message":"injected fault"}`, http.StatusBadRequest)
+			return
+		}
 		f.resolved = true
+		if fault != "" {
+			http.Error(w, `{"message":"injected fault after apply"}`, http.StatusBadRequest)
+			return
+		}
 		_, _ = w.Write([]byte(`{"data":{"resolveReviewThread":{"thread":{"id":"PRRT_1","isResolved":true}}}}`))
 		return
 	}
@@ -135,6 +174,13 @@ func newGitHubFeedbackWorld(t *testing.T) feedbackWorld {
 		editThread: func(body string) { fake.mu.Lock(); fake.rootBody = body; fake.mu.Unlock() },
 		replies:    func() int { fake.mu.Lock(); defer fake.mu.Unlock(); return len(fake.replies) },
 		resolved:   func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.resolved },
+		arm:        func(fault string) { fake.mu.Lock(); fake.fault = fault; fake.mu.Unlock() },
+		deleteOwnReplies: func() {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			fake.replies = nil
+		},
+		reopen: func() { fake.mu.Lock(); fake.resolved = false; fake.mu.Unlock() },
 	}
 }
 
@@ -221,6 +267,19 @@ func newADOFeedbackWorld(t *testing.T) feedbackWorld {
 			return len(fake.threads[5].replies) - humanReplies
 		},
 		resolved: func() bool { fake.mu.Lock(); defer fake.mu.Unlock(); return fake.threads[5].status == "fixed" },
+		arm:      func(fault string) { fake.mu.Lock(); fake.fault = fault; fake.mu.Unlock() },
+		deleteOwnReplies: func() {
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			kept := fake.threads[5].replies[:0]
+			for _, reply := range fake.threads[5].replies {
+				if author, _ := reply["author"].(map[string]string); author["id"] != "self-guid" {
+					kept = append(kept, reply)
+				}
+			}
+			fake.threads[5].replies = kept
+		},
+		reopen: func() { fake.mu.Lock(); fake.threads[5].status = "active"; fake.mu.Unlock() },
 	}
 }
 
