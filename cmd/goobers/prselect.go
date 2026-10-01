@@ -231,6 +231,17 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, exclusionChecks)
 			continue
 		}
+		if hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+			refreshed, cleared, err := clearStaleRunAbortedPR(ctx, gateProvider, repo, pr)
+			if err != nil {
+				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
+			}
+			pr = refreshed
+			if cleared {
+				pf(stdout, "re-queued PR #%d: removed stale %s after checks passed and no prior comments were present\n",
+					pr.Number, abortedRunLabel)
+			}
+		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
 			exclusions.recordPR(pr.Number, exclusionLabel)
 			continue
@@ -1185,6 +1196,110 @@ func hasPRSelectExclusion(labels, excludeLabels []string) bool {
 		}
 	}
 	return false
+}
+
+func clearStaleRunAbortedPR(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pr providers.PullRequestSummary,
+) (providers.PullRequestSummary, bool, error) {
+	if provider == nil || !hasAnyLabel(pr.Labels, []string{abortedRunLabel}) {
+		return pr, false, nil
+	}
+	if pr.State != "open" || pr.Draft || pr.CheckState != providers.CheckStatePassing {
+		return pr, false, nil
+	}
+	pullID := strconv.Itoa(pr.Number)
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return pr, false, nil
+	}
+	refreshed := pullRequestSummaryFromPoll(pr, poll)
+	if poll.State != "open" || poll.Draft || poll.CheckState != providers.CheckStatePassing {
+		return pr, false, nil
+	}
+	if !hasAnyLabel(refreshed.Labels, []string{abortedRunLabel}) {
+		return refreshed, false, nil
+	}
+	if poll.Mergeable == nil || !*poll.Mergeable {
+		return pr, false, nil
+	}
+	if len(poll.CommentsSince) != 0 {
+		return pr, false, nil
+	}
+	if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
+		return pr, false, nil
+	}
+	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository:   repo,
+		ID:           pullID,
+		RemoveLabels: []string{abortedRunLabel},
+	}); err != nil {
+		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
+	}
+	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
+	return refreshed, true, nil
+}
+
+func runAbortedPRHasReviewAttention(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	poll providers.PullRequestPollResult,
+) (bool, error) {
+	if poll.ReviewDecision != "" && poll.ReviewDecision != providers.ReviewDecisionPending {
+		return true, nil
+	}
+	if poll.RequestedChanges > 0 {
+		return true, nil
+	}
+	threads, err := provider.ListPullRequestReviewThreads(ctx, repo, pullID)
+	if err != nil {
+		return true, err
+	}
+	return len(threads.Reviews) > 0 || len(threads.InlineComments) > 0, nil
+}
+
+func pullRequestSummaryFromPoll(pr providers.PullRequestSummary, poll providers.PullRequestPollResult) providers.PullRequestSummary {
+	if poll.Number != 0 {
+		pr.ID = strconv.Itoa(poll.Number)
+		pr.Number = poll.Number
+	}
+	if poll.URL != "" {
+		pr.URL = poll.URL
+	}
+	pr.Author = poll.Author
+	pr.Assignees = append([]string(nil), poll.Assignees...)
+	pr.RequestedReviewers = append([]string(nil), poll.RequestedReviewers...)
+	pr.State = poll.State
+	pr.Merged = poll.Merged
+	pr.Head = poll.HeadBranch
+	pr.Base = poll.BaseBranch
+	pr.HeadSHA = poll.HeadSHA
+	pr.BaseSHA = poll.BaseSHA
+	pr.Draft = poll.Draft
+	if poll.Labels != nil {
+		pr.Labels = append([]string(nil), poll.Labels...)
+	}
+	pr.CheckState = poll.CheckState
+	pr.Body = poll.Body
+	pr.Integrity = poll.Integrity
+	return pr
+}
+
+func removeLabel(labels []string, remove string) []string {
+	filtered := labels[:0]
+	for _, label := range labels {
+		if label != remove {
+			filtered = append(filtered, label)
+		}
+	}
+	return filtered
 }
 
 // scopeGateVerdictStillParks skips only the exact PR state that was already
