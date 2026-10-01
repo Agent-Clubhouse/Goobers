@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,11 @@ import (
 )
 
 func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
-	authErr := errors.New("GET /commits/abc/check-runs failed: status 403: Resource not accessible by personal access token")
+	authErr := fmt.Errorf("provider backlog count: %w", schedulerTypedCause{
+		code:  "github_auth_rejected",
+		class: "auth",
+		err:   errors.New("GET /commits/abc/check-runs failed: status 403: Resource not accessible by personal access token"),
+	})
 	failing := &fakeBacklogCounter{err: authErr}
 	entry := WorkflowEntry{
 		Workflow:              "implementation",
@@ -49,6 +54,9 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 	for _, event := range events {
 		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed {
 			authEvents++
+			if got := event.Error.Causes; len(got) < 2 || got[1].Code != "github_auth_rejected" || got[1].Class != "auth" {
+				t.Fatalf("auth event causes = %+v, want typed provider cause metadata", got)
+			}
 		}
 	}
 	if authEvents != 1 {
@@ -66,6 +74,21 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 	if got := repaired.polls(); got != 1 {
 		t.Fatalf("polls after credential configuration reload = %d, want 1", got)
 	}
+}
+
+type schedulerTypedCause struct {
+	code  string
+	class string
+	err   error
+}
+
+func (e schedulerTypedCause) Error() string { return e.err.Error() }
+func (e schedulerTypedCause) Unwrap() error { return e.err }
+func (e schedulerTypedCause) ErrorCode() string {
+	return e.code
+}
+func (e schedulerTypedCause) ErrorClass() string {
+	return e.class
 }
 
 func TestAuthFailureCircuitStopsRunRedispatch(t *testing.T) {

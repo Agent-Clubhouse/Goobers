@@ -75,6 +75,28 @@ func TestErrorCausesContinueThroughTypedWrapperAroundWrappedChain(t *testing.T) 
 	}
 }
 
+func TestErrorInfoForPreservesTypedCauseMetadata(t *testing.T) {
+	err := fmt.Errorf("stage result: %w", typedCause{code: "provider_error", class: "infra", err: errors.New("provider unavailable")})
+
+	info := ErrorInfoFor("stage_failed", err, true)
+	if info == nil {
+		t.Fatal("ErrorInfoFor returned nil")
+	}
+	if info.Code != "stage_failed" || info.Message != err.Error() || !info.Retryable {
+		t.Fatalf("info = %+v, want code/message/retryable", info)
+	}
+	got := make([]string, len(info.Causes))
+	for i, cause := range info.Causes {
+		got[i] = cause.Message
+	}
+	if !equalStrings(got, []string{"stage result", "provider unavailable"}) {
+		t.Fatalf("cause messages = %#v, want structured chain", got)
+	}
+	if info.Causes[1].Code != "provider_error" || info.Causes[1].Class != "infra" {
+		t.Fatalf("typed cause metadata = %+v, want code/class", info.Causes[1])
+	}
+}
+
 func causeMessages(causes []ErrorCause) []string {
 	out := make([]string, len(causes))
 	for i, cause := range causes {

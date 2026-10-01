@@ -389,7 +389,7 @@ func (h *engineTerminalHooks) recordHookFailure(out engineTerminalOutcome, stage
 		Type:   journal.EventError,
 		Stage:  stage,
 		Reason: "engine terminal hook failed",
-		Error:  &journal.ErrorDetail{Code: code, Message: err.Error()},
+		Error:  journal.ErrorDetailFor(code, err),
 		Runner: map[string]any{"driver": string(journal.DriverEngine)},
 	})
 }

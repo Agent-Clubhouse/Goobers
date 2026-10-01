@@ -309,7 +309,7 @@ func (h *Handler) rejectInvalidSignature(w http.ResponseWriter) {
 func (h *Handler) rejectUnusablePayload(w http.ResponseWriter, cause error) {
 	if err := h.journal.Append(journal.Event{
 		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "webhook_payload_unusable", Message: cause.Error()},
+		Error: journal.ErrorDetailFor("webhook_payload_unusable", cause),
 	}); err != nil {
 		http.Error(w, "record webhook rejection", http.StatusInternalServerError)
 		return

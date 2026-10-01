@@ -1543,9 +1543,29 @@ func TestExecutorInvokeFailsClosedOnMissingDeclaredArtifactFile(t *testing.T) {
 	if !result.Error.Retryable {
 		t.Fatalf("Error.Retryable = false, want true so the runner spends the stage retry budget")
 	}
+	if got := errorCauseMessages(result.Error.Causes); !containsCauseMessage(got, ErrDeclaredArtifactMissing.Error()) {
+		t.Fatalf("Error.Causes = %#v, want declared artifact missing leaf", got)
+	}
 	if len(rec.artifacts) != 0 {
 		t.Fatalf("expected no artifact recorded, got %d", len(rec.artifacts))
 	}
+}
+
+func errorCauseMessages(causes []apiv1.ErrorCause) []string {
+	out := make([]string, len(causes))
+	for i, cause := range causes {
+		out[i] = cause.Message
+	}
+	return out
+}
+
+func containsCauseMessage(messages []string, want string) bool {
+	for _, message := range messages {
+		if message == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestExecutorInvokeNoWorkToleratesMissingDeclaredArtifactFile is the

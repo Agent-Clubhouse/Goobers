@@ -108,10 +108,7 @@ func (s *daemonRunJournalService) journalOperatorMessageTargetScopeError(runID s
 		Type:   journal.EventError,
 		RunID:  runID,
 		Reason: "operator-message-target-scope-denial-journal-failed",
-		Error: &journal.ErrorDetail{
-			Code:    "operator_message_denial_journal_failed",
-			Message: err.Error(),
-		},
+		Error:  journal.ErrorDetailFor("operator_message_denial_journal_failed", err),
 	})
 }
 

@@ -1042,7 +1042,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					Type:     journal.EventError,
 					Workflow: entry.Workflow,
 					Gaggle:   entry.Gaggle,
-					Error:    &journal.ErrorDetail{Code: "trigger_state_persist_failed", Message: persistErr.Error()},
+					Error:    journal.ErrorDetailFor("trigger_state_persist_failed", persistErr),
 				})
 			}
 			if res.Fire {
@@ -1836,10 +1836,7 @@ func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding
 		Type:     journal.EventError,
 		Workflow: identity.Workflow,
 		Gaggle:   identity.Gaggle,
-		Error: &journal.ErrorDetail{
-			Code:    "schedule_demand_persist_failed",
-			Message: err.Error(),
-		},
+		Error:    journal.ErrorDetailFor("schedule_demand_persist_failed", err),
 	})
 	return false
 }

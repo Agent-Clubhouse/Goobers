@@ -37,7 +37,7 @@ func startServiceHealthWithStores(ctx context.Context, root string, identity *da
 		exporter, err := buildDiagnosticExporterWithStores(initialize, root, setup, stores)
 		cancel()
 		if err != nil {
-			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: &journal.ErrorDetail{Code: "diagnostics_export_unavailable", Message: err.Error()}})
+			setup.InstanceLog.AppendBestEffort(journal.Event{Type: journal.EventError, Error: journal.ErrorDetailFor("diagnostics_export_unavailable", err)})
 		}
 		runHealthExports(ctx, root, setup, exporter, records, fleet)
 

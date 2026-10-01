@@ -933,7 +933,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
-			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
+			Error:   journal.ErrorInfoFor("exec_start", err, false),
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
@@ -1221,11 +1221,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			)))
 		}
 		result.Status = apiv1.ResultFailure
-		result.Error = &apiv1.ErrorInfo{
-			Code:      "provider_error",
-			Message:   providerErr.Error(),
-			Retryable: false,
-		}
+		result.Error = journal.ErrorInfoFor("provider_error", providerErr, false)
 		result.Summary = fmt.Sprintf("provider stage %q failed", command[1])
 		return result, nil
 	}

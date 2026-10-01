@@ -3,6 +3,7 @@ package ingest_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -212,6 +213,55 @@ func TestLogFailureObservesInstanceJournalAppendDrop(t *testing.T) {
 	if got := observer.count.Load(); got != 1 {
 		t.Fatalf("observer notifications = %d, want 1", got)
 	}
+}
+
+func TestLogFailurePreservesStructuredCauses(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+
+	cause := fmt.Errorf("ingest scheduler log: %w", ingestTypedCause{
+		code:  "sqlite_locked",
+		class: "infra",
+		err:   errors.New("database is locked"),
+	})
+	ingest.LogFailure(log, "run-structured-log", "telemetry_ingest_failed", cause)
+
+	events, err := journal.ReadInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Error == nil {
+		t.Fatalf("events = %+v, want one error event", events)
+	}
+	got := events[0].Error.Causes
+	if len(got) < 2 {
+		t.Fatalf("causes = %+v, want wrapped chain", got)
+	}
+	if got[1].Code != "sqlite_locked" || got[1].Class != "infra" {
+		t.Fatalf("typed cause = %+v, want code/class metadata", got[1])
+	}
+	if got[len(got)-1].Message != "database is locked" {
+		t.Fatalf("leaf cause = %+v, want database leaf", got[len(got)-1])
+	}
+}
+
+type ingestTypedCause struct {
+	code  string
+	class string
+	err   error
+}
+
+func (e ingestTypedCause) Error() string { return e.err.Error() }
+func (e ingestTypedCause) Unwrap() error { return e.err }
+func (e ingestTypedCause) ErrorCode() string {
+	return e.code
+}
+func (e ingestTypedCause) ErrorClass() string {
+	return e.class
 }
 
 func TestRunTelemetryNilDBIsNoOp(t *testing.T) {

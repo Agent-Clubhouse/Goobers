@@ -145,11 +145,7 @@ func outboxExportFailureResult(commandResult apiv1.ResultEnvelope, exportErr err
 	status := commandResult.Status
 	commandResult.Status = apiv1.ResultFailure
 	commandResult.Summary = fmt.Sprintf("command reported %s; required outbox export failed", status)
-	commandResult.Error = &apiv1.ErrorInfo{
-		Code:    outboxExportFailureCode,
-		Message: exportErr.Error(),
-		Causes:  apiErrorCauses(exportErr),
-	}
+	commandResult.Error = journal.ErrorInfoFor(outboxExportFailureCode, exportErr, false)
 	return commandResult
 }
 

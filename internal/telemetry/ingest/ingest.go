@@ -183,6 +183,6 @@ func LogFailure(log *journal.InstanceLog, runID, code string, cause error) {
 	}
 	log.AppendBestEffort(journal.Event{
 		Type: journal.EventError, RunID: runID,
-		Error: &journal.ErrorDetail{Code: code, Message: cause.Error()},
+		Error: journal.ErrorDetailFor(code, cause),
 	})
 }

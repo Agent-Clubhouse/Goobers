@@ -849,12 +849,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 				ResultEnvelope: apiv1.ResultEnvelope{
 					Status:  apiv1.ResultFailure,
 					Summary: runner.BaseSyncConflictSummary,
-					Error: &apiv1.ErrorInfo{
-						Code:      runner.BaseSyncConflictErrorCode,
-						Message:   err.Error(),
-						Causes:    apiErrorCauses(err),
-						Retryable: true,
-					},
+					Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
 				},
 				BaseSyncConflict: detail,
 				SelfPlacement:    selfStagePlacement(),
@@ -874,22 +869,6 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	}
 	result.SelfPlacement = selfStagePlacement()
 	return a.scrubStageActivityResult(ctx, result)
-}
-
-func apiErrorCauses(err error) []apiv1.ErrorCause {
-	causes := journal.ErrorCauses(err)
-	if len(causes) == 0 {
-		return nil
-	}
-	out := make([]apiv1.ErrorCause, 0, len(causes))
-	for _, cause := range causes {
-		out = append(out, apiv1.ErrorCause{
-			Code:    cause.Code,
-			Class:   cause.Class,
-			Message: cause.Message,
-		})
-	}
-	return out
 }
 
 // selfStagePlacement is the in-process arms' placement provenance (#3875): what

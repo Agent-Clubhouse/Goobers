@@ -5165,12 +5165,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 					Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 					MediaType: "application/json", Integrity: ref.Integrity,
 				}},
-				Error: &apiv1.ErrorInfo{
-					Code:      baseSyncConflictErrorCode,
-					Message:   prepErr.Error(),
-					Causes:    apiErrorCauses(prepErr),
-					Retryable: true,
-				},
+				Error: journal.ErrorInfoFor(baseSyncConflictErrorCode, prepErr, true),
 			}, nil, nil, nil
 		}
 		// #572: a transient network/remote failure provisioning the stage's
@@ -5704,22 +5699,6 @@ func journalErrorCausesFrom(causes []apiv1.ErrorCause) []journal.ErrorCause {
 	out := make([]journal.ErrorCause, 0, len(causes))
 	for _, cause := range causes {
 		out = append(out, journal.ErrorCause{
-			Code:    cause.Code,
-			Class:   cause.Class,
-			Message: cause.Message,
-		})
-	}
-	return out
-}
-
-func apiErrorCauses(err error) []apiv1.ErrorCause {
-	causes := journal.ErrorCauses(err)
-	if len(causes) == 0 {
-		return nil
-	}
-	out := make([]apiv1.ErrorCause, 0, len(causes))
-	for _, cause := range causes {
-		out = append(out, apiv1.ErrorCause{
 			Code:    cause.Code,
 			Class:   cause.Class,
 			Message: cause.Message,

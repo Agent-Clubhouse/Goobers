@@ -2,6 +2,8 @@ package journal
 
 import (
 	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 const maxErrorCauses = 32
@@ -43,6 +45,31 @@ func ErrorDetailFor(code string, err error) *ErrorDetail {
 		return nil
 	}
 	return &ErrorDetail{Code: code, Message: err.Error(), Causes: ErrorCauses(err)}
+}
+
+// ErrorInfoFor records err as an API result error with the same structured
+// wrapped-error cause extraction used by journal ErrorDetail producers.
+func ErrorInfoFor(code string, err error, retryable bool) *apiv1.ErrorInfo {
+	if err == nil {
+		return nil
+	}
+	return &apiv1.ErrorInfo{Code: code, Message: err.Error(), Causes: ErrorInfoCauses(err), Retryable: retryable}
+}
+
+func ErrorInfoCauses(err error) []apiv1.ErrorCause {
+	causes := ErrorCauses(err)
+	if len(causes) == 0 {
+		return nil
+	}
+	out := make([]apiv1.ErrorCause, 0, len(causes))
+	for _, cause := range causes {
+		out = append(out, apiv1.ErrorCause{
+			Code:    cause.Code,
+			Class:   cause.Class,
+			Message: cause.Message,
+		})
+	}
+	return out
 }
 
 // ErrorCauses returns the wrapped error chain as ordered causal layers. The
