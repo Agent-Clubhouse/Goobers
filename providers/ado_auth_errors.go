@@ -19,6 +19,7 @@ const (
 	azureCLINotFoundCode           = "azure_cli_not_found"
 	azureCLIStartFailedCode        = "azure_cli_start_failed"
 	azureCLIExitCode               = "azure_cli_exit"
+	azureCLIPathAmbiguousCode      = "azure_cli_path_ambiguous"
 	azureCLISignInRequiredCode     = "azure_cli_sign_in_required"
 	azureCLINoAccountCode          = "azure_cli_no_account"
 	azureCLINetworkUnreachableCode = "azure_cli_network_unreachable"
@@ -138,6 +139,8 @@ func azureCLICommandError(ctx context.Context, err error, out []byte) error {
 	hint := "run az account get-access-token --resource " + AzureDevOpsResourceID +
 		" --query expiresOn --output tsv in the same user/process context as Goobers" +
 		" (include the configured --tenant, if any); use az login only if that check requests sign-in"
+	var pathAmbiguity *azureCLIPathAmbiguityError
+	hasPathAmbiguity := errors.As(cause, &pathAmbiguity)
 
 	var lookup *exec.Error
 	var start *os.PathError
@@ -170,6 +173,15 @@ func azureCLICommandError(ctx context.Context, err error, out []byte) error {
 		detail = status
 		if class, ok := classifyAzureCLIOutput(out); ok {
 			code, detail, hint = class.code, class.detail+" ("+status+")", class.hint
+		}
+	}
+	if hasPathAmbiguity {
+		if code == azureCLIFailureCode || code == azureCLIStartFailedCode || code == azureCLIExitCode {
+			code = azureCLIPathAmbiguousCode
+			hint += fmt.Sprintf(
+				"; Goobers found %d Azure CLI launchers on PATH and used the first; inspect PATH and remove or reorder stale installations",
+				pathAmbiguity.candidateCount,
+			)
 		}
 	}
 	return &azureCLICommandFailure{

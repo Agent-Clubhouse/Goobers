@@ -428,7 +428,9 @@ func (s *cachedADOBearerSource) Invalidate() {
 // NewAzureCLIADOCredentialSource reuses the current Azure CLI login. tenant is
 // optional; when set, az requests the token from that tenant explicitly.
 func NewAzureCLIADOCredentialSource(runner CommandRunner, tenant string) ADOCredentialSource {
-	runner = commandRunnerOrDefault(runner)
+	if runner == nil {
+		runner = azureCLIExecRunner{}
+	}
 	return newCachedADOBearerSource(time.Now, func(ctx context.Context) (adoBearerToken, error) {
 		args := []string{
 			"account", "get-access-token",
