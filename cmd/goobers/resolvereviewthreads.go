@@ -70,6 +70,13 @@ type reviewThreadPublication struct {
 	// receipt an earlier attempt of the same transaction left in the journal.
 	receipt apiv1.ReviewThreadPublication
 	prior   *apiv1.ReviewThreadPublication
+	// earlier holds receipts this run's earlier publication passes left at
+	// the same head for other feedback snapshots, newest first; pass is this
+	// pass's reply-marker key; reused maps a thread to the earlier pass
+	// whose still-visible reply already answers this pass's response.
+	earlier []apiv1.ReviewThreadPublication
+	pass    string
+	reused  map[string]string
 	stdout  io.Writer
 	stderr  io.Writer
 }
@@ -126,7 +133,8 @@ func newReviewThreadPublication(root string, stdout, stderr io.Writer) (*reviewT
 		p.prePublishHead = brief.FeedbackSnapshot.HeadSHA
 	}
 	p.receipt = newReviewThreadReceipt(p.pullID, publishedHead, p.snapshot, responses)
-	if p.prior, err = loadPriorReviewThreadReceipt(root, runID, reviewThreadReceiptStage(), p.receipt); err != nil {
+	p.pass = reviewThreadPassKey(p.receipt.FeedbackSnapshotDigest)
+	if p.prior, p.earlier, err = loadPriorReviewThreadReceipts(root, runID, reviewThreadReceiptStage(), p.receipt); err != nil {
 		return nil, p.fail("read this run's review-thread publication receipt", err), false
 	}
 	if code, ok := p.connect(); !ok {
@@ -316,7 +324,7 @@ func (p *reviewThreadPublication) publish(ctx context.Context, response reviewTh
 	if stop {
 		return code, true
 	}
-	if replyID, ok := reviewThreadReplyID(listing, p.runID, response.ThreadID); ok {
+	if replyID, ok := p.replyFor(listing, response.ThreadID); ok {
 		if entry.ReplyState != apiv1.ReviewThreadMutationVerified {
 			entry.ReplyState, entry.ProviderReplyID = apiv1.ReviewThreadMutationVerified, replyID
 			entry.Recovery = apiv1.ReviewThreadRecoveryProviderAdopted
@@ -351,7 +359,7 @@ func (p *reviewThreadPublication) listThreads(ctx context.Context, what string) 
 
 func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThreadDisposition, entry *apiv1.ReviewThreadReceipt) (providers.PullRequestReviewThreads, int, bool) {
 	thread := p.threads[response.ThreadID]
-	body := renderReviewThreadReply(p.runID, p.publishedHead, response)
+	body := renderReviewThreadReply(p.runID, p.pass, p.publishedHead, response)
 	if _, err := p.mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
 		Repository: p.repo, PullID: p.pullID, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
 	}); err != nil {
@@ -364,7 +372,7 @@ func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThre
 	if stop {
 		return listing, code, true
 	}
-	replyID, ok := reviewThreadReplyID(listing, p.runID, response.ThreadID)
+	replyID, ok := reviewThreadReplyID(listing, p.runID, response.ThreadID, p.pass)
 	if !ok {
 		entry.ReplyState, entry.LastError = apiv1.ReviewThreadMutationFailed, "reply not visible after publication"
 		return listing, p.failTyped("verify review-thread reply",
@@ -540,18 +548,39 @@ func failThreadResponseValidation(validationErr error, stderr io.Writer) int {
 }
 
 // reviewThreadResponseMarker is the hidden line that identifies this run's
-// reply to one review thread. The stage recognises its own reply by it, both
-// before posting (idempotent re-runs) and after (the visibility check).
-func reviewThreadResponseMarker(runID, threadID string) string {
-	return fmt.Sprintf("%s%s:%s -->", reviewThreadResponseMarkerPrefix, runID, threadID)
+// reply to one review thread in one publication pass. The stage recognises
+// its own reply by it, both before posting (idempotent re-runs) and after
+// (the visibility check).
+//
+// pass names the feedback snapshot the reply answers (reviewThreadPassKey).
+// A run can publish more than once at the same head — a no-change feedback
+// repass after publication (#6126) runs resolve-review-threads again against
+// a fresh snapshot — and a reply to the earlier snapshot must not pass for
+// the later one's (#6131). A run without a snapshot uses the original
+// run-and-thread marker.
+func reviewThreadResponseMarker(runID, threadID, pass string) string {
+	if pass == "" {
+		return fmt.Sprintf("%s%s:%s -->", reviewThreadResponseMarkerPrefix, runID, threadID)
+	}
+	return fmt.Sprintf("%s%s:%s:%s -->", reviewThreadResponseMarkerPrefix, runID, threadID, pass)
+}
+
+// reviewThreadPassKey is the short, stable pass discriminator a reply marker
+// carries: the leading hex of the feedback snapshot digest it answers.
+func reviewThreadPassKey(snapshotDigest string) string {
+	key := strings.TrimPrefix(strings.TrimSpace(snapshotDigest), "sha256:")
+	if len(key) > 16 {
+		key = key[:16]
+	}
+	return key
 }
 
 // reviewThreadResponseMarkerPrefix opens every reviewThreadResponseMarker.
 // pr-comment-watch reads it to recognise a Goobers-written thread reply.
 const reviewThreadResponseMarkerPrefix = "<!-- goobers:review-thread-response:"
 
-func renderReviewThreadReply(runID, headSHA string, response reviewThreadDisposition) string {
-	marker := reviewThreadResponseMarker(runID, response.ThreadID)
+func renderReviewThreadReply(runID, pass, headSHA string, response reviewThreadDisposition) string {
+	marker := reviewThreadResponseMarker(runID, response.ThreadID, pass)
 	switch response.Disposition {
 	case "addressed":
 		return fmt.Sprintf("Addressed in `%s`.\n\n%s\n\n%s", headSHA, response.Detail, marker)
@@ -563,12 +592,12 @@ func renderReviewThreadReply(runID, headSHA string, response reviewThreadDisposi
 }
 
 // reviewThreadReplyID returns the provider id of this run's reply on
-// threadID, if the thread already carries one. It matches the response
-// marker on a line of its own rather than the whole body: providers append
-// run attribution to the text they post, so the body read back does not
-// equal the body the stage rendered.
-func reviewThreadReplyID(snapshot providers.PullRequestReviewThreads, runID, threadID string) (string, bool) {
-	marker := reviewThreadResponseMarker(runID, threadID)
+// threadID for one publication pass, if the thread already carries one. It
+// matches the response marker on a line of its own rather than the whole
+// body: providers append run attribution to the text they post, so the body
+// read back does not equal the body the stage rendered.
+func reviewThreadReplyID(snapshot providers.PullRequestReviewThreads, runID, threadID, pass string) (string, bool) {
+	marker := reviewThreadResponseMarker(runID, threadID, pass)
 	for _, comment := range snapshot.InlineComments {
 		if comment.ThreadID == threadID && bodyHasMarkerLine(comment.Body, marker) {
 			return strconv.FormatInt(comment.ID, 10), true

@@ -42,6 +42,11 @@ const (
 	// (this run's reply marker, or the resolution) but no receipt recorded it,
 	// as after an attempt interrupted between mutation and receipt write.
 	ReviewThreadRecoveryProviderAdopted = "provider_adopted"
+	// ReviewThreadRecoveryEarlierPass: an earlier publication pass of this run
+	// (before a feedback repass) already answered the same thread content
+	// with the same disposition at the same head, and provider state still
+	// shows that reply, so this pass reuses it instead of repeating it.
+	ReviewThreadRecoveryEarlierPass = "earlier_pass"
 )
 
 // ReviewThreadRestorationUnsupported records that no provider-side rollback

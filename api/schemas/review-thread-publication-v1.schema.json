@@ -166,8 +166,8 @@
           "description": "Provider-stable id of the verified reply."
         },
         "recovery": {
-          "enum": ["receipt_confirmed", "provider_adopted"],
-          "description": "How a retry accounted for a mutation it did not make itself: receipt_confirmed when an earlier attempt's receipt recorded it and provider state still shows it; provider_adopted when provider state shows this run's reply marker or resolution but no receipt recorded it, as after an attempt interrupted between mutation and receipt write."
+          "enum": ["receipt_confirmed", "provider_adopted", "earlier_pass"],
+          "description": "How the attempt accounted for a mutation it did not make itself: receipt_confirmed when an earlier attempt's receipt recorded it and provider state still shows it; provider_adopted when provider state shows this pass's reply marker or the resolution but no receipt recorded it, as after an attempt interrupted between mutation and receipt write; earlier_pass when an earlier publication pass of the run (before a feedback repass) already answered the same thread content with the same disposition at the same head, and that reply is still visible, so it is reused rather than repeated."
         },
         "lastError": {
           "type": "string",

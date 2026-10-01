@@ -82,7 +82,7 @@ func assertAttributedReviewThreadReply(t *testing.T, threadID, body string) {
 }
 
 func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
-	rendered := renderReviewThreadReply("run-1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
+	rendered := renderReviewThreadReply("run-1", "p1", "sha", reviewThreadDisposition{ThreadID: "T1", Disposition: "addressed", Detail: "done"})
 	attributed := rendered + "\n\n<!-- goobers:attribution v1 e30= -->\nPosted by **Goobers** | `goobers/pr-remediation`"
 	for _, tc := range []struct {
 		name     string
@@ -93,12 +93,16 @@ func TestReviewThreadHasReplyMatchesResponseMarkerLine(t *testing.T) {
 		{"CRLF-normalised reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "\n", "\r\n")}}, true},
 		{"reply on another thread", []providers.PullRequestInlineComment{{ThreadID: "T2", Body: attributed}}, false},
 		{"another run's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, "run-1", "run-0")}}, false},
-		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1") + " above"}}, false},
+		{"marker quoted mid-line", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "see " + reviewThreadResponseMarker("run-1", "T1", "p1") + " above"}}, false},
+		// #6131: a reply to an earlier publication pass's feedback snapshot,
+		// or the snapshot-less marker, is not this pass's reply.
+		{"earlier pass's reply", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: strings.ReplaceAll(attributed, ":T1:p1 -->", ":T1:p0 -->")}}, false},
+		{"snapshot-less marker", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: reviewThreadResponseMarker("run-1", "T1", "")}}, false},
 		{"reviewer comment only", []providers.PullRequestInlineComment{{ThreadID: "T1", Body: "finding"}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			snapshot := providers.PullRequestReviewThreads{InlineComments: tc.comments}
-			if _, got := reviewThreadReplyID(snapshot, "run-1", "T1"); got != tc.want {
+			if _, got := reviewThreadReplyID(snapshot, "run-1", "T1", "p1"); got != tc.want {
 				t.Fatalf("reviewThreadReplyID found = %v, want %v", got, tc.want)
 			}
 		})

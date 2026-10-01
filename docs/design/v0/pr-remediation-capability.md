@@ -231,6 +231,17 @@ outputs the workflow routes on (`selectedNumber`, `publishedHeadSha`,
   mutation. It is never silently redone. Publication stops as
   `staleInput=changed_thread_state` naming the thread, and the feedback gate
   re-gathers.
+- **Repeated passes.** A no-change feedback repass after publication runs the
+  stage again in the same run, at the same published head, against a new
+  snapshot and new responses. That pass is a new transaction: an earlier
+  pass's receipt is never resumed and never blocks it. Reply markers carry
+  the pass's snapshot key, so an earlier pass's reply never passes for this
+  one's. The one exception is a reply that already says the same thing. If
+  an earlier pass answered the same thread content with the same disposition
+  at this head, left the thread unresolved, and the reply is still visible,
+  it is reused (`earlier_pass`) instead of repeated. New human input on a
+  thread, a changed disposition, or a thread reopened after an earlier pass
+  resolved it gets this pass's own reply.
 - **Completion.** `complete` is written only after a final read shows every
   intended reply and every addressed thread's resolution. A receipt never
   stands in for that read.

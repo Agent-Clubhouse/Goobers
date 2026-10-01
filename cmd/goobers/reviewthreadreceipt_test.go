@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	apivalidate "github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -236,6 +237,20 @@ func TestReviewThreadReceiptRecordsStaleStops(t *testing.T) {
 			if entry.ReplyState != apiv1.ReviewThreadMutationPending || entry.ResolutionState != apiv1.ReviewThreadMutationPending || w.replies() != 0 {
 				t.Fatalf("thread = %+v replies = %d, want nothing published", entry, w.replies())
 			}
+			// classify-feedback-repass reads the stale verdict and its
+			// reference head from this stage's scalar outputs, exactly as the
+			// executor lifts them from the receipt.
+			outputs := map[string]any{}
+			if err := json.Unmarshal(stopped.raw, &outputs); err != nil {
+				t.Fatal(err)
+			}
+			rec := latestFeedbackRepass([]journal.Event{
+				{Type: journal.EventStageFinished, Stage: "resolve-review-threads", Status: string(apiv1.ResultSuccess), Outputs: outputs},
+				{Type: journal.EventStageFinished, Stage: prFeedbackGatherStage, Status: string(apiv1.ResultSuccess)},
+			})
+			if !rec.found || !rec.reGathered || rec.reason != staleReasonNew || rec.reference != revisionPublishedSHA {
+				t.Fatalf("classify-feedback-repass read %+v from receipt %s, want the stale verdict and the published head", rec, stopped.raw)
+			}
 		})
 		t.Run(string(kind)+"/moved head", func(t *testing.T) {
 			w, _ := newReceiptWorld(t, kind)
@@ -279,4 +294,105 @@ func TestReviewThreadReceiptUsesTheRunnersTaskName(t *testing.T) {
 	if got := reviewThreadReceiptStage(); got != defaultResolveReviewThreadsStage {
 		t.Fatalf("stage = %q, want the command's default", got)
 	}
+}
+
+// answerThreads appends an implement result answering threadID with
+// disposition, then this run's publication at head: what the agentic chain
+// and push-remediated leave in the journal before resolve-review-threads.
+// On a no-change feedback repass push-remediated acknowledges the same head.
+func answerThreads(t *testing.T, run *revisionRun, threadID, disposition, detail, head string) {
+	t.Helper()
+	responses := `[{"threadId":"` + threadID + `","disposition":"` + disposition + `","detail":"` + detail + `"}]`
+	if err := run.run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess),
+		Outputs: map[string]any{threadResponsesOutput: responses},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run.publish(head)
+}
+
+// TestReviewThreadReceiptSecondPassAtTheSamePublishedHead: after a no-change
+// feedback repass that follows publication, resolve-review-threads runs a
+// second time in the same run, at the same published head, against a new
+// feedback snapshot and new thread responses. The first pass's receipt and
+// replies must neither block it nor stand in for it:
+//
+//   - a thread whose human feedback changed gets the second pass's own reply,
+//     exactly once across retries;
+//   - a thread whose feedback and disposition did not change keeps the first
+//     pass's reply and gets no duplicate.
+func TestReviewThreadReceiptSecondPassAtTheSamePublishedHead(t *testing.T) {
+	for _, kind := range mutatingFeedbackProviders {
+		t.Run(string(kind)+"/changed thread gets its own reply", func(t *testing.T) {
+			w := newFeedbackWorld(t, kind)
+			setDaemonStageAttributionEnv(t)
+			run := newRevisionRun(t, w.root, w.runID)
+			run.selectHead("77", revisionSelectedSHA)
+			gatherIntoJournal(t, w, run)
+			answerThreads(t, run, w.threadID, "blocked", "needs a maintainer decision", revisionPublishedSHA)
+			w.setHead(revisionPublishedSHA)
+
+			first := runReceiptAttempt(t, w)
+			if first.code != 0 || first.receipt.Status != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
+				t.Fatalf("first pass: code = %d, replies = %d, receipt = %s", first.code, w.replies(), first.raw)
+			}
+			recordReceipt(t, run, first)
+
+			// The reviewer answers on the thread; the run re-gathers, the agent's
+			// repass changes nothing and push-remediated acknowledges the head.
+			w.editThread("Decision: guard it with the existing lock.")
+			second := gatherIntoJournal(t, w, run)
+			answerThreads(t, run, w.threadID, "addressed", "guarded with the existing lock", revisionPublishedSHA)
+			if second.FeedbackSnapshot.SnapshotDigest == first.receipt.FeedbackSnapshotDigest {
+				t.Fatal("re-gather pinned the same feedback snapshot")
+			}
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				pass := runReceiptAttempt(t, w)
+				entry := onlyThread(t, pass.receipt)
+				if pass.code != 0 || pass.receipt.Status != apiv1.ReviewThreadPublicationComplete ||
+					pass.receipt.FeedbackSnapshotDigest != second.FeedbackSnapshot.SnapshotDigest {
+					t.Fatalf("second pass attempt %d: code = %d, receipt = %s", attempt, pass.code, pass.raw)
+				}
+				if entry.ReplyState != apiv1.ReviewThreadMutationVerified || entry.ResolutionState != apiv1.ReviewThreadMutationVerified ||
+					entry.ProviderReplyID == first.receipt.Threads[0].ProviderReplyID {
+					t.Fatalf("second pass attempt %d thread = %+v, want its own verified reply and the resolution", attempt, entry)
+				}
+				recordReceipt(t, run, pass)
+				if w.replies() != 2 || !w.resolved() {
+					t.Fatalf("second pass attempt %d: replies = %d resolved = %v, want the first pass's reply plus exactly one new one", attempt, w.replies(), w.resolved())
+				}
+			}
+		})
+	}
+
+	// GitHub only: its fake can add general PR feedback, which changes the
+	// snapshot without touching the thread.
+	t.Run("github/unchanged thread keeps the first reply", func(t *testing.T) {
+		w := newFeedbackWorld(t, providers.ProviderGitHub)
+		setDaemonStageAttributionEnv(t)
+		run := newRevisionRun(t, w.root, w.runID)
+		run.selectHead("77", revisionSelectedSHA)
+		gatherIntoJournal(t, w, run)
+		answerThreads(t, run, w.threadID, "blocked", "needs a maintainer decision", revisionPublishedSHA)
+		w.setHead(revisionPublishedSHA)
+		first := runReceiptAttempt(t, w)
+		recordReceipt(t, run, first)
+
+		w.addComment("Thanks, looking.")
+		gatherIntoJournal(t, w, run)
+		answerThreads(t, run, w.threadID, "blocked", "still needs a maintainer decision", revisionPublishedSHA)
+		for attempt := 1; attempt <= 2; attempt++ {
+			pass := runReceiptAttempt(t, w)
+			entry := onlyThread(t, pass.receipt)
+			if pass.code != 0 || pass.receipt.Status != apiv1.ReviewThreadPublicationComplete || w.replies() != 1 {
+				t.Fatalf("attempt %d: code = %d, replies = %d, receipt = %s; want the first pass's reply reused", attempt, pass.code, w.replies(), pass.raw)
+			}
+			if entry.Recovery != apiv1.ReviewThreadRecoveryEarlierPass || entry.ProviderReplyID != first.receipt.Threads[0].ProviderReplyID {
+				t.Fatalf("attempt %d thread = %+v, want the first pass's reply recorded as %s", attempt, entry, apiv1.ReviewThreadRecoveryEarlierPass)
+			}
+			recordReceipt(t, run, pass)
+		}
+	})
 }
