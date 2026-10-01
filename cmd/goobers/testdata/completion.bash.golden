@@ -268,7 +268,7 @@ _goobers_completion()
             flags+=" --gate"
             ;;
         pr-claim)
-            flags+=" --release --verify-feedback"
+            flags+=" --release --verify-feedback --classify-feedback-repass"
             ;;
         remediation-checkpoint)
             flags+=" --budget --escalate --escalation-outcome"

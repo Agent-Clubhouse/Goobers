@@ -335,10 +335,31 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		responseGate.Automated.Check != "status-equals" {
 		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
 	}
-	if responseGate.Branches["pass"] != "guard-before-review" ||
+	if responseGate.Branches["pass"] != "classify-feedback-repass" ||
 		responseGate.Branches["fail"] != "guard-before-implement" ||
 		responseGate.Branches["escalate"] != "park-invalid-finding-responses" {
-		t.Errorf("finding-responses-gate branches = %v, want pass->guard-before-review, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+		t.Errorf("finding-responses-gate branches = %v, want pass->classify-feedback-repass, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+	}
+	// #6126: a stale-feedback repass that changed nothing skips re-review
+	// (whose identical-diff guard would escalate it) and returns to the
+	// feedback-verifying guard before publication. The classifier compares
+	// the workspace head, so it must run in the PR's worktree.
+	classify, ok := m.Task("classify-feedback-repass")
+	if !ok {
+		t.Fatal("classify-feedback-repass not found")
+	}
+	if classify.Run == nil || !reflect.DeepEqual(classify.Run.Command, []string{"goobers", "pr-claim", "--classify-feedback-repass"}) ||
+		classify.Run.Workspace == apiv1.WorkspaceScratch || classify.Next != "feedback-repass-gate" ||
+		!containsString(classify.ExpectedOutputs, "feedbackNoop") {
+		t.Errorf("classify-feedback-repass = %+v, want pr-claim --classify-feedback-repass in the repo workspace, next feedback-repass-gate", classify)
+	}
+	repassGate, ok := m.Gate("feedback-repass-gate")
+	if !ok || repassGate.Automated == nil || repassGate.Automated.Check != "output-equals" ||
+		repassGate.Automated.Params["key"] != "feedbackNoop" || repassGate.Automated.Params["equals"] != "false" ||
+		repassGate.Branches["pass"] != "guard-before-review" ||
+		repassGate.Branches["fail"] != "guard-before-push" ||
+		repassGate.Branches["escalate"] != "park-stale-feedback" {
+		t.Errorf("feedback-repass-gate = %+v, want feedbackNoop=false->guard-before-review, a no-op repass->guard-before-push, escalate->park-stale-feedback", repassGate)
 	}
 	invalidResponsesPark, ok := m.Task("park-invalid-finding-responses")
 	if !ok {
@@ -453,6 +474,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		}
 		if guard.Next != next {
 			t.Errorf("%s next = %q, want %q", name, guard.Next, next)
+		}
+		if name == "guard-before-push" && guard.Run != nil && guard.Run.Workspace == apiv1.WorkspaceScratch {
+			// #6126: a stale verdict records the workspace head the repass
+			// classifier compares against, so this guard needs the worktree.
+			t.Errorf("guard-before-push workspace = scratch, want the PR's worktree")
 		}
 	}
 
