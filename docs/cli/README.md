@@ -8,6 +8,7 @@
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-reset`](#goobers-advisory-pr-reset) | clear one private advisory disposition by explicit operator action |
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
 | [`goobers connect`](#goobers-connect) | connect an instance to your own GitHub or Azure DevOps repository |
 | [`goobers cost`](#goobers-cost) | show bounded cost attribution by pull request or issue |
@@ -154,6 +155,8 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-publish`](#goobers-advisory-pr-publish) | publish an advisory observation or record a permanent private skip |
+| [`goobers advisory-pr-select`](#goobers-advisory-pr-select) | select one open PR for a private-disposition advisory review |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
@@ -201,6 +204,54 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers telemetry-query`](#goobers-telemetry-query) | emit versioned candidate findings (a connector stage) |
 | [`goobers update-behind-pr`](#goobers-update-behind-pr) | API-update a clean behind-base PR, else route to remediation (a workflow stage) |
 | [`goobers validate-plan`](#goobers-validate-plan) | validate a decomposition plan against its selector artifact and the live parent (a workflow stage) |
+
+## `goobers advisory-pr-publish`
+
+publish an advisory observation or record a permanent private skip
+
+~~~text
+Usage: goobers advisory-pr-publish [path]
+
+Publish a strict advisory reviewer artifact or record a permanent private skip. Inputs: reviewType, reviewerStage, selectionStage.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-publish
+~~~
+
+## `goobers advisory-pr-reset`
+
+clear one private advisory disposition by explicit operator action
+
+~~~text
+Usage: goobers advisory-pr-reset --gaggle NAME --owner OWNER --repo REPO --review-type TYPE --pr NUMBER [path]
+
+Explicitly clear one private advisory disposition on the local instance.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance
+~~~
+
+## `goobers advisory-pr-select`
+
+select one open PR for a private-disposition advisory review
+
+~~~text
+Usage: goobers advisory-pr-select [path]
+
+Select one open PR for a private-disposition advisory review. Input: reviewType.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers advisory-pr-select
+~~~
 
 ## `goobers agent-kit`
 
