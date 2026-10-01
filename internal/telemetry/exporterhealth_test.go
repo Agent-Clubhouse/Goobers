@@ -3,12 +3,16 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"github.com/goobers/goobers/internal/journal"
 	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
@@ -33,6 +37,72 @@ func TestExporterHealthBoundsFailureDetailsAndRecovers(t *testing.T) {
 	if recovered.Trace.State != "healthy" || recovered.Trace.ConsecutiveFailures != 0 ||
 		recovered.Trace.RecoveryTransitions != 1 || recovered.Trace.LastSuccessAt == nil {
 		t.Fatalf("recovery state = %+v", recovered.Trace)
+	}
+}
+
+func TestExporterHealthJournalsRateLimitedTransitions(t *testing.T) {
+	schedulerDir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := journal.OpenInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateErr := errors.New("dial C:\\private\\collector-token.txt: permission denied")
+	health := NewExporterHealth(true, string(ExporterOTLP), "collector.example.com/v1/traces?api_key=secret")
+
+	health.RecordTraceFailure(privateErr)
+	health.AttachInstanceLog(log)
+	health.RecordTraceFailure(privateErr)
+	health.RecordTraceSuccess()
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transitions []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == exporterHealthTransitionAnnotation {
+			transitions = append(transitions, event)
+		}
+	}
+	if len(transitions) != 2 {
+		t.Fatalf("transition events = %+v, want first failure and recovery only", transitions)
+	}
+	if transitions[0].Runner["state"] != exporterHealthStateUnhealthy || transitions[0].Runner["signal"] != "trace" ||
+		transitions[0].Runner["reason"] != "exporter_error" || transitions[0].Runner["endpointHost"] != "collector.example.com" {
+		t.Fatalf("failure transition = %+v", transitions[0])
+	}
+	if transitions[1].Runner["state"] != exporterHealthStateRecovered || transitions[1].Runner["signal"] != "trace" {
+		t.Fatalf("recovery transition = %+v", transitions[1])
+	}
+	journalText := fmt.Sprint(events)
+	for _, leaked := range []string{"collector-token.txt", "api_key", "v1/traces", "permission denied"} {
+		if strings.Contains(journalText, leaked) {
+			t.Fatalf("journal transition leaked %q in events: %+v", leaked, events)
+		}
+	}
+}
+
+func TestClassifyEndpointDropsSchemeLessPathAndQuery(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint  string
+		wantHost  string
+		wantClass string
+	}{
+		{endpoint: "collector.example.com/v1/traces?api_key=secret", wantHost: "collector.example.com", wantClass: "dns-name"},
+		{endpoint: "collector.example.com:4317/v1/traces?api_key=secret", wantHost: "collector.example.com", wantClass: "dns-name"},
+		{endpoint: "collector.example.com?api_key=secret", wantHost: "collector.example.com", wantClass: "dns-name"},
+		{endpoint: "/v1/traces?api_key=secret", wantHost: "", wantClass: "unknown"},
+	} {
+		host, class := classifyEndpoint(tc.endpoint)
+		if host != tc.wantHost || class != tc.wantClass {
+			t.Fatalf("classifyEndpoint(%q) = (%q, %q), want (%q, %q)", tc.endpoint, host, class, tc.wantHost, tc.wantClass)
+		}
+		if strings.ContainsAny(host, "/?#") || strings.Contains(host, "secret") {
+			t.Fatalf("classifyEndpoint(%q) leaked unsafe host %q", tc.endpoint, host)
+		}
 	}
 }
 

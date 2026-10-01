@@ -14,6 +14,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // ExporterHealth tracks locally observable telemetry exporter health.
@@ -22,6 +24,7 @@ type ExporterHealth struct {
 	enabled  bool
 	mode     string
 	endpoint endpointHealth
+	journal  *journal.InstanceLog
 	trace    exporterSignalHealth
 	metric   exporterSignalHealth
 }
@@ -68,7 +71,15 @@ type exporterSignalHealth struct {
 	recoveryTransitions     uint64
 	failureTransitions      uint64
 	suppressedFailureEvents uint64
+	journaledRecoveries     uint64
+	journaledFailures       uint64
 }
+
+const (
+	exporterHealthTransitionAnnotation = "telemetry.exporter.transition"
+	exporterHealthStateUnhealthy       = "unhealthy"
+	exporterHealthStateRecovered       = "recovered"
+)
 
 // NewExporterHealth creates the shared exporter-health monitor for a telemetry
 // client. endpoint may contain a scheme or path; only the host classification
@@ -83,6 +94,20 @@ func NewExporterHealth(enabled bool, mode, endpoint string) *ExporterHealth {
 			class: class,
 		},
 	}
+}
+
+// AttachInstanceLog connects exporter-health transitions to the durable local
+// instance journal. Any transition observed before the journal was available is
+// written once when attached.
+func (h *ExporterHealth) AttachInstanceLog(log *journal.InstanceLog) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.journal = log
+	events := h.pendingTransitionEventsLocked()
+	h.mu.Unlock()
+	appendExporterHealthTransitions(log, events)
 }
 
 // DisabledExporterHealthSnapshot reports an explicit disabled state without a
@@ -141,52 +166,66 @@ func (h *ExporterHealth) MetricExporterInstalled() bool {
 }
 
 // RecordTraceSuccess records a successful trace exporter observation.
-func (h *ExporterHealth) RecordTraceSuccess() { h.recordSuccess(&h.trace) }
+func (h *ExporterHealth) RecordTraceSuccess() { h.recordSuccess("trace", &h.trace) }
 
 // RecordMetricSuccess records a successful metric exporter observation.
-func (h *ExporterHealth) RecordMetricSuccess() { h.recordSuccess(&h.metric) }
+func (h *ExporterHealth) RecordMetricSuccess() { h.recordSuccess("metric", &h.metric) }
 
 // RecordTraceFailure records a failed trace exporter observation.
-func (h *ExporterHealth) RecordTraceFailure(err error) { h.recordFailure(&h.trace, err) }
+func (h *ExporterHealth) RecordTraceFailure(err error) { h.recordFailure("trace", &h.trace, err) }
 
 // RecordMetricFailure records a failed metric exporter observation.
-func (h *ExporterHealth) RecordMetricFailure(err error) { h.recordFailure(&h.metric, err) }
+func (h *ExporterHealth) RecordMetricFailure(err error) { h.recordFailure("metric", &h.metric, err) }
 
-func (h *ExporterHealth) recordSuccess(signal *exporterSignalHealth) {
+func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignalHealth) {
 	if h == nil {
 		return
 	}
 	now := time.Now().UTC()
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	signal.configured = true
 	signal.lastSuccessAt = now
 	signal.consecutiveFailures = 0
+	var event *journal.Event
+	log := h.journal
 	if signal.unhealthy {
 		signal.unhealthy = false
 		signal.lastTransitionAt = now
 		signal.recoveryTransitions++
+		event = h.transitionEventLocked(signalName, exporterHealthStateRecovered, signal.lastFailureReason, now)
+		if log != nil {
+			signal.journaledRecoveries = signal.recoveryTransitions
+		}
 	}
+	h.mu.Unlock()
+	appendExporterHealthTransition(log, event)
 }
 
-func (h *ExporterHealth) recordFailure(signal *exporterSignalHealth, err error) {
+func (h *ExporterHealth) recordFailure(signalName string, signal *exporterSignalHealth, err error) {
 	if h == nil {
 		return
 	}
 	now := time.Now().UTC()
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	signal.configured = true
 	signal.lastFailureAt = now
 	signal.lastFailureReason = exporterFailureReason(err)
 	signal.consecutiveFailures++
 	if signal.unhealthy {
 		signal.suppressedFailureEvents++
+		h.mu.Unlock()
 		return
 	}
 	signal.unhealthy = true
 	signal.lastTransitionAt = now
 	signal.failureTransitions++
+	event := h.transitionEventLocked(signalName, exporterHealthStateUnhealthy, signal.lastFailureReason, now)
+	log := h.journal
+	if log != nil {
+		signal.journaledFailures = signal.failureTransitions
+	}
+	h.mu.Unlock()
+	appendExporterHealthTransition(log, event)
 }
 
 // Snapshot returns a copy of the current bounded health state.
@@ -262,6 +301,8 @@ func classifyEndpoint(raw string) (string, string) {
 	host := raw
 	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
 		host = parsed.Hostname()
+	} else if parsed, err := parseSchemeLessEndpoint(raw); err == nil && parsed.Host != "" {
+		host = parsed.Hostname()
 	} else if h, _, err := net.SplitHostPort(raw); err == nil {
 		host = h
 	} else {
@@ -272,7 +313,11 @@ func classifyEndpoint(raw string) (string, string) {
 		}
 	}
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	host = strings.TrimPrefix(host, "******")
 	if host == "" {
+		return "", "unknown"
+	}
+	if strings.ContainsAny(host, "/?#@\\") || strings.ContainsAny(host, " \t\r\n") {
 		return "", "unknown"
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -282,6 +327,19 @@ func classifyEndpoint(raw string) (string, string) {
 		return host, "localhost"
 	}
 	return host, "dns-name"
+}
+
+func parseSchemeLessEndpoint(raw string) (*url.URL, error) {
+	if strings.Contains(raw, "://") || !strings.ContainsAny(raw, "/?#") {
+		return nil, errors.New("not a scheme-less endpoint")
+	}
+	return url.Parse("//" + raw)
+}
+
+// ExporterFailureReason returns the same bounded reason code stored in
+// exporter-health state, without retaining the raw error text.
+func ExporterFailureReason(err error) string {
+	return exporterFailureReason(err)
 }
 
 func exporterFailureReason(err error) string {
@@ -301,6 +359,66 @@ func exporterFailureReason(err error) string {
 		return "collector_unavailable"
 	}
 	return "exporter_error"
+}
+
+func (h *ExporterHealth) pendingTransitionEventsLocked() []*journal.Event {
+	events := make([]*journal.Event, 0, 2)
+	events = append(events, h.pendingTransitionEventLocked("trace", &h.trace)...)
+	events = append(events, h.pendingTransitionEventLocked("metric", &h.metric)...)
+	return events
+}
+
+func (h *ExporterHealth) pendingTransitionEventLocked(signalName string, signal *exporterSignalHealth) []*journal.Event {
+	events := make([]*journal.Event, 0, 2)
+	if signal.failureTransitions > signal.journaledFailures {
+		events = append(events, h.transitionEventLocked(signalName, exporterHealthStateUnhealthy, signal.lastFailureReason, signal.lastTransitionAt))
+		signal.journaledFailures = signal.failureTransitions
+	}
+	if signal.recoveryTransitions > signal.journaledRecoveries {
+		events = append(events, h.transitionEventLocked(signalName, exporterHealthStateRecovered, signal.lastFailureReason, signal.lastTransitionAt))
+		signal.journaledRecoveries = signal.recoveryTransitions
+	}
+	return events
+}
+
+func (h *ExporterHealth) transitionEventLocked(signalName, state, reason string, at time.Time) *journal.Event {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	runner := map[string]any{
+		"annotation": exporterHealthTransitionAnnotation,
+		"signal":     signalName,
+		"state":      state,
+		"mode":       h.mode,
+	}
+	if reason != "" {
+		runner["reason"] = reason
+	}
+	if h.endpoint.class != "" {
+		runner["endpointClass"] = h.endpoint.class
+	}
+	if h.endpoint.host != "" {
+		runner["endpointHost"] = h.endpoint.host
+	}
+	return &journal.Event{
+		Type:   journal.EventRunnerAnnotation,
+		Time:   at,
+		Reason: state,
+		Runner: runner,
+	}
+}
+
+func appendExporterHealthTransitions(log *journal.InstanceLog, events []*journal.Event) {
+	for _, event := range events {
+		appendExporterHealthTransition(log, event)
+	}
+}
+
+func appendExporterHealthTransition(log *journal.InstanceLog, event *journal.Event) {
+	if log == nil || event == nil {
+		return
+	}
+	log.AppendBestEffort(*event)
 }
 
 type observedSpanExporter struct {

@@ -166,6 +166,19 @@ func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth 
 	return telemetry.NewExporterHealth(true, mode, endpoint)
 }
 
+func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
+	if log == nil {
+		return
+	}
+	log.AppendBestEffort(journal.Event{
+		Type: journal.EventError,
+		Error: &journal.ErrorDetail{
+			Code:    "telemetry_otlp_unavailable",
+			Message: telemetry.ExporterFailureReason(cause),
+		},
+	})
+}
+
 type schedulerDefinitions struct {
 	GenerationResolver executionGenerationResolver
 	Set                *instance.ConfigSet
@@ -499,8 +512,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
+	telemetryExporterHealth.AttachInstanceLog(instanceLog)
 	if telemetryOTLPDegradeErr != nil {
-		telemetryingest.LogFailure(instanceLog, "", "telemetry_otlp_unavailable", telemetryOTLPDegradeErr)
+		logTelemetryOTLPUnavailable(instanceLog, telemetryOTLPDegradeErr)
 	}
 	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)

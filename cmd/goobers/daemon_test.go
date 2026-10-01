@@ -644,8 +644,11 @@ func TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial(t *testing.T) {
 	if found == nil {
 		t.Fatalf("instance log has no telemetry_otlp_unavailable event; events: %+v", events)
 	}
-	if !strings.Contains(found.Error.Message, missingCAFile) {
-		t.Fatalf("telemetry_otlp_unavailable message = %q, want it to name %q", found.Error.Message, missingCAFile)
+	if found.Error.Message != "exporter_error" {
+		t.Fatalf("telemetry_otlp_unavailable message = %q, want bounded reason code", found.Error.Message)
+	}
+	if strings.Contains(found.Error.Message, missingCAFile) {
+		t.Fatalf("telemetry_otlp_unavailable message leaked CA path %q", found.Error.Message)
 	}
 
 	// The degraded client still works locally: a span reaches the local
