@@ -103,7 +103,9 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
 	"unknown acceptance; retry the printed request ID with the same options.\n" +
 	"The command returns once the daemon accepts the trigger because\n" +
-	"a remote client cannot watch the run's journal.\n"
+	"a remote client cannot watch the run's journal. For local file delegation,\n" +
+	"--no-wait returns after dispatch, or after workflow/PR validation succeeds\n" +
+	"and the live daemon durably accepts a capacity-queued request.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "continue" {

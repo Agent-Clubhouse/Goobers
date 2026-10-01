@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -164,10 +166,11 @@ type triggerRequest struct {
 	// from it, so two producers submitting the same logical ask publish to one
 	// path and the atomic rename collapses them. Empty on delegated requests,
 	// whose caller is blocked on a per-id response file.
-	Key        string    `json:"key,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	Deadline   time.Time `json:"deadline,omitempty"`
-	AcceptedAt time.Time `json:"acceptedAt,omitempty"`
+	Key           string    `json:"key,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	Deadline      time.Time `json:"deadline,omitempty"`
+	AcceptedAt    time.Time `json:"acceptedAt,omitempty"`
+	DispatchRunID string    `json:"dispatchRunId,omitempty"`
 }
 
 // triggerResponse is what the daemon writes back once it has acted on a
@@ -577,7 +580,7 @@ func requeueTriggerRequest(reqPath string, req triggerRequest) error {
 	return journal.WriteFileAtomic(reqPath, data, 0o644)
 }
 
-func recoverActiveTriggerRequest(reqDir, requestID string) (bool, error) {
+func recoverActiveTriggerRequest(schedulerDir, reqDir, requestID string) (bool, error) {
 	activePath := filepath.Join(reqDir, requestID+activeSuffix)
 	requestPath := filepath.Join(reqDir, requestID+requestSuffix)
 	responsePath := filepath.Join(reqDir, requestID+responseSuffix)
@@ -587,6 +590,34 @@ func recoverActiveTriggerRequest(reqDir, requestID string) (bool, error) {
 		return false, nil
 	} else if err != nil && !os.IsNotExist(err) {
 		return false, fmt.Errorf("delegate: inspect active trigger response %s: %w", requestID, err)
+	}
+	activeData, err := os.ReadFile(activePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("delegate: read active trigger request %s: %w", requestID, err)
+	}
+	var req triggerRequest
+	if err := json.Unmarshal(activeData, &req); err == nil && req.DispatchRunID != "" {
+		root := filepath.Dir(schedulerDir)
+		if _, err := instance.NewLayout(root).FindRunDir(req.DispatchRunID); err == nil {
+			if err := writeTriggerResponse(reqDir, requestID, triggerResponse{RunID: req.DispatchRunID}); err != nil {
+				return false, err
+			}
+		} else {
+			resp := triggerResponse{
+				Error: fmt.Sprintf(
+					"delegate: trigger request %s may have dispatched run %s before daemon shutdown; refusing to replay",
+					requestID, req.DispatchRunID,
+				),
+			}
+			if err := writeTriggerResponse(reqDir, requestID, resp); err != nil {
+				return false, err
+			}
+		}
+		_ = os.Remove(activePath)
+		return false, nil
 	}
 	if err := os.Rename(activePath, requestPath); err != nil {
 		if os.IsNotExist(err) {
@@ -601,13 +632,26 @@ func recoverActiveTriggerRequest(reqDir, requestID string) (bool, error) {
 	return true, nil
 }
 
+func newDelegatedDispatchRunID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	for raw == [16]byte{} {
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
 func removeExpiredTriggerArtifact(path string, info os.FileInfo, now time.Time) {
 	if now.Sub(info.ModTime()) > triggerDelegationTimeout {
 		_ = os.Remove(path)
 	}
 }
 
-func discoverPendingTriggerCandidates(reqDir string, entries []os.DirEntry, now func() time.Time, options triggerSweepOptions) ([]pendingTriggerCandidate, error) {
+func discoverPendingTriggerCandidates(schedulerDir, reqDir string, entries []os.DirEntry, now func() time.Time, options triggerSweepOptions) ([]pendingTriggerCandidate, error) {
 	var candidates []pendingTriggerCandidate
 	var discoverErr error
 	for _, e := range entries {
@@ -625,7 +669,7 @@ func discoverPendingTriggerCandidates(reqDir string, entries []os.DirEntry, now 
 				continue
 			}
 			requestID := strings.TrimSuffix(e.Name(), activeSuffix)
-			recovered, err := recoverActiveTriggerRequest(reqDir, requestID)
+			recovered, err := recoverActiveTriggerRequest(schedulerDir, reqDir, requestID)
 			if err != nil {
 				discoverErr = errors.Join(discoverErr, err)
 				continue
@@ -697,7 +741,7 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 		return fmt.Errorf("delegate: read pending triggers: %w", err)
 	}
 	var sweepErr error
-	requestEntries, err := discoverPendingTriggerCandidates(reqDir, entries, now, options)
+	requestEntries, err := discoverPendingTriggerCandidates(schedulerDir, reqDir, entries, now, options)
 	sweepErr = errors.Join(sweepErr, err)
 	// Total depth is reported from the entries this sweep already read, so the
 	// visibility costs no extra directory walk, and BEFORE the per-cycle bound
@@ -765,8 +809,17 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 				resp = acceptedTriggerExpiredResponse(requestID, req)
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
-				if err := acknowledgeTriggerRequest(reqDir, requestID, &req, sweepTime); err != nil {
-					sweepErr = errors.Join(sweepErr, err)
+				if req.DispatchRunID == "" {
+					runID, err := newDelegatedDispatchRunID()
+					if err != nil {
+						sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: allocate dispatch run id for %s: %w", requestID, err))
+						_ = os.Remove(activePath)
+						continue
+					}
+					req.DispatchRunID = runID
+				}
+				if err := requeueTriggerRequest(activePath, req); err != nil {
+					sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: persist dispatch marker for %s: %w", requestID, err))
 					_ = os.Remove(activePath)
 					continue
 				}
@@ -774,27 +827,33 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 				var runID string
 				var terr error
 				if req.Priority {
-					runID, terr = sched.TriggerPriorityWithDispatchContext(requestCtx, ctx, localscheduler.WorkflowIdentity{
+					runID, terr = sched.TriggerPriorityWithDispatchRunID(requestCtx, ctx, localscheduler.WorkflowIdentity{
 						Gaggle: req.Gaggle, Workflow: req.Workflow,
-					}, req.SourceRun, sweepTime)
+					}, req.SourceRun, sweepTime, req.DispatchRunID)
 				} else if req.Gaggle != "" {
 					identity := localscheduler.WorkflowIdentity{Gaggle: req.Gaggle, Workflow: req.Workflow}
 					if req.PR > 0 {
-						runID, terr = sched.TriggerSignalExactWithDispatchContext(requestCtx, ctx, identity, webhookhttp.SignalName("pull_request"),
-							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
+						runID, terr = sched.TriggerSignalExactWithDispatchContextOptions(requestCtx, ctx, identity, webhookhttp.SignalName("pull_request"),
+							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime, localscheduler.SignalTriggerOptions{
+								RunID: req.DispatchRunID,
+							})
 					} else {
 						runID, terr = sched.TriggerExactWithDispatchContextOptions(requestCtx, ctx, identity, sweepTime, localscheduler.ManualTriggerOptions{
 							BypassCadenceBudgets: req.Force,
+							RunID:                req.DispatchRunID,
 						})
 					}
 				} else {
 					if req.PR > 0 {
-						runID, terr = sched.TriggerSignalWithDispatchContext(requestCtx, ctx, req.Workflow,
+						runID, terr = sched.TriggerSignalWithDispatchContextOptions(requestCtx, ctx, req.Workflow,
 							webhookhttp.SignalName("pull_request"),
-							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
+							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime, localscheduler.SignalTriggerOptions{
+								RunID: req.DispatchRunID,
+							})
 					} else {
 						runID, terr = sched.TriggerWithDispatchContextOptions(requestCtx, ctx, req.Workflow, sweepTime, localscheduler.ManualTriggerOptions{
 							BypassCadenceBudgets: req.Force,
+							RunID:                req.DispatchRunID,
 						})
 					}
 				}
@@ -812,6 +871,12 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 					// Requeued atomically (hidden temp + rename) so a
 					// concurrent sweep/inspection can never observe a
 					// truncated live request file mid-rewrite.
+					if err := acknowledgeTriggerRequest(reqDir, requestID, &req, sweepTime); err != nil {
+						sweepErr = errors.Join(sweepErr, err)
+						_ = os.Remove(activePath)
+						continue
+					}
+					req.DispatchRunID = ""
 					if rerr := requeueTriggerRequest(reqPath, req); rerr != nil {
 						sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: requeue trigger request %s: %w", requestID, rerr))
 						resp.Error = terr.Error()

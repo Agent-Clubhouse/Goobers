@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -336,16 +337,6 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 	now = now.Add(triggerResponseWait() + time.Millisecond)
 	nowMu.Unlock()
 
-	var code int
-	select {
-	case code = <-codeDone:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	if code != 0 || !strings.Contains(stdout.String(), "state=queued") {
-		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want queued acceptance", code, stdout.String(), stderr.String())
-	}
-
 	release()
 	select {
 	case err := <-sweepDone:
@@ -354,6 +345,15 @@ func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	var code int
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if code == 0 || strings.Contains(stdout.String(), "state=queued") || !strings.Contains(stderr.String(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want deadline refusal without queued acceptance", code, stdout.String(), stderr.String())
 	}
 	sched.Wait()
 	if starter.count() != 0 {
@@ -817,6 +817,178 @@ func TestStartupSweepRecoversAcknowledgedActiveTrigger(t *testing.T) {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s stat error = %v, want removed after recovered terminal response", filepath.Base(path), err)
 		}
+	}
+}
+
+func TestStartupSweepAnswersDispatchedActiveTriggerWithoutReplay(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow: "implement",
+		Starter:  starter,
+	}})
+	root := filepath.Dir(schedulerDir)
+	now := time.Now().UTC()
+	const requestID = "dispatched-active"
+	const runID = "11111111111111111111111111111111"
+	writeStatusRunWithPhase(t, root, runID, "implement", "example", now, journal.PhaseRunning)
+	writeTriggerStateFixture(t, schedulerDir, requestID, activeSuffix, triggerRequest{
+		Workflow:      "implement",
+		CreatedAt:     now.Add(-time.Second),
+		AcceptedAt:    now.Add(-500 * time.Millisecond),
+		DispatchRunID: runID,
+	})
+	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
+	ackPath := filepath.Join(reqDir, requestID+ackSuffix)
+	if err := os.WriteFile(ackPath, []byte(`{"state":"queued"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sweepPendingTriggersWithOptions(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }, triggerSweepOptions{
+		recoverActiveRequests: true,
+	}); err != nil {
+		t.Fatalf("startup sweep recovery: %v", err)
+	}
+	gotRunID, err := pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
+	if err != nil {
+		t.Fatalf("poll recovered response: %v", err)
+	}
+	if gotRunID != runID {
+		t.Fatalf("runID = %q, want recovered dispatched run %q", gotRunID, runID)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter calls = %d, want no replay after dispatch marker", starter.count())
+	}
+	for _, suffix := range []string{requestSuffix, activeSuffix, ackSuffix} {
+		path := filepath.Join(reqDir, requestID+suffix)
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s stat error = %v, want removed after recovered terminal response", filepath.Base(path), err)
+		}
+	}
+}
+
+func TestStartupSweepRefusesAmbiguousDispatchMarkerWithoutReplay(t *testing.T) {
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
+		Workflow: "implement",
+		Starter:  starter,
+	}})
+	now := time.Now().UTC()
+	const requestID = "ambiguous-active"
+	const runID = "22222222222222222222222222222222"
+	writeTriggerStateFixture(t, schedulerDir, requestID, activeSuffix, triggerRequest{
+		Workflow:      "implement",
+		CreatedAt:     now.Add(-time.Second),
+		AcceptedAt:    now.Add(-500 * time.Millisecond),
+		DispatchRunID: runID,
+	})
+
+	if err := sweepPendingTriggersWithOptions(context.Background(), schedulerDir, nil, sched, func() time.Time { return now }, triggerSweepOptions{
+		recoverActiveRequests: true,
+	}); err != nil {
+		t.Fatalf("startup sweep recovery: %v", err)
+	}
+	_, err := pollTriggerResponse(context.Background(), schedulerDir, requestID, testResponseWait)
+	if err == nil || !strings.Contains(err.Error(), "refusing to replay") {
+		t.Fatalf("poll recovered response error = %v, want fail-closed replay refusal", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter calls = %d, want no replay after ambiguous dispatch marker", starter.count())
+	}
+}
+
+func TestRunDelegatedNoWaitValidationFailuresReturnNonZero(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		target  runTarget
+		entries []localscheduler.WorkflowEntry
+		opts    []localscheduler.Option
+		wantErr string
+	}{
+		{
+			name:    "unknown workflow",
+			target:  runTarget{Workflow: "missing"},
+			wantErr: "unknown workflow",
+		},
+		{
+			name:   "provider validation",
+			target: runTarget{Workflow: "merge-review", PR: 3261},
+			entries: []localscheduler.WorkflowEntry{{
+				Workflow: "merge-review",
+				Signals:  []string{"github-webhook:pull_request"},
+				Starter:  &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}},
+			}},
+			opts: []localscheduler.Option{localscheduler.WithTargetedPRValidator(func(context.Context, localscheduler.WorkflowEntry, int) error {
+				return errors.New("pull request validation failed")
+			})},
+			wantErr: "pull request validation failed",
+		},
+		{
+			name:   "terminal readiness refusal",
+			target: runTarget{Workflow: "implement"},
+			entries: []localscheduler.WorkflowEntry{{
+				Workflow:  "implement",
+				Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 100, MaxRunsPerHour: 1},
+				Starter:   &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}},
+			}},
+			wantErr: "run conditions rejected",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			l := instance.NewLayout(root)
+			log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = log.Close() })
+			sched := localscheduler.New(tt.entries, log, tt.opts...)
+			if tt.name == "terminal readiness refusal" {
+				firstID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "implement")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), nil, sched, time.Now); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pollTriggerResponse(context.Background(), l.SchedulerDir(), firstID, testResponseWait); err != nil {
+					t.Fatal(err)
+				}
+				sched.Wait()
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), testResponseWait)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			codeDone := make(chan int, 1)
+			go func() {
+				codeDone <- runDelegatedTrigger(ctx, l, tt.target, root, true, &stdout, &stderr)
+			}()
+			waitForDelegatedRequestID(t, ctx, l.SchedulerDir())
+			var code int
+			for {
+				if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), nil, sched, time.Now); err != nil && !strings.Contains(err.Error(), "read trigger request") {
+					t.Fatal(err)
+				}
+				select {
+				case code = <-codeDone:
+					goto answered
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				default:
+					runtime.Gosched()
+				}
+			}
+		answered:
+			if code == 0 {
+				t.Fatalf("code = 0, want non-zero; stdout = %q stderr = %q", stdout.String(), stderr.String())
+			}
+			if strings.Contains(stdout.String(), "state=queued") {
+				t.Fatalf("stdout = %q, validation failure must not produce queued acceptance", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantErr) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tt.wantErr)
+			}
+		})
 	}
 }
 
