@@ -59,6 +59,29 @@ func TestIsTransientError(t *testing.T) {
 	}
 }
 
+func TestIsUnauthorizedError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"serialized 401", errors.New("GET /repos/acme/web/pulls/41 failed: status 401: Bad credentials"), true},
+		{"wrapped serialized 401", fmt.Errorf("poll pull request: %w", errors.New("GET /pulls/41 failed: status 401: Bad credentials")), true},
+		{"typed 401", &providerResponseError{method: "GET", endpoint: "/pulls/41", statusCode: 401, body: "Bad credentials"}, true},
+		{"403", errors.New("GET /pulls/41 failed: status 403: forbidden"), false},
+		{"503", errors.New("GET /pulls/41 failed: status 503: unavailable"), false},
+		{"opaque", errors.New("status nope"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsUnauthorizedError(tc.err); got != tc.want {
+				t.Fatalf("IsUnauthorizedError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsAuthenticationError(t *testing.T) {
 	permissionDenied := &providerResponseError{
 		method:     "GET",

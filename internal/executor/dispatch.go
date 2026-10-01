@@ -144,7 +144,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	if err == nil {
 		return result, nil
 	}
-	if providers.IsTransientError(err) {
+	if providers.IsTransientError(err) || IsCIPollInfrastructureError(err) {
 		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(CIPollFailureCode(err), err))
 	}
 	var providerErr *ciPollProviderError
