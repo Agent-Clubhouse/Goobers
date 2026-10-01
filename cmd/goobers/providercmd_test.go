@@ -1087,7 +1087,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 				out = append(out, issueJSON(child))
 			}
 		}
-		writeFakeJSON(w, out)
+		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 3 && parts[1] == "dependencies" && parts[2] == "blocked_by" && r.Method == http.MethodGet:
 		s.dependencyRequests++
 		if status := s.dependencyFailureStatus[num]; status != 0 {
@@ -1100,7 +1100,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 				out = append(out, issueJSON(blocker))
 			}
 		}
-		writeFakeJSON(w, out)
+		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		if status, injected := s.commentsFailureStatus[num]; injected {
 			http.Error(w, s.commentsFailureBody[num], status)
@@ -1117,7 +1117,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			}
 			out = append(out, comment)
 		}
-		writeFakeJSON(w, out)
+		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
 		out := make([]map[string]any, 0)
 		for _, event := range s.issueEvents {
@@ -1175,6 +1175,31 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	default:
 		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
 	}
+}
+
+func (s *fakeGitHubServer) writePaginatedJSON(w http.ResponseWriter, r *http.Request, out []map[string]interface{}) {
+	perPage := len(out)
+	if parsed, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && parsed > 0 {
+		perPage = parsed
+	}
+	page := 1
+	if parsed, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && parsed > 0 {
+		page = parsed
+	}
+	if perPage > 0 {
+		start := min((page-1)*perPage, len(out))
+		end := min(start+perPage, len(out))
+		if end < len(out) {
+			next := *r.URL
+			query := next.Query()
+			query.Set("page", strconv.Itoa(page+1))
+			query.Set("per_page", strconv.Itoa(perPage))
+			next.RawQuery = query.Encode()
+			w.Header().Set("Link", fmt.Sprintf("<%s%s>; rel=%q", s.server.URL, next.String(), "next"))
+		}
+		out = out[start:end]
+	}
+	writeFakeJSON(w, out)
 }
 
 func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Request, idString string) {
