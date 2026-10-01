@@ -2512,7 +2512,7 @@ func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Wo
 	builtInReady := builtInReadyConsumer(w, task)
 	builtInRemediation := builtInRemediationConsumer(w, task)
 
-	if !(resweep || curation || builtInReady || builtInRemediation) {
+	if !resweep && !curation && !builtInReady && !builtInRemediation {
 		checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
 	}
 	checkLifecycleLabelListNearMisses(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsRemediation)
