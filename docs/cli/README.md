@@ -2971,13 +2971,17 @@ check PR liveness or release its remediation claim (a workflow stage)
 Usage: goobers pr-claim [--release] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
-request is still open. If it has merged or closed, release the claim and
-return a structured no-work result so the runner stops the workflow.
+request is still open and still at the exact source revision this run
+selected (or itself published). If it has merged or closed, release the
+claim and return a terminal no-work result; if it moved to a different
+head, release the claim and return a distinct stale-selection no-work
+result, so the runner stops the workflow either way. A missing or
+malformed head fails closed.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
-Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
-2 = usage/IO error.
+Exit codes: 0 = PR current, terminal/stale no-work, or released;
+1 = business error; 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -2995,23 +2999,34 @@ label open goober PRs carrying unaddressed human comments (a workflow stage)
 Usage: goobers pr-comment-watch [path]
 
 Scan open goober-authored PRs (head under the gaggle branch namespace)
-and label any whose newest human comment is newer than the bot's own
+and label any whose newest human comment is newer than Goobers' own
 newest comment with goobers:needs-remediation, so pr-remediation updates
 that PR in place. A PR parked for a human (needs-human / merge-escalated)
 is un-parked when a fresh human comment lands: the park label is cleared
-and needs-remediation added in one mutation, since the human the PR was
-parked for has now weighed in. The bot identity is the token's own login
-(AuthenticatedLogin) — a dedicated bot account is required for signal;
-with a shared human identity the stage never fires. Comments landing
-mid-remediation after the brief snapshot can be masked by the bot's
-response comment until the human comments again (accepted v1 limit).
+and needs-remediation added, since the human the PR was parked for has
+now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps
+general comments and review-thread replies both count; deleted comments
+and system threads (votes, pushes, policy status) never do.
+
+A comment is Goobers' own when it carries a Goobers marker (the
+attribution footer or a review-thread response marker) on a line of its
+own. With identityMode=dedicated, an unmarked comment by the credential's
+own identity (its login; its identity id on Azure DevOps) is Goobers' own
+too. With identityMode=shared, for Goobers running as a person's own
+identity, such a comment is that person's and counts as human. Comments
+landing mid-remediation after the brief snapshot can be masked by
+Goobers' response until the human comments again (accepted v1 limit).
 
 Inputs: maxPullRequests (default 20), headPrefixes (default the branch
 namespace), base (default the gaggle base branch), excludeLabels (labels
 that hard-exclude a PR from the scan), unparkLabels (park labels a fresh
 human comment clears while routing, default needs-human,merge-escalated),
-excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),
-resultFile (default comment-watch-result.json).
+excludeAuthors (extra automation identities to ignore: logins, or
+identity ids on Azure DevOps), identityMode (dedicated or shared; default
+shared on Azure DevOps, dedicated elsewhere), resultFile (default
+comment-watch-result.json).
+Credentials: github:issues:write on GitHub and Gitea; github:pr:write on
+Azure DevOps, where the routing labels are pull-request labels.
 Exit codes: 0 = scanned (labeled zero or more), 1 = business error,
 2 = usage/IO error.
 ~~~

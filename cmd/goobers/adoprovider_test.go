@@ -156,7 +156,8 @@ func TestADOStageProviderUsesTheDeclaredCapabilityCredential(t *testing.T) {
 
 // TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure pins that an
 // HTTP 401 answered to a stage's delivered ADO credential still reports
-// errorCodeAuthFailed, typed and after crossing a process boundary as text:
+// an auth-failure code (provider_auth_failed since #6120), typed and after
+// crossing a process boundary as text:
 // the scheduler's auth circuit and the read model's provider-auth block key
 // on that code. The 401 detail stays in the message.
 func TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure(t *testing.T) {
@@ -181,8 +182,10 @@ func TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure(t *testing.T)
 		t.Fatalf("error %q must keep the 401 detail and never the credential", err)
 	}
 	for name, candidate := range map[string]error{"typed": err, "text": errors.New(err.Error())} {
-		if code, _, _ := classifyProviderError(candidate); code != errorCodeAuthFailed {
-			t.Fatalf("classifyProviderError(%s) = %q, want %q", name, code, errorCodeAuthFailed)
+		// provider_auth_failed since #6120: the same verdict under a code
+		// that does not name GitHub; auth-failure consumers match both.
+		if code, _, _ := classifyProviderError(candidate); code != errorCodeProviderAuthFailed || !providers.IsAuthFailureCode(code) {
+			t.Fatalf("classifyProviderError(%s) = %q, want %q", name, code, errorCodeProviderAuthFailed)
 		}
 	}
 }

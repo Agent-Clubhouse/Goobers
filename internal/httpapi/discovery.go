@@ -270,6 +270,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.runJournal != nil
 	case apicontract.RouteCredentialResolve:
 		available = config.credentials != nil
+	case apicontract.RouteCredentialRefresh:
+		_, available = config.credentials.(CredentialRefreshService)
 	case apicontract.RouteBlobGet, apicontract.RouteBlobPut:
 		available = config.blobs != nil
 	case apicontract.RouteRunRecovery:

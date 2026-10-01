@@ -56,6 +56,7 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 	}
 	var rateLimitWaited time.Duration
 	var rateLimitRetries, transientRetries int
+	authRetried := false
 	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
@@ -97,6 +98,14 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 			return nil, fmt.Errorf("send request: %w", err)
 		}
 		p.observeQuota(ctx, resp)
+		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateToken() {
+			// A refreshable delivered credential was rejected (Goobers#6120):
+			// re-resolve it once and resend. Safe for every method — a 401
+			// is refused before the request is acted on.
+			_ = resp.Body.Close()
+			authRetried = true
+			continue
+		}
 		if isRateLimited(resp) {
 			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
 			_ = resp.Body.Close()
@@ -217,13 +226,30 @@ func (p *GitHubProvider) resolveToken(ctx context.Context) (string, error) {
 	return p.Token, nil
 }
 
-// RefreshCIPollCredential lets ci-poll distinguish a refreshable credential
-// source from a static token when a long poll receives 401. The next request
-// resolves through the source again; a static-token provider reports that no
-// refresh path exists so the caller preserves the terminal auth failure.
+// invalidateToken marks a refreshable token source's value rejected, and
+// reports whether the source can re-resolve at all.
+func (p *GitHubProvider) invalidateToken() bool {
+	source, ok := p.tokenSource.(RefreshableTokenSource)
+	if !ok {
+		return false
+	}
+	source.Invalidate()
+	return true
+}
+
+// RefreshCIPollCredential lets ci-poll (#6154) distinguish a refreshable
+// credential source from a static token when a long poll receives 401, after
+// send()'s own one re-resolve (#6120) was also rejected. A refreshable source
+// is invalidated and re-resolved once here, so a refresh failure surfaces to
+// ci-poll's bounded retry as an error; any other source is asked again. A
+// static-token provider reports that no refresh path exists so the caller
+// preserves the terminal auth failure.
 func (p *GitHubProvider) RefreshCIPollCredential(ctx context.Context) (bool, error) {
 	if p.tokenSource == nil {
 		return false, nil
+	}
+	if source, ok := p.tokenSource.(RefreshableTokenSource); ok {
+		source.Invalidate()
 	}
 	_, err := p.tokenSource.Token(ctx)
 	return err == nil, err

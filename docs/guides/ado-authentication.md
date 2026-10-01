@@ -296,11 +296,24 @@ The stage receives each token's expiry as the non-secret
 `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>` (an RFC 3339 UTC timestamp) beside
 `GOOBERS_CRED_<CAPABILITY>`. A PAT states no expiry and gets no such variable.
 
-A stage cannot refresh what it was delivered: when Azure DevOps rejects the
-value with HTTP 401, the request fails without a retry, with an error that
-names the capability and keeps the 401 response. It is reported as an
-authentication failure (`github_auth_failed`). The delivered expiry decides
-the wording:
+The 20-minute floor cannot help on `azure-cli`, and a stage can run for hours,
+so a deterministic stage refreshes a delivered Entra token itself (#6120). With
+its credentials it receives a stage credential-refresh grant
+(`GOOBERS_CREDENTIAL_ENDPOINT` and `GOOBERS_CREDENTIAL_GRANT`). The built-in
+commands re-resolve a token through the daemon within five minutes of its
+expiry, and once more when Azure DevOps answers 401 or redirects to sign-in,
+then resend the request. Git pushes and fetches read the current token each
+time. After a real 401 the daemon's `az` cache is also at or near expiry, so the
+re-resolve returns a genuinely new token. See "Mid-stage refresh" in
+`docs/stage-contract.md`. A PAT states no expiry and is never refreshed.
+Agentic stages do not receive a grant yet.
+
+When Azure DevOps rejects a value the stage cannot refresh (no grant), or
+rejects the re-resolved value too, the request fails with an error that names
+the capability and keeps the 401 response; an HTML sign-in page is summarized,
+not embedded. It is reported as an authentication failure
+(`provider_auth_failed`; before #6120 it was reported as `github_auth_failed`,
+and consumers match both). The delivered expiry decides the wording:
 
 - at or after the expiry, the credential "expired at" that time;
 - before it, the credential was "revoked or without access to this resource"

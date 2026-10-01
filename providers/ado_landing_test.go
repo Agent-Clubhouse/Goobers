@@ -608,6 +608,22 @@ func TestADOProviderPollMergeQueueEntryStates(t *testing.T) {
 			wantState: MergeQueueEntryEvicted,
 		},
 		{
+			name: "active with auto-complete consumed by a queued completion is pending",
+			response: map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "succeeded",
+				"completionQueueTime": "2026-01-02T03:04:05Z",
+			},
+			wantState: MergeQueueEntryPending,
+		},
+		{
+			name: "active with a queued completion that policy rejected is evicted",
+			response: map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "rejectedByPolicy",
+				"completionQueueTime": "2026-01-02T03:04:05Z",
+			},
+			wantState: MergeQueueEntryEvicted,
+		},
+		{
 			name: "abandoned is evicted",
 			response: map[string]interface{}{
 				"pullRequestId": 42, "status": "abandoned",

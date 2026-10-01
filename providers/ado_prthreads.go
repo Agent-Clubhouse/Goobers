@@ -543,6 +543,10 @@ type adoPullRequestThread struct {
 	IsDeleted                bool                         `json:"isDeleted"`
 	ThreadContext            *adoThreadContext            `json:"threadContext"`
 	PullRequestThreadContext *adoPullRequestThreadContext `json:"pullRequestThreadContext"`
+	// Properties carries ADO's thread properties; a CodeReviewThreadType key
+	// marks a thread ADO synthesized (vote, push, policy status), read by
+	// ListPullRequestFeedbackComments.
+	Properties map[string]interface{} `json:"properties"`
 }
 
 type adoPullRequestThreadComment struct {

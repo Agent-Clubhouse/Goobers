@@ -909,7 +909,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// authenticator below) every resolve answers a typed 403 rather than
 	// handing raw secret material to any local caller. Local modes never need
 	// the plane; their resolution stays in-process via buildCredentialEnv.
-	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog).withStageGrants(l.Root, apiServer.Address(), setup.Config.API.TLS != nil)
 	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
 	setup.CredentialPlane = credentialPlane
 	// The surrender plane (#3699) rides beside the blob store, under the same
@@ -1035,7 +1035,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(credentialPlane.grantKey())))
 		apiAuthorizer = httpapi.RequireRoles()
 	} else if !instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		// Non-loopback with no human authenticator configured: serve the pod
@@ -1049,7 +1049,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(credentialPlane.grantKey())))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)

@@ -630,7 +630,7 @@ func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, stdout, st
 // outcome is written so queue-gate can still read it; the remediation routing
 // is deferred to the ADO merge epic (CONF-3 #2076).
 func mergeQueuePollEvictedADO(pullNumber, resultFile string, stdout, stderr io.Writer) int {
-	reason := fmt.Sprintf("merge queue evicted pull request #%s: its build against the projected merge state failed; ado remediation labeling deferred to the ADO merge epic (CONF-3 #2076)", pullNumber)
+	reason := fmt.Sprintf("auto-complete for pull request #%s was cleared while it was still active (a branch policy rejected completion, or it was cancelled); ado remediation labeling deferred to the ADO merge epic (CONF-3 #2076)", pullNumber)
 	if err := writeQueueResult(resultFile, pullNumber, "evicted", "", nil, reason); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

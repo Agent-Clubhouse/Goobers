@@ -58,7 +58,7 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		// — the portal never fetches it, so the 10s portal abort that
 		// motivates this rule does not apply. TestCredentialResolveBudget
 		// below pins the mint-containment reasoning.
-		if route.ID == RouteCredentialResolve {
+		if route.ID == RouteCredentialResolve || route.ID == RouteCredentialRefresh {
 			continue
 		}
 		// Defect nomination is a stage-pod read with its own five-minute
