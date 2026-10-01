@@ -147,9 +147,12 @@ type visitRecordingDeterministic struct {
 	rec           ArtifactRecorder
 	byTask        map[string]stubTaskResult
 	statusByVisit map[string][]apiv1.ResultStatus
-	visitCounts   map[string]int
-	mu            *sync.Mutex
-	visited       *[]string
+	// outputsByVisit serves a successful result with these outputs for the
+	// Nth visit of a stage, after which byTask applies again.
+	outputsByVisit map[string][]map[string]interface{}
+	visitCounts    map[string]int
+	mu             *sync.Mutex
+	visited        *[]string
 }
 
 func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.InvocationEnvelope, dr apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -162,9 +165,13 @@ func (v *visitRecordingDeterministic) Run(ctx context.Context, env apiv1.Invocat
 	visit := v.visitCounts[stage]
 	v.visitCounts[stage]++
 	statuses := v.statusByVisit[stage]
+	outputs := v.outputsByVisit[stage]
 	v.mu.Unlock()
 	if visit < len(statuses) {
 		return apiv1.ResultEnvelope{Status: statuses[visit]}, nil
+	}
+	if visit < len(outputs) {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Outputs: outputs[visit]}, nil
 	}
 	return (&stubDeterministic{rec: v.rec, byTask: v.byTask}).Run(ctx, env, dr)
 }
@@ -175,6 +182,9 @@ type remediationWalkOptions struct {
 	beforePushStatus             apiv1.ResultStatus
 	guardBeforeImplementStatuses []apiv1.ResultStatus
 	pushPublished                string
+	// beforePushStaleInputs is guard-before-push's staleInput per visit
+	// (#6126); once exhausted, the guard reports no staleInput at all.
+	beforePushStaleInputs []string
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -297,6 +307,11 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":release-escalated-claim":        {status: apiv1.ResultSuccess},
 		runID + ":park-escalated":                 {status: apiv1.ResultSuccess},
 		runID + ":park-invalid-finding-responses": {status: apiv1.ResultSuccess},
+		runID + ":park-stale-feedback":            {status: apiv1.ResultSuccess},
+	}
+	var beforePushOutputs []map[string]interface{}
+	for _, stale := range opts.beforePushStaleInputs {
+		beforePushOutputs = append(beforePushOutputs, map[string]interface{}{"staleInput": stale})
 	}
 
 	r, err := New(Config{
@@ -305,6 +320,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 				t: t, rec: rec, byTask: byTask,
 				statusByVisit: map[string][]apiv1.ResultStatus{
 					"guard-before-implement": opts.guardBeforeImplementStatuses,
+				},
+				outputsByVisit: map[string][]map[string]interface{}{
+					"guard-before-push": beforePushOutputs,
 				},
 				visitCounts: make(map[string]int),
 				mu:          &mu,
@@ -519,6 +537,53 @@ func TestShippedPRRemediationRepassesOnNeedsChanges(t *testing.T) {
 	}
 	if visited[len(visited)-1] != "release-claim" {
 		t.Errorf("last stage = %q, want release-claim after the remediated branch was published", visited[len(visited)-1])
+	}
+}
+
+// TestShippedPRRemediationRegathersOnStaleFeedback walks #6126's routing on
+// the real graph: feedback that changed before publication re-enters
+// gather-review-threads and the agent, instead of escalating or failing, and
+// the run then publishes normally.
+func TestShippedPRRemediationRegathersOnStaleFeedback(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-stale-feedback", goober, remediationWalkOptions{
+		beforePushStaleInputs: []string{"new_feedback", ""},
+	})
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+	}
+	counts := map[string]int{}
+	for _, stage := range visited {
+		counts[stage]++
+	}
+	if counts["gather-review-threads"] != 2 || counts["implement"] != 2 || counts["push-remediated"] != 1 {
+		t.Fatalf("visits = %v, want one re-gather and re-implement before a single publication (visited: %v)", counts, visited)
+	}
+	if counts["park-stale-feedback"] != 0 || visited[len(visited)-1] != "release-claim" {
+		t.Fatalf("visited = %v, want a normal release, no stale-feedback park", visited)
+	}
+}
+
+// TestShippedPRRemediationParksWhenFeedbackKeepsChanging: once the re-gather
+// repass budget is spent, stale feedback parks with an escalation instead of
+// looping.
+func TestShippedPRRemediationParksWhenFeedbackKeepsChanging(t *testing.T) {
+	goober := &remediationGoober{t: t}
+	res, visited, _ := walkShippedPRRemediation(t, "prr-stale-forever", goober, remediationWalkOptions{
+		beforePushStaleInputs: []string{"new_feedback", "changed_feedback", "new_feedback", "changed_feedback", "new_feedback", "new_feedback"},
+	})
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want %q (visited: %v)", res.Phase, journal.PhaseEscalated, visited)
+	}
+	parked := false
+	for _, stage := range visited {
+		if stage == "push-remediated" {
+			t.Fatalf("published despite stale feedback (visited: %v)", visited)
+		}
+		parked = parked || stage == "park-stale-feedback"
+	}
+	if !parked || visited[len(visited)-1] != "release-escalated-claim" {
+		t.Fatalf("visited = %v, want park-stale-feedback then release-escalated-claim", visited)
 	}
 }
 

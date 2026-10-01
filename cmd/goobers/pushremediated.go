@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -253,6 +254,7 @@ func runPushRemediatedCoreWithAuth(
 			"(remediation-checkpoint records it every cycle) — refusing to force-push without one\n", selectedNumber)
 		return 1
 	}
+	lease := remediationLeaseExpectation(root, repo, selectedNumber, state.HeadSHA)
 
 	// Nothing to publish is NOT success. If the branch still sits exactly where
 	// it did before this cycle's agentic chain ran, the chain produced no
@@ -267,10 +269,10 @@ func runPushRemediatedCoreWithAuth(
 		pf(stderr, "error: resolve local head for PR #%d: %v\n", selectedNumber, err)
 		return 1
 	}
-	if localHead == state.HeadSHA {
+	if localHead == lease {
 		pf(stderr, "error: PR #%d's branch is unchanged from its pre-remediation head %s — "+
 			"the remediation produced no commit, so there is nothing to publish and %s stays set\n",
-			selectedNumber, state.HeadSHA, needsRemediationLabel)
+			selectedNumber, lease, needsRemediationLabel)
 		return 1
 	}
 
@@ -281,8 +283,11 @@ func runPushRemediatedCoreWithAuth(
 	if current.State != "open" || current.Merged {
 		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
 	}
+	if code, stop := enforcePushRevision(root, repo, selectedNumber, current, stdout, stderr); stop {
+		return code
+	}
 
-	if err := forcePushWithLeaseWithAuth(ctx, ".", current.Head, state.HeadSHA, gitAuth); err != nil {
+	if err := forcePushWithLeaseWithAuth(ctx, ".", current.Head, lease, gitAuth); err != nil {
 		return failProviderStage(
 			stderr,
 			fmt.Sprintf("force-push remediated PR #%d branch %q", selectedNumber, current.Head),
@@ -297,6 +302,73 @@ func runPushRemediatedCoreWithAuth(
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
 	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
+}
+
+// remediationLeaseExpectation is the SHA the force-with-lease must find on
+// the remote. Normally that is the pre-remediation head remediation-checkpoint
+// recorded. When this run already published once and a stale-feedback repass
+// (#6126) brought it back here, the remote legitimately sits at the run's own
+// published head, so that — recorded in this run's journal, never re-resolved
+// from the remote — becomes the expectation. The lease stays mandatory and
+// non-tautological either way: anything pushed since the recorded SHA still
+// makes it refuse.
+func remediationLeaseExpectation(root string, repo providers.RepositoryRef, selectedNumber int, recorded string) string {
+	runID, _, err := providerRunContext()
+	if err != nil {
+		return recorded
+	}
+	expected, ok, err := loadPRExpectedRevision(root, runID, repo, selectedNumber)
+	if err != nil || !ok || expected.Source != prRevisionSourcePublication {
+		return recorded
+	}
+	return expected.ExpectedHeadSHA
+}
+
+// enforcePushRevision applies the shared revision precondition (#6128) to the
+// PR read push-remediated is about to publish against. It is in addition to,
+// never instead of, the force-with-lease on the recorded pre-remediation SHA:
+// the lease refuses a push if the remote moved since the checkpoint recorded
+// it, while this refuses one if the PR is no longer at the revision this run
+// selected — the case where the checkpoint itself recorded a head the run's
+// work was never derived from. A stale selection publishes nothing, releases
+// the claim, and ends the run as a distinct no-work outcome.
+func enforcePushRevision(root string, repo providers.RepositoryRef, selectedNumber int, current providers.PullRequestSummary, stdout, stderr io.Writer) (int, bool) {
+	runID, _, err := providerRunContext()
+	if err != nil {
+		return failProviderStage(stderr, "read run context", err, pushRemediatedResultName), true
+	}
+	expected, recorded, err := loadPRExpectedRevision(root, runID, repo, selectedNumber)
+	if err != nil {
+		return failPRRevision(stderr, "load claimed pull request revision", err, pushRemediatedResultName), true
+	}
+	check, err := evaluatePRRevision(expected, recorded, current)
+	if err != nil {
+		return failPRRevision(stderr, fmt.Sprintf("verify pull request #%d revision before publishing", selectedNumber), err, pushRemediatedResultName), true
+	}
+	if check.State != prRevisionStale {
+		return 0, false
+	}
+	if err := releasePRRemediationClaim(root); err != nil {
+		return failProviderStage(stderr, "release remediation PR claim", err, pushRemediatedResultName), true
+	}
+	reason := fmt.Sprintf("stale selection: PR #%d moved from this run's %s head %s to %s",
+		selectedNumber, expected.Source, check.Expected, check.Live)
+	pf(stdout, "no work: %s; nothing published, claim released so the next cycle re-selects it\n", reason)
+	if err := writeProviderStagePayload(providerInput("resultFile", pushRemediatedResultName), map[string]interface{}{
+		"selectedNumber":              strconv.Itoa(selectedNumber),
+		pushRemediatedPublishedOutput: "false",
+		"head":                        "",
+		pushRemediatedLocalHeadOutput: "",
+		executor.OutputNoWork:         true,
+		"noWorkReason":                reason,
+		"outcome":                     prClaimOutcomeStaleSelection,
+		"expectedHeadSha":             check.Expected,
+		"liveHeadSha":                 check.Live,
+	}); err != nil {
+		pf(stderr, "error: write push-remediated result: %v\n", err)
+		return 2, true
+	}
+	return 0, true
 }
 
 func skipTerminalRemediatedPullRequest(selectedNumber int, stdout, stderr io.Writer) int {

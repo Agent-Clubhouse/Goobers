@@ -110,11 +110,13 @@ therefore write files; only scalars used for *gate routing* go through `inputsFr
 #### D1.1 — `remediation-brief.json` versioned contract
 
 The closed schema is
-`api/schemas/remediation-brief-v3.schema.json`; its wire identifier is
-`goobers.dev/remediation-brief/v3`. V3 adds the aggregate weakest-source
-integrity grade and preserves grades on provider-authored comments, reviews,
-and issue text. V2 added inline review diff hunks, original lines, and explicit
-resolved/outdated state. The v1 and v2 schemas remain embedded and unchanged.
+`api/schemas/remediation-brief-v4.schema.json`; its wire identifier is
+`goobers.dev/remediation-brief/v4`. V4 adds the optional `feedbackSnapshot`
+(`goobers.dev/pr-feedback-snapshot/v1`, see D1.2). V3 added the aggregate
+weakest-source integrity grade and preserves grades on provider-authored
+comments, reviews, and issue text. V2 added inline review diff hunks, original
+lines, and explicit resolved/outdated state. The v1, v2 and v3 schemas remain
+embedded and unchanged, and every reader still accepts them.
 Unknown fields are rejected. Any shape change, including an additive field,
 publishes a new schema version rather than silently widening an existing
 version. Writers emit one version and readers select support by the wire
@@ -146,6 +148,37 @@ Only `selectedNumber`, `head`, `base`, `hasSubstantiveFindings`, and
 `hasFailingCI` continue through `inputsFrom`. `workspaceBranch` remains the
 runner-interpreted branch-rebinding output. The full verdict, comments, and every
 optional section travel only in the journal-lifted brief artifact.
+
+#### D1.2 — Revision and feedback continuity (#6128, #6126)
+
+A run works on one PR at one revision, answering one set of human feedback.
+Both can move while it runs, so both are pinned and re-checked.
+
+- **Revision.** The expected head is the `gatherPrContext.headSha` that
+  `gather-pr-context` selected, read back from its own journal artifact. Only a
+  new selection or this run's own `push-remediated` publication advances it.
+  Every `pr-claim` guard and `push-remediated` compare the live head with it.
+  A different head is a distinct `stale_selection` no-work that releases the
+  claim, so the next cycle re-selects the PR at its new head. It is never an
+  escalation and never an in-run adoption. A missing or malformed head fails
+  closed (`pr_revision_unverifiable`).
+- **Feedback.** `gather-review-threads` pins the review threads, non-empty
+  review bodies and general PR comments it hands the agent in the brief's
+  `feedbackSnapshot`. The same read refreshes `gatherPrContext.comments`, so
+  the agent sees exactly what the snapshot pins. `pr-claim --verify-feedback`
+  (guard-before-push) and `resolve-review-threads` (before and around every
+  mutation) re-read and compare that feedback. New, changed or missing
+  feedback, or a thread whose state someone else changed, reports a typed
+  `staleInput`. The feedback gates route it back to `gather-review-threads`.
+  That re-entry is charged to the run's repass budget, and only an exhausted
+  budget parks (`park-stale-feedback`). A post-publication head move ends the
+  run as a `stale_head` no-work. A push that the provider has not yet surfaced
+  is a retryable `published_head_not_visible`.
+- **Canonicalization.** Identity is the provider's stable id, and items are
+  ordered by id. Bodies are compared by the sha256 of their normalized text.
+  Excluded: bodies carrying a Goobers hidden marker, bot-authored general
+  comments, empty review bodies, review state and the outdated flag. The
+  digest includes the head and collection completeness.
 
 ### D2 — Remediation policy declared in the DSL, not compiled into Go
 

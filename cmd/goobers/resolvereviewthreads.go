@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,14 +19,21 @@ const (
 	threadResponsesOutput             = "threadResponses"
 	resolveReviewThreadsResultFile    = "review-thread-resolution.json"
 	errorCodeThreadResponsesInvalid   = "thread_responses_invalid"
+	errorCodePublishedHeadNotVisible  = "published_head_not_visible"
 	unresolvedReviewThreadCountOutput = "unresolvedThreadCount"
 )
 
 const resolveReviewThreadsHelp = "Usage: goobers resolve-review-threads [path]\n\n" +
 	"Validate the implementer's threadResponses against every gathered live review\n" +
 	"thread, reply to each thread, resolve addressed threads after the reply is\n" +
-	"visible, and re-query the published PR head. Exit codes: 0 = responses\n" +
-	"applied and verified, 1 = business/provider error, 2 = usage/IO error.\n"
+	"visible, and re-query the published PR head. Before and during publication\n" +
+	"the live feedback is compared with the run's recorded feedback snapshot:\n" +
+	"new, changed or missing feedback, or a thread whose state someone else\n" +
+	"changed, stops publication with a typed staleInput result the workflow\n" +
+	"routes back to gather-review-threads; a head that moved off the published\n" +
+	"SHA ends the run as no-work. Exit codes: 0 = responses applied and\n" +
+	"verified, stale input reported, or no-work; 1 = business/provider error;\n" +
+	"2 = usage/IO error.\n"
 
 type reviewThreadDisposition struct {
 	ThreadID    string `json:"threadId"`
@@ -36,6 +44,27 @@ type reviewThreadDisposition struct {
 type gatheredReviewThread struct {
 	ID        string
 	CommentID int64
+}
+
+// reviewThreadPublication is one resolve-review-threads invocation: the
+// validated responses, the provider it publishes through, and what it
+// compares live state against.
+type reviewThreadPublication struct {
+	root, runID   string
+	repo          providers.RepositoryRef
+	pullID        string
+	publishedHead string
+	// prePublishHead is the head this pass's push published over: the
+	// snapshot's head, or the selected head for a run without a snapshot.
+	prePublishHead string
+	provider       reviewThreadResolver
+	mutator        providers.PullRequestReviewThreadMutator
+	source         prFeedbackSource
+	snapshot       *apiv1.PRFeedbackSnapshot
+	threads        map[string]gatheredReviewThread
+	responses      []reviewThreadDisposition
+	stdout         io.Writer
+	stderr         io.Writer
 }
 
 func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
@@ -49,124 +78,304 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
+	p, code, ok := newReviewThreadPublication(root, stdout, stderr)
+	if !ok {
+		return code
+	}
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	return p.run(ctx)
+}
+
+func newReviewThreadPublication(root string, stdout, stderr io.Writer) (*reviewThreadPublication, int, bool) {
 	runID, _, err := providerRunContext()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 1
+		return nil, 1, false
 	}
 	brief, rawResponses, publishedHead, published, err := readReviewThreadResolutionInputs(root, runID)
 	if err != nil {
 		pf(stderr, "error: read review-thread resolution inputs: %v\n", err)
-		return 1
+		return nil, 1, false
 	}
 	if !published {
 		pf(stderr, "error: remediated branch was not published; refusing to reply to review threads\n")
-		return 1
+		return nil, 1, false
 	}
 	threads, err := gatheredLiveReviewThreads(brief.GatherReviewThreads)
 	if err != nil {
-		return failThreadResponseValidation(err, stderr)
+		return nil, failThreadResponseValidation(err, stderr), false
 	}
 	responses, err := validateThreadResponses(threads, rawResponses)
 	if err != nil {
-		return failThreadResponseValidation(err, stderr)
+		return nil, failThreadResponseValidation(err, stderr), false
 	}
+	p := &reviewThreadPublication{
+		root: root, runID: runID, pullID: brief.SelectedNumber, publishedHead: publishedHead,
+		snapshot: brief.FeedbackSnapshot, threads: threads, responses: responses, stdout: stdout, stderr: stderr,
+		prePublishHead: strings.TrimSpace(brief.GatherPRContext.HeadSHA),
+	}
+	if brief.FeedbackSnapshot != nil {
+		p.prePublishHead = brief.FeedbackSnapshot.HeadSHA
+	}
+	if code, ok := p.connect(); !ok {
+		return nil, code, false
+	}
+	return p, 0, true
+}
 
-	repo, err := providerRepo(root)
+func (p *reviewThreadPublication) connect() (int, bool) {
+	repo, err := providerRepo(p.root)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		pf(p.stderr, "error: %v\n", err)
+		return 1, false
 	}
-	provider, err := reviewThreadStageSurface[reviewThreadResolver](root, repo, false)
+	provider, err := reviewThreadStageSurface[reviewThreadResolver](p.root, repo, false)
 	if err != nil {
-		pf(stderr, "error: construct remediation provider: %v\n", err)
-		return 1
+		pf(p.stderr, "error: construct remediation provider: %v\n", err)
+		return 1, false
 	}
-	ctx, cancel := providerCommandContext()
-	defer cancel()
 	mutator, ok := provider.(providers.PullRequestReviewThreadMutator)
 	if !ok {
-		pf(stderr, "error: provider %q cannot reply to or resolve review threads\n", repo.Provider)
-		return 1
+		pf(p.stderr, "error: provider %q cannot reply to or resolve review threads\n", repo.Provider)
+		return 1, false
 	}
-	current, err := provider.GetPullRequest(ctx, repo, brief.SelectedNumber)
-	if err != nil {
-		return failProviderStage(stderr, "read published pull request head", err, resolveReviewThreadsResultFile)
-	}
-	if current.HeadSHA == "" {
-		pf(stderr, "error: published PR #%s has no head SHA\n", brief.SelectedNumber)
-		return 1
-	}
-	if current.HeadSHA != publishedHead {
-		pf(stderr, "error: PR #%s head moved from published SHA %s to %s before review threads could be reconciled\n",
-			brief.SelectedNumber, publishedHead, current.HeadSHA)
-		return 1
-	}
-
-	for _, response := range responses {
-		thread := threads[response.ThreadID]
-		body := renderReviewThreadReply(runID, publishedHead, response)
-		snapshot, err := provider.ListPullRequestReviewThreads(ctx, repo, brief.SelectedNumber)
+	p.repo, p.provider, p.mutator = repo, provider, mutator
+	if p.snapshot != nil {
+		source, err := newPRFeedbackSource(provider, repo.Provider)
 		if err != nil {
-			return failProviderStage(stderr, "read review threads before reply", err, resolveReviewThreadsResultFile)
+			pf(p.stderr, "error: %v\n", err)
+			return 1, false
 		}
-		if !reviewThreadHasReply(snapshot, runID, response.ThreadID) {
-			if _, err := mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
-				Repository: repo, PullID: brief.SelectedNumber, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
-			}); err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("reply to review thread %s", response.ThreadID), err, resolveReviewThreadsResultFile)
-			}
-			snapshot, err = provider.ListPullRequestReviewThreads(ctx, repo, brief.SelectedNumber)
-			if err != nil {
-				return failProviderStage(stderr, "verify review-thread reply", err, resolveReviewThreadsResultFile)
-			}
-			if !reviewThreadHasReply(snapshot, runID, response.ThreadID) {
-				pf(stderr, "error: reply to review thread %s is not visible after publication\n", response.ThreadID)
-				return 1
-			}
-		}
-		if response.Disposition != "addressed" {
-			continue
-		}
-		if reviewThreadResolved(snapshot, response.ThreadID) {
-			continue
-		}
-		if err := mutator.ResolvePullRequestReviewThread(ctx, repo, response.ThreadID); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("resolve review thread %s", response.ThreadID), err, resolveReviewThreadsResultFile)
-		}
-		snapshot, err = provider.ListPullRequestReviewThreads(ctx, repo, brief.SelectedNumber)
-		if err != nil {
-			return failProviderStage(stderr, "verify review-thread resolution", err, resolveReviewThreadsResultFile)
-		}
-		if !reviewThreadResolved(snapshot, response.ThreadID) {
-			pf(stderr, "error: review thread %s remains unresolved after resolution\n", response.ThreadID)
-			return 1
-		}
+		p.source = source
 	}
+	return 0, true
+}
 
-	final, err := provider.ListPullRequestReviewThreads(ctx, repo, brief.SelectedNumber)
+func (p *reviewThreadPublication) run(ctx context.Context) int {
+	if code, stop := p.checkBeforePublication(ctx); stop {
+		return code
+	}
+	for _, response := range p.responses {
+		if code, stop := p.publish(ctx, response); stop {
+			return code
+		}
+	}
+	return p.finish(ctx)
+}
+
+// compareOptions names the thread-state changes this run makes itself.
+func (p *reviewThreadPublication) compareOptions() feedbackCompareOptions {
+	mayResolve := map[string]bool{}
+	for _, response := range p.responses {
+		if response.Disposition == "addressed" {
+			mayResolve[response.ThreadID] = true
+		}
+	}
+	return feedbackCompareOptions{expectedHead: p.publishedHead, mayResolve: mayResolve}
+}
+
+// checkBeforePublication re-reads the head and, when the run recorded a
+// feedback snapshot, every feedback source, before the first mutation.
+func (p *reviewThreadPublication) checkBeforePublication(ctx context.Context) (int, bool) {
+	if p.snapshot == nil {
+		current, err := p.provider.GetPullRequest(ctx, p.repo, p.pullID)
+		if err != nil {
+			return failProviderStage(p.stderr, "read published pull request head", err, resolveReviewThreadsResultFile), true
+		}
+		return p.checkHead(current.HeadSHA, "before review threads could be reconciled")
+	}
+	check, err := checkLiveFeedback(ctx, p.source, p.repo, p.snapshot, p.compareOptions())
 	if err != nil {
-		return failProviderStage(stderr, "re-query unresolved review threads", err, resolveReviewThreadsResultFile)
+		return failProviderStage(p.stderr, "re-read pull request feedback before publication", err, resolveReviewThreadsResultFile), true
 	}
-	verifiedHead, err := provider.GetPullRequest(ctx, repo, brief.SelectedNumber)
-	if err != nil {
-		return failProviderStage(stderr, "verify published pull request head", err, resolveReviewThreadsResultFile)
+	if check.stale() && check.reasons[0].Code == staleReasonHead {
+		if code, stop := p.checkHead(check.evidence.pr.HeadSHA, "before review threads could be reconciled"); stop {
+			return code, true
+		}
 	}
-	if verifiedHead.HeadSHA != publishedHead {
-		pf(stderr, "error: PR #%s head moved from published SHA %s to %s while review threads were reconciled\n",
-			brief.SelectedNumber, publishedHead, verifiedHead.HeadSHA)
-		return 1
+	if check.stale() {
+		return p.reportStale(check.reasons, countLiveUnresolvedReviewThreads(check.evidence.threads)), true
 	}
-	unresolved := countLiveUnresolvedReviewThreads(final)
+	return 0, false
+}
+
+// checkHead enforces the published-head precondition. An empty head fails
+// closed; a head that moved off this run's publication ends the run as
+// no-work: whatever moved it, replies describing the published SHA would now
+// describe a head the PR is no longer at.
+func (p *reviewThreadPublication) checkHead(live, when string) (int, bool) {
+	live = strings.TrimSpace(live)
+	if live == "" {
+		pf(p.stderr, "error: published PR #%s has no head SHA\n", p.pullID)
+		return 1, true
+	}
+	if strings.EqualFold(live, p.publishedHead) {
+		return 0, false
+	}
+	if p.prePublishHead != "" && strings.EqualFold(live, p.prePublishHead) {
+		// The provider still reports the head this pass published over: its
+		// view has not caught up with the push yet (Azure DevOps updates the
+		// PR's source commit asynchronously). That is weather, not a moved
+		// PR, so it takes the bounded infrastructure retry.
+		return failProviderStageRetryable(p.stderr, "read published pull request head",
+			fmt.Errorf("PR #%s still reports pre-publication head %s instead of published %s", p.pullID, live, p.publishedHead),
+			errorCodePublishedHeadNotVisible, resolveReviewThreadsResultFile), true
+	}
+	pf(p.stderr, "PR #%s head moved from published SHA %s to %s %s\n", p.pullID, p.publishedHead, live, when)
+	return p.endStaleHead(live), true
+}
+
+func (p *reviewThreadPublication) endStaleHead(live string) int {
+	if err := releasePRRemediationClaim(p.root); err != nil {
+		return failProviderStage(p.stderr, "release remediation PR claim", err, resolveReviewThreadsResultFile)
+	}
+	reason := fmt.Sprintf("stale head: PR #%s moved from this run's published head %s to %s", p.pullID, p.publishedHead, live)
+	pf(p.stdout, "no work: %s; no further review-thread replies published, claim released\n", reason)
 	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), map[string]interface{}{
-		"selectedNumber":                  brief.SelectedNumber,
-		"publishedHeadSha":                publishedHead,
-		unresolvedReviewThreadCountOutput: strconv.Itoa(unresolved),
+		"selectedNumber":      p.pullID,
+		"publishedHeadSha":    p.publishedHead,
+		"liveHeadSha":         live,
+		executor.OutputNoWork: true,
+		"noWorkReason":        reason,
+		"outcome":             staleReasonHead,
+		staleInputOutput:      staleReasonHead,
 	}); err != nil {
-		pf(stderr, "error: write review-thread resolution result: %v\n", err)
+		pf(p.stderr, "error: write review-thread resolution result: %v\n", err)
 		return 2
 	}
-	pf(stdout, "PR #%s: replied to %d review thread(s); %d unresolved live thread(s) remain\n", brief.SelectedNumber, len(responses), unresolved)
+	return 0
+}
+
+// reportStale records a typed stale-input result and stops publication. It
+// exits 0 on purpose: the stage did its job — it refused to answer feedback
+// that is no longer the feedback on the PR — and the workflow's gate routes
+// the result back to gather-review-threads rather than treating it as a
+// provider failure.
+func (p *reviewThreadPublication) reportStale(reasons []feedbackStaleReason, unresolved int) int {
+	pf(p.stdout, "PR #%s: feedback changed since it was gathered (%s); no further review-thread replies published\n",
+		p.pullID, describeStaleReasons(reasons))
+	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), map[string]interface{}{
+		"selectedNumber":                  p.pullID,
+		"publishedHeadSha":                p.publishedHead,
+		unresolvedReviewThreadCountOutput: strconv.Itoa(unresolved),
+		staleInputOutput:                  staleInputCode(reasons),
+		staleReasonsOutput:                reasons,
+		feedbackSnapshotDigestOutput:      p.snapshot.SnapshotDigest,
+	}); err != nil {
+		pf(p.stderr, "error: write review-thread resolution result: %v\n", err)
+		return 2
+	}
+	return 0
+}
+
+func describeStaleReasons(reasons []feedbackStaleReason) string {
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		part := reason.Code
+		if reason.ID != "" {
+			part += " " + reason.Kind + " " + reason.ID
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// publish replies to one thread and, for an addressed thread, resolves it,
+// verifying each mutation by reading it back. The thread listing it already
+// re-reads around each mutation doubles as the per-mutation freshness check.
+func (p *reviewThreadPublication) publish(ctx context.Context, response reviewThreadDisposition) (int, bool) {
+	listing, code, stop := p.listThreads(ctx, "read review threads before reply")
+	if stop {
+		return code, true
+	}
+	if !reviewThreadHasReply(listing, p.runID, response.ThreadID) {
+		if listing, code, stop = p.reply(ctx, response); stop {
+			return code, true
+		}
+	}
+	if response.Disposition != "addressed" || reviewThreadResolved(listing, response.ThreadID) {
+		return 0, false
+	}
+	return p.resolve(ctx, response.ThreadID)
+}
+
+// listThreads re-lists the PR's review threads and applies the per-mutation
+// freshness check to the listing.
+func (p *reviewThreadPublication) listThreads(ctx context.Context, what string) (providers.PullRequestReviewThreads, int, bool) {
+	listing, err := p.provider.ListPullRequestReviewThreads(ctx, p.repo, p.pullID)
+	if err != nil {
+		return listing, failProviderStage(p.stderr, what, err, resolveReviewThreadsResultFile), true
+	}
+	if reasons := checkThreadFeedback(p.snapshot, listing, p.compareOptions()); len(reasons) > 0 {
+		return listing, p.reportStale(reasons, countLiveUnresolvedReviewThreads(listing)), true
+	}
+	return listing, 0, false
+}
+
+func (p *reviewThreadPublication) reply(ctx context.Context, response reviewThreadDisposition) (providers.PullRequestReviewThreads, int, bool) {
+	thread := p.threads[response.ThreadID]
+	body := renderReviewThreadReply(p.runID, p.publishedHead, response)
+	if _, err := p.mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
+		Repository: p.repo, PullID: p.pullID, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
+	}); err != nil {
+		return providers.PullRequestReviewThreads{}, failProviderStage(p.stderr, fmt.Sprintf("reply to review thread %s", response.ThreadID), err, resolveReviewThreadsResultFile), true
+	}
+	listing, code, stop := p.listThreads(ctx, "verify review-thread reply")
+	if stop {
+		return listing, code, true
+	}
+	if !reviewThreadHasReply(listing, p.runID, response.ThreadID) {
+		pf(p.stderr, "error: reply to review thread %s is not visible after publication\n", response.ThreadID)
+		return listing, 1, true
+	}
+	return listing, 0, false
+}
+
+func (p *reviewThreadPublication) resolve(ctx context.Context, threadID string) (int, bool) {
+	if err := p.mutator.ResolvePullRequestReviewThread(ctx, p.repo, threadID); err != nil {
+		return failProviderStage(p.stderr, fmt.Sprintf("resolve review thread %s", threadID), err, resolveReviewThreadsResultFile), true
+	}
+	listing, code, stop := p.listThreads(ctx, "verify review-thread resolution")
+	if stop {
+		return code, true
+	}
+	if !reviewThreadResolved(listing, threadID) {
+		pf(p.stderr, "error: review thread %s remains unresolved after resolution\n", threadID)
+		return 1, true
+	}
+	return 0, false
+}
+
+// finish re-queries the threads and the head after the last mutation and
+// writes the stage result.
+func (p *reviewThreadPublication) finish(ctx context.Context) int {
+	final, code, stop := p.listThreads(ctx, "re-query unresolved review threads")
+	if stop {
+		return code
+	}
+	verifiedHead, err := p.provider.GetPullRequest(ctx, p.repo, p.pullID)
+	if err != nil {
+		return failProviderStage(p.stderr, "verify published pull request head", err, resolveReviewThreadsResultFile)
+	}
+	if code, stop := p.checkHead(verifiedHead.HeadSHA, "while review threads were reconciled"); stop {
+		return code
+	}
+	unresolved := countLiveUnresolvedReviewThreads(final)
+	result := map[string]interface{}{
+		"selectedNumber":                  p.pullID,
+		"publishedHeadSha":                p.publishedHead,
+		unresolvedReviewThreadCountOutput: strconv.Itoa(unresolved),
+		staleInputOutput:                  "",
+	}
+	if p.snapshot != nil {
+		result[feedbackSnapshotDigestOutput] = p.snapshot.SnapshotDigest
+	}
+	if err := writeProviderStageResult(providerInput("resultFile", resolveReviewThreadsResultFile), result); err != nil {
+		pf(p.stderr, "error: write review-thread resolution result: %v\n", err)
+		return 2
+	}
+	pf(p.stdout, "PR #%s: replied to %d review thread(s); %d unresolved live thread(s) remain\n", p.pullID, len(p.responses), unresolved)
 	return 0
 }
 
@@ -208,7 +417,6 @@ func readReviewThreadResolutionInputs(root, runID string) (apiv1.RemediationBrie
 	}
 	return brief, raw, publishedHead, publishedValue == "true", nil
 }
-
 func gatheredLiveReviewThreads(section *apiv1.RemediationReviewThreads) (map[string]gatheredReviewThread, error) {
 	if section == nil {
 		return nil, fmt.Errorf("remediation brief has no gathered review threads")

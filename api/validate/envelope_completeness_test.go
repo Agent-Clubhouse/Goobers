@@ -380,6 +380,24 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				}},
 			},
 		},
+		FeedbackSnapshot: &apiv1.PRFeedbackSnapshot{
+			Schema:      apiv1.PRFeedbackSnapshotVersion,
+			Provider:    "github",
+			Repository:  "github:example/repo",
+			PullRequest: "42",
+			HeadSHA:     strings.Repeat("a", 40),
+			CapturedAt:  "2026-09-30T00:00:00Z",
+			Complete:    true,
+			GeneralComments: []apiv1.PRFeedbackComment{{
+				ID: "7", Author: "reviewer", InReplyTo: "6", BodySHA256: strings.Repeat("b", 64),
+			}},
+			Reviews: []apiv1.PRFeedbackReview{{ID: "8", Author: "reviewer", BodySHA256: strings.Repeat("c", 64)}},
+			ReviewThreads: []apiv1.PRFeedbackThread{{
+				ThreadID: "T1", Resolved: true, Outdated: true, ContentDigest: "sha256:" + strings.Repeat("d", 64),
+				Comments: []apiv1.PRFeedbackComment{{ID: "9", Author: "reviewer", InReplyTo: "8", BodySHA256: strings.Repeat("e", 64)}},
+			}},
+			SnapshotDigest: "sha256:" + strings.Repeat("f", 64),
+		},
 	}
 }
 
