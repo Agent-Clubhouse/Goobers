@@ -170,6 +170,9 @@ func ValidateWorkflow(spec apiv1.WorkflowSpec) error {
 		if gate.MaxRepasses > 0 && gate.Evaluator == apiv1.EvaluatorHuman {
 			return fmt.Errorf("gate %q maxRepasses is only valid for automated or agentic gates", gate.Name)
 		}
+		if gate.Automated != nil && gate.Automated.MaxTimeoutPolls < 0 {
+			return fmt.Errorf("gate %q automated.maxTimeoutPolls must be positive, got %d", gate.Name, gate.Automated.MaxTimeoutPolls)
+		}
 	}
 	return nil
 }

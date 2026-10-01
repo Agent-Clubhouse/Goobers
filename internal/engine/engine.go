@@ -432,12 +432,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// a history recorded before the infrastructure counters existed replays
 	// with their zero values, which is what "no infrastructure repass has been
 	// charged" means.
-	repassBudget := gate.RepassBudget{
-		Attempts:                     map[string]int{},
-		InfrastructureAttempts:       map[string]int{},
-		RepassAttempts:               map[string]int{},
-		InfrastructureRepassAttempts: map[string]int{},
-	}
+	repassBudget := newRepassBudget()
 	// gateDispatches numbers each placed gate's pod attempts across the whole
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.

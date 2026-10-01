@@ -266,6 +266,50 @@ func init() {
 		Premise: premiseInfraRepassBudgetResumed,
 		Check:   checkInfraRepassBudgetResumed,
 	})
+
+	// --- timeout polling is bounded separately from policy repasses ------------
+	//
+	// Four pending CI poll windows against MaxRepasses=1 would exhaust the
+	// policy budget if OutcomeTimeout still shared that counter. The correct
+	// behavior is to ignore the policy budget, count the timeout branch's own
+	// re-entries, and escalate only one past maxTimeoutPolls with the polling
+	// reason. This row is deliberately in the parity suite so the engine's
+	// deterministic gate-resolution port produces an actual OutcomeTimeout
+	// history, not just the local runner.
+	registerParityRow(parityCase{
+		Row:        rowTimeoutPollingBudget,
+		Name:       "timeout polling can exceed maxRepasses but exhausts maxTimeoutPolls",
+		Lane:       "implementation.yaml",
+		DSLVersion: "2.0",
+		Spec: fixtureSpec("ci-poll",
+			[]apiv1.Task{
+				detTask("ci-poll", "ci-gate"),
+				detTask("remediate-ci", "ci-poll"),
+			},
+			[]apiv1.Gate{{
+				Name:      "ci-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "ci-status", MaxTimeoutPolls: 3},
+				Branches: map[string]string{
+					gate.OutcomePass:    wf.TerminalComplete,
+					gate.OutcomeFail:    "remediate-ci",
+					gate.OutcomeTimeout: "ci-poll",
+					wf.BranchEscalate:   wf.TargetEscalate,
+				},
+			}},
+		),
+		RunControls: apiv1.RunControls{MaxRepasses: 1},
+		Script: map[string][]scriptedCall{
+			"ci-poll": {
+				succeed(map[string]interface{}{"ciStatus": "timeout"}),
+				succeed(map[string]interface{}{"ciStatus": "timeout"}),
+				succeed(map[string]interface{}{"ciStatus": "timeout"}),
+				succeed(map[string]interface{}{"ciStatus": "timeout"}),
+			},
+		},
+		Premise: premiseTimeoutPollingBudget,
+		Check:   checkTimeoutPollingBudget,
+	})
 }
 
 // --- observation ------------------------------------------------------------
@@ -284,12 +328,14 @@ type gateEvaluationRecord struct {
 	RepassAttempt int
 	GateAttempt   int
 	RepassTarget  string
+	PollAttempt   int
+	PollTarget    string
 	Reason        string
 }
 
 func (r gateEvaluationRecord) String() string {
-	return fmt.Sprintf("gate=%s outcome=%s target=%s escalated=%t repassAttempt=%d gateAttempt=%d repassTarget=%s reason=%s",
-		r.Gate, r.Outcome, r.Target, r.Escalated, r.RepassAttempt, r.GateAttempt, r.RepassTarget, r.Reason)
+	return fmt.Sprintf("gate=%s outcome=%s target=%s escalated=%t repassAttempt=%d gateAttempt=%d repassTarget=%s pollAttempt=%d pollTarget=%s reason=%s",
+		r.Gate, r.Outcome, r.Target, r.Escalated, r.RepassAttempt, r.GateAttempt, r.RepassTarget, r.PollAttempt, r.PollTarget, r.Reason)
 }
 
 // gateEvaluations extracts a side's gate.evaluated events in order.
@@ -306,6 +352,8 @@ func gateEvaluations(side paritySide) []gateEvaluationRecord {
 			rec.RepassAttempt = annotationInt(e.Runner, "repassAttempt")
 			rec.GateAttempt = annotationInt(e.Runner, "gateAttempt")
 			rec.RepassTarget = annotationString(e.Runner, "repassTarget")
+			rec.PollAttempt = annotationInt(e.Runner, "pollAttempt")
+			rec.PollTarget = annotationString(e.Runner, "pollTarget")
 			rec.Reason = annotationString(e.Runner, "reason")
 		}
 		out = append(out, rec)
@@ -563,6 +611,72 @@ func checkInfraRepassBudgetResumed(obs parityObservation) error {
 	return checkAllSurfaces(obs)
 }
 
+// --- timeout polling --------------------------------------------------------
+
+func requirePollingEscalation(side paritySide, gateName string, wantAttempt int) error {
+	evaluations := gateEvaluations(side)
+	if len(evaluations) == 0 {
+		return fmt.Errorf("%s evaluated no gates at all", side.Name)
+	}
+	last := evaluations[len(evaluations)-1]
+	if last.Gate != gateName || !last.Escalated || last.Outcome != gate.OutcomeTimeout {
+		return fmt.Errorf("%s final gate evaluation = %s, want an escalated timeout outcome on %q",
+			side.Name, last, gateName)
+	}
+	if last.PollAttempt != wantAttempt || last.PollTarget != "ci-poll" {
+		return fmt.Errorf("%s escalated on poll attempt %d target %q, want attempt %d target ci-poll",
+			side.Name, last.PollAttempt, last.PollTarget, wantAttempt)
+	}
+	if last.RepassAttempt != 0 || last.RepassTarget != "" {
+		return fmt.Errorf("%s timeout charged policy repass attempt=%d target=%q, want no policy charge",
+			side.Name, last.RepassAttempt, last.RepassTarget)
+	}
+	if last.Reason != gate.ReasonPollingBudgetExhausted {
+		return fmt.Errorf("%s escalation reason = %q, want %q — pending-only polling must not report policy repass exhaustion",
+			side.Name, last.Reason, gate.ReasonPollingBudgetExhausted)
+	}
+	return nil
+}
+
+func premiseTimeoutPollingBudget(obs parityObservation) error {
+	want := []gateEvaluationRecord{
+		{Gate: "ci-gate", Outcome: gate.OutcomeTimeout, Target: "ci-poll",
+			PollAttempt: 1, PollTarget: "ci-poll"},
+		{Gate: "ci-gate", Outcome: gate.OutcomeTimeout, Target: "ci-poll",
+			PollAttempt: 2, PollTarget: "ci-poll"},
+		{Gate: "ci-gate", Outcome: gate.OutcomeTimeout, Target: "ci-poll",
+			PollAttempt: 3, PollTarget: "ci-poll"},
+		{Gate: "ci-gate", Outcome: gate.OutcomeTimeout, Target: wf.TargetEscalate, Escalated: true,
+			PollAttempt: 4, PollTarget: "ci-poll", Reason: gate.ReasonPollingBudgetExhausted},
+	}
+	if err := diffGateEvaluations("runner", gateEvaluations(obs.Runner), want); err != nil {
+		return errParityPremisef(obs.Case.Row,
+			"%v — this row exists to pin timeout polling as its own budget: four pending polls must exceed "+
+				"MaxRepasses=1 without charging policy repasses, then exhaust maxTimeoutPolls=3", err)
+	}
+	if err := requireStagesDispatched(obs.Runner, []string{"ci-poll", "ci-poll", "ci-poll", "ci-poll"}); err != nil {
+		return errParityPremisef(obs.Case.Row,
+			"%v — the run must keep polling after it has exceeded MaxRepasses=1 and stop only after maxTimeoutPolls=3",
+			err)
+	}
+	if err := requirePollingEscalation(obs.Runner, "ci-gate", 4); err != nil {
+		return errParityPremisef(obs.Case.Row, "%v", err)
+	}
+	return nil
+}
+
+func checkTimeoutPollingBudget(obs parityObservation) error {
+	if err := diffGateEvaluations("engine", gateEvaluations(obs.Engine), gateEvaluations(obs.Runner)); err != nil {
+		return errParityRow(obs.Case.Row,
+			"%v — the engine must produce OutcomeTimeout histories and charge the dedicated polling budget, "+
+				"not the policy repass budget, when pending CI keeps re-entering ci-poll (#5558)", err)
+	}
+	if err := requirePollingEscalation(obs.Engine, "ci-gate", 4); err != nil {
+		return errParityRow(obs.Case.Row, "%v", err)
+	}
+	return checkAllSurfaces(obs)
+}
+
 // rebuildRepassBudget reconstructs the run's repass accounting from a side's
 // journal alone, the way internal/runner/resume.go's seeds do: per class, keyed
 // by the journaled repassTarget (which survives an escalation override, unlike
@@ -578,13 +692,16 @@ func rebuildRepassBudget(side paritySide) (gate.RepassBudget, error) {
 		InfrastructureAttempts:       map[string]int{},
 		RepassAttempts:               map[string]int{},
 		InfrastructureRepassAttempts: map[string]int{},
+		PollAttempts:                 map[string]int{},
 	}
 	infraTargets := map[string]string{}
+	pollTargets := map[string]string{}
 	for _, rec := range gateEvaluations(side) {
 		switch rec.Outcome {
 		case gate.OutcomePass:
 			budget.Attempts[rec.Gate] = 0
 			budget.InfrastructureAttempts[rec.Gate] = 0
+		case gate.OutcomeTimeout:
 		case gate.OutcomeInfra:
 			budget.Attempts[rec.Gate] = 0
 			budget.InfrastructureAttempts[rec.Gate] = rec.GateAttempt
@@ -596,6 +713,18 @@ func rebuildRepassBudget(side paritySide) (gate.RepassBudget, error) {
 			if target := infraTargets[rec.Gate]; target != "" {
 				budget.InfrastructureRepassAttempts[target] = 0
 			}
+		}
+		if rec.Outcome != gate.OutcomeTimeout {
+			if target := pollTargets[rec.Gate]; target != "" {
+				budget.PollAttempts[target] = 0
+			}
+		}
+		if rec.Outcome == gate.OutcomeTimeout {
+			if rec.PollTarget != "" {
+				pollTargets[rec.Gate] = rec.PollTarget
+				budget.PollAttempts[rec.PollTarget] = rec.PollAttempt
+			}
+			continue
 		}
 		if rec.RepassTarget == "" {
 			if rec.RepassAttempt != 0 {
@@ -623,6 +752,7 @@ func diffRepassBudgets(runnerBudget, engineBudget gate.RepassBudget) error {
 		{"per-gate infrastructure attempts", runnerBudget.InfrastructureAttempts, engineBudget.InfrastructureAttempts},
 		{"per-target policy budget", runnerBudget.RepassAttempts, engineBudget.RepassAttempts},
 		{"per-target infrastructure budget", runnerBudget.InfrastructureRepassAttempts, engineBudget.InfrastructureRepassAttempts},
+		{"per-target polling budget", runnerBudget.PollAttempts, engineBudget.PollAttempts},
 	} {
 		if err := diffCounterMaps(counter.name, counter.runner, counter.engin); err != nil {
 			return err

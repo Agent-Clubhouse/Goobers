@@ -259,7 +259,9 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// moved, and the example no longer reads as a Go project.
 	// #5397: the review gate declares a bounded agentic.retry so a transient
 	// reviewer-harness infrastructure failure no longer discards the run.
-	const wantDigest = "sha256:960c710c3fab8eb1a2382d426c4e2da5c6f557fdef10876892259d50235d4f26"
+	// #5558: ci-gate declares maxTimeoutPolls so pending-only CI polling has a
+	// dedicated bound separate from the failed-CI repass budget.
+	const wantDigest = "sha256:ac960dc3507b1965d48eed549bee8eda1aca0581021d5735ba603ad021e653c1"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

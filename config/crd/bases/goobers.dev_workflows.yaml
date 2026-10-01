@@ -164,6 +164,13 @@ spec:
                             Check names a built-in coded check such as "status-equals",
                             "output-numeric-lte", or "output-matches".
                           type: string
+                        maxTimeoutPolls:
+                          description: |-
+                            MaxTimeoutPolls bounds consecutive timeout outcomes for polling checks
+                            such as ci-status before the gate routes through its escalation branch.
+                          format: int32
+                          minimum: 1
+                          type: integer
                         params:
                           additionalProperties:
                             type: string
