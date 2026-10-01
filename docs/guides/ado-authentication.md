@@ -56,6 +56,20 @@ runner error text are withheld because they can contain partial credentials.
 Repository validation still fails; Goobers does not bypass authentication or
 change the configured credential source.
 
+For a nonzero exit, Goobers checks the CLI output for a fixed set of markers
+and reports only the resulting classification (never the output itself), which
+also appears in the run journal and `goobers status` error message:
+
+| Reported failure | Error code | What to do |
+| --- | --- | --- |
+| `Azure CLI sign-in expired or requires interaction` (an expired or revoked refresh token, MFA or other interaction required, or the CLI asking for `az login`) | `azure_cli_sign_in_required` | Run `az login` (with `--tenant` if `auth.tenant` is set) as the user Goobers runs as. |
+| `no Azure CLI account is signed in` | `azure_cli_no_account` | Same as above. |
+| `Azure CLI could not reach the network` (name resolution or connection failures, for example after the host slept or a VPN dropped) | `azure_cli_network_unreachable` | Restore network, DNS, VPN or proxy access, then retry. Signing in again does not help. |
+| `process exited with code N` (no recognized marker) | `azure_cli_exit` | Run the check below. |
+
+A sign-in error returned by Microsoft Entra ID takes precedence over network
+markers, because receiving it proves the network was reachable.
+
 For a command failure, run this token-free output check in the same user and
 process environment as Goobers:
 

@@ -73,8 +73,9 @@ URL or download argument in an existing step requires manifest review. On drift,
 inspect the command and update its origin/override description as needed before
 copying the new site identity from the diagnostic into the manifest.
 
-The Windows Azure CLI launcher test uses preinstalled `cmd.exe` to run a
-locally built synthetic executable, not an installed or downloaded Azure CLI.
+The Azure CLI launcher test uses preinstalled `cmd.exe` on Windows (and `sh`
+elsewhere) to run a locally built synthetic executable, not an installed or
+downloaded Azure CLI.
 Its Go build and Windows CI test step remain declared as `go-modules`
 acquisition sites.
 
