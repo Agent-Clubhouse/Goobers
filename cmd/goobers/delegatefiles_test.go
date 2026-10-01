@@ -197,6 +197,31 @@ func TestSweepDelegateRequestsCharacterizesValidationAndOrdering(t *testing.T) {
 	}
 }
 
+func TestSweepDelegateRequestsRejectsFileAtPendingDirectory(t *testing.T) {
+	schedulerDir := t.TempDir()
+	cfg := delegateFileTestProtocol()
+	if err := os.WriteFile(filepath.Join(schedulerDir, cfg.pendingDir), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := sweepDelegateRequests(
+		schedulerDir,
+		cfg,
+		time.Now,
+		func(string, delegateFileTestRequest, error) (delegateFileTestResponse, bool) {
+			t.Fatal("validate called")
+			return delegateFileTestResponse{}, false
+		},
+		func(delegateFileTestRequest) delegateFileTestResponse {
+			t.Fatal("handle called")
+			return delegateFileTestResponse{}
+		},
+	)
+	if err == nil || !strings.HasPrefix(err.Error(), cfg.errorPrefix+": read pending requests: ") {
+		t.Fatalf("sweep error = %v, want pending-directory read error", err)
+	}
+}
+
 func TestPollDelegateResponseTimeoutAndContextCancellation(t *testing.T) {
 	cfg := delegateFileTestProtocol()
 	schedulerDir := t.TempDir()

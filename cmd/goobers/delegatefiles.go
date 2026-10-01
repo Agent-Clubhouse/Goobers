@@ -106,8 +106,8 @@ func sweepDelegateRequests[Req, Resp any](
 	handle func(Req) Resp,
 ) error {
 	reqDir := filepath.Join(schedulerDir, cfg.pendingDir)
-	entries, err := os.ReadDir(reqDir)
-	if os.IsNotExist(err) {
+	entries, exists, err := readDirectory(reqDir)
+	if !exists {
 		return nil
 	}
 	if err != nil {
