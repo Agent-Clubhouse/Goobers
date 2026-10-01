@@ -82,10 +82,38 @@ type electionPRLister interface {
 	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
 }
 
-func listElectionPRs(ctx context.Context, provider electionPRLister, repo providers.RepositoryRef) ([]providers.PullRequestSummary, error) {
-	return provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+type electionPRSource struct {
+	lister            electionPRLister
+	exclusionProvider remediationProvider
+	resultFile        string
+}
+
+func listElectionPRs(ctx context.Context, source electionPRSource, repo providers.RepositoryRef, stderr io.Writer) ([]providers.PullRequestSummary, int, bool) {
+	prs, err := source.lister.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo,
 		Base:       providerInput("base", providerBaseBranch()),
 		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
 	})
+	if err != nil {
+		return nil, failProviderStage(stderr, "list pull requests", err, source.resultFile), false
+	}
+	return prs, 0, true
+}
+
+func resolveElectionPRExclusions(ctx context.Context, source electionPRSource, repo providers.RepositoryRef, prs []providers.PullRequestSummary, stderr io.Writer) (map[int]bool, int, bool) {
+	if source.exclusionProvider == nil {
+		return nil, 0, true
+	}
+	excluded, err := electionExcludedSet(
+		ctx,
+		source.exclusionProvider,
+		repo,
+		prs,
+		providerInput("unlandableSiblings", ""),
+		stderr,
+	)
+	if err != nil {
+		return nil, failProviderStage(stderr, "resolve lander eligibility", err, source.resultFile), false
+	}
+	return excluded, 0, true
 }

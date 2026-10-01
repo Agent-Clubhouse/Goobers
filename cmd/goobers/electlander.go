@@ -290,9 +290,14 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := listElectionPRs(ctx, provider, repo)
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, resultFile)
+	prSource := electionPRSource{
+		lister:            provider,
+		exclusionProvider: provider,
+		resultFile:        resultFile,
+	}
+	prs, code, ok := listElectionPRs(ctx, prSource, repo, stderr)
+	if !ok {
+		return code
 	}
 
 	// Resolve the election policy now that the open-PR set is available — the
@@ -322,9 +327,9 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 
 	// #950/#5602: demoted, parked, and unlandable PRs are dropped from the
 	// candidacy and from every blocker set, identically to apply-verdict.
-	demoted, ierr := electionExcludedSet(ctx, provider, repo, prs, providerInput("unlandableSiblings", ""), stderr)
-	if ierr != nil {
-		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+	demoted, code, ok := resolveElectionPRExclusions(ctx, prSource, repo, prs, stderr)
+	if !ok {
+		return code
 	}
 
 	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, serializedCluster, policy, demoted, resolvedPolicy); reason != "" {

@@ -2,83 +2,103 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/goobers/goobers/internal/executor"
 )
 
-func TestReadSelectedPREnvelope(t *testing.T) {
+func TestSelectedPREnvelopeCommandBehavior(t *testing.T) {
 	tests := []struct {
 		name       string
-		source     selectedPREnvelopeSource
+		command    func([]string, *bytes.Buffer, *bytes.Buffer) int
 		inputs     map[string]string
-		want       selectedPREnvelope
+		wantCode   int
+		wantStdout string
 		wantStderr string
+		wantResult map[string]string
 	}{
 		{
-			name:       "elect-lander missing selected number names gather sibling context",
-			source:     electLanderEnvelopeSource,
-			wantStderr: "error: selectedNumber is required (inputsFrom gather-sibling-context's selectedNumber output)\n",
+			name:     "elect-lander missing selected number names gather sibling context",
+			command:  runElectLanderForEnvelopeTest,
+			wantCode: 1,
+			wantStderr: "error: selectedNumber is required " +
+				"(inputsFrom gather-sibling-context's selectedNumber output)\n",
 		},
 		{
-			name:       "apply-verdict missing selected number names pr-select",
-			source:     applyVerdictEnvelopeSource,
-			wantStderr: "error: selectedNumber is required (inputsFrom pr-select's number output)\n",
+			name:     "apply-verdict missing selected number names pr-select",
+			command:  runApplyVerdictForEnvelopeTest,
+			wantCode: 1,
+			wantStderr: "error: selectedNumber is required " +
+				"(inputsFrom pr-select's number output)\n",
 		},
 		{
-			name:   "invalid selected number",
-			source: electLanderEnvelopeSource,
-			inputs: map[string]string{"selectedNumber": "not-a-number"},
+			name:     "invalid selected number",
+			command:  runElectLanderForEnvelopeTest,
+			inputs:   map[string]string{"selectedNumber": "not-a-number"},
+			wantCode: 1,
 			wantStderr: "error: invalid selectedNumber \"not-a-number\": " +
 				"strconv.Atoi: parsing \"not-a-number\": invalid syntax\n",
 		},
 		{
-			name:   "missing head SHA",
-			source: applyVerdictEnvelopeSource,
-			inputs: map[string]string{"selectedNumber": "42"},
+			name:     "missing head SHA",
+			command:  runApplyVerdictForEnvelopeTest,
+			inputs:   map[string]string{"selectedNumber": "42"},
+			wantCode: 1,
 			wantStderr: "error: selectedHeadSha is required " +
 				"(inputsFrom gather-sibling-context's deterministic output)\n",
 		},
 		{
-			name:   "missing base SHA",
-			source: applyVerdictEnvelopeSource,
+			name:    "missing base SHA",
+			command: runApplyVerdictForEnvelopeTest,
 			inputs: map[string]string{
 				"selectedNumber":  "42",
 				"selectedHeadSha": "head",
 			},
+			wantCode: 1,
 			wantStderr: "error: selectedBaseSha is required " +
 				"(inputsFrom gather-sibling-context's deterministic output)\n",
 		},
 		{
-			name:   "invalid advisory mode",
-			source: applyVerdictEnvelopeSource,
+			name:    "invalid advisory mode",
+			command: runApplyVerdictForEnvelopeTest,
 			inputs: map[string]string{
 				"selectedNumber":  "42",
 				"selectedHeadSha": "head",
 				"selectedBaseSha": "base",
 				"advisoryMode":    "sometimes",
 			},
+			wantCode: 1,
 			wantStderr: "error: invalid advisoryMode input: " +
 				"strconv.ParseBool: parsing \"sometimes\": invalid syntax\n",
 		},
 		{
-			name:   "scope gate state passes through",
-			source: applyVerdictEnvelopeSource,
+			name:    "scope gate and complete base result pass through",
+			command: runElectLanderForEnvelopeTest,
 			inputs: map[string]string{
-				"selectedNumber":  "042",
-				"selectedHeadSha": "head",
-				"selectedBaseSha": "base",
-				"advisoryMode":    "true",
-				"scopeGateParked": "parked-verbatim",
+				"selectedNumber":      "042",
+				"selectedHeadSha":     "head",
+				"selectedBaseSha":     "base",
+				"advisoryMode":        "true",
+				"scopeGateParked":     "parked-verbatim",
+				"reviewDigest":        "digest",
+				"overlappingSiblings": "43,44",
+				"unlandableSiblings":  "45",
 			},
-			want: selectedPREnvelope{
-				Number:          42,
-				NumberString:    "042",
-				HeadSHA:         "head",
-				BaseSHA:         "base",
-				Advisory:        true,
-				ScopeGateParked: "parked-verbatim",
+			wantStdout: "PR #42 is advisory-only — skipping lander election\n",
+			wantResult: map[string]string{
+				"elected":                "false",
+				"selectedNumber":         "42",
+				"selectedHeadSha":        "head",
+				"selectedBaseSha":        "base",
+				"reviewDigest":           "digest",
+				"overlappingSiblingsCsv": "43,44",
+				"unlandableSiblingsCsv":  "45",
+				"advisoryMode":           "true",
+				"scopeGateParked":        "parked-verbatim",
 			},
 		},
 	}
@@ -91,6 +111,10 @@ func TestReadSelectedPREnvelope(t *testing.T) {
 				"selectedBaseSha",
 				"advisoryMode",
 				"scopeGateParked",
+				"reviewDigest",
+				"overlappingSiblings",
+				"unlandableSiblings",
+				"resultFile",
 			} {
 				t.Setenv(executor.InputEnvVar(name), "")
 			}
@@ -98,44 +122,41 @@ func TestReadSelectedPREnvelope(t *testing.T) {
 				t.Setenv(executor.InputEnvVar(name), value)
 			}
 
-			var stderr bytes.Buffer
-			got, code, ok := readSelectedPREnvelope(&stderr, tt.source)
-			if tt.wantStderr != "" {
-				if ok || code != 1 {
-					t.Fatalf("readSelectedPREnvelope = (%+v, %d, %v), want failure code 1", got, code, ok)
-				}
-				if stderr.String() != tt.wantStderr {
-					t.Fatalf("stderr = %q, want %q", stderr.String(), tt.wantStderr)
-				}
+			resultFile := filepath.Join(t.TempDir(), "result.json")
+			t.Setenv(executor.InputEnvVar("resultFile"), resultFile)
+			var stdout, stderr bytes.Buffer
+			code := tt.command([]string{t.TempDir()}, &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Fatalf("code = %d, want %d; stdout = %q, stderr = %q", code, tt.wantCode, stdout.String(), stderr.String())
+			}
+			if stdout.String() != tt.wantStdout {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), tt.wantStdout)
+			}
+			if stderr.String() != tt.wantStderr {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tt.wantStderr)
+			}
+			if tt.wantResult == nil {
 				return
 			}
-			if !ok || code != 0 {
-				t.Fatalf("readSelectedPREnvelope = (%+v, %d, %v), stderr = %q", got, code, ok, stderr.String())
+			data, err := os.ReadFile(resultFile)
+			if err != nil {
+				t.Fatalf("read result: %v", err)
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("envelope = %+v, want %+v", got, tt.want)
+			var got map[string]string
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.wantResult) {
+				t.Fatalf("result = %v, want %v", got, tt.wantResult)
 			}
 		})
 	}
 }
 
-func TestSelectedPREnvelopeBaseResult(t *testing.T) {
-	envelope := selectedPREnvelope{
-		Number:          42,
-		NumberString:    "042",
-		HeadSHA:         "head",
-		BaseSHA:         "base",
-		Advisory:        true,
-		ScopeGateParked: "true",
-	}
-	want := map[string]string{
-		"selectedNumber":  "42",
-		"selectedHeadSha": "head",
-		"selectedBaseSha": "base",
-		"advisoryMode":    "true",
-		"scopeGateParked": "true",
-	}
-	if got := envelope.baseResult(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("baseResult() = %v, want %v", got, want)
-	}
+func runElectLanderForEnvelopeTest(args []string, stdout, stderr *bytes.Buffer) int {
+	return runElectLander(args, stdout, stderr)
+}
+
+func runApplyVerdictForEnvelopeTest(args []string, stdout, stderr *bytes.Buffer) int {
+	return runApplyVerdict(args, stdout, stderr)
 }

@@ -595,9 +595,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		)
 	}
 
-	prs, err := listElectionPRs(ctx, provider, repo)
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "")
+	var exclusionProvider remediationProvider
+	if providerRouted {
+		exclusionProvider = prProvider
+	}
+	prSource := electionPRSource{
+		lister:            provider,
+		exclusionProvider: exclusionProvider,
+	}
+	prs, code, ok := listElectionPRs(ctx, prSource, repo, stderr)
+	if !ok {
+		return code
 	}
 
 	// #950: which open PRs are currently demoted (repeatedly could not merge at
@@ -608,12 +616,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
 	// #5602 adds the PRs this instance cannot land, identically to elect-lander.
-	var demoted map[int]bool
-	if providerRouted {
-		var ierr error
-		if demoted, ierr = electionExcludedSet(ctx, prProvider, repo, prs, providerInput("unlandableSiblings", ""), stderr); ierr != nil {
-			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
-		}
+	demoted, code, ok := resolveElectionPRExclusions(ctx, prSource, repo, prs, stderr)
+	if !ok {
+		return code
 	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
