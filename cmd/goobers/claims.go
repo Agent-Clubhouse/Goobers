@@ -44,11 +44,12 @@ var claimAdminDelegationTimeout = 30 * time.Second
 
 func claimAdminDelegateFileProtocol() delegateFileProtocol {
 	return delegateFileProtocol{
-		pendingDir:     pendingClaimsDir,
-		requestSuffix:  claimAdminRequestSuffix,
-		responseSuffix: claimAdminResponseSuffix,
-		errorPrefix:    "claims delegate",
-		staleAfter:     claimAdminDelegationTimeout,
+		pendingDir:                  pendingClaimsDir,
+		requestSuffix:               claimAdminRequestSuffix,
+		responseSuffix:              claimAdminResponseSuffix,
+		errorPrefix:                 "claims delegate",
+		staleAfter:                  claimAdminDelegationTimeout,
+		distinguishNonDirectoryPath: true,
 	}
 }
 

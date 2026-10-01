@@ -197,28 +197,45 @@ func TestSweepDelegateRequestsCharacterizesValidationAndOrdering(t *testing.T) {
 	}
 }
 
-func TestSweepDelegateRequestsRejectsFileAtPendingDirectory(t *testing.T) {
-	schedulerDir := t.TempDir()
-	cfg := delegateFileTestProtocol()
-	if err := os.WriteFile(filepath.Join(schedulerDir, cfg.pendingDir), []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
+func TestSweepDelegateRequestsPreservesProtocolDirectoryReadBehavior(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  delegateFileProtocol
+	}{
+		{name: "apply", cfg: applyDelegateFileProtocol()},
+		{name: "claims", cfg: claimAdminDelegateFileProtocol()},
+		{name: "cancel", cfg: cancelDelegateFileProtocol()},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schedulerDir := t.TempDir()
+			reqDir := filepath.Join(schedulerDir, tt.cfg.pendingDir)
+			if err := os.WriteFile(reqDir, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	err := sweepDelegateRequests(
-		schedulerDir,
-		cfg,
-		time.Now,
-		func(string, delegateFileTestRequest, error) (delegateFileTestResponse, bool) {
-			t.Fatal("validate called")
-			return delegateFileTestResponse{}, false
-		},
-		func(delegateFileTestRequest) delegateFileTestResponse {
-			t.Fatal("handle called")
-			return delegateFileTestResponse{}
-		},
-	)
-	if err == nil || !strings.HasPrefix(err.Error(), cfg.errorPrefix+": read pending requests: ") {
-		t.Fatalf("sweep error = %v, want pending-directory read error", err)
+			err := sweepDelegateRequests(
+				schedulerDir,
+				tt.cfg,
+				time.Now,
+				func(string, delegateFileTestRequest, error) (delegateFileTestResponse, bool) {
+					t.Fatal("validate called")
+					return delegateFileTestResponse{}, false
+				},
+				func(delegateFileTestRequest) delegateFileTestResponse {
+					t.Fatal("handle called")
+					return delegateFileTestResponse{}
+				},
+			)
+			_, legacyReadErr := os.ReadDir(reqDir)
+			if tt.cfg.distinguishNonDirectoryPath || !os.IsNotExist(legacyReadErr) {
+				if err == nil || !strings.HasPrefix(err.Error(), tt.cfg.errorPrefix+": read pending requests: ") {
+					t.Fatalf("sweep error = %v, want pending-directory read error", err)
+				}
+			} else if err != nil {
+				t.Fatalf("sweep error = %v, want nil for legacy missing-path classification", err)
+			}
+		})
 	}
 }
 

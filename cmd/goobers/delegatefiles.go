@@ -15,11 +15,12 @@ import (
 )
 
 type delegateFileProtocol struct {
-	pendingDir     string
-	requestSuffix  string
-	responseSuffix string
-	errorPrefix    string
-	staleAfter     time.Duration
+	pendingDir                  string
+	requestSuffix               string
+	responseSuffix              string
+	errorPrefix                 string
+	staleAfter                  time.Duration
+	distinguishNonDirectoryPath bool
 }
 
 func writeDelegateRequest[T any](
@@ -106,9 +107,19 @@ func sweepDelegateRequests[Req, Resp any](
 	handle func(Req) Resp,
 ) error {
 	reqDir := filepath.Join(schedulerDir, cfg.pendingDir)
-	entries, exists, err := readDirectory(reqDir)
-	if !exists {
-		return nil
+	var entries []os.DirEntry
+	var err error
+	if cfg.distinguishNonDirectoryPath {
+		var exists bool
+		entries, exists, err = readDirectory(reqDir)
+		if !exists {
+			return nil
+		}
+	} else {
+		entries, err = os.ReadDir(reqDir)
+		if os.IsNotExist(err) {
+			return nil
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("%s: read pending requests: %w", cfg.errorPrefix, err)
