@@ -93,9 +93,14 @@ type WorkItem struct {
 	Body       string       `json:"body,omitempty"`
 	// AcceptanceCriteria carries Azure Boards' dedicated acceptance criteria
 	// field separately from System.Description so agent inputs can include both.
-	AcceptanceCriteria string   `json:"acceptanceCriteria,omitempty"`
-	Labels             []string `json:"labels,omitempty"`
-	State              string   `json:"state,omitempty"`
+	AcceptanceCriteria string `json:"acceptanceCriteria,omitempty"`
+	// Description is the provider's own description before acceptance
+	// criteria were composed into Body, set only by providers that compose
+	// (ADO). It is not serialized; it lets a spec pin recorded before #6093
+	// still be matched against an unchanged item (#6190).
+	Description string   `json:"-"`
+	Labels      []string `json:"labels,omitempty"`
+	State       string   `json:"state,omitempty"`
 	// StateReason is the provider's own reason a closed item is closed (e.g.
 	// GitHub's "completed" vs. "not_planned"). Empty for a provider with no
 	// such concept or for an item that is not closed — callers that need to
