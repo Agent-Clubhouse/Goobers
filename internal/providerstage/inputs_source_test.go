@@ -59,6 +59,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"prclaim.go":                {command: "pr-claim"},
 	"prcommentwatch.go":         {command: "pr-comment-watch"},
 	"preflightrepowrite.go":     {command: "preflight-repo-write"},
+	"prfeedbackrepass.go":       {command: "pr-claim"},
 	"prqueuereport.go":          {command: "backlog-query"},
 	"prremediationlifecycle.go": {command: "pr-claim"},
 	"prselect.go":               {command: "pr-select"},
