@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -267,7 +266,7 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	approved := result.Approved()
-	data, err := json.Marshal(fileIssuesResult{
+	value := fileIssuesResult{
 		NominationsDigest: result.Digest,
 		Created:           created,
 		Filed:             len(result.Filed),
@@ -282,14 +281,11 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 		OverflowKeys:      result.Overflow,
 		Refusals:          result.Refused,
 		Annotated:         result.Annotated,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal filed-nominations result: %v\n", err)
-		return 1
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal filed-nominations result",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "filed %d nomination(s) (%d created, %d approved, %d unapproved), suppressed %d, %d over budget, %d refused\n",
 		len(result.Filed), created, approved, len(result.Filed)-approved, len(result.Suppressed), len(result.Overflow), len(result.Refused))
@@ -411,14 +407,10 @@ func writeFileIssuesCheck(stdout, stderr io.Writer, resultFile string, result fi
 	if result.Errors == nil {
 		result.Errors = []string{}
 	}
-	data, err := json.Marshal(result)
-	if err != nil {
-		pf(stderr, "error: marshal nomination check result: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, result, stageResultOptions{
+		MarshalLabel: "marshal nomination check result",
+	}); code != 0 {
+		return code
 	}
 	if result.Valid {
 		pf(stdout, "nominations are valid: %d to file, %d suppressed, %d over budget\n", result.FiledCount, result.SuppressedCount, result.OverBudget)
