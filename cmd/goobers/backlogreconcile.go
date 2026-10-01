@@ -1059,20 +1059,6 @@ func itemHasParkLabel(item providers.WorkItem) bool {
 		item.HasLabel(needsRemediationLabel)
 }
 
-func inspectBacklogMetadata(
-	ctx context.Context,
-	provider *providers.GitHubProvider,
-	repo providers.RepositoryRef,
-	item providers.WorkItem,
-	botLogin string,
-	now time.Time,
-	stalenessPolicy backlogStalenessPolicy,
-	recs map[string]blockedRecord,
-	budgets ...*backlogReconcileBudget,
-) (backlogMetadataCorrection, string, error) {
-	return inspectBacklogMetadataWithChildCursor(ctx, provider, repo, item, botLogin, now, stalenessPolicy, recs, nil, budgets...)
-}
-
 func inspectBacklogMetadataWithChildCursor(
 	ctx context.Context,
 	provider *providers.GitHubProvider,

@@ -150,9 +150,9 @@ func TestClearingBlockedOnSiblingNeverRereadiesAnItem(t *testing.T) {
 		t.Fatalf("GetWorkItem: %v", err)
 	}
 
-	correction, _, err := inspectBacklogMetadata(
+	correction, _, err := inspectBacklogMetadataWithChildCursor(
 		context.Background(), provider, repo, item, "goobers-bot",
-		time.Now().UTC(), defaultBacklogStalenessPolicy(), nil,
+		time.Now().UTC(), defaultBacklogStalenessPolicy(), nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("inspectBacklogMetadata: %v", err)
