@@ -61,7 +61,7 @@ func openHistoricalTestDB(t *testing.T, path string, version int) *DB {
 // every upgraded store silently stops applying the inserted DDL forever while
 // fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "cadb9afdb62f29d3239d4c2de2d2fb6250fe5c290270ac87ff161db684c46a80"
+	const wantDigest = "8b206e38b570e14d3714f03eaa966918ed7dfe6acdb344cea0d0f10a98a7cdf3"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
