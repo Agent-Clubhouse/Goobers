@@ -141,6 +141,18 @@ func (r *revisionRun) publish(localHead string) {
 	}
 }
 
+// rebasePush records rebase-pr's clean-rebase force-push on the agentic path
+// (failing-ci / human-comment), leased against attempted.
+func (r *revisionRun) rebasePush(attempted, pushed string) {
+	r.t.Helper()
+	if err := r.run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "rebase-pr", Attempt: 1, Status: string(apiv1.ResultSuccess),
+		Outputs: map[string]any{"needsAgent": "true", "attemptedHeadSha": attempted, rebasePushedHeadOutput: pushed},
+	}); err != nil {
+		r.t.Fatalf("append rebase-pr: %v", err)
+	}
+}
+
 func TestLoadPRExpectedRevision(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "acme", Project: "project", Name: "web"}
 	for _, tc := range []struct {
@@ -167,6 +179,24 @@ func TestLoadPRExpectedRevision(t *testing.T) {
 			_ = r.run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "push-remediated", Outputs: map[string]any{
 				pushRemediatedPublishedOutput: "false", pushRemediatedLocalHeadOutput: revisionPublishedSHA,
 			}})
+		}, wantHead: revisionSelectedSHA, wantSource: prRevisionSourceSelection},
+		// rebase-pr force-pushes a clean rebase and continues into the agentic
+		// chain on a failing-ci / human-comment cycle: that push is this run's
+		// own, so the guards after it must not read it as a stale selection.
+		{name: "own rebase push advances the expectation", seed: func(r *revisionRun) {
+			r.selectHead("77", revisionSelectedSHA)
+			r.rebasePush(revisionSelectedSHA, revisionPublishedSHA)
+		}, wantHead: revisionPublishedSHA, wantSource: prRevisionSourcePublication},
+		// rebase-pr leases against the head IT checked out: a human push after
+		// selection would be rebased and published under that lease, so it
+		// must not be adopted.
+		{name: "rebase push over a foreign head does not advance", seed: func(r *revisionRun) {
+			r.selectHead("77", revisionSelectedSHA)
+			r.rebasePush(revisionMovedSHA, revisionPublishedSHA)
+		}, wantHead: revisionSelectedSHA, wantSource: prRevisionSourceSelection},
+		{name: "rebase without a push does not advance", seed: func(r *revisionRun) {
+			r.selectHead("77", revisionSelectedSHA)
+			r.rebasePush(revisionSelectedSHA, "")
 		}, wantHead: revisionSelectedSHA, wantSource: prRevisionSourceSelection},
 		{name: "no selection is unrecorded", seed: func(*revisionRun) {}, unrecorded: true},
 		{name: "a no-work selection records nothing", seed: func(r *revisionRun) {
