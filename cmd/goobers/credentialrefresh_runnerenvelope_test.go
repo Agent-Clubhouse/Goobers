@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,13 +42,45 @@ func (grantTestRecorder) RecordArtifact(name string, data []byte) (journal.Ref, 
 	return journal.Ref{Path: name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
 }
 
+// heldRevokeMinter passes every mint through to the daemon's real minter and
+// records what the executor asked for and received, but holds the revoke the
+// executor fires when the attempt returns. The test can then play the stage
+// child's mid-stage refresh against the exact grant the executor delivered,
+// with no cross-process timing, and release the revoke afterwards.
+type heldRevokeMinter struct {
+	inner executor.StageCredentialGrants
+
+	mu             sync.Mutex
+	envs           []apiv1.InvocationEnvelope
+	grants         []executor.StageCredentialGrant
+	executorRevoke int
+}
+
+func (m *heldRevokeMinter) MintStageGrant(env apiv1.InvocationEnvelope, capabilities []string, ttl time.Duration) (executor.StageCredentialGrant, error) {
+	grant, err := m.inner.MintStageGrant(env, capabilities, ttl)
+	if err != nil {
+		return grant, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.envs = append(m.envs, env)
+	m.grants = append(m.grants, grant)
+	held := grant
+	held.Revoke = func() {
+		m.mu.Lock()
+		m.executorRevoke++
+		m.mu.Unlock()
+	}
+	return held, nil
+}
+
 // TestLocalRunnerStageRefreshesThroughThePinnedDefinition is the round trip
 // the live failure took: the real ShellExecutor runs a goobers-CLI stage
 // under a runner-shaped envelope and mints its grant through the daemon's
-// credential service; while the stage is still running (the grant is revoked
-// when it returns), the stage child's ADO delivered source is rejected and
-// re-resolves through the loopback refresh route, which verifies the grant's
-// stage against the run's pinned definition and mints a fresh value.
+// credential service; the stage child's ADO delivered source is then
+// rejected and re-resolves with that grant over the loopback refresh route,
+// which verifies the grant's stage against the run's pinned definition and
+// mints a fresh value.
 func TestLocalRunnerStageRefreshesThroughThePinnedDefinition(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("drives a POSIX shell stub as the goobers-CLI stage child")
@@ -67,10 +99,9 @@ func TestLocalRunnerStageRefreshesThroughThePinnedDefinition(t *testing.T) {
 
 	// The executor's injector delivers repo:push with a stated expiry, so the
 	// executor asks the daemon for a grant.
+	deliveredExpiry := time.Now().Add(40 * time.Minute).UTC().Truncate(time.Second)
 	resolver, err := credentials.NewResolverWithExpiring(nil, nil, nil, map[string]credentials.ExpiringResolveFunc{
-		"app": func(context.Context) (string, time.Time, error) {
-			return delivered, time.Now().Add(40 * time.Minute), nil
-		},
+		"app": func(context.Context) (string, time.Time, error) { return delivered, deliveredExpiry, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -83,19 +114,11 @@ func TestLocalRunnerStageRefreshesThroughThePinnedDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shell.CredentialGrants = service
+	minter := &heldRevokeMinter{inner: service}
+	shell.CredentialGrants = minter
 	shell.DefaultTimeout = time.Minute
-
-	// The stage child hands its grant environment to the test, then stays
-	// alive until the test has refreshed through it.
-	dir := t.TempDir()
-	handoff, done := filepath.Join(dir, "grant"), filepath.Join(dir, "done")
-	stub := filepath.Join(dir, "goobers")
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n%s\\n%s\\n' \"$" + executor.CredentialEndpointEnvVar + "\" \"$" + executor.CredentialGrantEnvVar + "\" \"$" + capability.CredentialExpiryEnvVar("repo:push") + "\" > '" + handoff + ".tmp'\n" +
-		"mv '" + handoff + ".tmp' '" + handoff + "'\n" +
-		"i=0; while [ ! -e '" + done + "' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done\n"
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	shell.SelfBin = stub
@@ -103,39 +126,27 @@ func TestLocalRunnerStageRefreshesThroughThePinnedDefinition(t *testing.T) {
 	env := runnerStageEnvelope(runID, "push-branch", 1)
 	env.Workspace = t.TempDir()
 	env.Capabilities = []string{"repo:push"}
-	type outcome struct {
-		result apiv1.ResultEnvelope
-		err    error
+	result, err := shell.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"goobers", "push-branch"}})
+	if err != nil || result.Status != apiv1.ResultSuccess {
+		t.Fatalf("stage = %+v, %v", result, err)
 	}
-	finished := make(chan outcome, 1)
-	go func() {
-		result, err := shell.Run(context.Background(), env, apiv1.DeterministicRun{Command: []string{"goobers", "push-branch"}})
-		finished <- outcome{result, err}
-	}()
-	var lines []string
-	for deadline := time.Now().Add(20 * time.Second); ; {
-		if data, err := os.ReadFile(handoff); err == nil {
-			lines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-			break
-		}
-		select {
-		case got := <-finished:
-			t.Fatalf("the stage returned before handing off its grant: %+v, %v", got.result, got.err)
-		case <-time.After(20 * time.Millisecond):
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the stage never handed off its grant")
-		}
+	if len(minter.grants) != 1 || minter.executorRevoke != 1 {
+		t.Fatalf("executor minted %d grants and revoked %d; want one grant, revoked when the attempt returned", len(minter.grants), minter.executorRevoke)
 	}
-	if len(lines) != 3 || lines[0] != server.URL || lines[1] == "" || lines[2] == "" {
-		t.Fatalf("stage grant environment = %q; want the daemon endpoint, a grant, and the delivered expiry", lines)
+	if minter.envs[0].TaskID != runID+":push-branch" {
+		t.Fatalf("executor minted from TaskID %q; the fixture no longer plays the runner's run-scoped shape", minter.envs[0].TaskID)
+	}
+	grant := minter.grants[0]
+	if grant.Endpoint != server.URL || grant.Token == "" {
+		t.Fatalf("grant = endpoint %q token set %v; want the daemon endpoint and a token", grant.Endpoint, grant.Token != "")
 	}
 
-	// The stage child: its delivered bearer is rejected, so it re-resolves.
+	// The stage child, as the executor equipped it: its delivered bearer is
+	// rejected, so it re-resolves through the grant.
 	t.Setenv(executor.CredentialEnvVar("repo:push"), delivered)
-	t.Setenv(capability.CredentialExpiryEnvVar("repo:push"), lines[2])
-	t.Setenv(executor.CredentialEndpointEnvVar, lines[0])
-	t.Setenv(executor.CredentialGrantEnvVar, lines[1])
+	t.Setenv(capability.CredentialExpiryEnvVar("repo:push"), capability.FormatCredentialExpiry(deliveredExpiry))
+	t.Setenv(executor.CredentialEndpointEnvVar, grant.Endpoint)
+	t.Setenv(executor.CredentialGrantEnvVar, grant.Token)
 	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
 	source, err := stageADOCredentialSource(capability.RepoPush, delivered)
 	if err != nil {
@@ -146,17 +157,9 @@ func TestLocalRunnerStageRefreshesThroughThePinnedDefinition(t *testing.T) {
 		t.Fatalf("source %T is not refreshable", source)
 	}
 	refreshable.Invalidate()
-	credential, refreshErr := source.Credential(context.Background())
-
-	if err := os.WriteFile(done, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got := <-finished
-	if got.err != nil || got.result.Status != apiv1.ResultSuccess {
-		t.Fatalf("stage = %+v, %v", got.result, got.err)
-	}
-	if refreshErr != nil {
-		t.Fatalf("mid-stage re-resolve of a runner-shaped stage grant: %v", refreshErr)
+	credential, err := source.Credential(context.Background())
+	if err != nil {
+		t.Fatalf("mid-stage re-resolve of a runner-shaped stage grant: %v", err)
 	}
 	if credential.Secret != minted.value(1) || credential.Kind != providers.ADOCredentialKindBearer || minted.calls != 1 {
 		t.Fatalf("credential after re-resolve = %+v (minted %d); want the daemon's one fresh mint", credential, minted.calls)
@@ -172,6 +175,13 @@ func TestLocalRunnerStageRefreshesThroughThePinnedDefinition(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the re-resolve was not journaled")
+	}
+
+	// Releasing the held revoke ends the grant, as the attempt's return does.
+	grant.Revoke()
+	_, err = service.Refresh(context.Background(), grant.Token, httpapi.CredentialRefreshRequest{Capability: "repo:push"})
+	if err == nil || planeErrorOf(t, err).Code != "credential_grant_revoked" {
+		t.Fatalf("refresh after revoke = %v, want credential_grant_revoked", err)
 	}
 }
 
