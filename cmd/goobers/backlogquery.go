@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1019,15 +1018,12 @@ func writeClaimedBacklogResult(
 		}
 		curationItems = append(curationItems, readOnlyItems...)
 	}
-	data, err := marshalClaimedBacklogItems(claimed, curationItems, opts.curationRun, opts.maxItems)
-	if err != nil {
-		pf(env.stderr, "error: marshal claimed item(s): %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "claimed-item.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(env.stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	value := claimedBacklogItemsValue(claimed, curationItems, opts.curationRun, opts.maxItems)
+	if code := writeStageResultJSON(env.stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal claimed item(s)",
+	}); code != 0 {
+		return code
 	}
 	if err := opts.persistResweepState(ctx); err != nil {
 		pf(env.stderr, "error: %v\n", err)
@@ -1037,21 +1033,21 @@ func writeClaimedBacklogResult(
 	return 0
 }
 
-func marshalClaimedBacklogItems(
+func claimedBacklogItemsValue(
 	claimed []providers.WorkItem,
 	curationItems []curationClaimedItem,
 	curationRun bool,
 	maxItems int,
-) ([]byte, error) {
+) any {
 	switch {
 	case curationRun && maxItems == 1:
-		return json.Marshal(curationItems[0])
+		return curationItems[0]
 	case curationRun:
-		return json.Marshal(curationItems)
+		return curationItems
 	case maxItems == 1:
-		return json.Marshal(claimed[0])
+		return claimed[0]
 	default:
-		return json.Marshal(claimed)
+		return claimed
 	}
 }
 
@@ -2464,34 +2460,27 @@ func backlogReconcileNotApplicable(env backlogQueryEnv) bool {
 // telemetry rollup records no corrections for the cycle.
 func writeBacklogReconciliationNotApplicable(provider providers.ProviderKind, stdout, stderr io.Writer) int {
 	reason := fmt.Sprintf("backlog metadata reconciliation is not applicable on %s: skipped", provider)
-	data, err := json.Marshal(map[string]any{
+	value := map[string]any{
 		"reconciled":    0,
 		"notApplicable": "true",
 		"reason":        reason,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
-		return 1
 	}
 	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal backlog reconciliation",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "%s\n", reason)
 	return 0
 }
 
 func writeBacklogReconciliationResult(result backlogReconciliationResult, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(result)
-	if err != nil {
-		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, result, stageResultOptions{
+		MarshalLabel: "marshal backlog reconciliation",
+	}); code != 0 {
+		return code
 	}
 	if result.Scan.WorkRemaining {
 		pf(stdout, "reconciled %d backlog item(s); reconciliation scan incomplete after %d item(s), work remains\n",
@@ -3343,18 +3332,15 @@ func writeNoWorkResult(stdout, stderr io.Writer, reason string) int {
 	// carry stage stdout — it is where an agent transcript or a provider
 	// string can quote a secret — so a reason that exists only there is
 	// unreachable to the operator debugging a no-work cycle from a bundle.
-	data, err := json.Marshal(map[string]interface{}{
+	value := map[string]interface{}{
 		"claimed":             false,
 		executor.OutputNoWork: true,
 		"noWorkReason":        reason,
-	})
-	if err != nil {
-		pf(stderr, "error: marshal no-work result: %v\n", err)
-		return 1
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+		MarshalLabel: "marshal no-work result",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "no work: %s\n", reason)
 	return 0

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
@@ -236,7 +234,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// writeResult emits the routing decision plus the pass-through outputs the
 	// two possible successor stages resolve their inputsFrom against.
 	writeResult := func(elected bool) int {
-		data, err := json.Marshal(map[string]string{
+		value := map[string]string{
 			"elected":                strconv.FormatBool(elected),
 			"selectedNumber":         strconv.Itoa(selectedNumber),
 			"selectedHeadSha":        selectedHeadSha,
@@ -246,16 +244,10 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 			"unlandableSiblingsCsv":  providerInput("unlandableSiblings", ""),
 			"advisoryMode":           strconv.FormatBool(advisoryMode),
 			"scopeGateParked":        scopeGateParked,
+		}
+		return writeStageResultJSON(stderr, resultFile, value, stageResultOptions{
+			MarshalLabel: "marshal election result",
 		})
-		if err != nil {
-			pf(stderr, "error: marshal election result: %v\n", err)
-			return 1
-		}
-		if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-			pf(stderr, "error: write %s: %v\n", resultFile, err)
-			return 1
-		}
-		return 0
 	}
 	if advisoryMode {
 		pf(stdout, "PR #%d is advisory-only — skipping lander election\n", selectedNumber)

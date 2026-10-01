@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"io"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -179,15 +177,11 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		ClaimedIDs:     claimedIDs,
 		Candidates:     candidates,
 	}
-	data, err := json.Marshal(artifact)
-	if err != nil {
-		pf(stderr, "error: marshal dedupe candidates: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "dedupe-candidates.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, artifact, stageResultOptions{
+		MarshalLabel: "marshal dedupe candidates",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "surfaced %d likely-duplicate candidate pair(s) from %d open item(s)\n", len(candidates), len(openItems))
 	return 0

@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -267,15 +265,11 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 }
 
 func writeBacklogHealthReport(report backlogHealthReport, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(report)
-	if err != nil {
-		pf(stderr, "error: marshal backlog health: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "backlog-health.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, report, stageResultOptions{
+		MarshalLabel: "marshal backlog health",
+	}); code != 0 {
+		return code
 	}
 	if report.ReadyPoolObservedAt == "" {
 		// A deferred snapshot deliberately carries no observation: an absent
@@ -926,15 +920,11 @@ func compactFeedbackText(raw string, limit int) string {
 }
 
 func writeImplementationFeedbackReport(report implementationFeedbackReport, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(report)
-	if err != nil {
-		pf(stderr, "error: marshal implementation feedback: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "implementation-feedback.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeStageResultJSON(stderr, resultFile, report, stageResultOptions{
+		MarshalLabel: "marshal implementation feedback",
+	}); code != 0 {
+		return code
 	}
 	pf(stdout, "routed %d chronically failing item(s) back to curation\n", report.Recurated)
 	return 0
