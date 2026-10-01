@@ -195,7 +195,12 @@ func credentialPlaneStub(t *testing.T, grant []string) string {
 	return server.URL
 }
 
-func TestPodCIPollCredentialSourceReResolvesPerPoll(t *testing.T) {
+// TestPodCIPollCredentialSourceReResolvesOnlyAfterUnauthorized: the pod's
+// ci-poll source serves the stage-start value without calling the credential
+// plane per poll, and re-resolves (and registers the new value) once after
+// the provider's 401 invalidates it (#6154 on top of Goobers#6120). This holds
+// for a value with no stated expiry too, so a PAT keeps #6154's bounded retry.
+func TestPodCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) {
 	capabilities := []string{string(capability.ProviderPRWrite)}
 	setPodCIPollEnv(t, ciPollFixture{
 		inputs:       defaultCIPollFixture().inputs,
@@ -227,27 +232,36 @@ func TestPodCIPollCredentialSourceReResolvesPerPoll(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
-	var registered []string
-	source := podCIPollTokenSource{
-		capability: string(capability.ProviderPRWrite),
-		register: func(token string) {
-			registered = append(registered, token)
-		},
+	reg := &escTestRegistrar{}
+	source := podCIPollTokenSource([]dispatcher.MintedCredential{{
+		Capability: string(capability.ProviderPRWrite), Value: "pod-ci-poll-token-0",
+	}}, string(capability.ProviderPRWrite), reg)
+	refreshable, ok := source.(providers.RefreshableTokenSource)
+	if !ok {
+		t.Fatalf("source %T is not refreshable", source)
 	}
 
-	first, err := source.Token(context.Background())
-	if err != nil {
-		t.Fatalf("first Token: %v", err)
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != "pod-ci-poll-token-0" {
+			t.Fatalf("Token = %q, %v; want the stage-start value", token, err)
+		}
 	}
-	second, err := source.Token(context.Background())
-	if err != nil {
-		t.Fatalf("second Token: %v", err)
+	if calls != 0 {
+		t.Fatalf("credential plane called %d times before any 401, want 0", calls)
 	}
-	if first != "pod-ci-poll-token-1" || second != "pod-ci-poll-token-2" {
-		t.Fatalf("tokens = %q, %q; want two independently resolved values", first, second)
+	refreshable.Invalidate()
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != "pod-ci-poll-token-1" {
+			t.Fatalf("Token after 401 = %q, %v; want one re-resolved value", token, err)
+		}
 	}
-	if !reflect.DeepEqual(registered, []string{first, second}) {
-		t.Fatalf("registered tokens = %v, want [%s %s]", registered, first, second)
+	if calls != 1 {
+		t.Fatalf("credential plane called %d times, want exactly one re-resolve", calls)
+	}
+	if len(reg.registered) != 1 || string(reg.registered[0]) != "pod-ci-poll-token-1" {
+		t.Fatalf("registered = %q, want the re-resolved value", reg.registered)
 	}
 }
 

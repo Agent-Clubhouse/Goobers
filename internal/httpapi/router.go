@@ -155,6 +155,11 @@ const PodPrincipalIssuer = "goobers/pod"
 // identity.
 const WorkerPrincipalIssuer = "goobers/worker"
 
+// CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
+// (Goobers#6120). Such a principal holds no roles and no pod scopes: the
+// authorizer admits it to the credential refresh route and nothing else.
+const CredentialGrantPrincipalIssuer = "goobers/credential-grant"
+
 // IsPodPrincipal reports whether principal was authenticated as a stage pod.
 func IsPodPrincipal(principal Principal) bool {
 	return principal.Issuer == PodPrincipalIssuer
@@ -409,6 +414,12 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("only an authenticated worker may report config divergence")
+		}
+		if principal.Issuer == CredentialGrantPrincipalIssuer {
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
+				return nil
+			}
+			return errors.New("a credential-refresh grant may only call the credential refresh route")
 		}
 		if principal.Issuer == WorkerPrincipalIssuer {
 			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {

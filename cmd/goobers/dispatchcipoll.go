@@ -127,24 +127,30 @@ func runCIPollStage(ctx context.Context, stderr io.Writer) apiv1.ResultEnvelope 
 			executor.KindCIPoll, required,
 		))
 	}
+	// Resolution happens HERE, at stage start, against the daemon's credential
+	// plane — never at dispatch — so no secret ever rides a dispatch payload or
+	// a pod spec, and the pod receives only the capabilities its stage declared.
+	creds, err := resolveStageCredentials(ctx)
+	if err != nil {
+		return failureEnvelope("credential_resolve_failed", err.Error())
+	}
+	token := mintedCredentialValue(creds, required)
+	if token == "" {
+		return failureEnvelope("credential_resolve_failed", fmt.Sprintf(
+			"the credential plane returned no value for declared capability %q", required,
+		))
+	}
 	// Register every resolved token BEFORE anything can carry it: the ci-checks
 	// evidence artifact, and every failure message below, pass through this
 	// scrubber. The local path gets the same protection from the run's
 	// registrar (the executor registers each materialized token with the
-	// journal scrubber before the stage runs).
+	// journal scrubber before the stage runs). A value re-resolved after a 401
+	// is registered by the refreshing source before it is used.
 	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(token))
 	scrub := func(s string) string { return string(scrubber.Scrub([]byte(s))) }
 
-	source := podCIPollTokenSource{
-		capability: required,
-		register:   func(token string) { registry.Register([]byte(token)) },
-	}
-	token, err := source.Token(ctx)
-	if err != nil {
-		return failureEnvelope("credential_resolve_failed", scrub(err.Error()))
-	}
-
-	poller, err := podCIPollPoller(token, source)
+	poller, err := podCIPollPoller(token, podCIPollTokenSource(creds, required, registry))
 	if err != nil {
 		return failureEnvelope(ciPollProviderUnsupportedCode, scrub(err.Error()))
 	}
@@ -293,26 +299,6 @@ func podCIPollEnvelope(declared []string) apiv1.InvocationEnvelope {
 // (runnerwiring_executors.go) on purpose: a parity test that substitutes one
 // fake must be able to drive BOTH substrates through it, or the test proves
 // only that two different fakes behave differently.
-type podCIPollTokenSource struct {
-	capability string
-	register   func(string)
-}
-
-func (s podCIPollTokenSource) Token(ctx context.Context) (string, error) {
-	creds, err := resolveStageCredentials(ctx)
-	if err != nil {
-		return "", err
-	}
-	token := mintedCredentialValue(creds, s.capability)
-	if token == "" {
-		return "", fmt.Errorf("the credential plane returned no value for declared capability %q", s.capability)
-	}
-	if s.register != nil {
-		s.register(token)
-	}
-	return token, nil
-}
-
 func podCIPollPoller(token string, source providers.TokenSource) (executor.PRPoller, error) {
 	repo, err := providerRepo(providerStageRoot(""))
 	if err != nil {
@@ -333,7 +319,7 @@ func podCIPollPoller(token string, source providers.TokenSource) (executor.PRPol
 	// (#3914). The poller itself reads CI state, but the seam is what keeps
 	// every in-pod GitHub construction identical.
 	return newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), repo, true,
-		withStageProviderTokenSource(source),
+		withStageProviderToken(token), withStageProviderTokenSource(source),
 	)
 }
 

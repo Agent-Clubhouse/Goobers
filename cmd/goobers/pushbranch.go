@@ -64,7 +64,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	env, err := pushBranchEnvironment(dir)
+	env, err := pushBranchAuth(dir)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -126,10 +126,10 @@ const pushRaceAttempts = 3
 // apply cleanly aborts and surfaces the original push rejection: conflict
 // resolution is agentic work, not a push-layer concern. Any non-race failure
 // (auth, missing remote) fails immediately, exactly as before.
-func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) error {
+func pushBranchWithRetry(dir, branch string, auth pushBranchAuthEnv, stderr io.Writer) error {
 	var err error
 	for attempt := 1; ; attempt++ {
-		err = gitPushBranch(dir, branch, env)
+		err = gitPushBranchWithAuth(dir, branch, auth)
 		if err == nil {
 			return nil
 		}
@@ -147,11 +147,50 @@ func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) err
 			return err
 		}
 		pf(stderr, "warning: push attempt %d rejected as a ref race; rebasing onto the remote tip and retrying: %v\n", attempt, err)
-		if rebaseErr := rebaseOntoRemoteBranch(dir, branch, env); rebaseErr != nil {
+		if rebaseErr := rebaseOntoRemoteBranchWithAuth(dir, branch, auth); rebaseErr != nil {
 			pf(stderr, "warning: rebase onto remote %q failed (%v); surfacing the original push rejection\n", branch, rebaseErr)
 			return err
 		}
 	}
+}
+
+// pushBranchAuthEnv yields the credentialed git environment for ONE git
+// invocation. push-branch resolves it per push, fetch and rebase rather than
+// once at command start, so a delivered credential that expires during a
+// long push-rebase-retry loop is refreshed (Goobers#6120). A nil value means
+// no credential (the environment the git helpers compose on their own).
+type pushBranchAuthEnv func() ([]string, error)
+
+func (auth pushBranchAuthEnv) env() ([]string, error) {
+	if auth == nil {
+		return nil, nil
+	}
+	return auth()
+}
+
+func gitPushBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+	env, err := auth.env()
+	if err != nil {
+		return err
+	}
+	return gitPushBranch(dir, branch, env)
+}
+
+func rebaseOntoRemoteBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+	env, err := auth.env()
+	if err != nil {
+		return err
+	}
+	return rebaseOntoRemoteBranch(dir, branch, env)
+}
+
+// pushBranchAuth is pushBranchEnvironment resolved per invocation: the origin
+// checks run once, the credential is read each time it is used.
+func pushBranchAuth(dir string) (pushBranchAuthEnv, error) {
+	if _, err := pushBranchEnvironment(dir); err != nil {
+		return nil, err
+	}
+	return func() ([]string, error) { return pushBranchEnvironment(dir) }, nil
 }
 
 // isPushRaceError classifies a push failure as a ref race worth a
@@ -722,7 +761,13 @@ func isADORemote(remote string) bool {
 // `ps`) and is never written to any file. GitHub's HTTPS token convention is
 // basic auth with the token as the password and any non-empty username;
 // "x-access-token" is GitHub's own documented placeholder for that username.
+//
+// It is built per git invocation: a repo:push value the stage holds a
+// credential-refresh grant for is refreshed here when it nears its stated
+// expiry (Goobers#6120), so a long remediation does not push with the value
+// it was handed at stage start.
 func gitAuthEnv(token string) []string {
+	token = currentStageToken(capability.RepoPush, token)
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	return append(os.Environ(),
 		"GIT_CONFIG_COUNT=1",

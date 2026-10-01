@@ -55,10 +55,28 @@ const MaxCredentialCapabilityBytes = 128
 // 401'd); empty resolves the full declared set. Naming a capability the stage
 // did not declare is refused with a typed 403 naming the capability — nothing
 // materializes for an undeclared capability.
+//
+// Grant asks, in addition, for a stage credential-refresh grant (Goobers#6120)
+// for Attempt of the stage: the pod's stage-start resolve sets it, the
+// checkout-credential resolve does not. TimeoutSeconds is the stage timeout
+// the pod enforces; the service sizes the grant from the PINNED task timeout
+// when the definition declares one and from this value only when it does not.
+// A grant is minted only for a deterministic task.
 type CredentialResolveRequest struct {
-	RunID        string   `json:"runId"`
-	Stage        string   `json:"stage"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	RunID          string   `json:"runId"`
+	Stage          string   `json:"stage"`
+	Capabilities   []string `json:"capabilities,omitempty"`
+	Grant          bool     `json:"grant,omitempty"`
+	Attempt        int32    `json:"attempt,omitempty"`
+	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty"`
+}
+
+// CredentialGrantDelivery is a stage credential-refresh grant handed to a pod
+// for its deterministic stage child (Goobers#6120). Token is a secret; it is
+// registered with the scrubbers before the response is written.
+type CredentialGrantDelivery struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 // MintedCredential is one resolved credential value. ExpiresAt is present
@@ -81,11 +99,15 @@ type MintedCredential struct {
 // repository is on Azure DevOps and at least one credential was minted. The
 // pod stamps it as GOOBERS_REPO_AUTH_SCHEME so the stage never infers the
 // scheme from the token's shape. It is empty for every other provider.
+//
+// Grant is present only when the request asked for one and the stage is a
+// deterministic task with at least one expiring credential.
 type CredentialResolveResponse struct {
-	RunID          string             `json:"runId"`
-	Stage          string             `json:"stage"`
-	Credentials    []MintedCredential `json:"credentials"`
-	RepoAuthScheme string             `json:"repoAuthScheme,omitempty"`
+	RunID          string                   `json:"runId"`
+	Stage          string                   `json:"stage"`
+	Credentials    []MintedCredential       `json:"credentials"`
+	RepoAuthScheme string                   `json:"repoAuthScheme,omitempty"`
+	Grant          *CredentialGrantDelivery `json:"grant,omitempty"`
 }
 
 // CredentialService is the daemon-side credential plane. Implementations
