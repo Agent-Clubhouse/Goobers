@@ -320,23 +320,6 @@ func backlogHealthScanReasonSuffix(scan backlogHealthScan) string {
 	return " reason=" + scan.Reason
 }
 
-func newBacklogHealthProvider(root string, repo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
-	provider, err := providerForEnvAs[providers.Provider](
-		stageCommandEnv{root: root, repo: repo},
-		readOnly,
-		withStageProviderCache(),
-		withStageProviderMutations("issue"),
-	)
-	if err != nil {
-		return nil, err
-	}
-	healthProvider, ok := provider.(backlogHealthProvider)
-	if !ok {
-		return nil, fmt.Errorf("backlog-health does not support repository provider %q", repo.Provider)
-	}
-	return healthProvider, nil
-}
-
 func backlogHealthTransitions(
 	ctx context.Context,
 	provider backlogHealthProvider,

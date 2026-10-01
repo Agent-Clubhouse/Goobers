@@ -193,12 +193,6 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return providerForEnvAs[providers.BacklogProvider](
-		stageCommandEnv{root: root, repo: repo}, true, withStageProviderCache(),
-	)
-}
-
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {
 	claimedItems := make([]providers.WorkItem, 0, len(claimed))
 	for _, item := range items {
