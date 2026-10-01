@@ -56,6 +56,8 @@ func ErrorInfoFor(code string, err error, retryable bool) *apiv1.ErrorInfo {
 	return &apiv1.ErrorInfo{Code: code, Message: err.Error(), Causes: ErrorInfoCauses(err), Retryable: retryable}
 }
 
+// ErrorInfoCauses converts an error's structured cause chain into the API
+// result-envelope wire shape.
 func ErrorInfoCauses(err error) []apiv1.ErrorCause {
 	causes := ErrorCauses(err)
 	if len(causes) == 0 {

@@ -221,7 +221,11 @@ func TestLogFailurePreservesStructuredCauses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer func() {
+		if err := log.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	cause := fmt.Errorf("ingest scheduler log: %w", ingestTypedCause{
 		code:  "sqlite_locked",
