@@ -205,6 +205,7 @@ type fakeGitHubServer struct {
 	commentsFailureStatus map[int]int
 	commentsFailureBody   map[int]string
 	reviewThreadsFailure  map[int]int
+	pullGetMutations      map[int][]func(*fakeGitHubServer, *fakePR)
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -228,6 +229,15 @@ func (s *fakeGitHubServer) setPullRequestReviewThreadsFailure(number, status int
 		s.reviewThreadsFailure = map[int]int{}
 	}
 	s.reviewThreadsFailure[number] = status
+}
+
+func (s *fakeGitHubServer) mutatePullRequestOnNextGet(number int, mutate func(*fakeGitHubServer, *fakePR)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pullGetMutations == nil {
+		s.pullGetMutations = map[int][]func(*fakeGitHubServer, *fakePR){}
+	}
+	s.pullGetMutations[number] = append(s.pullGetMutations[number], mutate)
 }
 
 // setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
@@ -1284,6 +1294,12 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 	}
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
+		if mutations := s.pullGetMutations[num]; len(mutations) > 0 {
+			delete(s.pullGetMutations, num)
+			for _, mutate := range mutations {
+				mutate(s, pr)
+			}
+		}
 		writeFakeJSON(w, s.prDetailJSON(pr))
 	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.reviews))

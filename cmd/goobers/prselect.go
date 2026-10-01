@@ -236,8 +236,8 @@ func runPRSelectCore(
 			if err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("reconcile run-aborted PR #%d", pr.Number), err, "selected-pr.json")
 			}
+			pr = refreshed
 			if cleared {
-				pr = refreshed
 				pf(stdout, "re-queued PR #%d: removed stale %s after checks passed and no prior comments were present\n",
 					pr.Number, abortedRunLabel)
 			}
@@ -1211,21 +1211,27 @@ func clearStaleRunAbortedPR(
 		return pr, false, nil
 	}
 	pullID := strconv.Itoa(pr.Number)
-	mergeable, err := provider.PullRequestMergeable(ctx, repo, pullID)
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
 	if err != nil {
 		return pr, false, nil
 	}
-	if mergeable == nil || !*mergeable {
+	refreshed := pullRequestSummaryFromPoll(pr, poll)
+	if poll.State != "open" || poll.Draft || poll.CheckState != providers.CheckStatePassing {
 		return pr, false, nil
 	}
-	comments, err := provider.ListComments(ctx, repo, pullID)
-	if err != nil {
+	if !hasAnyLabel(refreshed.Labels, []string{abortedRunLabel}) {
+		return refreshed, false, nil
+	}
+	if poll.Mergeable == nil || !*poll.Mergeable {
 		return pr, false, nil
 	}
-	if len(comments) != 0 {
+	if len(poll.CommentsSince) != 0 {
 		return pr, false, nil
 	}
-	if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID); err != nil || reviewed {
+	if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
 		return pr, false, nil
 	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
@@ -1235,8 +1241,8 @@ func clearStaleRunAbortedPR(
 	}); err != nil {
 		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
 	}
-	pr.Labels = removeLabel(pr.Labels, abortedRunLabel)
-	return pr, true, nil
+	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
+	return refreshed, true, nil
 }
 
 func runAbortedPRHasReviewAttention(
@@ -1244,14 +1250,8 @@ func runAbortedPRHasReviewAttention(
 	provider remediationProvider,
 	repo providers.RepositoryRef,
 	pullID string,
+	poll providers.PullRequestPollResult,
 ) (bool, error) {
-	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
-		Repository: repo,
-		PullID:     pullID,
-	})
-	if err != nil {
-		return true, err
-	}
 	if poll.ReviewDecision != "" && poll.ReviewDecision != providers.ReviewDecisionPending {
 		return true, nil
 	}
@@ -1263,6 +1263,33 @@ func runAbortedPRHasReviewAttention(
 		return true, err
 	}
 	return len(threads.Reviews) > 0 || len(threads.InlineComments) > 0, nil
+}
+
+func pullRequestSummaryFromPoll(pr providers.PullRequestSummary, poll providers.PullRequestPollResult) providers.PullRequestSummary {
+	if poll.Number != 0 {
+		pr.ID = strconv.Itoa(poll.Number)
+		pr.Number = poll.Number
+	}
+	if poll.URL != "" {
+		pr.URL = poll.URL
+	}
+	pr.Author = poll.Author
+	pr.Assignees = append([]string(nil), poll.Assignees...)
+	pr.RequestedReviewers = append([]string(nil), poll.RequestedReviewers...)
+	pr.State = poll.State
+	pr.Merged = poll.Merged
+	pr.Head = poll.HeadBranch
+	pr.Base = poll.BaseBranch
+	pr.HeadSHA = poll.HeadSHA
+	pr.BaseSHA = poll.BaseSHA
+	pr.Draft = poll.Draft
+	if poll.Labels != nil {
+		pr.Labels = append([]string(nil), poll.Labels...)
+	}
+	pr.CheckState = poll.CheckState
+	pr.Body = poll.Body
+	pr.Integrity = poll.Integrity
+	return pr
 }
 
 func removeLabel(labels []string, remove string) []string {
