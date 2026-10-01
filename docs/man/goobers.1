@@ -15,9 +15,6 @@ Use `goobers help all` for advanced operator commands or
 .SH COMMANDS
 .SS Core commands
 .TP
-\fBgoobers advisory-pr-reset\fR
-clear one private advisory disposition by explicit operator action
-.TP
 \fBgoobers completion\fR
 generate a shell completion script
 .TP
@@ -81,6 +78,9 @@ inspect workflows
 \fBgoobers workflow show\fR
 show a workflow as a text DAG
 .SS Advanced operator commands
+.TP
+\fBgoobers advisory-pr-reset\fR
+clear one private advisory disposition by explicit operator action
 .TP
 \fBgoobers agent-kit\fR
 install, inspect, or update the release-matched agent toolkit
@@ -417,10 +417,10 @@ tear down and re-materialize a pinned repository workspace
 .SS Workflow-stage and connector commands
 .TP
 \fBgoobers advisory-pr-publish\fR
-publish an advisory observation or record a permanent private skip
+publish an advisory observation or private skip (a workflow stage)
 .TP
 \fBgoobers advisory-pr-select\fR
-select one open PR for a private-disposition advisory review
+select one open PR for a private advisory review (a workflow stage)
 .TP
 \fBgoobers apply-verdict\fR
 publish a managed or advisory merge-review verdict (a workflow stage)

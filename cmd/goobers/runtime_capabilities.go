@@ -798,13 +798,13 @@ func init() {
 			withExamples("goobers pr-select"),
 		stageCommand("advisory-pr-select", apicontract.ActionWorkflowExecution, runAdvisoryPRSelect).
 			withSynopsis(synopsisByID["advisory-pr-select"]).
-			withHelp("select one open PR for a private-disposition advisory review", advisorySelectHelp).
+			withHelp("select one open PR for a private advisory review (a workflow stage)", advisorySelectHelp).
 			withExamples("goobers advisory-pr-select"),
 		stageCommand("advisory-pr-publish", apicontract.ActionWorkflowExecution, runAdvisoryPRPublish).
 			withSynopsis(synopsisByID["advisory-pr-publish"]).
-			withHelp("publish an advisory observation or record a permanent private skip", advisoryPublishHelp).
+			withHelp("publish an advisory observation or private skip (a workflow stage)", advisoryPublishHelp).
 			withExamples("goobers advisory-pr-publish"),
-		coreCommand("advisory-pr-reset", apicontract.ActionMaintenance, runAdvisoryPRReset).
+		command("advisory-pr-reset", apicontract.ActionMaintenance, runAdvisoryPRReset).
 			withSynopsis(synopsisByID["advisory-pr-reset"]).
 			withHelp("clear one private advisory disposition by explicit operator action", advisoryResetHelp).
 			withExamples("goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goobers --review-type architecture --pr 123 ./instance"),

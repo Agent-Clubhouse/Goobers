@@ -8,7 +8,6 @@
 
 | Command | Description |
 | --- | --- |
-| [`goobers advisory-pr-reset`](#goobers-advisory-pr-reset) | clear one private advisory disposition by explicit operator action |
 | [`goobers completion`](#goobers-completion) | generate a shell completion script |
 | [`goobers connect`](#goobers-connect) | connect an instance to your own GitHub or Azure DevOps repository |
 | [`goobers cost`](#goobers-cost) | show bounded cost attribution by pull request or issue |
@@ -37,6 +36,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 
 | Command | Description |
 | --- | --- |
+| [`goobers advisory-pr-reset`](#goobers-advisory-pr-reset) | clear one private advisory disposition by explicit operator action |
 | [`goobers agent-kit`](#goobers-agent-kit) | install, inspect, or update the release-matched agent toolkit |
 | [`goobers agent-kit check`](#goobers-agent-kit-check) | report agent toolkit version and drift |
 | [`goobers agent-kit install`](#goobers-agent-kit-install) | install the release-matched agent toolkit |
@@ -155,8 +155,8 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 
 | Command | Description |
 | --- | --- |
-| [`goobers advisory-pr-publish`](#goobers-advisory-pr-publish) | publish an advisory observation or record a permanent private skip |
-| [`goobers advisory-pr-select`](#goobers-advisory-pr-select) | select one open PR for a private-disposition advisory review |
+| [`goobers advisory-pr-publish`](#goobers-advisory-pr-publish) | publish an advisory observation or private skip (a workflow stage) |
+| [`goobers advisory-pr-select`](#goobers-advisory-pr-select) | select one open PR for a private advisory review (a workflow stage) |
 | [`goobers apply-verdict`](#goobers-apply-verdict) | publish a managed or advisory merge-review verdict (a workflow stage) |
 | [`goobers backlog-assignment`](#goobers-backlog-assignment) | assign eligible backlog items from a configured roster (a workflow stage) |
 | [`goobers backlog-dedupe`](#goobers-backlog-dedupe) | surface ranked duplicate candidates for curator judgment (a workflow stage) |
@@ -207,7 +207,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 
 ## `goobers advisory-pr-publish`
 
-publish an advisory observation or record a permanent private skip
+publish an advisory observation or private skip (a workflow stage)
 
 ~~~text
 Usage: goobers advisory-pr-publish [path]
@@ -239,7 +239,7 @@ $ goobers advisory-pr-reset --gaggle goobers --owner Agent-Clubhouse --repo Goob
 
 ## `goobers advisory-pr-select`
 
-select one open PR for a private-disposition advisory review
+select one open PR for a private advisory review (a workflow stage)
 
 ~~~text
 Usage: goobers advisory-pr-select [path]

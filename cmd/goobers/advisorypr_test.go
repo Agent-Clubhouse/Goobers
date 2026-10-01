@@ -29,6 +29,38 @@ func advisoryFixture(t *testing.T) (*fakeGitHubServer, string) {
 	return server, root
 }
 
+func TestAdvisoryPRSelectRefusesNonGitHubProviders(t *testing.T) {
+	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			root := initDemo(t)
+			setNonGitHubStageEnv(t, kind)
+			t.Setenv(executor.RunIDEnvVar, "advisory-dispatch-probe")
+			t.Setenv(executor.WorkflowEnvVar, "advisory-pr-architecture")
+			t.Setenv(executor.InputEnvVar("reviewType"), "architecture")
+			code, _, stderr := runArgs(t, "advisory-pr-select", root)
+			if code != 1 || !strings.Contains(stderr, "advisory PR review currently requires GitHub") {
+				t.Fatalf("%s select: code=%d stderr=%q", kind, code, stderr)
+			}
+		})
+	}
+}
+
+func TestAdvisoryPRPublishRefusesNonGitHubProviders(t *testing.T) {
+	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
+		t.Run(string(kind), func(t *testing.T) {
+			root := initDemo(t)
+			setNonGitHubStageEnv(t, kind)
+			t.Setenv(executor.RunIDEnvVar, "advisory-dispatch-probe")
+			t.Setenv(executor.WorkflowEnvVar, "advisory-pr-architecture")
+			t.Setenv(executor.InputEnvVar("reviewType"), "architecture")
+			code, _, stderr := runArgs(t, "advisory-pr-publish", root)
+			if code != 1 || !strings.Contains(stderr, "advisory PR review currently requires GitHub") {
+				t.Fatalf("%s publish: code=%d stderr=%q", kind, code, stderr)
+			}
+		})
+	}
+}
+
 func advisoryPR(t *testing.T, server *fakeGitHubServer, number int, draft bool) string {
 	t.Helper()
 	sha := strings.Repeat(string(rune('a'+number%20)), 40)

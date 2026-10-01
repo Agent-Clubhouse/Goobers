@@ -22,7 +22,6 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'trace'
         'escalations'
         'completion'
-        'advisory-pr-reset'
         'help'
         '--version'
         '-h'
