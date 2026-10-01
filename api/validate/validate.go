@@ -2489,7 +2489,11 @@ func checkLifecycleLabelContracts(r *Report, w apiv1.Workflow, file string) {
 		switch command {
 		case "backlog-health":
 			checkLifecycleLabelInput(r, file, w, task, "readyLabel", task.Inputs["readyLabel"], lifecycle.LabelReady)
-			checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			if builtInBacklogHealthConsumer(w, task) {
+				checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			} else {
+				checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", task.Inputs["trustLabel"], lifecycle.LabelApproved)
+			}
 		case "backlog-query":
 			checkBacklogQueryLifecycleLabelContracts(r, file, w, task)
 		default:
@@ -2505,31 +2509,39 @@ func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Wo
 	readOnly := commandHasArg(args, "--read-only")
 	resweep := commandHasArg(args, "--resweep")
 	curation := strings.EqualFold(strings.TrimSpace(inputs["curation"]), "true")
+	builtInReady := builtInReadyConsumer(w, task)
+	builtInRemediation := builtInRemediationConsumer(w, task)
 
-	checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+	if !(resweep || curation || builtInReady || builtInRemediation) {
+		checkLifecycleLabelNearMisses(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
+	}
 	checkLifecycleLabelListNearMisses(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsRemediation)
 	checkLifecycleLabelListNearMisses(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady, lifecycle.LabelNeedsHuman, lifecycle.LabelNeedsRemediation, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
 	checkLifecycleLabelListNearMisses(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelNeedsRemediation, lifecycle.LabelBlockedOnSibling)
 
 	if resweep {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
 		checkLifecycleLabelInput(r, file, w, task, "resweepReadyLabel", inputs["resweepReadyLabel"], lifecycle.LabelReady)
 		checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady)
 		checkLifecycleLabelListContains(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelNeedsRemediation)
 		return
 	}
 	if curation {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
 		checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelReady)
 		checkLifecycleLabelListContains(r, file, w, task, "parkLabels", inputs["parkLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelNeedsRemediation)
 		return
 	}
-	if builtInReadyConsumer(w, task) {
+	if builtInReady {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
 		checkLifecycleLabelListContains(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelReady)
 		if claim {
 			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelStatusInReview)
 		}
 		return
 	}
-	if builtInRemediationConsumer(w, task) {
+	if builtInRemediation {
+		checkRequiredLifecycleLabelInput(r, file, w, task, "trustLabel", inputs["trustLabel"], lifecycle.LabelApproved)
 		checkLifecycleLabelListContains(r, file, w, task, "requireLabels", inputs["requireLabels"], lifecycle.LabelNeedsRemediation)
 		if claim {
 			checkLifecycleLabelListContains(r, file, w, task, "excludeLabels", inputs["excludeLabels"], lifecycle.LabelNeedsHuman, lifecycle.LabelBlockedOnSibling, lifecycle.LabelStatusInReview)
@@ -2551,12 +2563,21 @@ func checkBacklogQueryLifecycleLabelContracts(r *Report, file string, w apiv1.Wo
 	}
 }
 
+func builtInBacklogHealthConsumer(w apiv1.Workflow, task apiv1.Task) bool {
+	switch w.Name {
+	case "backlog-curation":
+		return task.Name == "implementation-feedback" || task.Name == "sample-ready-pool"
+	default:
+		return false
+	}
+}
+
 func builtInReadyConsumer(w apiv1.Workflow, task apiv1.Task) bool {
 	if task.Name != "query-backlog" {
 		return false
 	}
 	switch w.Name {
-	case "implementation", "implementation-pre-review-experiment", "backlog-assignment":
+	case "implementation", "implementation-pre-review-experiment", "backlog-assignment", "quickstart":
 		return true
 	default:
 		return false
@@ -2572,6 +2593,13 @@ func builtInRemediationConsumer(w apiv1.Workflow, task apiv1.Task) bool {
 	default:
 		return false
 	}
+}
+
+func checkRequiredLifecycleLabelInput(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {
+	if strings.TrimSpace(configured) == expected {
+		return
+	}
+	addLifecycleLabelContractIssue(r, file, w, task, input, configured, expected)
 }
 
 func checkLifecycleLabelInput(r *Report, file string, w apiv1.Workflow, task apiv1.Task, input, configured, expected string) {

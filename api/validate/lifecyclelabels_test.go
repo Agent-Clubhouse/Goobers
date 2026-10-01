@@ -14,6 +14,20 @@ func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
 		want     string
 	}{
 		{
+			name: "implementation trust label replacement",
+			workflow: lifecycleWorkflow("implementation", `    - name: query-backlog
+      type: deterministic
+      goal: Claim one ready item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approve"
+        requireLabels: "goobers:ready"
+        excludeLabels: "goobers/status:in-review"
+`),
+			want: `task "query-backlog" input "trustLabel" configured lifecycle label "goobers:approve"; expected "goobers:approved"`,
+		},
+		{
 			name: "implementation ready require label typo",
 			workflow: lifecycleWorkflow("implementation", `    - name: query-backlog
       type: deterministic
@@ -67,6 +81,21 @@ func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
         readyLabel: "goobers:ready2"
 `),
 			want: `task "sample-ready-pool" input "readyLabel" configured lifecycle label "goobers:ready2"; expected "goobers:ready"`,
+		},
+		{
+			name: "curation trust label replacement",
+			workflow: lifecycleWorkflow("backlog-curation", `    - name: query-backlog
+      type: deterministic
+      goal: Claim curation work.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        curation: "true"
+        trustLabel: "goobers:approve"
+        excludeLabels: "goobers:ready"
+        parkLabels: "goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
+`),
+			want: `task "query-backlog" input "trustLabel" configured lifecycle label "goobers:approve"; expected "goobers:approved"`,
 		},
 		{
 			name: "curation ready exclusion typo",
@@ -144,6 +173,21 @@ func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
 			want: `task "query-resweep" input "resweepReadyLabel" configured lifecycle label "goobers:ready2"; expected "goobers:ready"`,
 		},
 		{
+			name: "resweep trust label replacement",
+			workflow: lifecycleWorkflow("curate-resweep", `    - name: query-resweep
+      type: deterministic
+      goal: Re-sweep parked and ready items.
+      run:
+        command: ["goobers", "backlog-query", "--claim", "--resweep"]
+      inputs:
+        trustLabel: "goobers:approve"
+        excludeLabels: "goobers:ready"
+        parkLabels: "goobers:needs-human,goobers:blocked-on-sibling,goobers:needs-remediation"
+        resweepReadyLabel: "goobers:ready"
+`),
+			want: `task "query-resweep" input "trustLabel" configured lifecycle label "goobers:approve"; expected "goobers:approved"`,
+		},
+		{
 			name: "recovery remediation require label typo",
 			workflow: lifecycleWorkflow("implementation-recovery", `    - name: query-backlog
       type: deterministic
@@ -157,6 +201,21 @@ func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
         excludeLabels: "goobers:needs-human,goobers:blocked-on-sibling,goobers/status:in-review"
 `),
 			want: `task "query-backlog" input "requireLabels" configured lifecycle label "goobers:needs-remediation2"; expected "goobers:needs-remediation"`,
+		},
+		{
+			name: "recovery trust label replacement",
+			workflow: lifecycleWorkflow("implementation-recovery", `    - name: query-backlog
+      type: deterministic
+      goal: Claim one remediation item.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approve"
+        requireLabels: "goobers:needs-remediation"
+        filterParkLabels: "false"
+        excludeLabels: "goobers:needs-human,goobers:blocked-on-sibling,goobers/status:in-review"
+`),
+			want: `task "query-backlog" input "trustLabel" configured lifecycle label "goobers:approve"; expected "goobers:approved"`,
 		},
 		{
 			name: "recovery needs-human exclusion typo",
