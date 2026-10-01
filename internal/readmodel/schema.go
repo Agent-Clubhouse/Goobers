@@ -248,8 +248,8 @@ INSERT OR IGNORE INTO sweep_cursor (id) VALUES (1);
 --
 -- 10,906 of 40,665 directories on the live instance are unpublished (27%) and
 -- can never be ingested. Remembering them costs one stat per cycle instead of an
--- open. Mtime changes detect ordinary promotion immediately; seen_at bounds
--- how long a same-tick promotion can remain hidden.
+-- open. Writing run.yaml bumps the directory mtime, so promotion is detected
+-- rather than cached forever.
 CREATE TABLE IF NOT EXISTS unpublished (
 	run_id    TEXT PRIMARY KEY,
 	dir_mtime TEXT NOT NULL,
