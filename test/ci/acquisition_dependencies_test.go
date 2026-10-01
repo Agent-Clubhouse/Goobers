@@ -21,13 +21,14 @@ var dependencyAcquisitionDecisions = map[string]dependencyAcquisition{
 	"bash":           {reason: "interpreter; fixture command acquisitions are inventoried separately"},
 	"bwrap":          {reason: "preinstalled containment executable"},
 	"claude":         {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
+	"cmd.exe":        {reason: "preinstalled Windows command interpreter; the MSI-shaped Azure CLI fixture launches a locally built synthetic executable"},
 	"copilot":        {reason: "preinstalled CLI; live service tests are separately opt-in, not binary provisioning"},
 	"cp":             {reason: "local coreutils operation"},
 	"dirname":        {reason: "local coreutils operation"},
 	"dotnet":         {kind: "nuget-packages", reason: "opt-in dotnet-service fixture executes dotnet test with restore"},
 	"find":           {reason: "local findutils operation"},
 	"git":            {reason: "integration fixtures operate on locally seeded repositories"},
-	"go":             {kind: "go-modules", reason: "telemetry integration fixture builds the daemon and driver using the pinned module graph"},
+	"go":             {kind: "go-modules", reason: "integration fixtures build local executables using the pinned Go toolchain and module graph"},
 	"head":           {reason: "local coreutils operation"},
 	"grep":           {reason: "local text filtering operation"},
 	"java":           {reason: "preinstalled JVM; Maven resolves fixture dependencies"},
@@ -71,5 +72,20 @@ func TestNewAcquisitionDependencyNeedsExplicitDecision(t *testing.T) {
 	dependencies := append(testdep.Dependencies(), testdep.Dependency{Name: "new-package-manager"})
 	if _, err := dependencyAcquisitionSites(dependencies); err == nil {
 		t.Fatal("new executable passed without an acquisition decision")
+	}
+}
+
+func TestAzureCLIFixtureAcquisitionDecisions(t *testing.T) {
+	t.Parallel()
+	decision, ok := dependencyAcquisitionDecisions["cmd.exe"]
+	if !ok || decision.kind != "" || decision.reason == "" {
+		t.Fatal("the synthetic Azure CLI launcher needs an explicit preinstalled cmd.exe decision")
+	}
+	sites, err := dependencyAcquisitionSites(testdep.Dependencies())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(sites, "integration-dependency/go:go-modules") {
+		t.Fatal("building the synthetic launcher must retain the Go acquisition declaration")
 	}
 }

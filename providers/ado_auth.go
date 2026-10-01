@@ -440,9 +440,7 @@ func NewAzureCLIADOCredentialSource(runner CommandRunner, tenant string) ADOCred
 		}
 		out, err := runner.Run(ctx, "az", args...)
 		if err != nil {
-			// Azure CLI output can contain credential material on partial
-			// failures, so never copy it into the returned error.
-			return adoBearerToken{}, fmt.Errorf("azure CLI get-access-token: %w", err)
+			return adoBearerToken{}, azureCLICommandError(ctx, err, out)
 		}
 		return parseAzureCLIAccessToken(out)
 	})
