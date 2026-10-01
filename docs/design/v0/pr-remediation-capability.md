@@ -156,7 +156,10 @@ Both can move while it runs, so both are pinned and re-checked.
 
 - **Revision.** The expected head is the `gatherPrContext.headSha` that
   `gather-pr-context` selected, read back from its own journal artifact. Only a
-  new selection or this run's own `push-remediated` publication advances it.
+  new selection or this run's own lease-verified push advances it: a
+  `push-remediated` publication, or `rebase-pr`'s clean-rebase push on a
+  cycle that continues into the agentic chain (adopted only when it leased
+  against the head the run already expected).
   Every `pr-claim` guard and `push-remediated` compare the live head with it.
   A different head is a distinct `stale_selection` no-work that releases the
   claim, so the next cycle re-selects the PR at its new head. It is never an
@@ -174,6 +177,20 @@ Both can move while it runs, so both are pinned and re-checked.
   budget parks (`park-stale-feedback`). A post-publication head move ends the
   run as a `stale_head` no-work. A push that the provider has not yet surfaced
   is a retryable `published_head_not_visible`.
+- **No-change feedback.** New feedback often needs no code change (a
+  "thanks", a question the thread reply answers). After a re-gather,
+  `classify-feedback-repass` (`pr-claim --classify-feedback-repass`) compares
+  the workspace head with the head the stale check recorded: the head that
+  had already passed review and local CI (guard-before-push records it as
+  `localHead`) or this run's published head. When the agent left it
+  unchanged, `feedbackNoop=true` skips review and local CI and returns to
+  guard-before-push. The reviewer's identical-diff guard never sees the
+  unchanged head, so it cannot escalate it as `UNCHANGED_REPASS`, and no
+  remediation-checkpoint budget is charged. After publication,
+  `push-remediated` acknowledges a branch still at this run's own published
+  head ("feedback acknowledged, no change needed") instead of refusing it as
+  nothing to publish. `resolve-review-threads` then answers the fresh
+  feedback. A first pass that produced no commit is still refused.
 - **Canonicalization.** Identity is the provider's stable id, and items are
   ordered by id. Bodies are compared by the sha256 of their normalized text.
   Excluded: bodies carrying a Goobers hidden marker, bot-authored general

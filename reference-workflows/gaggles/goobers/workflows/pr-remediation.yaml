@@ -428,6 +428,32 @@ spec:
         maxAttempts: 1
       next: warm-module-cache-gate
 
+    # A stale-feedback repass (#6126) whose agent pass found the new feedback
+    # needs no code change ("thanks", a question the thread reply answers)
+    # leaves the branch exactly at the head that already passed review and
+    # local CI, or that this run already published. Re-reviewing that head
+    # would trip the reviewer's identical-diff guard (UNCHANGED_REPASS) and
+    # park a PR that is fine, so this classifies the repass from the run
+    # journal and the workspace: feedbackNoop=true means "feedback
+    # acknowledged, no change needed". Every other pass — first pass,
+    # reviewer or CI repass, or a feedback repass that changed the branch —
+    # reports false and takes the normal review path. Runs in the PR's
+    # worktree (not scratch): it compares the workspace head.
+    - name: classify-feedback-repass
+      type: deterministic
+      goal: Recognize a stale-feedback repass that needed no code change, so it skips re-review instead of escalating as an unchanged repass.
+      run:
+        command: ["goobers", "pr-claim", "--classify-feedback-repass"]
+      inputs:
+        resultFile: "feedback-repass.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - release-pr-claim
+      expectedOutputs:
+        - feedbackNoop
+      next: feedback-repass-gate
+
     # Implementation can outlive its subject. Re-check before spending a
     # reviewer session on work for a PR that has since become terminal.
     - name: guard-before-review
@@ -597,13 +623,15 @@ spec:
     # the feedback snapshot gather-review-threads pinned (#6126): feedback
     # that changed while the agent, reviewer and local CI ran reports a typed
     # staleInput, and push-feedback-gate routes it back to re-gather before
-    # anything is published.
+    # anything is published. It runs in the PR's worktree (not scratch) so a
+    # stale verdict also records the workspace head (localHead) that had
+    # passed review and local CI, which classify-feedback-repass compares the
+    # re-gathered agent pass against.
     - name: guard-before-push
       type: deterministic
       goal: Stop remediation and release the claim when the selected PR is no longer open or moved, and flag feedback that changed since it was gathered.
       run:
         command: ["goobers", "pr-claim", "--verify-feedback"]
-        workspace: scratch
       inputs:
         resultFile: "pr-remediation-lifecycle.json"
       capabilities:
@@ -971,9 +999,30 @@ spec:
       automated:
         check: status-equals
       branches:
-        pass: guard-before-review
+        pass: classify-feedback-repass
         fail: guard-before-implement
         escalate: park-invalid-finding-responses
+
+    # feedbackNoop="false" is the normal path (pass, never charged). "true"
+    # skips review and local CI — both already passed on this exact head —
+    # and returns to guard-before-push, which re-verifies the feedback
+    # against the fresh snapshot before anything is published (or, after
+    # publication, before push-remediated acknowledges the unchanged
+    # published head and resolve-review-threads answers the new feedback).
+    # That re-entry is charged to guard-before-push's repass budget, never to
+    # remediation-checkpoint's per-cause budget or the reviewer's
+    # identical-diff guard.
+    - name: feedback-repass-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: feedbackNoop
+          equals: "false"
+      branches:
+        pass: guard-before-review
+        fail: guard-before-push
+        escalate: park-stale-feedback
 
     # Stale-input routing (#6126). guard-before-push and resolve-review-threads
     # report staleInput="" when the live feedback still matches the snapshot

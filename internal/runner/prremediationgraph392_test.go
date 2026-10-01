@@ -28,9 +28,12 @@ import (
 // that committed nothing would make this test pass through a path the live
 // workflow never takes.
 type remediationGoober struct {
-	t                 *testing.T
-	mu                sync.Mutex
-	verdicts          []apiv1.VerdictDecision
+	t        *testing.T
+	mu       sync.Mutex
+	verdicts []apiv1.VerdictDecision
+	// commitOnlyFirst makes every implement pass after the first commit
+	// nothing: the agent read new feedback that needed no code change.
+	commitOnlyFirst   bool
 	invoked           int
 	reviewed          int
 	sawSiblingContext bool
@@ -69,6 +72,13 @@ func (g *remediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelo
 		}
 	}
 	g.mu.Unlock()
+	if g.commitOnlyFirst && n > 0 {
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultSuccess,
+			Summary: "feedback needs no change",
+			Outputs: map[string]interface{}{"findingResponses": "[]"},
+		}, nil
+	}
 	// A distinct change per pass, so a repass produces a genuinely different
 	// diff (#316's same-diff short-circuit would otherwise escalate).
 	name := filepath.Join(env.Workspace, "remediation.txt")
@@ -185,6 +195,11 @@ type remediationWalkOptions struct {
 	// beforePushStaleInputs is guard-before-push's staleInput per visit
 	// (#6126); once exhausted, the guard reports no staleInput at all.
 	beforePushStaleInputs []string
+	// resolveStaleInputs is resolve-review-threads' staleInput per visit.
+	resolveStaleInputs []string
+	// classifyNoops is classify-feedback-repass's feedbackNoop per visit;
+	// once exhausted it reports "false" (the normal review path).
+	classifyNoops []string
 }
 
 // walkShippedPRRemediation drives one run of the real graph and returns the
@@ -276,8 +291,11 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 		runID + ":guard-before-implement":     {status: apiv1.ResultSuccess},
 		runID + ":warm-module-cache":          {status: apiv1.ResultSuccess},
 		runID + ":guard-before-review":        {status: apiv1.ResultSuccess},
-		runID + ":guard-before-local-ci":      {status: apiv1.ResultSuccess},
-		runID + ":guard-before-push":          {status: opts.beforePushStatus},
+		runID + ":classify-feedback-repass": {status: apiv1.ResultSuccess, outputs: map[string]interface{}{
+			"feedbackNoop": "false",
+		}},
+		runID + ":guard-before-local-ci": {status: apiv1.ResultSuccess},
+		runID + ":guard-before-push":     {status: opts.beforePushStatus},
 		runID + ":gather-review-threads": {
 			status:            apiv1.ResultSuccess,
 			artifactName:      "remediation-brief.json",
@@ -313,6 +331,14 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 	for _, stale := range opts.beforePushStaleInputs {
 		beforePushOutputs = append(beforePushOutputs, map[string]interface{}{"staleInput": stale})
 	}
+	var resolveOutputs []map[string]interface{}
+	for _, stale := range opts.resolveStaleInputs {
+		resolveOutputs = append(resolveOutputs, map[string]interface{}{"staleInput": stale, "unresolvedThreadCount": "0"})
+	}
+	var classifyOutputs []map[string]interface{}
+	for _, noop := range opts.classifyNoops {
+		classifyOutputs = append(classifyOutputs, map[string]interface{}{"feedbackNoop": noop})
+	}
 
 	r, err := New(Config{
 		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
@@ -322,7 +348,9 @@ func walkShippedPRRemediation(t *testing.T, runID string, goober *remediationGoo
 					"guard-before-implement": opts.guardBeforeImplementStatuses,
 				},
 				outputsByVisit: map[string][]map[string]interface{}{
-					"guard-before-push": beforePushOutputs,
+					"guard-before-push":        beforePushOutputs,
+					"resolve-review-threads":   resolveOutputs,
+					"classify-feedback-repass": classifyOutputs,
 				},
 				visitCounts: make(map[string]int),
 				mu:          &mu,
@@ -392,6 +420,7 @@ func TestShippedPRRemediationWalksTheFullAgenticChain(t *testing.T) {
 		"warm-module-cache",
 		"implement",
 		"validate-finding-responses",
+		"classify-feedback-repass",
 		"guard-before-review",
 		"guard-before-local-ci",
 		"local-ci",
@@ -584,6 +613,52 @@ func TestShippedPRRemediationParksWhenFeedbackKeepsChanging(t *testing.T) {
 	}
 	if !parked || visited[len(visited)-1] != "release-escalated-claim" {
 		t.Fatalf("visited = %v, want park-stale-feedback then release-escalated-claim", visited)
+	}
+}
+
+// TestShippedPRRemediationAcknowledgesNoChangeFeedbackRepass is the casual
+// "thanks" comment mid-run (#6126): the stale feedback is rejected and
+// re-gathered, the agent finds it needs no code change and commits nothing,
+// and the run must complete cleanly — never park or escalate. Before
+// classify-feedback-repass, the unchanged head went back through the reviewer
+// and tripped its identical-diff guard (UNCHANGED_REPASS -> park-escalated).
+// Covered before publication (guard-before-push found it) and after
+// (resolve-review-threads found it).
+func TestShippedPRRemediationAcknowledgesNoChangeFeedbackRepass(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts remediationWalkOptions
+		push int
+	}{
+		{name: "before publication", opts: remediationWalkOptions{
+			beforePushStaleInputs: []string{"new_feedback", ""},
+			classifyNoops:         []string{"false", "true"},
+		}, push: 1},
+		{name: "after publication", opts: remediationWalkOptions{
+			resolveStaleInputs: []string{"new_feedback", ""},
+			classifyNoops:      []string{"false", "true"},
+		}, push: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			goober := &remediationGoober{t: t, commitOnlyFirst: true}
+			res, visited, _ := walkShippedPRRemediation(t, "prr-thanks", goober, tc.opts)
+			if res.Phase != journal.PhaseCompleted {
+				t.Fatalf("phase = %q, want %q: a no-change feedback repass must not escalate (visited: %v)", res.Phase, journal.PhaseCompleted, visited)
+			}
+			counts := map[string]int{}
+			for _, stage := range visited {
+				counts[stage]++
+			}
+			if counts["gather-review-threads"] != 2 || counts["implement"] != 2 || counts["push-remediated"] != tc.push {
+				t.Fatalf("visits = %v, want one re-gather, one no-change repass and %d push(es) (visited: %v)", counts, tc.push, visited)
+			}
+			if counts["park-escalated"] != 0 || counts["park-stale-feedback"] != 0 || visited[len(visited)-1] != "release-claim" {
+				t.Fatalf("visited = %v, want a normal release with no park", visited)
+			}
+			if goober.reviewed != 1 {
+				t.Fatalf("reviewer ran %d times, want once: the unchanged head was already reviewed", goober.reviewed)
+			}
+		})
 	}
 }
 

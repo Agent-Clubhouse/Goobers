@@ -27,7 +27,7 @@ type prClaimProvider interface {
 
 const prRemediationLifecycleResultFile = "pr-remediation-lifecycle.json"
 
-const prRemediationLifecycleHelp = "Usage: goobers pr-claim [--release] [--verify-feedback] [path]\n\n" +
+const prRemediationLifecycleHelp = "Usage: goobers pr-claim [--release] [--verify-feedback] [--classify-feedback-repass] [path]\n\n" +
 	"At a pr-remediation stage boundary, verify that this run's claimed pull\n" +
 	"request is still open and still at the exact source revision this run\n" +
 	"selected (or itself published). If it has merged or closed, release the\n" +
@@ -39,7 +39,13 @@ const prRemediationLifecycleHelp = "Usage: goobers pr-claim [--release] [--verif
 	"and compare them with the feedback snapshot this run's brief pinned; a\n" +
 	"difference keeps the claim and reports a typed staleInput reason\n" +
 	"(new_feedback, changed_feedback, missing_feedback, changed_thread_state,\n" +
-	"incomplete_collection, stale_head) for the workflow to route on.\n" +
+	"incomplete_collection, stale_head) for the workflow to route on; beside a\n" +
+	"stale verdict it records the workspace head as localHead.\n" +
+	"With --classify-feedback-repass, report feedbackNoop=true when this run\n" +
+	"re-gathered stale feedback and the agent's repass left the branch at the\n" +
+	"head the stale check recorded (already reviewed, CI-validated or\n" +
+	"published): the feedback is acknowledged with no change needed. No\n" +
+	"provider call is made.\n" +
 	"With --release, explicitly release the run's PR claim without querying the\n" +
 	"provider. Releasing an already-released claim is an idempotent success.\n\n" +
 	"Exit codes: 0 = PR current, terminal/stale no-work, or released;\n" +
@@ -84,6 +90,10 @@ type prRemediationLifecycleResult struct {
 	FeedbackSnapshotDigest string                `json:"feedbackSnapshotDigest,omitempty"`
 	// FeedbackCheck is current, stale or unrecorded when --verify-feedback ran.
 	FeedbackCheck string `json:"feedbackCheck,omitempty"`
+	// LocalHead is the workspace head beside a stale --verify-feedback
+	// verdict: the head that had already passed review and local CI, which
+	// classify-feedback-repass compares the repass against.
+	LocalHead string `json:"localHead,omitempty"`
 }
 
 const (
@@ -98,6 +108,7 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = helpUsage(stderr, "pr-claim")
 	release := fs.Bool("release", false, "release this run's PR claim without checking provider state")
 	verifyFeedback := fs.Bool("verify-feedback", false, "also compare the live PR feedback with this run's recorded feedback snapshot")
+	classifyRepass := fs.Bool("classify-feedback-repass", false, "report whether this stale-feedback repass left the branch at the head that already passed review, local CI or publication")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -126,6 +137,9 @@ func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
 			NoWork:   true,
 			Outcome:  prClaimOutcomeNoClaim,
 		}, stdout, stderr)
+	}
+	if *classifyRepass {
+		return classifyFeedbackRepass(root, number, stdout, stderr)
 	}
 	return verifyClaimedPullRequest(root, number, *verifyFeedback, stdout, stderr)
 }
@@ -166,7 +180,7 @@ func verifyClaimedPullRequest(root string, number int, verifyFeedback bool, stdo
 	result.Open = true
 	result.Outcome = prClaimOutcomeOpen
 	if verifyFeedback {
-		if err := verifyClaimedFeedback(root, runID, repo, check.Live, &result); err != nil {
+		if err := verifyClaimedFeedback(root, runID, repo, check.Live, &result, stderr); err != nil {
 			return failProviderStage(stderr, "verify pull request feedback", err, prRemediationLifecycleResultFile)
 		}
 	}
@@ -179,7 +193,7 @@ func verifyClaimedPullRequest(root string, number int, verifyFeedback bool, stdo
 // staleInput, which the workflow's gate routes back to gather-review-threads
 // for a bounded repass. A brief without a snapshot (gathered before v4) has
 // nothing to compare against and passes.
-func verifyClaimedFeedback(root, runID string, repo providers.RepositoryRef, liveHead string, result *prRemediationLifecycleResult) error {
+func verifyClaimedFeedback(root, runID string, repo providers.RepositoryRef, liveHead string, result *prRemediationLifecycleResult, stderr io.Writer) error {
 	brief, err := readLatestRemediationBrief(root, runID)
 	if err != nil {
 		return err
@@ -208,6 +222,7 @@ func verifyClaimedFeedback(root, runID string, repo providers.RepositoryRef, liv
 	result.FeedbackCheck = prFeedbackCheckCurrent
 	if check.stale() {
 		result.FeedbackCheck = prFeedbackCheckStale
+		recordStaleLocalHead(result, stderr)
 	}
 	return nil
 }

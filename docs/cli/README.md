@@ -2857,7 +2857,7 @@ $ goobers post-merge
 check PR liveness or release its remediation claim (a workflow stage)
 
 ~~~text
-Usage: goobers pr-claim [--release] [--verify-feedback] [path]
+Usage: goobers pr-claim [--release] [--verify-feedback] [--classify-feedback-repass] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
 request is still open and still at the exact source revision this run
@@ -2870,7 +2870,13 @@ With --verify-feedback, also re-read the PR's review threads and comments
 and compare them with the feedback snapshot this run's brief pinned; a
 difference keeps the claim and reports a typed staleInput reason
 (new_feedback, changed_feedback, missing_feedback, changed_thread_state,
-incomplete_collection, stale_head) for the workflow to route on.
+incomplete_collection, stale_head) for the workflow to route on; beside a
+stale verdict it records the workspace head as localHead.
+With --classify-feedback-repass, report feedbackNoop=true when this run
+re-gathered stale feedback and the agent's repass left the branch at the
+head the stale check recorded (already reviewed, CI-validated or
+published): the feedback is acknowledged with no change needed. No
+provider call is made.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
