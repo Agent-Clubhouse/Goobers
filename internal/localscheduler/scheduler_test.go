@@ -289,6 +289,51 @@ func TestTickRetainsBacklogQueueSnapshotBetweenPolls(t *testing.T) {
 	scheduler.Wait()
 }
 
+func TestReloadDropsQueueSnapshotsForRemovedCounters(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:       "backlog",
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        starter,
+		},
+		{
+			Workflow:            "refill",
+			Readiness:           apiv1.ReadinessConditions{DesiredConcurrentRuns: 3, MaxConcurrentRuns: 3},
+			RefillDemandCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 4, OldestReadyAt: base.Add(-time.Minute)}},
+			Starter:             starter,
+		},
+	}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	initial := recorder.lastSamples()
+	if depth := queueSampleWithKind(t, initial, queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("initial backlog depth = %d, want 2", depth)
+	}
+	if depth := queueSampleWithKind(t, initial, queueKindRefill).Depth; depth != 3 {
+		t.Fatalf("initial refill depth = %d, want 3", depth)
+	}
+	scheduler.Wait()
+
+	if err := scheduler.Reload([]WorkflowEntry{
+		{Workflow: "backlog", Starter: starter},
+		{Workflow: "refill", Starter: starter},
+	}, nil, base.Add(time.Second), "old", "new"); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	scheduler.Tick(context.Background(), base.Add(2*time.Second))
+	reloaded := recorder.lastSamples()
+	if depth := queueSampleWithKind(t, reloaded, queueKindBacklog).Depth; depth != 0 {
+		t.Fatalf("reloaded backlog depth = %d, want 0 after backlog counter removal", depth)
+	}
+	if depth := queueSampleWithKind(t, reloaded, queueKindRefill).Depth; depth != 0 {
+		t.Fatalf("reloaded refill depth = %d, want 0 after refill counter removal", depth)
+	}
+}
+
 func TestTickOmitsBacklogOldestAgeWhenAnyContributorLacksSource(t *testing.T) {
 	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	recorder := &queueTelemetryRecorder{}

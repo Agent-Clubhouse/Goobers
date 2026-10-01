@@ -1290,14 +1290,20 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 		if candidate.backlogObserved {
 			s.storeQueueSnapshot(queueKindBacklog, entryIdentity(candidate.entry), candidate.backlogRemaining, candidate.backlogEnqueuedAt)
 			add(queueKindBacklog, candidate.backlogRemaining, candidate.backlogEnqueuedAt)
-		} else if snapshot, ok := s.queueSnapshot(queueKindBacklog, entryIdentity(candidate.entry)); ok {
-			add(queueKindBacklog, snapshot.depth, snapshot.enqueuedAt)
+		} else if candidate.entry.BacklogCounter != nil {
+			snapshot, ok := s.queueSnapshot(queueKindBacklog, entryIdentity(candidate.entry))
+			if ok {
+				add(queueKindBacklog, snapshot.depth, snapshot.enqueuedAt)
+			}
 		}
 		if candidate.refillObserved {
 			s.storeQueueSnapshot(queueKindRefill, entryIdentity(candidate.entry), candidate.refillRemaining, candidate.refillEnqueuedAt)
 			add(queueKindRefill, candidate.refillRemaining, candidate.refillEnqueuedAt)
-		} else if snapshot, ok := s.queueSnapshot(queueKindRefill, entryIdentity(candidate.entry)); ok {
-			add(queueKindRefill, snapshot.depth, snapshot.enqueuedAt)
+		} else if candidate.entry.RefillDemandCounter != nil {
+			snapshot, ok := s.queueSnapshot(queueKindRefill, entryIdentity(candidate.entry))
+			if ok {
+				add(queueKindRefill, snapshot.depth, snapshot.enqueuedAt)
+			}
 		}
 	}
 	samples := []telemetry.QueueSaturationSample{
@@ -1415,6 +1421,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	refillLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	backlogQueueSnapshots := make(map[WorkflowIdentity]queueMetricSnapshot, len(entries))
+	refillQueueSnapshots := make(map[WorkflowIdentity]queueMetricSnapshot, len(entries))
 	idleBackoffs := make(map[WorkflowIdentity][]idleBackoffState, len(entries))
 	webhookBackoffs := make(map[WorkflowIdentity]idleBackoffState, len(entries))
 	pendingScheduleDemand := make(map[WorkflowIdentity]scheduledDemand, len(entries))
@@ -1436,8 +1445,21 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		state.Workflow = entry.Workflow
 		state.Schedules = entry.Schedules
 		triggers[identity] = state
-		if checked, ok := s.backlogLastCheck[identity]; ok {
-			backlogLastCheck[identity] = checked
+		if entry.BacklogCounter != nil {
+			if checked, ok := s.backlogLastCheck[identity]; ok {
+				backlogLastCheck[identity] = checked
+			}
+			if snapshot, ok := s.backlogQueueSnapshots[identity]; ok {
+				backlogQueueSnapshots[identity] = snapshot
+			}
+		}
+		if entry.RefillDemandCounter != nil {
+			if checked, ok := s.refillLastCheck[identity]; ok {
+				refillLastCheck[identity] = checked
+			}
+			if snapshot, ok := s.refillQueueSnapshots[identity]; ok {
+				refillQueueSnapshots[identity] = snapshot
+			}
 		}
 		idleBackoffs[identity] = make([]idleBackoffState, len(entry.Schedules))
 		if pending, ok := s.pendingScheduleDemand[identity]; ok {
@@ -1485,6 +1507,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.workflows = workflows
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
+	s.refillLastCheck = refillLastCheck
+	s.backlogQueueSnapshots = backlogQueueSnapshots
+	s.refillQueueSnapshots = refillQueueSnapshots
 	s.idleBackoffs = idleBackoffs
 	s.webhookBackoffs = webhookBackoffs
 	s.pendingScheduleDemand = pendingScheduleDemand
