@@ -1030,6 +1030,7 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 		Title:              stringField(item.Fields, "System.Title"),
 		Body:               ComposeWorkItemBody(stringField(item.Fields, "System.Description"), acceptanceCriteria),
 		AcceptanceCriteria: acceptanceCriteria,
+		Description:        stringField(item.Fields, "System.Description"),
 		Labels:             labels,
 		State:              state,
 		Status:             statusFromLabels(labels, string(status)),
