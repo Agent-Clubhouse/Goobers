@@ -81,6 +81,10 @@ var ErrEndpointWithoutGaggle = errors.New("telemetryclient: a telemetry plane en
 // read budget plus margin: an evidence read that hangs delays a whole stage.
 const DefaultTimeout = 30 * time.Second
 
+// DefectAggregateTimeout bounds the heavier seven-day rollup query used by
+// defect nomination. The ordinary telemetry reads keep DefaultTimeout.
+const DefectAggregateTimeout = 5 * time.Minute
+
 // maxResponseBytes bounds a plane response so a misbehaving or compromised
 // endpoint cannot exhaust a stage pod's memory. Generous relative to a
 // gaggle's terminal implementation runs inside one ready-window.

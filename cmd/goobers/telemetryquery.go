@@ -872,7 +872,7 @@ func runTelemetryQueryOverPlane(
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefectAggregateTimeout)
 	defer cancel()
 	response, err := client.DefectAggregates(ctx, telemetryclient.DefectAggregateRequest{
 		Gaggle:     request.gaggle,

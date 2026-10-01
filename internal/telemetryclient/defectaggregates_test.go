@@ -397,6 +397,28 @@ func TestDefectAggregatesSendsItsOwnBearerAndScope(t *testing.T) {
 	}
 }
 
+func TestDefectAggregatesUsesItsLongerBoundAndHonorsCallerDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(40 * time.Millisecond)
+		writeTestJSON(w, DefectAggregateResponse{Gaggle: "core", Findings: []Finding{}})
+	}))
+	defer server.Close()
+	client, err := NewHTTP(Config{BaseURL: server.URL, Token: "telemetry-bearer", Gaggle: "core",
+		Client: &http.Client{Timeout: time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := DefectAggregateRequest{Since: time.Now().UTC().Add(-time.Hour)}
+	if _, err := client.DefectAggregates(context.Background(), query); err != nil {
+		t.Fatalf("aggregate query used the ordinary short HTTP timeout: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if _, err := client.DefectAggregates(ctx, query); err == nil {
+		t.Fatal("aggregate query ignored the caller's shorter deadline")
+	}
+}
+
 // TestParseAggregateAdmitsOnlyTheRuledFour pins the admitted set itself.
 func TestParseAggregateAdmitsOnlyTheRuledFour(t *testing.T) {
 	for _, name := range []string{"stage-failure-rate", "error-signature", "gate-noise", "credit-assignment"} {
