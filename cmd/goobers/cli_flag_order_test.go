@@ -7,6 +7,60 @@ import (
 	"testing"
 )
 
+func TestParseOptionalRoot(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantRoot   string
+		wantOK     bool
+		wantOutput string
+	}{
+		{
+			name:       "parse error",
+			args:       []string{"--unknown"},
+			wantOutput: "flag provided but not defined: -unknown\ncommand-specific usage\n",
+		},
+		{
+			name:     "zero args",
+			wantRoot: ".",
+			wantOK:   true,
+		},
+		{
+			name:     "one arg",
+			args:     []string{"instance"},
+			wantRoot: "instance",
+			wantOK:   true,
+		},
+		{
+			name:       "two args",
+			args:       []string{"first", "second"},
+			wantOutput: "command-specific usage\n",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var output strings.Builder
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			fs.SetOutput(&output)
+			fs.Usage = func() {
+				_, _ = io.WriteString(&output, "command-specific usage\n")
+			}
+
+			root, ok := parseOptionalRoot(fs, testCase.args)
+
+			if root != testCase.wantRoot {
+				t.Errorf("root = %q, want %q", root, testCase.wantRoot)
+			}
+			if ok != testCase.wantOK {
+				t.Errorf("ok = %t, want %t", ok, testCase.wantOK)
+			}
+			if got := output.String(); got != testCase.wantOutput {
+				t.Errorf("output = %q, want %q", got, testCase.wantOutput)
+			}
+		})
+	}
+}
+
 func TestCommandsExplainFlagsAfterPath(t *testing.T) {
 	tests := []struct {
 		name string

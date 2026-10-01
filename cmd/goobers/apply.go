@@ -40,16 +40,9 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "apply")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	l := instance.NewLayout(root)
