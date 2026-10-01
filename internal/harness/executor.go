@@ -194,10 +194,18 @@ type Executor struct {
 	timeout         time.Duration
 	transcriptLimit int64
 	sandboxEnforced bool
+	observer        Observer
 	newSandbox      func() (sandbox.Sandbox, error)
 
 	guardedCredentialFiles bool
 }
+
+// Observer is told about every completed Invoke. It is advisory: it must not
+// block, and it cannot change the result it is given (it receives a copy).
+type Observer func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope)
+
+// WithObserver registers an advisory Observer. Nil leaves behavior unchanged.
+func WithObserver(o Observer) Option { return func(e *Executor) { e.observer = o } }
 
 // Option configures an Executor at construction.
 type Option func(*Executor)
@@ -413,6 +421,9 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return result, err
 	}
 	result.Artifacts = append(result.Artifacts, out.DiagnosticArtifacts...)
+	if e.observer != nil {
+		e.observer(env, result)
+	}
 	return result, nil
 }
 

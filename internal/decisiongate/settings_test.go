@@ -78,9 +78,12 @@ func TestShadowAndTally(t *testing.T) {
 	}
 }
 
-// Guards against committing something key-shaped in tests or docs of this package.
+// Guards against committing something key-shaped in this package. Long plain
+// identifiers are allowed; a long token only counts if it mixes in a digit.
 func TestNoKeyShapedStringsCommitted(t *testing.T) {
-	pat := regexp.MustCompile(`(?i)(sk-[a-z0-9]{20,}|bearer\s+[a-z0-9._-]{20,}|[a-z0-9]{40,})`)
+	prefixed := regexp.MustCompile(`(?i)(sk-[a-z0-9]{20,}|bearer\s+[a-z0-9._-]{20,})`)
+	longToken := regexp.MustCompile(`(?i)[a-z0-9]{40,}`)
+	digit := regexp.MustCompile(`[0-9]`)
 	files, _ := filepath.Glob("*.go")
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
@@ -88,8 +91,11 @@ func TestNoKeyShapedStringsCommitted(t *testing.T) {
 			if strings.Contains(line, "regexp.MustCompile") {
 				continue
 			}
-			if m := pat.FindString(line); m != "" {
-				t.Errorf("%s: key-shaped string %q", f, m[:8]+"...")
+			if m := prefixed.FindString(line); m != "" {
+				t.Errorf("%s: key-shaped string %q", f, m[:6]+"...")
+			}
+			if m := longToken.FindString(line); m != "" && digit.MatchString(m) {
+				t.Errorf("%s: key-shaped token %q", f, m[:6]+"...")
 			}
 		}
 	}

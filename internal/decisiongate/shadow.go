@@ -19,7 +19,10 @@ type ShadowRecord struct {
 	// claim that needs no human label.
 	AgentClaimedBad bool
 	InputValid      bool
-	Err             error
+	// InputKnown is false when no deterministic input check was available;
+	// such records only measure model-vs-lexical agreement.
+	InputKnown bool
+	Err        error
 }
 
 // Sampled reports whether key falls inside the sample fraction, stably, so the
@@ -39,8 +42,23 @@ func (g *Gate) Shadow(ctx context.Context, inputValid, agentClaimedBad bool, rep
 	v, o, err := g.EvaluateClaim(ctx, inputValid, reply)
 	return ShadowRecord{
 		Verdict: v, Probability: o.Probability, Confidence: o.Confidence,
-		Cached: o.Cached, AgentClaimedBad: agentClaimedBad, InputValid: inputValid, Err: err,
+		Cached: o.Cached, AgentClaimedBad: agentClaimedBad, InputValid: inputValid, InputKnown: true, Err: err,
 	}
+}
+
+// ShadowReply scores a reply whose input validity is not known here. The model
+// is always consulted; ground truth is joined offline.
+func (g *Gate) ShadowReply(ctx context.Context, agentClaimedBad bool, reply string) ShadowRecord {
+	o, err := g.JudgeNoul(ctx, ClaimQuestion, reply, claimQuestion)
+	v := ClaimUnsure
+	switch {
+	case err != nil:
+	case o.Decision == Yes:
+		v = ClaimSpurious
+	case o.Decision == No:
+		v = ClaimNone
+	}
+	return ShadowRecord{StateDigest: o.Name, Verdict: v, Probability: o.Probability, Confidence: o.Confidence, Cached: o.Cached, AgentClaimedBad: agentClaimedBad, Err: err}
 }
 
 // Tally summarizes shadow records. Spurious ground truth is InputValid &&
@@ -57,6 +75,9 @@ func (t *Tally) Add(r ShadowRecord) {
 	}
 	if r.Verdict == ClaimUnsure {
 		t.Unsure++
+	}
+	if !r.InputKnown {
+		return
 	}
 	truth := r.InputValid && r.AgentClaimedBad
 	flagged := r.Verdict == ClaimSpurious
