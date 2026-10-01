@@ -43,6 +43,24 @@ func (m *Manager) WithRecoveryMirror(ctx context.Context, repoURL string, visit 
 	return visit(dir)
 }
 
+// FetchRecoveryBase refreshes origin's heads and tags into a recovery mirror so
+// a delta archive's base commit becomes importable (#6306). It must be called
+// from inside WithRecoveryMirror's visitor, which holds the repository lock.
+// The fetch is best-effort recovery assistance: callers fail closed when the
+// base is still missing afterwards.
+func (m *Manager) FetchRecoveryBase(ctx context.Context, repoURL, dir, sha string) error {
+	if repoURL == "" || dir == "" || sha == "" {
+		return fmt.Errorf("recovery base fetch requires repository, mirror and commit")
+	}
+	if err := m.fetchMirror(ctx, repoURL, dir, true); err != nil {
+		return fmt.Errorf("fetch recovery base: %w", err)
+	}
+	if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", sha+"^{commit}"); err != nil {
+		return fmt.Errorf("recovery base commit %s not reachable from origin heads or tags: %w", sha, err)
+	}
+	return nil
+}
+
 func ensureRecoveryMirrorDirectory(path string) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err

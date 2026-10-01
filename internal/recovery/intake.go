@@ -48,6 +48,13 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 	// Reserve capacity under the inventory lock before importing objects or
 	// creating a host ref. Failed imports leave a bounded retry reservation.
 	retained, path, err := publishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, record, request.MaxSnapshots, request.MaxArchiveBytes, func() error {
+		if request.EnsureBase != nil && record.archiveFormat() == archiveFormatDelta {
+			if recoveryGit(ctx, request.Repository, io.Discard, "cat-file", "-e", record.BaseSHA+"^{commit}") != nil {
+				if err := request.EnsureBase(ctx, request.Repository, record.BaseSHA); err != nil {
+					return fmt.Errorf("ensure recovery base commit %s: %w", record.BaseSHA, err)
+				}
+			}
+		}
 		return ImportSnapshotBundle(ctx, request.Repository, filepath.Join(directory, BundleFileName), record, request.MaxArchiveBytes)
 	}, request.EvictFull)
 	if err != nil {

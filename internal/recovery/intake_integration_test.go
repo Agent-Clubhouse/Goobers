@@ -121,3 +121,64 @@ func TestIntegrationArchiveIntakeRequiresVerifiedDurableAcknowledgement(t *testi
 		t.Fatal(err)
 	}
 }
+
+// Regression for #6306: a pure-pod gaggle's host mirror is never fetched by a
+// host stage, so a pod's delta archive arrives without its base. Intake must
+// fail closed without EnsureBase and import once EnsureBase supplies the base.
+func TestIntegrationArchiveIntakeEnsuresMissingDeltaBase(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	source, archive, host, inventory := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	recoveryTestGit(t, source, "init", "--initial-branch=main")
+	recoveryTestGit(t, source, "commit", "--allow-empty", "-m", "base")
+	writeRestoreFixture(t, source, "implementation", "worker implementation")
+	template := storageTestRecord()
+	prepared, err := PrepareRecord(ctx, source, template.RepositoryKey, template.RunID, "main", template.CreatedAt, template.RetainUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := PublishRetainedState(ctx, source, archive, []string{source}, prepared, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.archiveFormat() != archiveFormatDelta {
+		t.Fatalf("fixture must produce a delta archive, got %q", record.archiveFormat())
+	}
+	var wire bytes.Buffer
+	if err := WriteArchiveEnvelope(ctx, filepath.Join(archive, BundleFileName), record, 1<<20, &wire); err != nil {
+		t.Fatal(err)
+	}
+	recoveryTestGit(t, host, "init", "--bare")
+	request := RetentionRequest{Repository: host, RepositoryKey: record.RepositoryKey, RunID: record.RunID, IdentityTime: record.CreatedAt, RetainUntil: record.RetainUntil, InventoryRoot: inventory, CleanupRoots: []string{host}, MaxSnapshots: 1, MaxArchiveBytes: 1 << 20}
+	ack := retentionJournalFunc(func(journal.Event) error { return nil })
+	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, ack); !errors.Is(err, errRestoreBaseMissing) {
+		t.Fatalf("intake without EnsureBase into an empty mirror: %v, want base missing", err)
+	}
+	failing := request
+	failing.EnsureBase = func(context.Context, string, string) error { return errors.New("forge unavailable") }
+	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), failing, ack); err == nil {
+		t.Fatal("intake succeeded although EnsureBase failed")
+	}
+	calls := 0
+	request.EnsureBase = func(_ context.Context, repository, sha string) error {
+		calls++
+		if repository != host || sha != record.BaseSHA {
+			t.Fatalf("EnsureBase(%q, %q), want (%q, %q)", repository, sha, host, record.BaseSHA)
+		}
+		recoveryTestGit(t, host, "fetch", source, "main")
+		return nil
+	}
+	got, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("EnsureBase calls = %d, want 1", calls)
+	}
+	if data := recoveryTestGit(t, host, "show", got.Ref+":implementation"); data != "worker implementation" {
+		t.Fatalf("host pin: %q", data)
+	}
+	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, ack); err != nil || calls != 1 {
+		t.Fatalf("retry with base present: err=%v calls=%d, want no further EnsureBase", err, calls)
+	}
+}
