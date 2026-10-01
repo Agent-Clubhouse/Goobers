@@ -395,7 +395,14 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	if len(kit.HarnessCommand) > 0 {
 		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
 	}
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, podHarnessEnvironment(kit, spec.Harness), commands, "", "", false, nil, false)
+	// The pod launches goobers-io through this binary. Passing an empty self
+	// binary silently omits its MCP registration and leaves artifact-producing
+	// agents unable to publish their declared output.
+	selfBin, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve goobers binary path in pod: %w", err)
+	}
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, podHarnessEnvironment(kit, spec.Harness), commands, "", selfBin, false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
