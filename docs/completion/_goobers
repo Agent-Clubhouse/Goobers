@@ -295,6 +295,9 @@ _goobers_completion()
         ios-simulator-test)
             flags+=(--project --workspace --scheme --device --runtime --only-testing --result-bundle)
             ;;
+        advisory-pr-reset)
+            flags+=(--gaggle --owner --repo --review-type --pr)
+            ;;
         gather-sibling-context)
             flags+=(--no-cache --no-verdict-cache)
             ;;
