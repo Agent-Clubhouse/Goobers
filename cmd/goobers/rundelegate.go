@@ -607,6 +607,66 @@ func removeExpiredTriggerArtifact(path string, info os.FileInfo, now time.Time) 
 	}
 }
 
+func discoverPendingTriggerCandidates(reqDir string, entries []os.DirEntry, now func() time.Time, options triggerSweepOptions) ([]pendingTriggerCandidate, error) {
+	var candidates []pendingTriggerCandidate
+	var discoverErr error
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(e.Name(), responseSuffix), strings.HasSuffix(e.Name(), ackSuffix), strings.HasSuffix(e.Name(), abandonedSuffix):
+			info, err := e.Info()
+			if err == nil {
+				removeExpiredTriggerArtifact(filepath.Join(reqDir, e.Name()), info, now())
+			}
+		case strings.HasSuffix(e.Name(), activeSuffix):
+			if !options.recoverActiveRequests {
+				continue
+			}
+			requestID := strings.TrimSuffix(e.Name(), activeSuffix)
+			recovered, err := recoverActiveTriggerRequest(reqDir, requestID)
+			if err != nil {
+				discoverErr = errors.Join(discoverErr, err)
+				continue
+			}
+			if recovered {
+				candidates = append(candidates, pendingTriggerCandidate{
+					id:   requestID,
+					path: filepath.Join(reqDir, requestID+requestSuffix),
+				})
+			}
+		case strings.HasSuffix(e.Name(), requestSuffix):
+			requestID := strings.TrimSuffix(e.Name(), requestSuffix)
+			candidates = append(candidates, pendingTriggerCandidate{
+				id:   requestID,
+				path: filepath.Join(reqDir, e.Name()),
+			})
+		}
+	}
+	return candidates, discoverErr
+}
+
+func readPendingTriggerRequests(requestEntries []pendingTriggerCandidate) ([]*pendingTriggerRequest, error) {
+	parsed := make([]*pendingTriggerRequest, 0, len(requestEntries))
+	var readErr error
+	for _, e := range requestEntries {
+		requestID := e.id
+		reqPath := e.path
+		data, err := os.ReadFile(reqPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				readErr = errors.Join(readErr, fmt.Errorf("delegate: read trigger request %s: %w", requestID, err))
+			}
+			continue
+		}
+		p := &pendingTriggerRequest{id: requestID, path: reqPath, data: data}
+		p.parseErr = json.Unmarshal(data, &p.req)
+		parsed = append(parsed, p)
+	}
+	return parsed, readErr
+}
+
 // sweepPendingTriggers is the daemon-side half of #343's delegation
 // protocol, called at startup and periodically from runUpContext's sweep
 // goroutine
@@ -637,44 +697,8 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 		return fmt.Errorf("delegate: read pending triggers: %w", err)
 	}
 	var sweepErr error
-	var requestEntries []pendingTriggerCandidate
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		switch {
-		case strings.HasSuffix(e.Name(), responseSuffix), strings.HasSuffix(e.Name(), ackSuffix), strings.HasSuffix(e.Name(), abandonedSuffix):
-			info, err := e.Info()
-			if err == nil {
-				removeExpiredTriggerArtifact(filepath.Join(reqDir, e.Name()), info, now())
-			}
-			continue
-		case strings.HasSuffix(e.Name(), activeSuffix):
-			if !options.recoverActiveRequests {
-				continue
-			}
-			requestID := strings.TrimSuffix(e.Name(), activeSuffix)
-			recovered, err := recoverActiveTriggerRequest(reqDir, requestID)
-			if err != nil {
-				sweepErr = errors.Join(sweepErr, err)
-				continue
-			}
-			if recovered {
-				requestEntries = append(requestEntries, pendingTriggerCandidate{
-					id:   requestID,
-					path: filepath.Join(reqDir, requestID+requestSuffix),
-				})
-			}
-			continue
-		case strings.HasSuffix(e.Name(), requestSuffix):
-			requestID := strings.TrimSuffix(e.Name(), requestSuffix)
-			requestEntries = append(requestEntries, pendingTriggerCandidate{
-				id:   requestID,
-				path: filepath.Join(reqDir, e.Name()),
-			})
-			continue
-		}
-	}
+	requestEntries, err := discoverPendingTriggerCandidates(reqDir, entries, now, options)
+	sweepErr = errors.Join(sweepErr, err)
 	// Total depth is reported from the entries this sweep already read, so the
 	// visibility costs no extra directory walk, and BEFORE the per-cycle bound
 	// truncates the batch — the number that matters is the backlog the
@@ -691,21 +715,8 @@ func sweepPendingTriggersWithOptions(ctx context.Context, schedulerDir string, l
 	// Read every candidate request before dispatching any of them so
 	// suppressExcessOutstanding can bound outstanding requests per identity
 	// across the whole batch, not just entries seen so far.
-	parsed := make([]*pendingTriggerRequest, 0, len(requestEntries))
-	for _, e := range requestEntries {
-		requestID := e.id
-		reqPath := e.path
-		data, err := os.ReadFile(reqPath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				sweepErr = errors.Join(sweepErr, fmt.Errorf("delegate: read trigger request %s: %w", requestID, err))
-			}
-			continue
-		}
-		p := &pendingTriggerRequest{id: requestID, path: reqPath, data: data}
-		p.parseErr = json.Unmarshal(data, &p.req)
-		parsed = append(parsed, p)
-	}
+	parsed, err := readPendingTriggerRequests(requestEntries)
+	sweepErr = errors.Join(sweepErr, err)
 	suppressed := suppressExcessOutstanding(parsed)
 
 	for _, p := range parsed {
