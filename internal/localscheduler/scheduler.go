@@ -1094,8 +1094,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					})
 					candidate.scheduleIndexes = nil
 				} else if entry.ScheduleDemandCounter == nil {
+					// Coalesces with a retained fire; scheduleDemand stays set
+					// so admission consumes its marker (#6207).
 					candidate.scheduleRemaining = 1
-					candidate.scheduleDemand = false
 				} else {
 					candidate.schedulePollDue = true
 				}
@@ -1196,14 +1197,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					candidate.dispatchedThisTick = true
 					break
 				}
-				// Retained demand must survive a refusal the next tick can
-				// clear on its own. Memory pressure is such a refusal (#3960),
-				// so it joins the two max-parallel reasons here; it is
-				// prefix-matched because Admit appends the measurement to it.
-				if kind == journal.TriggerSchedule && candidate.scheduleDemand &&
-					reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel &&
-					!strings.HasPrefix(reason, ReasonMemoryPressure) {
-					s.clearPendingScheduleDemand(candidate.entry)
+				if kind == journal.TriggerSchedule {
+					s.settleRefusedScheduleFire(candidate, reason)
 				}
 				candidate.stopped = true
 				if reason == ReasonInstanceMaxParallel {
@@ -1973,6 +1968,50 @@ func (s *Scheduler) deferScheduledDispatch(candidate *tickCandidate) {
 		schedule:   candidate.schedule,
 		remaining:  candidate.scheduleRemaining,
 		enqueuedAt: candidate.scheduleEnqueuedAt,
+	}
+	s.mu.Unlock()
+}
+
+// settleRefusedScheduleFire decides what survives a refused schedule fire.
+// Retained demand must survive a refusal the next tick can clear on its own.
+// Memory pressure is such a refusal (#3960), so it joins the two max-parallel
+// reasons here; it is prefix-matched because Admit appends the measurement to
+// it. An unsized fire refused by the shared instance pool is retained rather
+// than dropped (#6207); one refused for its own workflow cap is still dropped.
+func (s *Scheduler) settleRefusedScheduleFire(candidate *tickCandidate, reason string) {
+	if !candidate.scheduleDemand {
+		if reason == ReasonInstanceMaxParallel {
+			s.retainUnsizedScheduleFire(candidate)
+		}
+		return
+	}
+	if reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel &&
+		!strings.HasPrefix(reason, ReasonMemoryPressure) {
+		s.clearPendingScheduleDemand(candidate.entry)
+	}
+}
+
+// retainUnsizedScheduleFire keeps an ordinary one-run-per-fire schedule
+// tick that the shared instance pool refused, instead of dropping it. A
+// dropped fire waits a whole schedule period for its next chance, and when
+// another gaggle's runs reliably hold the pool at that minute (two gaggles'
+// same-named workflows on offset crons, #6207) it never gets one: the
+// pool-skip ageing in Tick only orders candidates that are due in the same
+// tick, so it cannot help a workflow that is never due when a slot is free.
+// The retained fire is coalesced with later fires (at most one per
+// workflow), re-offered every tick with its pool-skip age, and the Run loop
+// is woken when any slot is released (wakeForDemand), so it takes the next
+// freed slot. It reuses the schedule-demand marker deferScheduledDispatch
+// already persists, which Reconcile restores as one unsized fire.
+func (s *Scheduler) retainUnsizedScheduleFire(candidate *tickCandidate) {
+	identity := entryIdentity(candidate.entry)
+	if !s.persistScheduleDemand(identity, true) {
+		return
+	}
+	s.mu.Lock()
+	s.pendingScheduleDemand[identity] = scheduledDemand{
+		schedule:  candidate.schedule,
+		remaining: 1,
 	}
 	s.mu.Unlock()
 }
