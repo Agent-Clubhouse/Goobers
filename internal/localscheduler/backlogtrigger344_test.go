@@ -40,6 +40,12 @@ func (f *fakeBacklogCounter) polls() int {
 	return f.polled
 }
 
+func (f *fakeBacklogCounter) setCount(count int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.count = count
+}
+
 func (f *fakeBacklogCounter) snapshots() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

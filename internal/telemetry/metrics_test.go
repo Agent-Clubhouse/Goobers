@@ -378,6 +378,28 @@ func TestSchedulerQueueSaturationMetricsOmitUnavailableWorkerCapacity(t *testing
 	}
 }
 
+func TestSchedulerQueueSaturationMetricsOmitOldestAgeWithoutSource(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+
+	client.RecordSchedulerQueueSaturation(context.Background(), []QueueSaturationSample{
+		{QueueKind: "schedule", OperatingSystem: runtime.GOOS, Depth: 0},
+		{QueueKind: "backlog", OperatingSystem: runtime.GOOS, Depth: 2},
+	}, nil)
+
+	collected := collectMetrics(t, reader)
+	if got := pointWith(t, metricPoints(t, collected, MetricQueueDepth), MetricAttrQueueKind, "backlog"); got.value != 2 {
+		t.Fatalf("backlog depth = %v, want 2", got.value)
+	}
+	agePoints := metricPoints(t, collected, MetricQueueOldestAge)
+	if got := pointWith(t, agePoints, MetricAttrQueueKind, "schedule"); got.value != 0 {
+		t.Fatalf("empty schedule oldest age = %v, want 0", got.value)
+	}
+	if _, found := pointWithOK(agePoints, MetricAttrQueueKind, "backlog"); found {
+		t.Fatalf("non-empty backlog without enqueue source exported oldest age: %+v", agePoints)
+	}
+}
+
 // The default provider-pattern net used by Redact is package-global. Metric
 // observers belong to clients, so default clients must receive private
 // scrubbers: constructing one client may neither redirect another's events nor
@@ -781,13 +803,20 @@ func dataPoints(t *testing.T, m metricdata.Metrics) []collectedPoint {
 
 func pointWith(t *testing.T, points []collectedPoint, key, want string) collectedPoint {
 	t.Helper()
-	for _, point := range points {
-		if value, found := point.attrs.Value(attribute.Key(key)); found && value.AsString() == want {
-			return point
-		}
+	if point, found := pointWithOK(points, key, want); found {
+		return point
 	}
 	t.Fatalf("no point with %s=%q in %+v", key, want, points)
 	return collectedPoint{}
+}
+
+func pointWithOK(points []collectedPoint, key, want string) (collectedPoint, bool) {
+	for _, point := range points {
+		if value, found := point.attrs.Value(attribute.Key(key)); found && value.AsString() == want {
+			return point, true
+		}
+	}
+	return collectedPoint{}, false
 }
 
 func assertPointAttr(t *testing.T, point collectedPoint, key, want string) {

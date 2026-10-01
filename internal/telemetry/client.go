@@ -215,7 +215,9 @@ func (c *Client) StorageHealthSampled(tier string, freeBytes uint64, tierChanged
 // QueueSaturationSample is one scheduler-visible queue lane snapshot. QueueKind
 // must be a closed, bounded value such as "schedule", "backlog", or "refill".
 // OldestEnqueuedAt is the canonical enqueue/readiness time for the oldest item
-// represented by Depth; zero means no age source is available and records age 0.
+// represented by Depth; zero means no age source is available. Empty queues
+// still record age 0, but non-empty queues without a source omit age instead
+// of guessing.
 type QueueSaturationSample struct {
 	QueueKind        string
 	OperatingSystem  string
@@ -245,8 +247,11 @@ func (c *Client) RecordSchedulerQueueSaturation(ctx context.Context, queues []Qu
 		}
 		attrs := queueSaturationAttrs(queue.QueueKind, queue.OperatingSystem)
 		c.instruments.queueDepth.Record(ctx, int64(depth), c.instruments.attributeSet(attrs...))
+		if depth > 0 && queue.OldestEnqueuedAt.IsZero() {
+			continue
+		}
 		ageSeconds := int64(0)
-		if depth > 0 && !queue.OldestEnqueuedAt.IsZero() {
+		if depth > 0 {
 			observedAt := queue.ObservedAt
 			if observedAt.IsZero() {
 				observedAt = time.Now()

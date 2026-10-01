@@ -374,7 +374,7 @@ func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	}
 }
 
-func TestBacklogCounterDoesNotUseIssueCreationAsReadyTime(t *testing.T) {
+func TestBacklogCounterRealListWorkItemsOmitReadyTimeWhenProviderLacksReadyAt(t *testing.T) {
 	t.Setenv("BACKLOG_TOK", "backlog-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
 	if err != nil {
