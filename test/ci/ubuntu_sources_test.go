@@ -30,13 +30,21 @@ func TestDistroDependencyJobsUseUbuntuSources(t *testing.T) {
 			}
 		})
 	}
-	t.Run("checks waits for boot-time apt work", func(t *testing.T) {
+	t.Run("checks touches apt only for missing Chromium libraries", func(t *testing.T) {
 		script := w.Jobs["checks"].step(t, "Install Portal dependencies and pinned Chromium").Run
-		wait := strings.Index(script, "for _ in $(seq 1 60); do")
+		if strings.Contains(script, "--with-deps") {
+			t.Fatal("checks must not unconditionally install Chromium system packages; hosted images usually ship them")
+		}
+		browser := strings.Index(script, "playwright install chromium")
+		gate := strings.Index(script, "ldd $browser_bins 2>&1 | grep -q 'not found'; then")
+		wait := strings.Index(script, "for _ in $(seq 1 180); do")
 		probe := strings.Index(script, "pgrep -x 'apt|apt-.*|dpkg|unattended-upgr' >/dev/null || break")
-		chromium := strings.Index(script, "playwright install --with-deps chromium")
-		if wait < 0 || probe <= wait || chromium <= probe {
-			t.Fatal("checks must wait, with a finite bound, for runner apt/dpkg work to exit before the Playwright --with-deps install")
+		deps := strings.Index(script, "playwright install-deps chromium")
+		if browser < 0 || gate <= browser || wait <= gate || probe <= wait || deps <= probe {
+			t.Fatal("checks must install deps only when ldd reports a gap, after a finite wait for runner apt/dpkg work to exit")
+		}
+		if !strings.Contains(script, `[ -z "$browser_bins" ] ||`) {
+			t.Fatal("checks must fail closed and install deps when no Chromium binary is found")
 		}
 	})
 	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "apt", "ubuntu-only.conf"))
