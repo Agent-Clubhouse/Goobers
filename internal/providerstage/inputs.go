@@ -132,7 +132,11 @@ var inputSchemas = map[string][]Input{
 	),
 	"gather-ci-failures":       schema(pathsIn("resultFile"), durationsIn("timeout")),
 	"gather-implement-context": schema(stringsIn("base"), integersIn("maxHotFiles"), pathsIn("resultFile"), durationsIn("timeout")),
-	"gather-issue-context":     schema(pathsIn("resultFile"), durationsIn("timeout")),
+	"gather-issue-context": schema(
+		stringsIn("parentCrossProject"), stringListsIn("parentFields", "parentIncludeTypes"),
+		booleansIn("parentTraversal"), integersIn("parentMaxDepth", "parentMaxFieldBytes", "parentMaxItems"),
+		pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"gather-pr-context": schema(
 		stringsIn("base", "headPrefix", "minSeverity", "remediationAlgorithm", "selectedNumber"),
 		pathsIn("resultFile"), durationsIn("timeout"),

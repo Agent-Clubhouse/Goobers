@@ -2152,9 +2152,15 @@ Usage: goobers gather-ci-failures [path]
 
 Enrich this run's remediation brief with failing check names,
 conclusions, summaries, and annotations. Passing CI leaves the brief
-unchanged and performs no provider API calls. Raw job logs are never
-fetched: their explicit per-check volume bound is 0 bytes. [path] is
-the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:
+unchanged and performs no provider API calls. On GitHub and Gitea raw
+job logs are never fetched: their per-check volume bound is 0 bytes.
+On Azure DevOps each failing build or status policy is traced to its
+build, and the build's failed jobs and tasks are reported with their
+issues and a bounded excerpt of each failed step's log; every check's
+summary grades its evidence (complete, partial_bound, partial_provider,
+unsupported, failed or stale), so an external status or a missing log
+is explicit. [path] is the instance root, defaulting to
+GOOBERS_INSTANCE_ROOT. Exit codes:
 0 = evidence gathered (or passing-CI no-op), 1 = business error,
 2 = usage/IO error.
 ~~~
@@ -2200,6 +2206,20 @@ Fixes/Closes/Resolves issue references, and replace only the brief's
 gatherIssueContext section with the originating issue bodies. Missing
 PRs, absent references, and referenced issues that no longer resolve
 produce an empty issues list rather than failing the remediation cycle.
+
+With the parentTraversal input set to true, the section also carries
+gatherIssueContext.ancestry: the originating issues' provider-native
+parents (Azure DevOps Hierarchy-Reverse links, read in one workitemsbatch
+call per level; GitHub sub-issue parents), bounded by parentMaxDepth
+(default 3, at most 10) and parentMaxItems (default 10, at most 100).
+parentIncludeTypes (comma-separated, any type by default) selects the
+work-item types serialized, parentFields the fields (default Azure DevOps
+description and acceptance criteria; GitHub body), each cut to
+parentMaxFieldBytes (default 4096). parentCrossProject is deny (default)
+or allow. Cycles, bounds, denied or missing parents are listed as
+omissions and never fail the stage; a provider with no parent relation
+reports status unsupported. Traversal is off by default.
+
 [path] defaults to GOOBERS_INSTANCE_ROOT. Exit codes: 0 = issue context
 gathered (possibly empty), 1 = business/provider/journal error, 2 =
 usage/IO error.
