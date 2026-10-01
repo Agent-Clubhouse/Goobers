@@ -45,6 +45,11 @@ const (
 
 	prSelectionStage   = "gather-pr-context"
 	prPublicationStage = "push-remediated"
+	prRebaseStage      = "rebase-pr"
+
+	// rebasePushedHeadOutput is rebase-pr's record of the head it force-pushed
+	// when it continues into the agentic chain (empty when it pushed nothing).
+	rebasePushedHeadOutput = "pushedHeadSha"
 )
 
 // prRevisionState classifies a claimed PR against the run's expectation.
@@ -176,34 +181,49 @@ func loadPRExpectedRevision(root, runID string, repo providers.RepositoryRef, nu
 }
 
 // latestPRRevisionRecord scans events for the newest revision-defining record:
-// a gather-pr-context result artifact (a new selection) or a push-remediated
-// stage that published (this run's own force-with-lease publication). The
-// later one in journal order wins, so a new selection resets the expectation
-// and an own publication advances it.
+// a gather-pr-context result artifact (a new selection), a push-remediated
+// stage that published (this run's own force-with-lease publication), or a
+// rebase-pr stage that force-pushed its clean rebase and continued into the
+// agentic chain. The later one in journal order wins, so a new selection
+// resets the expectation and an own publication advances it. rebase-pr's push
+// advances it only when it was built on the head this run already expected:
+// rebase-pr leases against the head it checked out, which may itself be a
+// human's push since selection, and adopting that would launder the human's
+// commit into this run's expectation.
 func latestPRRevisionRecord(rd journalclient.Reader, runID string, events []journal.Event, number int) (head, source string, err error) {
-	var selection *journal.Ref
-	published := ""
 	for i := range events {
 		event := events[i]
 		if ref, ok := prSelectionArtifactRef(runID, event); ok {
-			selection, published = &ref, ""
+			source = prRevisionSourceSelection
+			if head, err = selectedHeadFromArtifact(rd, ref, number); err != nil || head == "" {
+				head, source = "", ""
+			}
 			continue
 		}
 		if localHead, ok := prPublishedHead(event); ok {
-			selection, published = nil, localHead
+			head, source, err = localHead, prRevisionSourcePublication, nil
+			continue
+		}
+		if attempted, pushed, ok := prRebasePushedHead(event); ok && err == nil && head != "" && strings.EqualFold(attempted, head) {
+			head, source = pushed, prRevisionSourcePublication
 		}
 	}
-	if published != "" {
-		return published, prRevisionSourcePublication, nil
-	}
-	if selection == nil {
-		return "", "", nil
-	}
-	head, err = selectedHeadFromArtifact(rd, *selection, number)
 	if err != nil {
 		return "", "", err
 	}
-	return head, prRevisionSourceSelection, nil
+	return head, source, nil
+}
+
+// prRebasePushedHead reads a rebase-pr stage that force-pushed its clean
+// rebase: the head it leased against and the head it published.
+func prRebasePushedHead(event journal.Event) (attempted, pushed string, ok bool) {
+	if event.Type != journal.EventStageFinished || event.Stage != prRebaseStage {
+		return "", "", false
+	}
+	pushed, _ = event.Outputs[rebasePushedHeadOutput].(string)
+	attempted, _ = event.Outputs["attemptedHeadSha"].(string)
+	pushed, attempted = strings.TrimSpace(pushed), strings.TrimSpace(attempted)
+	return attempted, pushed, pushed != "" && attempted != ""
 }
 
 func prSelectionArtifactRef(runID string, event journal.Event) (journal.Ref, bool) {
