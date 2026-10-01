@@ -409,6 +409,55 @@ func TestInlineStageFinishedErrorSurfacesInRunErrors(t *testing.T) {
 	}
 }
 
+func TestRunErrorsPreserveStructuredCauses(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := fixtureRunID
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+	leaf := `a rebound branch requires C:\repo:work and https://example.test/a:b`
+	message := `runner: prepare gate "review": create read-only workspace: ` + leaf
+	errorJSON, err := json.Marshal(journal.ErrorDetail{
+		Code:    "run_failed",
+		Message: message,
+		Causes: []journal.ErrorCause{
+			{Message: `runner: prepare gate "review"`},
+			{Message: "create read-only workspace"},
+			{Code: "infra_workspace_failed", Class: "infra", Message: leaf},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"error","error":`+string(errorJSON)),
+		eventLine(3, fixtureStart.Add(2*time.Second), `"type":"run.finished","status":"failed"`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	errs, err := db.RunErrors(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunErrors: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("RunErrors = %#v, want one error", errs)
+	}
+	got := errs[0].Causes
+	if len(got) != 3 {
+		t.Fatalf("causes = %#v, want 3", got)
+	}
+	if got[0].Message != `runner: prepare gate "review"` || got[1].Message != "create read-only workspace" ||
+		got[2].Message != leaf || got[2].Code != "infra_workspace_failed" || got[2].Class != "infra" {
+		t.Fatalf("causes = %#v", got)
+	}
+}
+
 // TestStageFinishedErrorDedupesAgainstStandaloneEvent is #230's other half:
 // if a stage/attempt somehow carries both a standalone error event AND a
 // matching inline stage.finished error for the SAME code, it must count

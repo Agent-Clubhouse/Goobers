@@ -644,10 +644,7 @@ func recoverSchedulerClaims(
 			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
 				instanceLog.AppendBestEffort(journal.Event{
 					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
-					Error: &journal.ErrorDetail{
-						Code:    "legacy_claim_ownership_unresolved",
-						Message: resolveErr.Error(),
-					},
+					Error: journal.ErrorDetailFor("legacy_claim_ownership_unresolved", resolveErr),
 				})
 			}
 			return namespace, resolveErr

@@ -583,8 +583,42 @@
           "description": "Human-facing detail. Excluded (varies run to run).",
           "type": "string",
           "x-conformance": "excluded"
+        },
+        "causes": {
+          "description": "Ordered wrapped-error cause chain derived from structured error wrapping, absent when unavailable for legacy events.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/errorCause" },
+          "x-conformance": "excluded"
         }
       }
+    },
+    "errorCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "Stable machine-readable cause code when the cause exposes one.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "excluded"
+        },
+        "class": {
+          "description": "Stable cause class when the cause exposes one.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "excluded"
+        },
+        "message": {
+          "description": "Human-facing cause-layer message.",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      },
+      "anyOf": [
+        { "required": ["code"] },
+        { "required": ["class"] },
+        { "required": ["message"] }
+      ]
     },
     "redactionInfo": {
       "type": "object",

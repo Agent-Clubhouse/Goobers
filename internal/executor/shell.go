@@ -933,7 +933,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
-			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
+			Error:   journal.ErrorInfoFor("exec_start", err, false),
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
@@ -1221,11 +1221,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			)))
 		}
 		result.Status = apiv1.ResultFailure
-		result.Error = &apiv1.ErrorInfo{
-			Code:      "provider_error",
-			Message:   providerErr.Error(),
-			Retryable: false,
-		}
+		result.Error = journal.ErrorInfoFor("provider_error", providerErr, false)
 		result.Summary = fmt.Sprintf("provider stage %q failed", command[1])
 		return result, nil
 	}
@@ -1271,11 +1267,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			// Untrusted declared path (#120): escapes the workspace lexically
 			// or via a symlink. Fail the stage closed, never follow it.
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{
-				Code:      "result_file_path_escape",
-				Message:   fmt.Sprintf("declared result file %q escapes the workspace: %v", resultFile, perr),
-				Retryable: false,
-			}
+			result.Error = journal.ErrorInfoFor("result_file_path_escape", fmt.Errorf("declared result file %q escapes the workspace: %w", resultFile, perr), false)
 			result.Summary = "declared result file path escapes the workspace"
 			return result, nil
 		default:

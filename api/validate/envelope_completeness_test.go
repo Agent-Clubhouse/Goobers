@@ -232,6 +232,7 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 		Error: &apiv1.ErrorInfo{
 			Code:      "RETRY",
 			Message:   "a retryable failure",
+			Causes:    []apiv1.ErrorCause{{Code: "transient", Class: "infra", Message: "temporary provider failure"}},
 			Retryable: true,
 		},
 		Integrity: apiv1.IntegrityDerived,
@@ -428,7 +429,11 @@ func completeJournalEvent() journal.Event {
 		// telemetry.GenAIEventSchema whenever the adapter leaves it empty).
 		DataSchema:  "goobers.dev/telemetry/genai-event/v1",
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://example.test/pr/42", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-		Error:       &journal.ErrorDetail{Code: "boom", Message: "detail"},
+		Error: &journal.ErrorDetail{
+			Code:    "boom",
+			Message: "detail",
+			Causes:  []journal.ErrorCause{{Code: "wrapped", Class: "workflow", Message: "wrapped detail"}},
+		},
 		Redaction: &journal.RedactionInfo{
 			Target:    "artifacts/sha256/cc/leak.txt",
 			OldDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

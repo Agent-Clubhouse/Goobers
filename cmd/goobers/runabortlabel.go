@@ -212,7 +212,7 @@ func appendRunAbortLabelResult(annotate terminalAnnotator, pr *journal.ExternalR
 		Runner:      map[string]any{"operation": runAbortLabelOperation},
 	}
 	if labelErr != nil {
-		ev.Error = &journal.ErrorDetail{Code: "run_abort_label_failed", Message: labelErr.Error()}
+		ev.Error = journal.ErrorDetailFor("run_abort_label_failed", labelErr)
 	}
 	if err := annotate.Append(ev); err != nil {
 		return fmt.Errorf("journal run-abort label: %w", err)

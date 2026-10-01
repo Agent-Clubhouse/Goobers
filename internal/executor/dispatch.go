@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -152,10 +153,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: "ci-poll provider request failed",
-			Error: &apiv1.ErrorInfo{
-				Code:    CIPollProviderErrorCode,
-				Message: err.Error(),
-			},
+			Error:   journal.ErrorInfoFor(CIPollProviderErrorCode, err, false),
 		}, nil
 	}
 	return result, err

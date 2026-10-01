@@ -339,9 +339,19 @@ type ErrorInfo struct {
 	Code string `json:"code"`
 	// Message is the human-readable error message.
 	Message string `json:"message"`
+	// Causes is the ordered wrapped-error cause chain when a producer can
+	// provide structure. It is absent for legacy or unavailable structure.
+	Causes []ErrorCause `json:"causes,omitempty"`
 	// Retryable indicates whether a retry might succeed (informs the runner's
 	// retry decision alongside the stage's declared policy).
 	Retryable bool `json:"retryable,omitempty"`
+}
+
+// ErrorCause is one ordered layer from a producer's structured error chain.
+type ErrorCause struct {
+	Code    string `json:"code,omitempty"`
+	Class   string `json:"class,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

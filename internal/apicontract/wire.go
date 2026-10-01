@@ -562,6 +562,10 @@ func newWireFixtures() wireFixtures {
 				Error: &journal.ErrorDetail{
 					Code:    "review_failed",
 					Message: "review requested changes",
+					Causes: []journal.ErrorCause{
+						{Message: "review gate failed"},
+						{Code: "review_rejected", Message: "review requested changes"},
+					},
 				},
 				Redaction: &journal.RedactionInfo{
 					Target:    "artifacts/result.json",

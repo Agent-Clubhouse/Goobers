@@ -1075,6 +1075,78 @@ describe("run failure banner", () => {
     });
   });
 
+  it("preserves structured causes from the causal failure event", () => {
+    const run = terminalRun({ terminalReason: "stage review finished with status failure" });
+    const events = [
+      event(2, "stage.finished", {
+        stage: "review",
+        attempt: 1,
+        status: "failure",
+        error: {
+          code: "review_failed",
+          message: "review gate failed: review requested changes",
+          causes: [
+            { message: "review gate failed" },
+            { code: "review_rejected", message: "review requested changes" },
+          ],
+        },
+      }),
+    ];
+
+    expect(runFailure(run, events)).toMatchObject({
+      message: "review gate failed: review requested changes",
+      causes: [
+        { message: "review gate failed" },
+        { code: "review_rejected", message: "review requested changes" },
+      ],
+      code: "review_failed",
+      stage: "review",
+      attempt: 1,
+      causalEventSeq: 2,
+    });
+  });
+
+  it("uses structured causes from the terminal run_failed event", () => {
+    const run = terminalRun({ terminalReason: "github_rate_limited: list pull requests: status 403, remaining 0" });
+    const events = [
+      event(2, "stage.finished", {
+        stage: "implement",
+        attempt: 1,
+        status: "failure",
+        error: {
+          code: "github_rate_limited",
+          message: "list pull requests: status 403, remaining 0",
+          causes: [
+            { message: "list pull requests" },
+            { code: "github_rate_limited", class: "infra", message: "status 403, remaining 0" },
+          ],
+        },
+      }),
+      event(3, "error", {
+        stage: "implement",
+        error: {
+          code: "run_failed",
+          message: "github_rate_limited: list pull requests: status 403, remaining 0",
+          causes: [
+            { message: "list pull requests" },
+            { code: "github_rate_limited", class: "infra", message: "status 403, remaining 0" },
+          ],
+        },
+      }),
+    ];
+
+    expect(runFailure(run, events)).toMatchObject({
+      message: "github_rate_limited: list pull requests: status 403, remaining 0",
+      code: "run_failed",
+      stage: "implement",
+      causalEventSeq: 3,
+      causes: [
+        { message: "list pull requests" },
+        { code: "github_rate_limited", class: "infra", message: "status 403, remaining 0" },
+      ],
+    });
+  });
+
   it("leaves completed and escalated runs to their own banners", () => {
     expect(runFailure(terminalRun({ phase: "completed" }), [])).toBeUndefined();
     expect(runFailure(terminalRun({ phase: "escalated" }), [])).toBeUndefined();

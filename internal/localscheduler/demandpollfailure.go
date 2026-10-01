@@ -56,7 +56,7 @@ func (s *Scheduler) demandPollFailed(ctx context.Context, entry WorkflowEntry, p
 			Type:     journal.EventError,
 			Workflow: entry.Workflow,
 			Gaggle:   entry.Gaggle,
-			Error:    &journal.ErrorDetail{Code: providers.ErrorCodeAuthFailed, Message: err.Error()},
+			Error:    journal.ErrorDetailFor(providers.ErrorCodeAuthFailed, err),
 		})
 		return 0
 	}
@@ -65,7 +65,7 @@ func (s *Scheduler) demandPollFailed(ctx context.Context, entry WorkflowEntry, p
 		Type:     journal.EventError,
 		Workflow: entry.Workflow,
 		Gaggle:   entry.Gaggle,
-		Error:    &journal.ErrorDetail{Code: code, Message: err.Error()},
+		Error:    journal.ErrorDetailFor(code, err),
 	})
 	s.recordDemandPollFailure(entry, code, err)
 	return failedPollDemand(ctx, poll, err)

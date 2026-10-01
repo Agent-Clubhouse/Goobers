@@ -223,9 +223,10 @@ type ArtifactInfo struct {
 // ErrorInfo is a stage or run error, with the classification the runner
 // recorded.
 type ErrorInfo struct {
-	Stage   string `json:"stage,omitempty"`
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
+	Stage   string               `json:"stage,omitempty"`
+	Code    string               `json:"code,omitempty"`
+	Message string               `json:"message,omitempty"`
+	Causes  []journal.ErrorCause `json:"causes,omitempty"`
 }
 
 // Decision is one recorded selector inclusion or exclusion, with the reason
@@ -421,7 +422,7 @@ func summarizeRunEvents(info *RunInfo, events []journal.Event) {
 			stage.Status = event.Status
 			appendArtifacts(&stage, event.Artifacts)
 			if event.Error != nil {
-				stage.Error = &ErrorInfo{Stage: event.Stage, Code: event.Error.Code, Message: event.Error.Message}
+				stage.Error = &ErrorInfo{Stage: event.Stage, Code: event.Error.Code, Message: event.Error.Message, Causes: event.Error.Causes}
 			}
 			info.Stages = append(info.Stages, stage)
 		case journal.EventError:
@@ -429,6 +430,7 @@ func summarizeRunEvents(info *RunInfo, events []journal.Event) {
 			if event.Error != nil {
 				detail.Code = event.Error.Code
 				detail.Message = event.Error.Message
+				detail.Causes = event.Error.Causes
 			}
 			// Last error wins: the decisive one is the one the run ended on.
 			info.DecisiveError = detail

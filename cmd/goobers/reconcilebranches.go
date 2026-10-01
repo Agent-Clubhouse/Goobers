@@ -567,7 +567,7 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 				code = "branch_delete_failed"
 			}
 		}
-		event.Error = &journal.ErrorDetail{Code: code, Message: detail.Err.Error()}
+		event.Error = journal.ErrorDetailFor(code, detail.Err)
 	}
 	if err := log.Append(event); err != nil {
 		return fmt.Errorf("journal branch reconciliation %s for %q: %w", detail.Kind, branch.Name, err)

@@ -388,7 +388,7 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err != nil {
 		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{Code: code, Message: err.Error(), Retryable: retryableDeclaredArtifactFailure(code)}
+			result.Error = journal.ErrorInfoFor(code, err, retryableDeclaredArtifactFailure(code))
 			result.Summary = summary
 			return result, nil
 		}

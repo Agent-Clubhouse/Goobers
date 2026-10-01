@@ -113,7 +113,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	heartbeat.Stop()
 	if cause := context.Cause(stageCtx); cause != nil {
 		outcome.Verdict = nil
-		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: &apiv1.ErrorInfo{Code: "execution_authority_ended", Message: cause.Error()}}
+		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: journal.ErrorInfoFor("execution_authority_ended", cause, false)}
 	}
 	stopFence()
 	// Surrender authorizes pod disposal. Include the complete receipt set,
@@ -158,7 +158,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 			envelope = apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "stage committed work that could not be carried to the next stage",
-				Error:   &apiv1.ErrorInfo{Code: "workspace_delta_failed", Message: derr.Error()},
+				Error:   journal.ErrorInfoFor("workspace_delta_failed", derr, false),
 			}
 		} else {
 			delta = published
@@ -348,11 +348,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error: &apiv1.ErrorInfo{
-					Code:      runner.BaseSyncConflictErrorCode,
-					Message:   err.Error(),
-					Retryable: true,
-				},
+				Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
 			}
 		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
@@ -549,13 +545,14 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 				},
 			}
 		case rerr != nil && !os.IsNotExist(rerr):
+			resultErr := fmt.Errorf("read result file %q: %w", resultFile, rerr)
 			return apiv1.ResultEnvelope{
 				Status:    apiv1.ResultFailure,
 				Outputs:   outputs,
 				Artifacts: stageArtifacts,
 				Metrics:   stageMetrics,
 				Summary:   "declared result file unreadable",
-				Error:     &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
+				Error:     journal.ErrorInfoFor("result_file_unreadable", resultErr, false),
 			}
 		}
 	}

@@ -331,10 +331,7 @@ func recordClaimMarkerReleaseError(log *journal.InstanceLog, entry localschedule
 		Gaggle:   entry.Gaggle,
 		Workflow: entry.Workflow,
 		RunID:    entry.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    claimMarkerReleaseErrorCode,
-			Message: err.Error(),
-		},
-		Runner: map[string]any{"operation": claimLockOperationRunRelease},
+		Error:    journal.ErrorDetailFor(claimMarkerReleaseErrorCode, err),
+		Runner:   map[string]any{"operation": claimLockOperationRunRelease},
 	})
 }

@@ -96,7 +96,7 @@ func TestFinishRecordsTerminalEvenWhenPrepareTerminalFails(t *testing.T) {
 						Type:        journal.EventRefTouched,
 						ExternalRef: &journal.ExternalRef{Provider: "gitea", Kind: "pr", ID: "77"},
 						Runner:      map[string]any{"operation": "label-run-aborted"},
-						Error:       &journal.ErrorDetail{Code: "run_abort_label_failed", Message: prepareErr.Error()},
+						Error:       journal.ErrorDetailFor("run_abort_label_failed", prepareErr),
 					}); err != nil {
 						t.Fatal(err)
 					}

@@ -154,10 +154,7 @@ func (c terminalFinalization) finalize(log *journal.InstanceLog) error {
 	}
 	if appendErr := log.Append(journal.Event{
 		Type: journal.EventError, Gaggle: c.identity.Gaggle, Workflow: c.identity.Workflow, RunID: c.identity.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    "terminal_cleanup_deferred",
-			Message: fmt.Sprintf("terminal cleanup deferred for retry: %v", err),
-		},
+		Error: journal.ErrorDetailFor("terminal_cleanup_deferred", fmt.Errorf("terminal cleanup deferred for retry: %w", err)),
 	}); appendErr != nil {
 		return fmt.Errorf("journal deferred terminal cleanup for run %q: %w", c.identity.RunID, appendErr)
 	}

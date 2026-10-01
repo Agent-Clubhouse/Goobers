@@ -334,7 +334,7 @@ func appendBranchCleanup(annotate terminalAnnotator, branch *journal.ExternalRef
 		Runner:      runnerFields,
 	}
 	if cleanupErr != nil {
-		ev.Error = &journal.ErrorDetail{Code: "branch_delete_failed", Message: cleanupErr.Error()}
+		ev.Error = journal.ErrorDetailFor("branch_delete_failed", cleanupErr)
 	}
 	if err := annotate.Append(ev); err != nil {
 		return fmt.Errorf("journal terminal branch cleanup: %w", err)

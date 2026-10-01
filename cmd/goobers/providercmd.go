@@ -956,10 +956,7 @@ func recordClaimLockTimeout(lockPath string, eventContext claimLockEventContext,
 		Gaggle:   eventContext.Gaggle,
 		Workflow: eventContext.Workflow,
 		RunID:    eventContext.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    claimsLockTimeoutCode,
-			Message: timeoutErr.Error(),
-		},
+		Error:    journal.ErrorDetailFor(claimsLockTimeoutCode, timeoutErr),
 		Runner: map[string]any{
 			"operation":    timeoutErr.Operation,
 			"pid":          os.Getpid(),

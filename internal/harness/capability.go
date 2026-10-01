@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // ErrorCodeCapabilityUnsatisfied is the failure code a stage carries when the
@@ -141,11 +142,7 @@ func capabilityFailureResult(err error) apiv1.ResultEnvelope {
 	return apiv1.ResultEnvelope{
 		Status:  apiv1.ResultFailure,
 		Summary: "declared capability is not satisfied by the granted tool surface",
-		Error: &apiv1.ErrorInfo{
-			Code:      ErrorCodeCapabilityUnsatisfied,
-			Retryable: false,
-			Message:   err.Error(),
-		},
+		Error:   journal.ErrorInfoFor(ErrorCodeCapabilityUnsatisfied, err, false),
 	}
 }
 

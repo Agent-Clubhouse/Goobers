@@ -849,11 +849,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 				ResultEnvelope: apiv1.ResultEnvelope{
 					Status:  apiv1.ResultFailure,
 					Summary: runner.BaseSyncConflictSummary,
-					Error: &apiv1.ErrorInfo{
-						Code:      runner.BaseSyncConflictErrorCode,
-						Message:   err.Error(),
-						Retryable: true,
-					},
+					Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
 				},
 				BaseSyncConflict: detail,
 				SelfPlacement:    selfStagePlacement(),
