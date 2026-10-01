@@ -25,13 +25,19 @@ func TestAzureReplayLargeMissingManifestDefersScanUntilReady(t *testing.T) {
 		}
 	}
 	start := make(chan struct{})
-	x := &azureReplayIndex{root: root, streams: []string{"journal"}, start: start}
+	coldDeferred := make(chan struct{})
+	x := &azureReplayIndex{root: root, streams: []string{"journal"}, start: start, coldDeferred: coldDeferred}
 	done := make(chan error, 1)
 	go func() { done <- x.awaitLargeColdBacklogStart(t.Context()) }()
 	select {
+	case <-coldDeferred:
 	case err := <-done:
 		t.Fatalf("large cold scan started before readiness: %v", err)
-	case <-time.After(50 * time.Millisecond):
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("large cold scan started before readiness: %v", err)
+	default:
 	}
 	close(start)
 	select {
@@ -39,8 +45,8 @@ func TestAzureReplayLargeMissingManifestDefersScanUntilReady(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("ready signal did not release cold scan")
+	case <-t.Context().Done():
+		t.Fatalf("ready signal did not release cold scan: %v", t.Context().Err())
 	}
 }
 

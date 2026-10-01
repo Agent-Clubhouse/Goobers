@@ -53,6 +53,8 @@ type azureReplayIndex struct {
 	firstAttempt  chan struct{}
 	firstErr      error // immutable after firstAttempt closes
 	retry         chan struct{}
+	coldDeferred  chan struct{}
+	coldOnce      sync.Once
 }
 
 func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
@@ -165,6 +167,7 @@ func (x *azureReplayIndex) awaitLargeColdBacklogStart(ctx context.Context) error
 			}
 		}
 		if count >= azureReplayLargeColdBacklogFiles {
+			x.signalColdDeferred()
 			select {
 			case <-x.start:
 				return nil
@@ -174,6 +177,13 @@ func (x *azureReplayIndex) awaitLargeColdBacklogStart(ctx context.Context) error
 		}
 	}
 	return nil
+}
+
+func (x *azureReplayIndex) signalColdDeferred() {
+	if x.coldDeferred == nil {
+		return
+	}
+	x.coldOnce.Do(func() { close(x.coldDeferred) })
 }
 
 func (x *azureReplayIndex) release(ctx context.Context) error {
