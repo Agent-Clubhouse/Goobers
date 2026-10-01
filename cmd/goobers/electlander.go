@@ -191,31 +191,18 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom gather-sibling-context's selectedNumber output)\n")
-		return 1
+	selectedPR, code, ok := readSelectedPREnvelope(stderr, electLanderEnvelopeSource)
+	if !ok {
+		return code
 	}
-	selectedNumber, err := strconv.Atoi(selectedNumberStr)
-	if err != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
-		return 1
-	}
-	selectedHeadSha := providerInput("selectedHeadSha", "")
-	selectedBaseSha := providerInput("selectedBaseSha", "")
+	selectedNumber := selectedPR.Number
 	reviewDigest := providerInput("reviewDigest", "")
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
-		return 1
-	}
 	resultFile := providerInput("resultFile", "election.json")
 	// Deterministic file-overlap set threaded from gather-sibling-context
 	// (#990). Parsed for the election backstop; passed through verbatim so
 	// apply-verdict on the parked (not-elected) branch resolves it too.
 	overlappingSiblingsCsv := providerInput("overlappingSiblings", "")
 	overlappingSiblings := parseOverlappingSiblings(overlappingSiblingsCsv)
-	scopeGateParked := providerInput("scopeGateParked", "")
 
 	// #834/#1028/#1029: the lander-election policy is workflow-configurable.
 	// fifo/newest are pure functions; most-blockers/fewest-overlaps score every
@@ -236,17 +223,12 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// writeResult emits the routing decision plus the pass-through outputs the
 	// two possible successor stages resolve their inputsFrom against.
 	writeResult := func(elected bool) int {
-		data, err := json.Marshal(map[string]string{
-			"elected":                strconv.FormatBool(elected),
-			"selectedNumber":         strconv.Itoa(selectedNumber),
-			"selectedHeadSha":        selectedHeadSha,
-			"selectedBaseSha":        selectedBaseSha,
-			"reviewDigest":           reviewDigest,
-			"overlappingSiblingsCsv": overlappingSiblingsCsv,
-			"unlandableSiblingsCsv":  providerInput("unlandableSiblings", ""),
-			"advisoryMode":           strconv.FormatBool(advisoryMode),
-			"scopeGateParked":        scopeGateParked,
-		})
+		result := selectedPR.baseResult()
+		result["elected"] = strconv.FormatBool(elected)
+		result["reviewDigest"] = reviewDigest
+		result["overlappingSiblingsCsv"] = overlappingSiblingsCsv
+		result["unlandableSiblingsCsv"] = providerInput("unlandableSiblings", "")
+		data, err := json.Marshal(result)
 		if err != nil {
 			pf(stderr, "error: marshal election result: %v\n", err)
 			return 1
@@ -257,7 +239,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if advisoryMode {
+	if selectedPR.Advisory {
 		pf(stdout, "PR #%d is advisory-only — skipping lander election\n", selectedNumber)
 		return writeResult(false)
 	}
@@ -306,15 +288,16 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	})
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, resultFile)
+	prSource := electionPRSource{
+		lister:            provider,
+		exclusionProvider: provider,
+		resultFile:        resultFile,
+	}
+	prs, code, ok := listElectionPRs(ctx, prSource, repo, stderr)
+	if !ok {
+		return code
 	}
 
 	// Resolve the election policy now that the open-PR set is available — the
@@ -344,9 +327,9 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 
 	// #950/#5602: demoted, parked, and unlandable PRs are dropped from the
 	// candidacy and from every blocker set, identically to apply-verdict.
-	demoted, ierr := electionExcludedSet(ctx, provider, repo, prs, providerInput("unlandableSiblings", ""), stderr)
-	if ierr != nil {
-		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+	demoted, code, ok := resolveElectionPRExclusions(ctx, prSource, repo, prs, stderr)
+	if !ok {
+		return code
 	}
 
 	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, serializedCluster, policy, demoted, resolvedPolicy); reason != "" {

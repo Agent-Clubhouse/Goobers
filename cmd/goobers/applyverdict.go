@@ -524,31 +524,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	resultFile := providerInput("resultFile", "verdict-result.json")
 
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
-		return 1
+	selectedPR, code, ok := readSelectedPREnvelope(stderr, applyVerdictEnvelopeSource)
+	if !ok {
+		return code
 	}
-	selectedNumber, err := strconv.Atoi(selectedNumberStr)
-	if err != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
-		return 1
-	}
-	selectedHeadSHA := providerInput("selectedHeadSha", "")
-	if selectedHeadSHA == "" {
-		pf(stderr, "error: selectedHeadSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
-		return 1
-	}
-	selectedBaseSHA := providerInput("selectedBaseSha", "")
-	if selectedBaseSHA == "" {
-		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
-		return 1
-	}
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
-		return 1
-	}
+	selectedNumber := selectedPR.Number
+	selectedNumberStr := selectedPR.NumberString
+	selectedHeadSHA := selectedPR.HeadSHA
+	selectedBaseSHA := selectedPR.BaseSHA
 	publishAdvisory, err := strconv.ParseBool(providerInput("publishAdvisory", "true"))
 	if err != nil {
 		pf(stderr, "error: invalid publishAdvisory input: %v\n", err)
@@ -601,7 +584,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	if advisoryMode {
+	if selectedPR.Advisory {
 		if !providerRouted {
 			pf(stderr, "error: apply-verdict advisory mode is not supported for repository provider %q\n", repo.Provider)
 			return 1
@@ -612,13 +595,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		)
 	}
 
-	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	})
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "")
+	var exclusionProvider remediationProvider
+	if providerRouted {
+		exclusionProvider = prProvider
+	}
+	prSource := electionPRSource{
+		lister:            provider,
+		exclusionProvider: exclusionProvider,
+	}
+	prs, code, ok := listElectionPRs(ctx, prSource, repo, stderr)
+	if !ok {
+		return code
 	}
 
 	// #950: which open PRs are currently demoted (repeatedly could not merge at
@@ -629,12 +616,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
 	// #5602 adds the PRs this instance cannot land, identically to elect-lander.
-	var demoted map[int]bool
-	if providerRouted {
-		var ierr error
-		if demoted, ierr = electionExcludedSet(ctx, prProvider, repo, prs, providerInput("unlandableSiblings", ""), stderr); ierr != nil {
-			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
-		}
+	demoted, code, ok := resolveElectionPRExclusions(ctx, prSource, repo, prs, stderr)
+	if !ok {
+		return code
 	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
@@ -1856,16 +1840,16 @@ func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int
 
 func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
 	advisoryMode, _ := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	out := map[string]string{
-		"selectedNumber":            strconv.Itoa(selectedNumber),
-		"selectedHeadSha":           headSHA,
-		"selectedBaseSha":           baseSHA,
-		"decision":                  decision,
-		"verdictAuthor":             verdictAuthor,
-		"advisoryMode":              strconv.FormatBool(advisoryMode),
-		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
-		"scopeGateParked":           providerInput("scopeGateParked", ""),
-	}
+	out := selectedPREnvelope{
+		Number:          selectedNumber,
+		HeadSHA:         headSHA,
+		BaseSHA:         baseSHA,
+		Advisory:        advisoryMode,
+		ScopeGateParked: providerInput("scopeGateParked", ""),
+	}.baseResult()
+	out["decision"] = decision
+	out["verdictAuthor"] = verdictAuthor
+	out["priorityDispatchRequested"] = strconv.FormatBool(priorityDispatchRequested)
 	if reason != "" {
 		out["reason"] = reason
 	}
