@@ -255,30 +255,34 @@ func (s *Store) SetProjectionFloor(ctx context.Context, floor time.Time) error {
 	return nil
 }
 
-// IsUnpublished reports whether a directory is remembered as having no run.yaml
-// AT THIS MTIME.
+// An unchanged directory mtime is not proof that no file was published: two
+// directory updates can land in the same filesystem timestamp tick. Expire the
+// memo periodically so a promoted run is eventually examined even then.
+const unpublishedMemoMaxAge = time.Hour
+
+// IsUnpublished reports whether a directory is recently remembered as having
+// no run.yaml at this mtime.
 //
 // The mtime comparison is the whole mechanism. 10,906 of 40,665 directories on
 // the live instance are unpublished and can never be ingested; remembering them
-// makes each cost one stat per cycle. Keying on mtime is what keeps that from
-// becoming permanent: writing run.yaml bumps the directory's mtime, so a
-// promoted run no longer matches its memo and is examined again.
+// makes each cost one stat per cycle. Mtime changes invalidate immediately;
+// age invalidates after one hour even when the filesystem reused a timestamp.
 func (s *Store) IsUnpublished(ctx context.Context, runID string, mtime time.Time) (bool, error) {
-	var recorded string
+	var recorded, seenAt string
 	db, release, err := s.readHandle()
 	if err != nil {
 		return false, err
 	}
 	defer release()
 	err = db.QueryRowContext(ctx,
-		`SELECT dir_mtime FROM unpublished WHERE run_id = ?`, runID).Scan(&recorded)
+		`SELECT dir_mtime, seen_at FROM unpublished WHERE run_id = ?`, runID).Scan(&recorded, &seenAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("readmodel: read unpublished %s: %w", runID, err)
 	}
-	return recorded == formatTime(mtime), nil
+	return recorded == formatTime(mtime) && seenAt > formatTime(s.now().Add(-unpublishedMemoMaxAge)), nil
 }
 
 // MarkUnpublished remembers a directory as carrying no run.yaml.
