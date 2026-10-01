@@ -116,7 +116,7 @@ var synopsisByID = map[string]string{
 	"pr-select":              "  goobers pr-select                      select one managed or advisory open PR for merge-review (a workflow stage)\n",
 	"advisory-pr-select":     "  goobers advisory-pr-select             select one open PR for a private advisory review (a workflow stage)\n",
 	"advisory-pr-publish":    "  goobers advisory-pr-publish            publish one advisory observation or private skip (a workflow stage)\n",
-	"advisory-pr-reset":      "  goobers advisory-pr-reset [flags] [path] clear one private advisory disposition (operator command)\n",
+	"advisory-pr-reset":      "  goobers advisory-pr-reset --gaggle <name> --owner <owner> --repo <repo> --review-type <type> --pr <number> [path]\n                                clear one private advisory disposition (operator command)\n",
 	"check-issue-staleness":  "  goobers check-issue-staleness          route a PR to remediation if its linked issue changed since implementation began (a workflow stage)\n",
 	"gather-sibling-context": "  goobers gather-sibling-context [--no-cache] [--no-verdict-cache]  load other open PRs' files/state as review evidence (a workflow stage)\n",
 	gatherContextID:          "  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)\n",
