@@ -2648,7 +2648,41 @@ func lifecycleLabelNearMiss(value, expected string) bool {
 	if value == "" || value == expected {
 		return false
 	}
-	return strings.HasPrefix(value, expected)
+	return lifecycleLabelEditDistanceAtMost(value, expected, 1)
+}
+
+func lifecycleLabelEditDistanceAtMost(value, expected string, maxDistance int) bool {
+	if value == expected {
+		return true
+	}
+	if len(value)-len(expected) > maxDistance || len(expected)-len(value) > maxDistance {
+		return false
+	}
+	edits := 0
+	i, j := 0, 0
+	for i < len(value) && j < len(expected) {
+		if value[i] == expected[j] {
+			i++
+			j++
+			continue
+		}
+		edits++
+		if edits > maxDistance {
+			return false
+		}
+		switch {
+		case len(value) > len(expected):
+			i++
+		case len(value) < len(expected):
+			j++
+		default:
+			i++
+			j++
+		}
+	}
+	edits += len(value) - i
+	edits += len(expected) - j
+	return edits <= maxDistance
 }
 
 func splitLifecycleLabelList(raw string) []string {

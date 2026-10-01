@@ -294,7 +294,13 @@ func TestLifecycleLabelContractsRejectDrift(t *testing.T) {
 }
 
 func TestLifecycleLabelContractsAllowArbitrarySelectorLabels(t *testing.T) {
-	workflow := lifecycleWorkflow("custom-selector", `    - name: query-backlog
+	tests := []struct {
+		name     string
+		workflow string
+	}{
+		{
+			name: "arbitrary labels",
+			workflow: lifecycleWorkflow("custom-selector", `    - name: query-backlog
       type: deterministic
       goal: Claim arbitrary partitioned work.
       run:
@@ -308,10 +314,35 @@ func TestLifecycleLabelContractsAllowArbitrarySelectorLabels(t *testing.T) {
         - github:issues:write
       policyActions:
         - claim-backlog-items
-`)
-	report := validateLifecycleConfig(t, workflow)
-	if report.HasErrors() {
-		t.Fatalf("arbitrary non-lifecycle labels must remain supported:\n%s", joinIssues(report))
+`),
+		},
+		{
+			name: "custom selectors sharing reserved prefixes",
+			workflow: lifecycleWorkflow("custom-prefixed-selector", `    - name: query-backlog
+      type: deterministic
+      goal: Claim custom work with labels near lifecycle namespaces.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers"
+        requireLabels: "goobers:ready-for-docs,area:backend"
+        excludeLabels: "goobers:needs-human-review,goobers/status:in-review-docs"
+        parkLabels: "goobers:needs-remediation-followup,goobers:blocked-on-sibling-review"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - claim-backlog-items
+`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := validateLifecycleConfig(t, tt.workflow)
+			if report.HasErrors() {
+				t.Fatalf("arbitrary non-lifecycle labels must remain supported:\n%s", joinIssues(report))
+			}
+		})
 	}
 }
 
