@@ -71,22 +71,23 @@ const (
 // Instance is the overview inventory projection.
 type Instance struct {
 	ReadStateEnvelope
-	APIVersion         string                    `json:"apiVersion"`
-	SchemaVersion      string                    `json:"schemaVersion"`
-	Name               string                    `json:"name"`
-	Environment        apiv1.Environment         `json:"environment"`
-	ComputerName       string                    `json:"computerName,omitempty"`
-	InstanceRoot       string                    `json:"instanceRoot"`
-	RootIdentity       *RootIdentity             `json:"rootIdentity,omitempty"`
-	Ready              bool                      `json:"ready"`
-	Status             InstanceStatus            `json:"status"`
-	Concurrency        Concurrency               `json:"concurrency"`
-	Counts             InventoryCounts           `json:"counts"`
-	Warnings           []validate.CodedWarning   `json:"warnings"`
-	Maintenance        *MaintenanceStatus        `json:"maintenance,omitempty"`
-	TelemetryRetention *TelemetryRetentionStatus `json:"telemetryRetention,omitempty"`
-	JournalHealth      *JournalHealthStatus      `json:"journalHealth,omitempty"`
-	StorageHealth      *StorageHealthStatus      `json:"storageHealth,omitempty"`
+	APIVersion              string                         `json:"apiVersion"`
+	SchemaVersion           string                         `json:"schemaVersion"`
+	Name                    string                         `json:"name"`
+	Environment             apiv1.Environment              `json:"environment"`
+	ComputerName            string                         `json:"computerName,omitempty"`
+	InstanceRoot            string                         `json:"instanceRoot"`
+	RootIdentity            *RootIdentity                  `json:"rootIdentity,omitempty"`
+	Ready                   bool                           `json:"ready"`
+	Status                  InstanceStatus                 `json:"status"`
+	Concurrency             Concurrency                    `json:"concurrency"`
+	Counts                  InventoryCounts                `json:"counts"`
+	Warnings                []validate.CodedWarning        `json:"warnings"`
+	Maintenance             *MaintenanceStatus             `json:"maintenance,omitempty"`
+	TelemetryRetention      *TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
+	JournalHealth           *JournalHealthStatus           `json:"journalHealth,omitempty"`
+	StorageHealth           *StorageHealthStatus           `json:"storageHealth,omitempty"`
+	TelemetryExporterHealth *TelemetryExporterHealthStatus `json:"telemetryExporterHealth,omitempty"`
 	// RecoveryInventory is shared recovery-snapshot occupancy (#5343). A full
 	// inventory halts worktree cleanup and therefore unrelated runs, so it
 	// belongs on the instance summary the portal Overview renders rather than
@@ -449,6 +450,7 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 	if s.sources.StorageHealthStats != nil {
 		storageHealth = storageHealthStatus(s.sources.StorageHealthStats())
 	}
+	telemetryExporterHealth := telemetryExporterHealthStatus(s.sources.TelemetryExporterHealthStats)
 	var recoveryInventory *RecoveryInventoryStatus
 	if s.sources.RecoveryInventoryStats != nil {
 		recoveryInventory = s.sources.RecoveryInventoryStats()
@@ -479,17 +481,18 @@ func (s *Local) instanceUnannotated(ctx context.Context) (Instance, error) {
 			Workflows:  len(inventory.definitions.Workflows),
 			ActiveRuns: activeTotal,
 		},
-		Warnings:           append([]validate.CodedWarning{}, inventory.warnings...),
-		Maintenance:        maintenance,
-		TelemetryRetention: telemetryRetention,
-		JournalHealth:      journalHealth,
-		StorageHealth:      storageHealth,
-		RecoveryInventory:  recoveryInventory,
-		MemoryHighWater:    memoryHighWater,
-		MemoryGateEnabled:  !memoryGateDisabled,
-		FsyncDisabled:      journal.FsyncDisabled(),
-		FleetEnrolled:      fleetEnrolled,
-		Fleet:              fleetPortal,
+		Warnings:                append([]validate.CodedWarning{}, inventory.warnings...),
+		Maintenance:             maintenance,
+		TelemetryRetention:      telemetryRetention,
+		JournalHealth:           journalHealth,
+		StorageHealth:           storageHealth,
+		TelemetryExporterHealth: telemetryExporterHealth,
+		RecoveryInventory:       recoveryInventory,
+		MemoryHighWater:         memoryHighWater,
+		MemoryGateEnabled:       !memoryGateDisabled,
+		FsyncDisabled:           journal.FsyncDisabled(),
+		FleetEnrolled:           fleetEnrolled,
+		Fleet:                   fleetPortal,
 	}, nil
 }
 

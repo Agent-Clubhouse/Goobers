@@ -397,7 +397,7 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
-	definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
+  definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
   readState?: ReadState;
@@ -411,6 +411,7 @@ export interface Health extends ContractVersion {
    * same as a check that confirmed the build is current.
    */
   update?: UpdateAvailability;
+  telemetryExporterHealth?: TelemetryExporterHealthStatus;
 }
 
 export interface UpdateAvailability {
@@ -461,6 +462,7 @@ export interface Instance extends ContractVersion {
   warnings: ValidationWarning[];
   maintenance?: MaintenanceStatus;
   telemetryRetention?: TelemetryRetentionStatus;
+  telemetryExporterHealth?: TelemetryExporterHealthStatus;
   journalHealth?: JournalHealthStatus;
   storageHealth?: StorageHealthStatus;
   recoveryInventory?: RecoveryInventoryStatus;
@@ -491,6 +493,28 @@ export interface StorageHealthStatus {
   criticalFloorPercent?: number;
   measuredAt?: string;
   error?: string;
+}
+
+export interface TelemetryExporterHealthStatus {
+  enabled: boolean;
+  mode?: "disabled" | "local" | "otlp" | "stdout" | "azure-monitor" | "custom" | string;
+  endpointHost?: string;
+  endpointClass?: "ip-address" | "localhost" | "dns-name" | "unknown" | string;
+  trace: TelemetryExporterSignalState;
+  metric: TelemetryExporterSignalState;
+}
+
+export interface TelemetryExporterSignalState {
+  configured: boolean;
+  state: "disabled" | "unknown" | "healthy" | "unhealthy" | string;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastFailureReason?: "collector_unavailable" | "signal_unimplemented" | "canceled" | "deadline_exceeded" | "exporter_error" | "unknown" | string;
+  consecutiveFailures?: number;
+  lastTransitionAt?: string;
+  recoveryTransitions?: number;
+  failureTransitions?: number;
+  suppressedFailureEvents?: number;
 }
 
 /**

@@ -513,7 +513,12 @@ func metricReaders(ctx context.Context, cfg Config) ([]metric.Reader, error) {
 		readers = append(readers, cfg.MetricReader)
 	}
 	if cfg.MetricExporter != nil {
-		readers = append(readers, metric.NewPeriodicReader(cfg.MetricExporter,
+		exporter := cfg.MetricExporter
+		if cfg.ExporterHealth != nil {
+			cfg.ExporterHealth.ConfigureMetric()
+			exporter = observedMetricExporter{next: exporter, health: cfg.ExporterHealth}
+		}
+		readers = append(readers, metric.NewPeriodicReader(exporter,
 			metric.WithInterval(metricInterval(cfg))))
 	}
 	if cfg.Exporter != ExporterOTLP {
@@ -552,6 +557,9 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 	} else {
 		tlsConfig, tlsErr := buildOTLPTLSConfig(cfg)
 		if tlsErr != nil {
+			if cfg.ExporterHealth != nil {
+				cfg.ExporterHealth.RecordMetricFailure(tlsErr)
+			}
 			return nil, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
 		}
 		opts = append(opts, otlpmetricgrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
@@ -565,5 +573,10 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create otlp telemetry metric exporter: %w", err)
 	}
-	return exporter, nil
+	var observed metric.Exporter = exporter
+	if cfg.ExporterHealth != nil {
+		cfg.ExporterHealth.ConfigureMetric()
+		observed = observedMetricExporter{next: observed, health: cfg.ExporterHealth}
+	}
+	return observed, nil
 }

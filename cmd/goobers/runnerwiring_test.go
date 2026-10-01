@@ -262,6 +262,7 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 		}},
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -419,6 +420,7 @@ func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
 				KeyFile:    clientCert.keyFile,
 			},
 		}},
+		nil,
 		nil,
 		nil,
 	)

@@ -132,6 +132,10 @@ type schedulerSetup struct {
 	// never nil — an instance with no declared stores gets a registry that
 	// fails every store ref closed.
 	SecretStores *secretstore.Registry
+	// TelemetryExporterHealth exposes the daemon-local exporter health monitor
+	// to read surfaces. It is non-nil even when telemetry is disabled so those
+	// surfaces can report an explicit disabled state.
+	TelemetryExporterHealth *telemetry.ExporterHealth
 	// MergedPRCostReconciler is the daemon-owned, workflow-independent
 	// backstop that publishes cost summaries for recently merged Goobers PRs.
 	// Config reload replaces its definition snapshot in place.
@@ -145,6 +149,21 @@ type schedulerSetup struct {
 	// blew the grace period finished afterwards.
 	shutdownOnce sync.Once
 	shutdownErr  error
+}
+
+func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth {
+	if cfg == nil || !cfg.TelemetryEnabled() {
+		return telemetry.NewExporterHealth(false, "disabled", "")
+	}
+	mode := "local"
+	endpoint := ""
+	if cfg.Telemetry.OTLP != nil && strings.TrimSpace(cfg.Telemetry.OTLP.Endpoint) != "" {
+		mode = string(telemetry.ExporterOTLP)
+		endpoint = cfg.Telemetry.OTLP.Endpoint
+	} else if cfg.Telemetry.AzureMonitor != nil {
+		mode = "azure-monitor"
+	}
+	return telemetry.NewExporterHealth(true, mode, endpoint)
 }
 
 type schedulerDefinitions struct {
@@ -333,6 +352,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var projectorStats func() projector.Stats
 	var projectorRestartComplete bool
 	var instanceLog *journal.InstanceLog
+	telemetryExporterHealth := newTelemetryExporterHealth(cfg)
 	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
 	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
 	// logged once instanceLog opens below, not returned as a setup failure:
@@ -375,7 +395,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}()
 	if cfg.TelemetryEnabled() {
 		reportStartupProgress(options.startupProgress, "opening telemetry state")
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, options.telemetryReplayStart)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, telemetryExporterHealth, options.telemetryReplayStart)
 		if err != nil {
 			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
 				return nil, err
@@ -566,6 +586,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		RunnerRegistry:           runnerRegistry,
 		Interventions:            interventionRegistry,
 		SecretStores:             secretStores,
+		TelemetryExporterHealth:  telemetryExporterHealth,
 	}, nil
 }
 
