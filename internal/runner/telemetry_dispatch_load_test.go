@@ -221,9 +221,20 @@ func dispatchProbeReconcile(t testing.TB, client *telemetry.Client, receiver *di
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	stats := telemetry.InspectAzureReplayRoot(spool)
-	if !stats.AccountingReady || stats.QueueDropped != 0 || stats.PrunedAge != 0 || stats.PrunedBytes != 0 {
-		t.Fatalf("unexpected replay accounting/loss: %+v", stats)
+	var stats telemetry.AzureReplayStats
+	for {
+		stats = telemetry.InspectAzureReplayRoot(spool)
+		if stats.QueueDropped != 0 || stats.PrunedAge != 0 || stats.PrunedBytes != 0 {
+			t.Fatalf("unexpected replay loss: %+v", stats)
+		}
+		if stats.AccountingReady {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("replay accounting did not become ready after delivery: %+v", stats)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	t.Logf("dispatch source reconciliation: expected=%d missing=0 duplicates=0 queue_dropped=%d pruned_age=%d pruned_bytes=%d admission_failures=%d export_failures=%d", len(expected), stats.QueueDropped, stats.PrunedAge, stats.PrunedBytes, stats.AdmissionFailures, stats.ExportFailures)
 }
