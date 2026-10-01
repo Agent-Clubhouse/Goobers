@@ -194,6 +194,23 @@ func TestCheckIssueStalenessADODetectsStaleAndDoesNotWriteRemediationLabel(t *te
 }
 
 func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.T) {
+	description := "Implement the requested behavior."
+	criteria := "- Preserve acceptance criteria."
+	checkADOAcceptanceCriteriaNotStale(t, description, criteria, providers.ComposeWorkItemBody(description, criteria))
+}
+
+// A pin recorded before work items carried Boards acceptance criteria (#6093)
+// digests the description alone. The item is unchanged, so it must not read
+// as stale after an upgrade: on ADO the pin cannot advance, and every
+// merge-review of such a PR would otherwise abort forever.
+func TestCheckIssueStalenessADOLegacyPinWithoutAcceptanceCriteriaIsNotStale(t *testing.T) {
+	description := "Implement the requested behavior."
+	criteria := "- Preserve acceptance criteria."
+	checkADOAcceptanceCriteriaNotStale(t, description, criteria, description)
+}
+
+func checkADOAcceptanceCriteriaNotStale(t *testing.T, description, criteria, pinnedBody string) {
+	t.Helper()
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
 	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
@@ -203,13 +220,11 @@ func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.
 	t.Setenv("GOOBERS_INPUT_PULLNUMBER", "361")
 
 	snapshotAt := time.Now().UTC().Truncate(time.Second)
-	description := "Implement the requested behavior."
-	criteria := "- Preserve acceptance criteria."
 	pin := formatIssueSpecPin(
 		"1458",
 		snapshotAt.Format(time.RFC3339),
 		"Unchanged criteria item",
-		providers.ComposeWorkItemBody(description, criteria),
+		pinnedBody,
 	)
 
 	prBase := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests"
