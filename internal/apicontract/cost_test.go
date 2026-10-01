@@ -61,6 +61,11 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		if route.ID == RouteCredentialResolve {
 			continue
 		}
+		// Defect nomination is a stage-pod read with its own five-minute
+		// client deadline, not a Portal request with a ten-second abort.
+		if route.ID == RouteTelemetryDefectAggregates {
+			continue
+		}
 		// Worker recovery uploads stream a bounded binary archive; they do
 		// not use the Portal's JSON client or its ten-second abort.
 		if route.ID == RouteRunRecoveryPublish {
@@ -143,6 +148,17 @@ func TestTelemetryCostsUsesAggregateBudget(t *testing.T) {
 	}
 	if route.Cost != CostAggregate || route.Budget != BoundedBudget {
 		t.Fatalf("telemetryCosts route = cost %q budget %s", route.Cost, route.Budget)
+	}
+}
+
+func TestDefectAggregateRouteHasItsOwnBoundedBudget(t *testing.T) {
+	route, ok := V1Route(RouteTelemetryDefectAggregates)
+	if !ok {
+		t.Fatal("defect aggregate route is not in the V1 contract")
+	}
+	if route.Cost != CostAggregate || route.Budget != DefectAggregateBudget ||
+		DefectAggregateBudget <= BoundedBudget || DefectAggregateBudget >= 5*time.Minute {
+		t.Fatalf("defect aggregate route = cost %q budget %s", route.Cost, route.Budget)
 	}
 }
 

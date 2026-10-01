@@ -420,6 +420,10 @@ const (
 	// magnitude of headroom, and is a backstop against pathology rather than a
 	// target.
 	BoundedBudget = 8 * time.Second
+	// DefectAggregateBudget covers the seven-day nomination derivation. It
+	// traverses the rollup and causal-credit stores, rather than one indexed
+	// list page, and therefore needs its own bounded route budget.
+	DefectAggregateBudget = 4 * time.Minute
 	// BlobBudget covers artifact and transcript streaming, where the time is
 	// transfer rather than query. A large artifact over a slow link legitimately
 	// takes longer than any query should.
@@ -489,12 +493,9 @@ var v1Routes = []Route{
 	{ID: RouteWorkItems, Method: http.MethodGet, Path: WorkItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkItemDetail, Method: http.MethodGet, Path: WorkItemDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	// The defect-aggregate route is classified with its telemetry siblings:
-	// answered from the same pre-aggregated rollup buckets, bounded by the
-	// same read budget. It costs more than one of them because it runs
-	// several detection families, which is why its window, its response and
-	// its cardinality are all bounded server-side rather than by the caller.
-	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	// This route derives four families from rollups and causal-credit data.
+	// Its window, response and cardinality remain bounded server-side.
+	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
