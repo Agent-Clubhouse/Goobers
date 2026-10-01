@@ -609,6 +609,13 @@ func (s *azureReplaySpool) close(ctx context.Context) error {
 		drainCtx, cancel := context.WithTimeout(ctx, azureReplayShutdownDrainTimeout)
 		err = s.drain(drainCtx)
 		cancel()
+		// A short-lived process sharing the spool with the daemon often finds
+		// the remaining batches already claimed by the daemon's upload. Those
+		// files are durable and owned; this process has nothing left to send,
+		// so its shutdown is not an export failure (#6058).
+		if errors.Is(err, errAzureReplayLeased) {
+			err = nil
+		}
 	default:
 	}
 	s.reportShutdownHealth(s.stats())
