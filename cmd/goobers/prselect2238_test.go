@@ -1,11 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestPRSelectAlwaysExcludesRunAbortedLabel is #2238's pr-select acceptance
@@ -30,4 +35,246 @@ func TestPRSelectAlwaysExcludesRunAbortedLabel(t *testing.T) {
 		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work", code, stdout, stderr)
 	}
 	assertNoWorkProviderStageResult(t, resultFile)
+}
+
+func TestPRSelectClearsStaleRunAbortedLabelOnGreenUnreviewedPR(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(5437, "green parked PR", abortedRunLabel)
+	server.addOpenPR(5437, "goobers/implementation/run-5437", "main", "green-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(5437, true)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #5437") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want PR selected after stale run-aborted clear", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, 5437, nil, []string{abortedRunLabel})
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[5437].comments...)
+	server.mu.Unlock()
+	if len(comments) != 0 {
+		t.Fatalf("comments = %q, want stale-label repair to preserve the zero-comment merge-review predicate", comments)
+	}
+}
+
+func TestPRSelectLeavesRunAbortedPRWithCommentsParked(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(5438, "commented parked PR", abortedRunLabel)
+	server.addOpenPR(5438, "goobers/implementation/run-5438", "main", "green-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(5438, true)
+	server.addRawCommentAs(5438, "reviewer", "needs a human decision")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "no work") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work for commented run-aborted PR", code, stdout, stderr)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+	assertFakeIssueLabels(t, server, 5438, []string{abortedRunLabel}, nil)
+}
+
+func TestPRSelectLeavesRunAbortedPRWithChangesRequestedReviewParked(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5439)
+	server.addPRReview(5439, "CHANGES_REQUESTED")
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5439)
+}
+
+func TestPRSelectLeavesRunAbortedPRWithInlineReviewCommentParked(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5440)
+	server.addPRInlineReviewComment(5440)
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5440)
+}
+
+func TestPRSelectLeavesRunAbortedPRWithApprovedReviewParked(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5441)
+	server.addPRReview(5441, "APPROVED")
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5441)
+}
+
+func TestPRSelectLeavesRunAbortedPRParkedWhenReviewAttentionReadFails(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5442)
+	server.setPullRequestReviewThreadsFailure(5442, 500)
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5442)
+}
+
+func TestPRSelectLeavesRunAbortedPRParkedWhenLivePollNoLongerGreen(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5443)
+	server.mutatePullRequestOnNextGet(5443, func(s *fakeGitHubServer, pr *fakePR) {
+		pr.headSHA = "new-head-pending"
+		pr.checkState = "pending"
+		issue := s.issues[5443]
+		s.nextCommentID++
+		issue.comments = append(issue.comments, "review comment arrived after list")
+		issue.commentIDs = append(issue.commentIDs, s.nextCommentID)
+		issue.commentAuthors = append(issue.commentAuthors, "reviewer")
+		issue.commentTypes = append(issue.commentTypes, "User")
+		issue.commentTimes = append(issue.commentTimes, time.Time{})
+	})
+
+	runPRSelectExpectingRunAbortedPark(t, server, 5443)
+}
+
+func TestPRSelectUsesLivePollSnapshotAfterClearingRunAbortedLabel(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(5444, "green parked PR", abortedRunLabel)
+	server.addOpenPR(5444, "goobers/implementation/run-5444", "main", "old-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(5444, true)
+	server.mutatePullRequestOnNextGet(5444, func(_ *fakeGitHubServer, pr *fakePR) {
+		pr.headSHA = "fresh-green-head"
+		pr.checkState = "success"
+	})
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #5444") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want PR selected after live stale-label clear", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		HeadSHA string `json:"headSha"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.HeadSHA != "fresh-green-head" {
+		t.Fatalf("selected result headSha = %q, want live poll head", result.HeadSHA)
+	}
+	assertFakeIssueLabels(t, server, 5444, nil, []string{abortedRunLabel})
+}
+
+func TestPRSelectUsesLivePollSnapshotWhenRunAbortedAlreadyCleared(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(5445, "green parked PR", abortedRunLabel)
+	server.addOpenPR(5445, "goobers/implementation/run-5445", "main", "old-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(5445, true)
+	server.mutatePullRequestOnNextGet(5445, func(s *fakeGitHubServer, pr *fakePR) {
+		pr.headSHA = "already-cleared-head"
+		pr.labels = removeLabel(pr.labels, abortedRunLabel)
+		s.issues[5445].labels = removeLabel(s.issues[5445].labels, abortedRunLabel)
+	})
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #5445") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want PR selected from live no-label snapshot", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(resultFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		HeadSHA string `json:"headSha"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.HeadSHA != "already-cleared-head" {
+		t.Fatalf("selected result headSha = %q, want live no-label head", result.HeadSHA)
+	}
+	assertFakeIssueLabels(t, server, 5445, nil, []string{abortedRunLabel})
+}
+
+func TestPRSelectDoesNotUseAlreadyClearedRunAbortedSnapshotWhenLiveChecksPending(t *testing.T) {
+	server := newReviewedRunAbortedPRFixture(t, 5446)
+	server.mutatePullRequestOnNextGet(5446, func(s *fakeGitHubServer, pr *fakePR) {
+		pr.headSHA = "already-cleared-pending-head"
+		pr.checkState = "pending"
+		pr.labels = removeLabel(pr.labels, abortedRunLabel)
+		s.issues[5446].labels = removeLabel(s.issues[5446].labels, abortedRunLabel)
+	})
+
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "no work") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work for live pending no-label snapshot", code, stdout, stderr)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+	assertFakeIssueLabels(t, server, 5446, nil, []string{abortedRunLabel})
+}
+
+func TestRunAbortedLivePollSnapshotPreservesLabelsWhenProviderOmitsThem(t *testing.T) {
+	listed := providers.PullRequestSummary{
+		Number:     5447,
+		Labels:     []string{abortedRunLabel},
+		CheckState: providers.CheckStatePassing,
+	}
+	poll := providers.PullRequestPollResult{
+		Number:     5447,
+		State:      "open",
+		CheckState: providers.CheckStatePassing,
+	}
+
+	refreshed := pullRequestSummaryFromPoll(listed, poll)
+	if !reflect.DeepEqual(refreshed.Labels, listed.Labels) {
+		t.Fatalf("refreshed labels = %v, want listed labels preserved when poll omits labels", refreshed.Labels)
+	}
+}
+
+func newReviewedRunAbortedPRFixture(t *testing.T, number int) *fakeGitHubServer {
+	t.Helper()
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(number, "reviewed parked PR", abortedRunLabel)
+	server.addOpenPR(number, "goobers/implementation/run-reviewed", "main", "green-head", "main-base", false, []string{abortedRunLabel}, nil)
+	server.setPRMergeable(number, true)
+	return server
+}
+
+func runPRSelectExpectingRunAbortedPark(t *testing.T, server *fakeGitHubServer, number int) {
+	t.Helper()
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "no work") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want no work for reviewed run-aborted PR", code, stdout, stderr)
+	}
+	assertNoWorkProviderStageResult(t, resultFile)
+	assertFakeIssueLabels(t, server, number, []string{abortedRunLabel}, nil)
 }
