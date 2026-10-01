@@ -944,15 +944,18 @@ type tickCandidate struct {
 	scheduleDemand     bool
 	schedulePollDue    bool
 	scheduleEnqueuedAt time.Time
+	scheduleMetricHeld int
 	backlogPollDue     bool
 	backlogRemaining   int
 	backlogEnqueuedAt  time.Time
 	backlogObserved    bool
+	backlogMetricHeld  int
 	refillRemaining    int
 	refillPollDue      bool
 	refillEligible     int
 	refillEnqueuedAt   time.Time
 	refillObserved     bool
+	refillMetricHeld   int
 	poolSkips          int
 	dispatchedThisTick bool
 	stopped            bool
@@ -1286,10 +1289,11 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 		byKind[kind] = current
 	}
 	for _, candidate := range candidates {
-		add(queueKindSchedule, candidate.scheduleRemaining, candidate.scheduleEnqueuedAt)
+		add(queueKindSchedule, candidate.scheduleRemaining+candidate.scheduleMetricHeld, candidate.scheduleEnqueuedAt)
 		if candidate.backlogObserved {
-			s.storeQueueSnapshot(queueKindBacklog, entryIdentity(candidate.entry), candidate.backlogRemaining, candidate.backlogEnqueuedAt)
-			add(queueKindBacklog, candidate.backlogRemaining, candidate.backlogEnqueuedAt)
+			depth := candidate.backlogRemaining + candidate.backlogMetricHeld
+			s.storeQueueSnapshot(queueKindBacklog, entryIdentity(candidate.entry), depth, candidate.backlogEnqueuedAt)
+			add(queueKindBacklog, depth, candidate.backlogEnqueuedAt)
 		} else if candidate.entry.BacklogCounter != nil {
 			snapshot, ok := s.queueSnapshot(queueKindBacklog, entryIdentity(candidate.entry))
 			if ok {
@@ -1297,8 +1301,9 @@ func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tic
 			}
 		}
 		if candidate.refillObserved {
-			s.storeQueueSnapshot(queueKindRefill, entryIdentity(candidate.entry), candidate.refillRemaining, candidate.refillEnqueuedAt)
-			add(queueKindRefill, candidate.refillRemaining, candidate.refillEnqueuedAt)
+			depth := candidate.refillRemaining + candidate.refillMetricHeld
+			s.storeQueueSnapshot(queueKindRefill, entryIdentity(candidate.entry), depth, candidate.refillEnqueuedAt)
+			add(queueKindRefill, depth, candidate.refillEnqueuedAt)
 		} else if candidate.entry.RefillDemandCounter != nil {
 			snapshot, ok := s.queueSnapshot(queueKindRefill, entryIdentity(candidate.entry))
 			if ok {
@@ -1935,13 +1940,16 @@ func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 		if candidate.scheduleRemaining > 0 && !candidate.scheduleDemand {
 			s.deferScheduledDispatch(candidate)
 		}
+		candidate.scheduleMetricHeld = candidate.scheduleRemaining
 		candidate.scheduleRemaining = 0
 		if candidate.backlogRemaining > 0 {
 			s.clearBacklogPoll(candidate.entry)
+			candidate.backlogMetricHeld = candidate.backlogRemaining
 			candidate.backlogRemaining = 0
 		}
 		if candidate.refillRemaining > 0 {
 			s.clearRefillPoll(candidate.entry)
+			candidate.refillMetricHeld = candidate.refillRemaining
 			candidate.refillRemaining = 0
 		}
 	}

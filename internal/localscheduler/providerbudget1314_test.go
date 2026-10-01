@@ -232,6 +232,46 @@ func TestRunPacesOrdinaryScheduledWorkflowsAfterQuotaReset(t *testing.T) {
 	}
 }
 
+func TestTickReportsQueuedDepthForQuotaPacedScheduledWorkflows(t *testing.T) {
+	resetAt := time.Date(2026, time.August, 7, 16, 5, 0, 0, time.UTC)
+	quota := NewProviderQuotaState()
+	quota.Record(apiv1.ProviderGitHub, 0, resetAt)
+	recorder := &queueTelemetryRecorder{}
+	first := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	second := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:  "first",
+			Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+			RepoRef:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
+			Starter:   first,
+		},
+		{
+			Workflow:  "second",
+			Schedules: []Schedule{fakeSchedule{d: time.Hour}},
+			RepoRef:   apiv1.RepoRef{Provider: apiv1.ProviderGitHub},
+			Starter:   second,
+		},
+	}, WithProviderQuota(quota), WithTelemetry(recorder))
+	sched.mu.Lock()
+	for identity, state := range sched.triggers {
+		state.LastEval = resetAt.Add(-time.Hour)
+		sched.triggers[identity] = state
+	}
+	sched.mu.Unlock()
+
+	sched.Tick(context.Background(), resetAt)
+
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindSchedule).Depth; depth != 2 {
+		t.Fatalf("quota-paced schedule queue depth = %d, want both ready identities reported", depth)
+	}
+	waitForCount(t, func() int { return first.count() + second.count() }, 1)
+	if got := first.count() + second.count(); got != 1 {
+		t.Fatalf("quota-paced dispatches = %d, want one admitted", got)
+	}
+	sched.Wait()
+}
+
 func TestRunWakesForDeferredScheduleDemandPollWhenFirstPollIsEmpty(t *testing.T) {
 	resetAt := time.Date(2026, time.August, 7, 16, 5, 0, 0, time.UTC)
 	clock := newFakeClock(resetAt)
