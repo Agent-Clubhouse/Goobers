@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -211,6 +212,13 @@ func assertPodLauncher(t *testing.T, kit *agentickit.Kit, selected apiv1.Harness
 	defer func() { podHarnessRegistry = previous }()
 	fake := &harnesstest.FakeAdapter{}
 	podHarnessRegistry = func(caps map[string]string, environment harness.EnvironmentConfig, commands map[string][]string, root, bin string, deferDiscovery bool, credential func(context.Context) (string, error), ephemeral bool) (*harness.Registry, error) {
+		selfBin, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bin != selfBin {
+			t.Fatalf("pod harness self binary = %q, want %q for goobers-io", bin, selfBin)
+		}
 		if !slices.Equal(environment.Unset, envUnset) {
 			t.Fatalf("pod harness env unset = %v, want %v", environment.Unset, envUnset)
 		}
