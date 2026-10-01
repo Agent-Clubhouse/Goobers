@@ -2426,7 +2426,9 @@ retry use the same acceptance identity. --api-timeout bounds remote validation
 and acceptance (default 30s; must be positive). A timed-out submission has
 unknown acceptance; retry the printed request ID with the same options.
 The command returns once the daemon accepts the trigger because
-a remote client cannot watch the run's journal.
+a remote client cannot watch the run's journal. For local file delegation,
+--no-wait returns after dispatch, or after workflow/PR validation succeeds
+and the live daemon durably accepts a capacity-queued request.
 
 ### run abort
 Usage: goobers run abort [--api=<url>] <run-id> [path]

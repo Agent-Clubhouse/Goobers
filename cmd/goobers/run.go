@@ -103,7 +103,9 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
 	"unknown acceptance; retry the printed request ID with the same options.\n" +
 	"The command returns once the daemon accepts the trigger because\n" +
-	"a remote client cannot watch the run's journal.\n"
+	"a remote client cannot watch the run's journal. For local file delegation,\n" +
+	"--no-wait returns after dispatch, or after workflow/PR validation succeeds\n" +
+	"and the live daemon durably accepts a capacity-queued request.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "continue" {
@@ -693,11 +695,42 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 		return 2
 	}
 
-	runID, err := pollTriggerResponse(ctx, l.SchedulerDir(), requestID, triggerResponseWait())
+	resp, err := pollTriggerResponseEvent(ctx, l.SchedulerDir(), requestID, triggerResponseWait(), true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	if resp.Error != "" {
+		pf(stderr, "error: %v\n", resp.Error)
+		return 1
+	}
+	if resp.State == triggerResponseQueued {
+		pf(stdout, "accepted trigger request %s (workflow=%s, state=queued via live daemon)\n", requestID, target.Workflow)
+		if noWait {
+			pf(stdout, "inspect with: goobers status %s\n", root)
+			return 0
+		}
+		for {
+			finalResp, err := pollTriggerResponseEvent(ctx, l.SchedulerDir(), requestID, triggerResponseWait(), false)
+			if err != nil {
+				if strings.Contains(err.Error(), "timed out after") && ctx.Err() == nil {
+					continue
+				}
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			if finalResp.Error != "" {
+				pf(stderr, "error: %s\n", finalResp.Error)
+				return 1
+			}
+			if finalResp.State == triggerResponseQueued {
+				continue
+			}
+			resp = finalResp
+			break
+		}
+	}
+	runID := resp.RunID
 	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, target.Workflow)
 	if noWait {
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)

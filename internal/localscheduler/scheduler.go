@@ -2033,6 +2033,19 @@ func (s *Scheduler) TriggerSignal(ctx context.Context, workflow, signal, ref str
 // validation by the client request without tying the run's lifetime to that
 // short-lived request.
 func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalWithDispatchContextOptions(ctx, dispatchCtx, workflow, signal, ref, now, SignalTriggerOptions{})
+}
+
+// SignalTriggerOptions controls internal dispatch options for signal triggers.
+type SignalTriggerOptions struct {
+	// RunID pins a previously accepted delivery's identity. Empty allocates a
+	// fresh ID. This is an internal dispatch option, never an HTTP body field.
+	RunID string
+}
+
+// TriggerSignalWithDispatchContextOptions is TriggerSignalWithDispatchContext
+// with explicit internal dispatch options.
+func (s *Scheduler) TriggerSignalWithDispatchContextOptions(ctx, dispatchCtx context.Context, workflow, signal, ref string, now time.Time, options SignalTriggerOptions) (runID string, err error) {
 	s.mu.Lock()
 	var gaggles []string
 	for identity := range s.workflows {
@@ -2055,8 +2068,8 @@ func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Co
 			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
 		)
 	}
-	return s.TriggerSignalExactWithDispatchContext(ctx, dispatchCtx,
-		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now)
+	return s.TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx,
+		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now, options)
 }
 
 // TriggerExact manually fires one workflow identified by its gaggle and name.
@@ -2103,6 +2116,12 @@ func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIde
 // TriggerSignalExactWithDispatchContext is TriggerSignalExact with separate
 // validation and run-lifetime contexts.
 func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx, identity, signal, ref, now, SignalTriggerOptions{})
+}
+
+// TriggerSignalExactWithDispatchContextOptions is TriggerSignalExactWithDispatchContext
+// with explicit internal dispatch options.
+func (s *Scheduler) TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time, options SignalTriggerOptions) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
@@ -2136,7 +2155,7 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
-		"signal", false, "")
+		"signal", false, options.RunID)
 }
 
 // TriggerPriority immediately re-evaluates one exact workflow after a prior run
