@@ -534,6 +534,8 @@ const (
 	featureEvaluatorAutomatedRetryBackoff    FeatureID = "gate.evaluator.automated.retry.backoff"
 	featureEvaluatorAutomatedPoll            FeatureID = "gate.evaluator.automated.pollIntervalSeconds"
 	featureEvaluatorAutomatedMaxTimeoutPolls FeatureID = "gate.evaluator.automated.maxTimeoutPolls"
+	featureTaskArtifactInputsMediaType       FeatureID = "task.artifactInputs.mediaType"
+	featureTaskArtifactInputsSchema          FeatureID = "task.artifactInputs.schemaPath"
 	featureEvaluatorStatusEquals             FeatureID = "gate.evaluator.automated.check.status-equals"
 	featureEvaluatorFailureClass             FeatureID = "gate.evaluator.automated.check.failure-class"
 	featureEvaluatorOutputEquals             FeatureID = "gate.evaluator.automated.check.output-equals"
@@ -933,6 +935,8 @@ func v31OnlyArtifactFeatures() []Feature {
 		featureTaskArtifactSlotsMaxSize,
 		featureTaskArtifactInputs,
 		featureTaskArtifactInputsFrom,
+		featureTaskArtifactInputsMediaType,
+		featureTaskArtifactInputsSchema,
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -9,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workflow/internal/model"
 	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 )
@@ -437,7 +439,16 @@ func compileV31(def Definition, config compileConfig) (*Machine, error) {
 	if problems := artifactContractProblems(def); len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
-	return compileV30Base(def, config)
+	machine, err := compileV30Base(def, config)
+	if err != nil {
+		return nil, err
+	}
+	bindings, problems := lowerArtifactBindings(machine)
+	if len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
+	machine.SetArtifactBindings(bindings)
+	return machine, nil
 }
 
 func compileV30Base(def Definition, config compileConfig) (*Machine, error) {
@@ -500,12 +511,34 @@ func preV31ArtifactSurfaceProblems(def Definition, version string) []string {
 }
 
 func artifactContractProblems(def Definition) []string {
-	slotByTask := make(map[string]map[string]struct{}, len(def.Spec.Tasks))
+	_, problems := collectArtifactContracts(def)
+	if len(problems) > 0 {
+		return problems
+	}
+	machine, buildProblems := artifactCheckMachine(def)
+	if len(buildProblems) > 0 {
+		return buildProblems
+	}
+	_, problems = lowerArtifactBindings(machine)
+	return problems
+}
+
+type artifactContractIndex struct {
+	slots     map[string]map[string]apiv1.ArtifactSlot
+	taskNames map[string]struct{}
+}
+
+func collectArtifactContracts(def Definition) (artifactContractIndex, []string) {
+	index := artifactContractIndex{
+		slots:     make(map[string]map[string]apiv1.ArtifactSlot, len(def.Spec.Tasks)),
+		taskNames: make(map[string]struct{}, len(def.Spec.Tasks)),
+	}
 	taskNames := make(map[string]struct{}, len(def.Spec.Tasks))
 	var problems []string
 	for _, task := range def.Spec.Tasks {
 		taskNames[task.Name] = struct{}{}
-		slots := make(map[string]struct{}, len(task.ArtifactSlots))
+		index.taskNames[task.Name] = struct{}{}
+		slots := make(map[string]apiv1.ArtifactSlot, len(task.ArtifactSlots))
 		for _, slot := range task.ArtifactSlots {
 			if !validArtifactContractName(slot.Name) {
 				problems = append(problems, fmt.Sprintf("task %q artifactSlots contains invalid slot name %q", task.Name, slot.Name))
@@ -515,7 +548,7 @@ func artifactContractProblems(def Definition) []string {
 				problems = append(problems, fmt.Sprintf("task %q artifactSlots repeats slot %q", task.Name, slot.Name))
 				continue
 			}
-			slots[slot.Name] = struct{}{}
+			slots[slot.Name] = slot
 			if strings.TrimSpace(slot.MediaType) != slot.MediaType {
 				problems = append(problems, fmt.Sprintf("task %q artifact slot %q has a blank mediaType", task.Name, slot.Name))
 			}
@@ -527,7 +560,7 @@ func artifactContractProblems(def Definition) []string {
 			}
 		}
 		if len(slots) > 0 {
-			slotByTask[task.Name] = slots
+			index.slots[task.Name] = slots
 		}
 	}
 	for _, task := range def.Spec.Tasks {
@@ -544,13 +577,301 @@ func artifactContractProblems(def Definition) []string {
 				problems = append(problems, fmt.Sprintf("task %q artifact input %q references unknown producer task %q", task.Name, local, producer))
 				continue
 			}
-			producerSlots := slotByTask[producer]
-			if _, exists := producerSlots[slot]; !exists {
+			producerSlots := index.slots[producer]
+			producerSlot, exists := producerSlots[slot]
+			if !exists {
 				problems = append(problems, fmt.Sprintf("task %q artifact input %q references unknown artifact slot %q on producer %q", task.Name, local, slot, producer))
 			}
+			problems = append(problems, artifactInputContractProblems(task.Name, local, ref, producer, slot, producerSlot, exists)...)
+		}
+	}
+	sort.Strings(problems)
+	return index, problems
+}
+
+func artifactInputContractProblems(taskName, local string, ref apiv1.ArtifactInputRef, producer, slot string, producerSlot apiv1.ArtifactSlot, slotExists bool) []string {
+	var problems []string
+	if strings.TrimSpace(ref.MediaType) != ref.MediaType {
+		problems = append(problems, fmt.Sprintf("task %q artifact input %q has a blank mediaType", taskName, local))
+	}
+	if strings.TrimSpace(ref.SchemaPath) != ref.SchemaPath {
+		problems = append(problems, fmt.Sprintf("task %q artifact input %q schemaPath must not have leading or trailing whitespace", taskName, local))
+	}
+	if !slotExists {
+		return problems
+	}
+	if ref.MediaType != "" {
+		if producerSlot.MediaType == "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q artifact input %q expects mediaType %q, but producer %q slot %q declares no mediaType",
+				taskName, local, ref.MediaType, producer, slot))
+		} else if ref.MediaType != producerSlot.MediaType {
+			problems = append(problems, fmt.Sprintf(
+				"task %q artifact input %q expects mediaType %q, but producer %q slot %q declares %q",
+				taskName, local, ref.MediaType, producer, slot, producerSlot.MediaType))
+		}
+	}
+	if ref.SchemaPath != "" {
+		if producerSlot.SchemaPath == "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q artifact input %q expects schemaPath %q, but producer %q slot %q declares no schemaPath",
+				taskName, local, ref.SchemaPath, producer, slot))
+		} else if ref.SchemaPath != producerSlot.SchemaPath {
+			problems = append(problems, fmt.Sprintf(
+				"task %q artifact input %q expects schemaPath %q, but producer %q slot %q declares %q",
+				taskName, local, ref.SchemaPath, producer, slot, producerSlot.SchemaPath))
 		}
 	}
 	return problems
+}
+
+func artifactCheckMachine(def Definition) (*Machine, []string) {
+	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
+	gates := make(map[string]apiv1.Gate, len(def.Spec.Gates))
+	parallels := make(map[string]apiv1.Parallel, len(def.Spec.Parallels))
+	for _, task := range def.Spec.Tasks {
+		tasks[task.Name] = task
+	}
+	for _, gate := range def.Spec.Gates {
+		gates[gate.Name] = gate
+	}
+	for _, parallel := range def.Spec.Parallels {
+		parallels[parallel.Name] = parallel
+	}
+	machine, err := model.NewMachine(def, tasks, gates, parallels, model.Graph{Start: def.Spec.Start})
+	if err != nil {
+		return nil, []string{fmt.Sprintf("digest workflow %q: %v", def.Name, err)}
+	}
+	return machine, nil
+}
+
+func lowerArtifactBindings(machine *Machine) (map[string]map[string]model.ArtifactBinding, []string) {
+	index, problems := collectArtifactContracts(machine.Def)
+	if len(problems) > 0 {
+		return nil, problems
+	}
+	bindings := make(map[string]map[string]model.ArtifactBinding)
+	for _, task := range machine.Def.Spec.Tasks {
+		for _, local := range sortedArtifactInputNames(task.ArtifactInputs) {
+			ref := task.ArtifactInputs[local]
+			producer, slot, ok := splitArtifactInputRef(ref.From)
+			if !ok {
+				continue
+			}
+			producerSlot, exists := index.slots[producer][slot]
+			if !exists {
+				continue
+			}
+			if producer == task.Name {
+				problems = append(problems, fmt.Sprintf(
+					"task %q artifact input %q references itself; artifactInputs must name an upstream producer",
+					task.Name, local))
+				continue
+			}
+			if !artifactProducerDominatesConsumer(machine, producer, task.Name) {
+				problems = append(problems, fmt.Sprintf(
+					"task %q artifact input %q references producer %q, but %q does not run on every successful path before %q",
+					task.Name, local, producer, producer, task.Name))
+				continue
+			}
+			if bindings[task.Name] == nil {
+				bindings[task.Name] = make(map[string]model.ArtifactBinding)
+			}
+			bindings[task.Name][local] = model.ArtifactBinding{
+				ConsumerTask: task.Name,
+				LocalName:    local,
+				ProducerTask: producer,
+				SlotName:     slot,
+				MediaType:    producerSlot.MediaType,
+				SchemaPath:   producerSlot.SchemaPath,
+				MaxSize:      producerSlot.MaxSize,
+			}
+		}
+	}
+	sort.Strings(problems)
+	return bindings, problems
+}
+
+func sortedArtifactInputNames(inputs map[string]apiv1.ArtifactInputRef) []string {
+	names := make([]string, 0, len(inputs))
+	for name := range inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func artifactProducerDominatesConsumer(machine *Machine, producer, consumer string) bool {
+	owner := artifactBranchOwnership(machine)
+	if ref, inBranch := owner[producer]; inBranch {
+		if consumerRef, consumerInBranch := owner[consumer]; consumerInBranch &&
+			consumerRef.parallel == ref.parallel && consumerRef.branch == ref.branch {
+			return artifactPrecedesWithinBranchOnEveryPath(machine, ref.start, producer, consumer)
+		}
+		parallel, ok := machine.Parallel(ref.parallel)
+		if !ok || !artifactPrecedesBranchJoinOnEveryPath(machine, ref.start, producer) {
+			return false
+		}
+		return consumer == parallel.Join || artifactPrecedesOnEveryPath(machine, parallel.Join, consumer)
+	}
+	return artifactPrecedesOnEveryPath(machine, producer, consumer)
+}
+
+type artifactBranchRef struct {
+	parallel string
+	branch   string
+	start    string
+}
+
+func artifactBranchOwnership(machine *Machine) map[string]artifactBranchRef {
+	owner := make(map[string]artifactBranchRef)
+	for _, parallel := range machine.Def.Spec.Parallels {
+		for _, branch := range parallel.Branches {
+			ref := artifactBranchRef{parallel: parallel.Name, branch: branch.Name, start: branch.Start}
+			for _, state := range artifactBranchBody(machine, branch.Start) {
+				if _, exists := owner[state]; !exists {
+					owner[state] = ref
+				}
+			}
+		}
+	}
+	return owner
+}
+
+func artifactPrecedesWithinBranchOnEveryPath(machine *Machine, start, producer, consumer string) bool {
+	if producer == consumer || start == producer {
+		return true
+	}
+	reachable := map[string]bool{}
+	stack := []string{start}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == producer || state == TargetJoin || state == TerminalComplete || model.IsReservedTarget(state) || reachable[state] {
+			continue
+		}
+		if !machine.Has(state) {
+			continue
+		}
+		reachable[state] = true
+		stack = append(stack, machine.Outgoing(state)...)
+	}
+	return !reachable[consumer]
+}
+
+func artifactBranchBody(machine *Machine, start string) []string {
+	seen := map[string]bool{}
+	stack := []string{start}
+	var states []string
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == TerminalComplete || model.IsReservedAnyTarget(state) || seen[state] || !machine.Has(state) {
+			continue
+		}
+		seen[state] = true
+		states = append(states, state)
+		stack = append(stack, machine.Outgoing(state)...)
+	}
+	sort.Strings(states)
+	return states
+}
+
+func artifactPrecedesBranchJoinOnEveryPath(machine *Machine, start, producer string) bool {
+	if start == producer {
+		return true
+	}
+	seen := map[string]bool{}
+	stack := []string{start}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == producer || seen[state] {
+			continue
+		}
+		if state == TargetJoin {
+			return false
+		}
+		if state == TerminalComplete || model.IsReservedAnyTarget(state) || !machine.Has(state) {
+			continue
+		}
+		seen[state] = true
+		stack = append(stack, machine.Outgoing(state)...)
+	}
+	return true
+}
+
+func artifactPrecedesOnEveryPath(machine *Machine, producer, consumer string) bool {
+	if producer == consumer {
+		return true
+	}
+	if machine.Def.Spec.Start == producer {
+		return true
+	}
+	reachable := map[string]bool{}
+	stack := []string{machine.Def.Spec.Start}
+	for len(stack) > 0 {
+		state := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if state == producer || state == TerminalComplete || model.IsReservedTarget(state) || reachable[state] {
+			continue
+		}
+		if !machine.Has(state) {
+			continue
+		}
+		reachable[state] = true
+		stack = append(stack, artifactOutgoing(machine, state)...)
+	}
+	return !reachable[consumer]
+}
+
+func artifactOutgoing(machine *Machine, state string) []string {
+	joinTargets := artifactJoinTargets(machine)
+	if parallel, ok := machine.Parallel(state); ok {
+		targets := make([]string, 0, len(parallel.Branches)+1)
+		for _, branch := range parallel.Branches {
+			targets = append(targets, branch.Start)
+		}
+		if parallel.OnFailure != "" {
+			targets = append(targets, parallel.OnFailure)
+		}
+		return targets
+	}
+	out := append([]string(nil), machine.Outgoing(state)...)
+	for i, target := range out {
+		if target == TargetJoin {
+			if join, ok := joinTargets[state]; ok {
+				out[i] = join
+			}
+		}
+	}
+	return out
+}
+
+func artifactJoinTargets(machine *Machine) map[string]string {
+	targets := make(map[string]string)
+	for _, parallel := range machine.Def.Spec.Parallels {
+		for _, branch := range parallel.Branches {
+			for _, terminal := range artifactJoinTerminalStates(machine, branch.Start) {
+				targets[terminal] = parallel.Join
+			}
+		}
+	}
+	return targets
+}
+
+func artifactJoinTerminalStates(machine *Machine, start string) []string {
+	var terminals []string
+	for _, state := range artifactBranchBody(machine, start) {
+		for _, target := range machine.Outgoing(state) {
+			if target == TargetJoin {
+				terminals = append(terminals, state)
+				break
+			}
+		}
+	}
+	sort.Strings(terminals)
+	return terminals
 }
 
 func splitArtifactInputRef(ref string) (producer, slot string, ok bool) {

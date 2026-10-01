@@ -275,6 +275,8 @@ const (
 	featureTaskArtifactSlotsMaxSize    FeatureID = "task.artifactSlots.maxSize"
 	featureTaskArtifactInputs          FeatureID = "task.artifactInputs"
 	featureTaskArtifactInputsFrom      FeatureID = "task.artifactInputs.from"
+	featureTaskArtifactInputsMediaType FeatureID = "task.artifactInputs.mediaType"
+	featureTaskArtifactInputsSchema    FeatureID = "task.artifactInputs.schemaPath"
 )
 
 func v31InheritedFeatures() []Feature {
@@ -300,6 +302,8 @@ func v31ArtifactFeatures() []Feature {
 		featureTaskArtifactSlotsMaxSize,
 		featureTaskArtifactInputs,
 		featureTaskArtifactInputsFrom,
+		featureTaskArtifactInputsMediaType,
+		featureTaskArtifactInputsSchema,
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
@@ -603,6 +607,12 @@ func featuresForV31Workflow(def Definition) ([]Feature, error) {
 		for _, ref := range task.ArtifactInputs {
 			if ref.From != "" {
 				add(featureTaskArtifactInputsFrom)
+			}
+			if ref.MediaType != "" {
+				add(featureTaskArtifactInputsMediaType)
+			}
+			if ref.SchemaPath != "" {
+				add(featureTaskArtifactInputsSchema)
 			}
 		}
 	}
