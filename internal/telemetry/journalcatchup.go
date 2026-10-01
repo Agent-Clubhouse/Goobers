@@ -135,7 +135,7 @@ func (s *journalCatchup) run(ctx context.Context) {
 			var enrolled time.Time
 			db, enrolled, err = openJournalCursorStore(ctx, s.spool, s.since)
 			if err != nil {
-				s.failure()
+				s.failureUnlessStopping(ctx)
 				if !s.waitForStoreRetry(ctx) {
 					return
 				}
@@ -145,7 +145,7 @@ func (s *journalCatchup) run(ctx context.Context) {
 		}
 		if time.Since(lastPrune) > time.Minute {
 			if err = pruneJournalCursors(ctx, db, time.Now().Add(-s.maxAge)); err != nil {
-				s.failure()
+				s.failureUnlessStopping(ctx)
 			}
 			lastPrune = time.Now()
 		}
@@ -206,12 +206,26 @@ func (s *journalCatchup) failure() {
 	s.pipeline.reporter.Handle(errors.New("journal catch-up unavailable; retained journal records will be retried"))
 }
 
+// failureUnlessStopping counts a failure only while the source is running.
+// Shutdown cancels ctx, which interrupts whatever batch is in flight; that is
+// this process stopping, not an export failure. Every short-lived stage CLI hit
+// it, because discovery keeps the worker busy with the instance's other
+// journals when the command exits (#6058). The interrupted batch's cursor never
+// advanced, so the retained journal still holds the records for the next owner.
+// A batch that exceeds its own attempt deadline while the source is running is
+// still counted: only the parent context is checked.
+func (s *journalCatchup) failureUnlessStopping(ctx context.Context) {
+	if ctx.Err() == nil {
+		s.failure()
+	}
+}
+
 func (s *journalCatchup) process(ctx context.Context, root *os.Root, db *sql.DB, hint journalCatchupHint) {
 	attempt, cancel := context.WithTimeout(ctx, journalLogTimeout)
 	defer cancel()
 	more, err := s.processBatch(attempt, root, db, hint)
 	if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, platformlock.ErrHeld) {
-		s.failure()
+		s.failureUnlessStopping(ctx)
 	}
 	if more || err != nil && !errors.Is(err, os.ErrNotExist) {
 		// Preserve the last committed watermark after a transient storage error
@@ -223,7 +237,48 @@ func (s *journalCatchup) process(ctx context.Context, root *os.Root, db *sql.DB,
 	}
 }
 
+// canonicalJournalDir gives each run journal exactly one cursor key. A
+// single-gaggle instance keeps root/runs as a compatibility alias of
+// gaggles/<gaggle>/runs (instance.CreateLegacyRuntimeAlias), so every run
+// journal is reachable at two paths: Commit offers both layout candidates and
+// discovery lists both trees. Cursors are keyed by path, so each path exported
+// the whole journal once and every run record reached the collector twice
+// (#6058). A runs/<id> path read through such an alias is rewritten to the
+// gaggle path it names. A real runs directory (the legacy flat layout, or a
+// multi-gaggle instance that retained one) and anything that cannot be
+// resolved keep their own path: an unresolved alias may duplicate, never lose.
+func canonicalJournalDir(root *os.Root, dir string) string {
+	rest, ok := strings.CutPrefix(dir, "runs"+string(filepath.Separator))
+	if !ok {
+		return dir
+	}
+	if info, err := root.Lstat("runs"); err != nil || info.IsDir() {
+		return dir
+	}
+	runs, err := root.Stat("runs")
+	if err != nil || !runs.IsDir() {
+		return dir
+	}
+	gaggles, err := root.Open("gaggles")
+	if err != nil {
+		return dir
+	}
+	defer func() { _ = gaggles.Close() }()
+	entries, err := gaggles.ReadDir(-1)
+	if err != nil {
+		return dir
+	}
+	for _, entry := range entries {
+		candidate := filepath.Join("gaggles", entry.Name(), "runs")
+		if info, err := root.Stat(candidate); err == nil && os.SameFile(info, runs) {
+			return filepath.Join(candidate, rest)
+		}
+	}
+	return dir
+}
+
 func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sql.DB, hint journalCatchupHint) (bool, error) {
+	hint.dir = canonicalJournalDir(root, hint.dir)
 	dir := hint.dir
 	cutoff := time.Now().Add(-s.maxAge)
 	if s.since.After(cutoff) {
