@@ -79,6 +79,23 @@ func NewRefreshingToken(capability, token string, expiresAt time.Time, refresh R
 	}, nil
 }
 
+// NewInvalidationRefreshingToken wraps a value that states no expiry (a PAT)
+// for a caller that owns a bounded retry around a provider 401, such as
+// ci-poll (#6154): it is never refreshed proactively, only after Invalidate,
+// so a long poll does not re-resolve on every request.
+func NewInvalidationRefreshingToken(capability, token string, refresh RefreshFunc, registrar SecretRegistrar) (*RefreshingToken, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("credentials: refreshing token for %s has no delivered value", capability)
+	}
+	if refresh == nil {
+		return nil, errors.New("credentials: refreshing token requires a refresh function")
+	}
+	return &RefreshingToken{
+		capability: capability, refresh: refresh, registrar: registrar, now: time.Now,
+		token: token,
+	}, nil
+}
+
 // WithClock overrides the time source for deterministic tests.
 func (t *RefreshingToken) WithClock(now func() time.Time) *RefreshingToken {
 	t.mu.Lock()

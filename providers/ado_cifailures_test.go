@@ -51,6 +51,16 @@ func TestADOPullRequestCIFailuresReportsRejectedCIPolicies(t *testing.T) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		evals(w, r)
 	})
+	// The builds behind the rejected build policies are not served here (see
+	// ado_buildevidence_test.go): their reads fail and are graded "failed".
+	mux.HandleFunc("/org/project/_apis/build/builds/", func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullRequests/42/statuses", func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		writeJSON(t, w, map[string]interface{}{"value": []interface{}{}})
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected ADO request: %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
@@ -81,26 +91,22 @@ func TestADOPullRequestCIFailuresReportsRejectedCIPolicies(t *testing.T) {
 	if want := server.URL + "/org/project/_build/results?buildId=314"; b.URL != want {
 		t.Errorf("build URL = %q, want %q", b.URL, want)
 	}
-	if b.Summary == "" || b.Annotations == nil || len(b.Annotations) != 0 {
-		t.Errorf("build failure summary/annotations = %q/%v, want a summary and empty annotations", b.Summary, b.Annotations)
+	if b.Annotations == nil || len(b.Annotations) != 0 || b.Evidence != CIEvidenceFailed ||
+		!strings.Contains(b.Summary, "build 314 read failed") {
+		t.Errorf("build failure = %+v, want an explicit failed grade and empty annotations when its build cannot be read", b)
 	}
 	if s.Name != "Status: example-ci/lint" || s.Conclusion != "broken" || s.URL != "" {
 		t.Errorf("status failure = %+v, want the named broken status with no build link", s)
+	}
+	if s.Evidence != CIEvidenceUnsupported {
+		t.Errorf("status evidence = %q, want unsupported when no status names a build", s.Evidence)
 	}
 	// An unnamed build policy is told apart by its configuration id.
 	if u.Name != "Build #27" {
 		t.Errorf("unnamed build failure name = %q, want %q", u.Name, "Build #27")
 	}
-	// Only build policies mention build logs.
-	if !strings.Contains(b.Summary, "build logs") {
-		t.Errorf("build summary = %q, want it to say build logs are not fetched", b.Summary)
-	}
-	for _, f := range []CIFailureDetail{s, o} {
-		if strings.Contains(f.Summary, "build logs") {
-			t.Errorf("%s summary = %q, want no mention of build logs for a non-build policy", f.Name, f.Summary)
-		}
-	}
-	if o.Name != "Custom policy" || o.Summary != "blocking policy rejected by Azure DevOps" {
-		t.Errorf("unclassified failure = %+v, want a neutral rejected summary", o)
+	if o.Name != "Custom policy" || !strings.HasPrefix(o.Summary, "blocking policy rejected by Azure DevOps; evidence unsupported; unsupported evidence source") ||
+		o.Evidence != CIEvidenceUnsupported {
+		t.Errorf("unclassified failure = %+v, want a neutral rejected summary graded unsupported", o)
 	}
 }

@@ -134,9 +134,12 @@ func TestReplaceDBSuccessDiscardsOldSidecars(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "telemetry.db")
 
-	openActiveDBWithLiveWAL(t, dbPath)
-	if _, err := os.Stat(dbPath + "-wal"); err != nil {
-		t.Fatalf("stat %s: %v", dbPath+"-wal", err)
+	if err := os.WriteFile(dbPath, []byte("active-projection"), 0o644); err != nil {
+		t.Fatalf("write active file: %v", err)
+	}
+	walPath := dbPath + "-wal"
+	if err := os.WriteFile(walPath, []byte("old-wal"), 0o644); err != nil {
+		t.Fatalf("write old WAL sidecar: %v", err)
 	}
 
 	stagingPath, err := createStagingDB(dbPath)
@@ -158,7 +161,7 @@ func TestReplaceDBSuccessDiscardsOldSidecars(t *testing.T) {
 	if string(body) != "staged-projection" {
 		t.Fatalf("active database content = %q, want the staged projection", body)
 	}
-	if _, err := os.Stat(dbPath + "-wal"); !os.IsNotExist(err) {
+	if _, err := os.Stat(walPath); !os.IsNotExist(err) {
 		t.Fatalf("-wal sidecar still present after a successful replaceDB: err=%v", err)
 	}
 

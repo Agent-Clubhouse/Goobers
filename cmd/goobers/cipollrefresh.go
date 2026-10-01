@@ -22,21 +22,17 @@ import (
 // (under the pod's own token) in a pod.
 
 // ciPollTokenSource resolves capabilityName through injector and wraps the
-// value in a refreshing source when it states an expiry. The returned source
-// is nil for a value without one (a PAT), which polls with the static value
-// exactly as before.
+// value in a refreshing source (newCIPollRefreshingToken): refreshed ahead of
+// a stated expiry, and re-resolved after a 401 whether or not it states one.
 func ciPollTokenSource(ctx context.Context, injector *credentials.Injector, capabilityName string, registrar credentials.SecretRegistrar) (string, providers.TokenSource, error) {
 	token, expiresAt, err := materializeCapability(ctx, injector, capabilityName)
 	if err != nil {
 		return "", nil, err
 	}
-	if expiresAt.IsZero() {
-		return token, nil, nil
-	}
 	refresh := func(ctx context.Context) (string, time.Time, error) {
 		return materializeCapability(ctx, injector, capabilityName)
 	}
-	source, err := credentials.NewRefreshingToken(capabilityName, token, expiresAt, refresh, registrar)
+	source, err := newCIPollRefreshingToken(capabilityName, token, expiresAt, refresh, registrar)
 	if err != nil {
 		return "", nil, err
 	}
@@ -79,8 +75,8 @@ func localCIPollGitHubPoller(ctx context.Context, injector *credentials.Injector
 
 // podCIPollTokenSource wraps the value the pod resolved at stage start in a
 // refreshing source that re-resolves through the credential plane under the
-// pod's own token — the same call that produced it — when the value states an
-// expiry. Nil otherwise.
+// pod's own token — the same call that produced it — ahead of a stated expiry
+// and after a 401 (newCIPollRefreshingToken). Nil when no value was resolved.
 func podCIPollTokenSource(creds []dispatcher.MintedCredential, capabilityName string, registrar credentials.SecretRegistrar) providers.TokenSource {
 	var minted dispatcher.MintedCredential
 	for _, cred := range creds {
@@ -88,8 +84,12 @@ func podCIPollTokenSource(creds []dispatcher.MintedCredential, capabilityName st
 			minted = cred
 		}
 	}
-	if minted.Value == "" || minted.ExpiresAt == nil {
+	if minted.Value == "" {
 		return nil
+	}
+	var expiresAt time.Time
+	if minted.ExpiresAt != nil {
+		expiresAt = *minted.ExpiresAt
 	}
 	refresh := func(ctx context.Context) (string, time.Time, error) {
 		client, err := credentialPlaneClient([]string{capabilityName})
@@ -102,11 +102,23 @@ func podCIPollTokenSource(creds []dispatcher.MintedCredential, capabilityName st
 		}
 		return mintedValueAndExpiry(resolution.Credentials, capabilityName)
 	}
-	source, err := credentials.NewRefreshingToken(capabilityName, minted.Value, *minted.ExpiresAt, refresh, registrar)
+	source, err := newCIPollRefreshingToken(capabilityName, minted.Value, expiresAt, refresh, registrar)
 	if err != nil {
 		return nil
 	}
 	return source
+}
+
+// newCIPollRefreshingToken is ci-poll's token source. A value with a stated
+// expiry is refreshed ahead of it and once after a 401 (Goobers#6120). A value
+// without one (a PAT) is never refreshed proactively, but is still re-resolved
+// after a 401 — once per ci-poll unauthorized retry (#6154), whose bound
+// limits the attempts — rather than on every poll request.
+func newCIPollRefreshingToken(capabilityName, token string, expiresAt time.Time, refresh credentials.RefreshFunc, registrar credentials.SecretRegistrar) (*credentials.RefreshingToken, error) {
+	if expiresAt.IsZero() {
+		return credentials.NewInvalidationRefreshingToken(capabilityName, token, refresh, registrar)
+	}
+	return credentials.NewRefreshingToken(capabilityName, token, expiresAt, refresh, registrar)
 }
 
 func mintedValueAndExpiry(creds []dispatcher.MintedCredential, capabilityName string) (string, time.Time, error) {

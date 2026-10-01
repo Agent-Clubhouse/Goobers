@@ -301,9 +301,11 @@ type Scheduler struct {
 	// tick after an exhausted quota window resets.
 	quotaResumePacing map[apiv1.Provider]bool
 	// authCircuits suppress provider polls and dispatch for a workflow after a
-	// permanent credential failure. Reload clears the circuit after an
-	// operator repairs configuration.
-	authCircuits map[WorkflowIdentity]struct{}
+	// credential failure (#2687). The circuit is time-bounded (#6166): after a
+	// cooldown it lets an attempt through, backing off further on each repeat
+	// failure and closing on a run that does not fail authentication. Reload
+	// clears it immediately after an operator repairs configuration.
+	authCircuits map[WorkflowIdentity]authCircuit
 	// lastDispatchedGaggle is the cursor for work-conserving round-robin
 	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
@@ -337,6 +339,15 @@ type Scheduler struct {
 	// refillRandN bounds testability of jitter generation.
 	refillRandN func(int64) int64
 }
+
+// wallClockNow is the scheduler's default clock: the current time with its
+// monotonic reading stripped. Everything the scheduler records against this
+// clock (budget starts, idle-backoff and backlog-poll deadlines, refill and
+// auth-circuit retries, trigger-stall silence) is a wall-clock deadline or
+// window, and Go's monotonic clock does not advance while a macOS host sleeps
+// — comparing two monotonic readings across a sleep undercounts the elapsed
+// time by the length of the sleep (#6169).
+func wallClockNow() time.Time { return time.Now().Round(0) }
 
 // Option configures a Scheduler.
 type Option func(*Scheduler)
@@ -489,7 +500,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		workflows:               make(map[WorkflowIdentity]WorkflowEntry, len(entries)),
 		conditions:              NewConditions(),
 		log:                     log,
-		now:                     time.Now,
+		now:                     wallClockNow,
 		after:                   time.After,
 		demandPollTimeout:       demandPollTimeout,
 		triggers:                make(map[WorkflowIdentity]TriggerState),
@@ -506,7 +517,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		triggerStallNotified:    make(map[WorkflowIdentity]bool),
 		demandPollFailures:      make(map[demandPollFailureKey]int),
 		quotaResumePacing:       make(map[apiv1.Provider]bool),
-		authCircuits:            make(map[WorkflowIdentity]struct{}),
+		authCircuits:            make(map[WorkflowIdentity]authCircuit),
 		refillBlockedUntil:      make(map[WorkflowIdentity]time.Time),
 		refillBackoff:           30 * time.Second,
 		refillBackoffJitter:     5 * time.Second,
@@ -998,7 +1009,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
-		if s.authCircuitOpen(entryIdentity(entry)) {
+		if s.authCircuitOpen(entryIdentity(entry), now) {
 			continue
 		}
 		if skipPermanentRefusedEntry(entry) {
@@ -1323,7 +1334,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
 	s.triggerStallNotified = triggerStallNotified
-	s.authCircuits = make(map[WorkflowIdentity]struct{})
+	s.authCircuits = make(map[WorkflowIdentity]authCircuit)
 
 	select {
 	case s.wake <- struct{}{}:
@@ -1630,7 +1641,7 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 		}
 		for _, poll := range due {
 			entry := poll.candidate.entry
-			if s.authCircuitOpen(entryIdentity(entry)) {
+			if s.authCircuitOpen(entryIdentity(entry), now) {
 				s.applyDemandCount(poll, 0)
 				continue
 			}
@@ -2427,8 +2438,8 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	defer span.End()
 
 	identity := entryIdentity(entry)
-	if s.authCircuitOpen(identity) {
-		reason := ReasonProviderAuth + ": operator must repair credentials and reload configuration"
+	if retryAt, open := s.authCircuitRetryAt(identity, now); open {
+		reason := authCircuitReason(retryAt)
 		s.journalEvent(journal.Event{
 			Type:     journal.EventTickSkipped,
 			Workflow: entry.Workflow,
@@ -2538,7 +2549,11 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		}
 		if (startErr == nil && providers.IsAuthFailureCode(result.FailureCode)) ||
 			result.FailureCode == telemetry.ErrCodeCredentialUnavailable {
-			s.openAuthCircuit(identity)
+			s.openAuthCircuit(identity, s.now())
+		} else if startErr == nil {
+			// A run that got past every credential it needed is the
+			// half-open probe succeeding: forget the failure streak.
+			s.closeAuthCircuit(identity)
 		}
 		// #710: this echo used to carry only the bare phase string — a
 		// business failure (result.Phase == "failed", startErr == nil: the
@@ -2601,16 +2616,75 @@ func (s *Scheduler) journalDispatchRefusal(entry WorkflowEntry, identity Workflo
 	})
 }
 
-func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, open := s.authCircuits[identity]
+// authCircuit is one workflow's credential-failure circuit. While now is
+// before retryAt the workflow is neither polled nor dispatched; from retryAt
+// on it is half-open and the next attempt either closes it or re-opens it
+// with a longer cooldown.
+type authCircuit struct {
+	retryAt time.Time
+	strikes int
+}
+
+const (
+	// authCircuitBaseCooldown is the first re-open delay. It keeps a broken
+	// credential to a handful of attempts per hour (#2687) while letting a
+	// transient failure — a delivered token that expired mid-stage, a token
+	// broker that failed twice in a row — recover on its own (#6166).
+	authCircuitBaseCooldown = 15 * time.Minute
+	// authCircuitMaxCooldown caps the exponential backoff on repeated
+	// failures.
+	authCircuitMaxCooldown = 2 * time.Hour
+)
+
+func authCircuitCooldown(strikes int) time.Duration {
+	cooldown := authCircuitBaseCooldown
+	for i := 1; i < strikes && cooldown < authCircuitMaxCooldown; i++ {
+		cooldown *= 2
+	}
+	return min(cooldown, authCircuitMaxCooldown)
+}
+
+func authCircuitReason(retryAt time.Time) string {
+	return fmt.Sprintf("%s: retrying after %s (or repair credentials and reload configuration)",
+		ReasonProviderAuth, retryAt.UTC().Format(time.RFC3339))
+}
+
+func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity, now time.Time) bool {
+	_, open := s.authCircuitRetryAt(identity, now)
 	return open
 }
 
-func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity) {
+func (s *Scheduler) authCircuitRetryAt(identity WorkflowIdentity, now time.Time) (time.Time, bool) {
 	s.mu.Lock()
-	s.authCircuits[identity] = struct{}{}
+	defer s.mu.Unlock()
+	circuit, ok := s.authCircuits[identity]
+	if !ok || !now.Before(circuit.retryAt) {
+		return time.Time{}, false
+	}
+	return circuit.retryAt, true
+}
+
+// openAuthCircuit opens (or re-opens, with a longer cooldown) identity's
+// circuit at now and journals when it will next be tried, so a workflow the
+// circuit is holding is never silent (#6166).
+func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity, now time.Time) {
+	s.mu.Lock()
+	circuit := s.authCircuits[identity]
+	circuit.strikes++
+	circuit.retryAt = now.Add(authCircuitCooldown(circuit.strikes))
+	s.authCircuits[identity] = circuit
+	s.mu.Unlock()
+	s.journalEvent(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Reason:   authCircuitReason(circuit.retryAt),
+	})
+}
+
+func (s *Scheduler) closeAuthCircuit(identity WorkflowIdentity) {
+	s.mu.Lock()
+	delete(s.authCircuits, identity)
 	s.mu.Unlock()
 }
 
@@ -2721,7 +2795,8 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		}
 	}
 	for name, entry := range s.workflows {
-		if _, open := s.authCircuits[name]; open {
+		if circuit, open := s.authCircuits[name]; open && now.Before(circuit.retryAt) {
+			consider(circuit.retryAt)
 			continue
 		}
 		ts := s.triggers[name]

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/creditgraph"
@@ -639,6 +640,12 @@ type Config struct {
 	// replaces it (never merged); empty leaves every task's own requireLabels
 	// (or its absence) untouched.
 	BacklogQueryRequireLabels string
+	// BacklogQueryBacklogLabels and BacklogQueryLabelPredicate are the
+	// gaggle's spec.backlog.labels / labelPredicate scope. They are conjoined
+	// with backlog-query task inputs and cannot be replaced by task-local
+	// selectors.
+	BacklogQueryBacklogLabels  string
+	BacklogQueryLabelPredicate string
 }
 
 func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
@@ -5057,6 +5064,27 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 	return resolved
 }
 
+func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]string) map[string]string {
+	inputs = defaultBacklogQueryAssignedTo(task, inputs, r.cfg.BacklogQueryAssignedTo)
+	return defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
+}
+
+func (r *Runner) applyInvocationBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]interface{}) (map[string]interface{}, error) {
+	return backlogdefaults.ApplyBacklogScopeToInvocation(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
+}
+
+func (r *Runner) finalizeInvocationInputs(task apiv1.Task, env *apiv1.InvocationEnvelope, fanIn *parallelExec) error {
+	inputs, err := r.applyInvocationBacklogQueryBacklogScope(task, env.Inputs)
+	if err != nil {
+		return fmt.Errorf("stage %q backlog scope: %w", task.Name, err)
+	}
+	env.Inputs = inputs
+	if fanIn != nil && task.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	}
+	return nil
+}
+
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
@@ -5087,7 +5115,9 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // upstreamResult.Outputs fails the stage closed, since InputsFrom is a
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
-// open read).
+// open read). Gaggle backlog labels/predicate are then conjoined onto the
+// resolved inputs so upstream bindings can narrow but never replace gaggle
+// scope.
 func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, cleanup func(bool) error, err error) {
 	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
@@ -5098,8 +5128,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err)
 	}
-	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
-	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
+	taskInputs = r.defaultBacklogQueryInputs(t, taskInputs)
 	var experiment bandit.Config
 	var assignment bandit.Assignment
 	var experimentObservations []bandit.Observation
@@ -5245,8 +5274,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		env.Inputs[inputKey] = v
 	}
-	if fanIn != nil && t.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	if err := r.finalizeInvocationInputs(t, &env, fanIn); err != nil {
+		return apiv1.ResultEnvelope{}, nil, nil, err
 	}
 
 	switch t.Type {

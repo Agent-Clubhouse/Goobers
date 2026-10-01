@@ -872,3 +872,21 @@ func requireLabelsByGaggle(set *instance.ConfigSet) map[string]string {
 	}
 	return out
 }
+
+func backlogLabelsByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = strings.Join(g.Spec.Backlog.Labels, ",")
+	}
+	return out
+}
+
+func backlogLabelPredicatesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = g.Spec.Backlog.LabelPredicate
+	}
+	return out
+}

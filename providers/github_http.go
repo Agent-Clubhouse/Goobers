@@ -237,6 +237,24 @@ func (p *GitHubProvider) invalidateToken() bool {
 	return true
 }
 
+// RefreshCIPollCredential lets ci-poll (#6154) distinguish a refreshable
+// credential source from a static token when a long poll receives 401, after
+// send()'s own one re-resolve (#6120) was also rejected. A refreshable source
+// is invalidated and re-resolved once here, so a refresh failure surfaces to
+// ci-poll's bounded retry as an error; any other source is asked again. A
+// static-token provider reports that no refresh path exists so the caller
+// preserves the terminal auth failure.
+func (p *GitHubProvider) RefreshCIPollCredential(ctx context.Context) (bool, error) {
+	if p.tokenSource == nil {
+		return false, nil
+	}
+	if source, ok := p.tokenSource.(RefreshableTokenSource); ok {
+		source.Invalidate()
+	}
+	_, err := p.tokenSource.Token(ctx)
+	return err == nil, err
+}
+
 func (p *GitHubProvider) recordExternalRef(ctx context.Context, ref ExternalRef) {
 	if p.recorder != nil {
 		p.recorder.RecordExternalRef(ctx, ref)

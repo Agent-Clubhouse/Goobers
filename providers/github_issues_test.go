@@ -192,19 +192,21 @@ func TestGitHubProviderLastObservedQuota(t *testing.T) {
 // issueMock is a minimal in-memory GitHub issue backend covering the endpoints the
 // issue operations touch: read issue, list/post comments, add/remove labels, patch.
 type issueMock struct {
-	mu        sync.Mutex
-	title     string
-	body      string
-	state     string
-	labels    []string
-	assignees []string
-	milestone int
-	comments  []map[string]interface{}
-	nextID    int64
-	authSeen  string
-	userLogin string
-	patchBody map[string]interface{}
-	children  []map[string]interface{}
+	mu             sync.Mutex
+	title          string
+	body           string
+	state          string
+	labels         []string
+	assignees      []string
+	milestone      int
+	comments       []map[string]interface{}
+	nextID         int64
+	authSeen       string
+	userLogin      string
+	patchBody      map[string]interface{}
+	children       []map[string]interface{}
+	now            func() time.Time
+	hideLabelUntil map[string]time.Time
 }
 
 func newIssueMock() *issueMock {
@@ -348,10 +350,21 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 }
 
 func (m *issueMock) issueJSON() map[string]interface{} {
+	labels := m.labels
+	if m.now != nil && len(m.hideLabelUntil) != 0 {
+		now := m.now()
+		labels = make([]string, 0, len(m.labels))
+		for _, label := range m.labels {
+			if until, hidden := m.hideLabelUntil[label]; hidden && now.Before(until) {
+				continue
+			}
+			labels = append(labels, label)
+		}
+	}
 	out := map[string]interface{}{
 		"id": 123, "number": 7, "title": m.title, "body": m.body, "state": m.state,
 		"html_url": "https://github.com/acme/app/issues/7",
-		"labels":   labelObjects(m.labels),
+		"labels":   labelObjects(labels),
 	}
 	assignees := make([]map[string]string, 0, len(m.assignees))
 	for _, login := range m.assignees {
@@ -1013,6 +1026,41 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	}
 	if len(m.comments) != before {
 		t.Fatalf("losing claim should not post a breadcrumb: %d -> %d", before, len(m.comments))
+	}
+}
+
+func TestGitHubClaimWaitsForLabelProjectionByElapsedWindow(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	visibleAt := now.Add(150 * time.Millisecond)
+	m := newIssueMock()
+	m.now = func() time.Time { return now }
+	m.hideLabelUntil = map[string]time.Time{LabelClaimed: visibleAt}
+	p, repo := newIssueProvider(t, m, func(p *GitHubProvider) {
+		p.jitter = func(time.Duration) time.Duration { return 0 }
+	})
+	var sleeps []time.Duration
+	p.sleep = func(ctx context.Context, delay time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		sleeps = append(sleeps, delay)
+		now = now.Add(delay)
+		return nil
+	}
+
+	result, err := p.ClaimWorkItem(context.Background(), ClaimWorkItemRequest{
+		Repository: repo, ID: "7", RunID: "run-A",
+	})
+	if err != nil || !result.Claimed {
+		t.Fatalf("claim = %+v, %v", result, err)
+	}
+	if !result.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("claimed item labels = %v, want %s after convergence", result.Item.Labels, LabelClaimed)
+	}
+	if len(sleeps) < 2 || now.Before(visibleAt) {
+		t.Fatalf("sleeps = %v, now = %s, want elapsed convergence at or after %s", sleeps, now, visibleAt)
 	}
 }
 

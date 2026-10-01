@@ -1485,14 +1485,20 @@ function EventLedger({
   const grouped = journalEntries(visible, run.id);
   const rows: JournalEntry[] =
     view === "all"
-      ? orderRunEvents(visible).map((event) => ({ kind: "event", event }))
+      ? newestLedgerEventsFirst(visible).map((event) => ({ kind: "event", event }))
       : view === "key"
-        ? orderRunEvents(visible)
+        ? newestLedgerEventsFirst(visible)
             .filter((event) => keyMomentIds.has(`${event.branch}-${event.seq}`))
             .map((event) => ({ kind: "event", event }))
-      : grouped.flatMap((entry) =>
+      : newestJournalEntriesFirst(grouped).flatMap((entry) =>
           entry.kind === "group" && expandedGroups.has(entry.id)
-            ? [entry, ...entry.events.map((event) => ({ kind: "event" as const, event }))]
+            ? [
+                entry,
+                ...newestLedgerEventsFirst(entry.events).map((event) => ({
+                  kind: "event" as const,
+                  event,
+                })),
+              ]
             : [entry],
         );
 
@@ -1548,7 +1554,7 @@ function EventLedger({
     <section aria-labelledby="event-ledger-title" className="event-ledger">
       <div className="panel-heading-row event-ledger-heading">
         <h2 id="event-ledger-title">Event ledger</h2>
-        <span className="graph-legend">Ordered by durable sequence</span>
+        <span className="graph-legend">Newest events first</span>
       </div>
       <div aria-label="Event ledger filters" className="filter-bar event-ledger-filter-bar">
         <button
@@ -1562,7 +1568,7 @@ function EventLedger({
           Key moments
         </button>
         <span className="sr-only" id="journal-view-key-hint">
-          Shows decisions, escalations, and branch handoffs in durable sequence order
+          Shows decisions, escalations, and branch handoffs with newest events first
         </span>
         <button
           aria-describedby="journal-view-major-hint"
@@ -1795,6 +1801,33 @@ function EventLedger({
       )}
     </section>
   );
+}
+
+function newestLedgerEventsFirst(events: RunEvent[]): RunEvent[] {
+  return [...events].sort(compareLedgerEventsNewestFirst);
+}
+
+function newestJournalEntriesFirst(entries: JournalEntry[]): JournalEntry[] {
+  return [...entries].sort((left, right) =>
+    compareLedgerEventsNewestFirst(latestLedgerEntryEvent(left), latestLedgerEntryEvent(right)),
+  );
+}
+
+function latestLedgerEntryEvent(entry: JournalEntry): RunEvent {
+  return entry.kind === "event" ? entry.event : newestLedgerEventsFirst(entry.events)[0];
+}
+
+function compareLedgerEventsNewestFirst(left: RunEvent, right: RunEvent): number {
+  return (
+    eventTimeMillis(right) - eventTimeMillis(left) ||
+    right.seq - left.seq ||
+    right.branch - left.branch
+  );
+}
+
+function eventTimeMillis(event: RunEvent): number {
+  const millis = Date.parse(event.time);
+  return Number.isFinite(millis) ? millis : Number.NEGATIVE_INFINITY;
 }
 
 /**

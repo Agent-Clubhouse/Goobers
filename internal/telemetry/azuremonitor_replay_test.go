@@ -97,12 +97,9 @@ func TestAzureReplayClientShutdownDoesNotWaitForUnavailableManifest(t *testing.T
 
 func TestAzureReplayShutdownBoundsStalledUploadAndReplaysAfterRestart(t *testing.T) {
 	cfg := azureReplayConfig{dir: t.TempDir(), maxAge: time.Hour, maxBytes: 1 << 20}
-	entered := make(chan struct{}, 1)
+	attempts := make(chan context.Context, 2)
 	first, err := newAzureReplaySpool(cfg, func(ctx context.Context, _ []byte) error {
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
+		attempts <- ctx
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -116,24 +113,42 @@ func TestAzureReplayShutdownBoundsStalledUploadAndReplaysAfterRestart(t *testing
 	if err := first.submit(t.Context(), payload); err != nil {
 		t.Fatal(err)
 	}
+	var backgroundUpload context.Context
 	select {
-	case <-entered:
+	case backgroundUpload = <-attempts:
 	case <-closeCtx.Done():
 		t.Fatal("background sender never started")
 	}
-	started := time.Now()
 	done := make(chan error, 1)
 	go func() { done <- first.close(closeCtx) }()
+	select {
+	case <-backgroundUpload.Done():
+	case <-closeCtx.Done():
+		t.Fatal("shutdown did not cancel the background sender")
+	}
+	var finalUpload context.Context
+	select {
+	case finalUpload = <-attempts:
+	case err := <-done:
+		t.Fatalf("shutdown completed before attempting final upload: %v", err)
+	case <-closeCtx.Done():
+		t.Fatal("shutdown did not attempt the bounded final upload")
+	}
+	select {
+	case <-finalUpload.Done():
+	case <-closeCtx.Done():
+		t.Fatal("bounded final upload did not expire before caller cleanup budget")
+	}
+	if !errors.Is(finalUpload.Err(), context.DeadlineExceeded) {
+		t.Fatalf("final upload stopped with %v, want %v", finalUpload.Err(), context.DeadlineExceeded)
+	}
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("stalled final upload error = %v", err)
 		}
-		t.Logf("stalled shutdown completed in %s", time.Since(started))
-	case <-time.After(2 * time.Second):
-		cancel()
-		<-done
-		t.Fatal("shutdown waited more than two seconds for a stalled remote upload")
+	case <-closeCtx.Done():
+		t.Fatal("shutdown did not return after bounded final upload expired")
 	}
 	if err := closeCtx.Err(); err != nil {
 		t.Fatalf("shutdown exhausted caller's cleanup budget: %v", err)

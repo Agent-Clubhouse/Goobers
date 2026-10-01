@@ -16,6 +16,10 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// gatherCIRawLogByteLimit is the raw job-log volume fetched per check on
+// GitHub and Gitea, whose check annotations carry the diagnosis. Azure DevOps
+// has no annotations, so its arm reads bounded excerpts of the failed steps'
+// logs instead (providers.ADOCIEvidenceBounds).
 const gatherCIRawLogByteLimit = 0
 
 // remediationBriefArtifact names the thing an upstream stage owed this one, for
@@ -25,9 +29,15 @@ const remediationBriefArtifact = "remediation brief artifact"
 const gatherCIFailuresHelp = "Usage: goobers gather-ci-failures [path]\n\n" +
 	"Enrich this run's remediation brief with failing check names,\n" +
 	"conclusions, summaries, and annotations. Passing CI leaves the brief\n" +
-	"unchanged and performs no provider API calls. Raw job logs are never\n" +
-	"fetched: their explicit per-check volume bound is 0 bytes. [path] is\n" +
-	"the instance root, defaulting to GOOBERS_INSTANCE_ROOT. Exit codes:\n" +
+	"unchanged and performs no provider API calls. On GitHub and Gitea raw\n" +
+	"job logs are never fetched: their per-check volume bound is 0 bytes.\n" +
+	"On Azure DevOps each failing build or status policy is traced to its\n" +
+	"build, and the build's failed jobs and tasks are reported with their\n" +
+	"issues and a bounded excerpt of each failed step's log; every check's\n" +
+	"summary grades its evidence (complete, partial_bound, partial_provider,\n" +
+	"unsupported, failed or stale), so an external status or a missing log\n" +
+	"is explicit. [path] is the instance root, defaulting to\n" +
+	"GOOBERS_INSTANCE_ROOT. Exit codes:\n" +
 	"0 = evidence gathered (or passing-CI no-op), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -107,10 +117,12 @@ func gatherCIFailureDetails(ctx context.Context, root string, repo providers.Rep
 }
 
 // gatherADOCIFailures is the Azure DevOps arm (ADO-N22, design
-// ado-parity-dsl-2-0.md §3.4): minimal native evidence from the pull
-// request's rejected policy evaluations, with a build link and no logs. It
-// builds its provider through the same narrow surface as the review-thread
-// stages, so the ADO stage factory resolves the credential itself.
+// ado-parity-dsl-2-0.md §3.4; #5652): native evidence from the pull
+// request's rejected policy evaluations, each traced to its build's failed
+// jobs, tasks, issues and bounded log excerpts, and graded for completeness
+// (providers.PullRequestCIFailures). It builds its provider through the same
+// narrow surface as the review-thread stages, so the ADO stage factory
+// resolves the credential itself.
 //
 // Policy evaluations belong to the pull request, not to a commit. When the
 // head ADO reports differs from the brief's head, the pull request moved
@@ -141,6 +153,7 @@ func gatherADOCIFailures(ctx context.Context, root string, repo providers.Reposi
 			summary += "; " + evidence.Failures[i].Summary
 		}
 		evidence.Failures[i].Summary = summary
+		evidence.Failures[i].Evidence = providers.CIEvidenceStale
 	}
 	return evidence.Failures, "", nil
 }
@@ -157,6 +170,7 @@ func staleADOCIEvidence(stale string) providers.CIFailureDetail {
 			Summary:    stale + "; no rejected CI policy is reported at the evaluated head",
 		},
 		Annotations: []providers.CheckAnnotation{},
+		Evidence:    providers.CIEvidenceStale,
 	}
 }
 
