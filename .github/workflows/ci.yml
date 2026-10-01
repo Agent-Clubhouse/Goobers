@@ -323,6 +323,13 @@ jobs:
             return 1
           }
 
+          # Hosted runners can still be running boot-time apt work, which holds
+          # the apt lists lock that DPkg::Lock::Timeout does not cover.
+          for _ in $(seq 1 60); do
+            pgrep -x 'apt|apt-.*|dpkg|unattended-upgr' >/dev/null || break
+            sleep 2
+          done
+
           retry_network_command "portal npm install" \
             npm --prefix portal ci --no-audit --no-fund
           retry_network_command "Playwright Chromium install" \
