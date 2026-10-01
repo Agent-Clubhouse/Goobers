@@ -2410,7 +2410,14 @@ func TestRunnerGateRoutedSuccessToCompleteStaysCompleted(t *testing.T) {
 func TestRunnerResultCarriesFailureCauseAtFirstStage(t *testing.T) {
 	machine := terminalFailMachine(t)
 	byTask := map[string]stubTaskResult{
-		"run-cause-first:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "github_rate_limited", Message: "list pull requests: status 403, remaining 0"}},
+		"run-cause-first:implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{
+			Code:    "github_rate_limited",
+			Message: "list pull requests: status 403, remaining 0",
+			Causes: []apiv1.ErrorCause{
+				{Message: "list pull requests"},
+				{Code: "github_rate_limited", Class: "infra", Message: "status 403, remaining 0"},
+			},
+		}},
 	}
 	r, runsDir := newTestRunner(t, byTask, nil)
 
@@ -2447,11 +2454,37 @@ func TestRunnerResultCarriesFailureCauseAtFirstStage(t *testing.T) {
 			if !strings.Contains(e.Error.Message, "github_rate_limited") {
 				t.Errorf("run_failed message = %q, want it to contain the stage's own code", e.Error.Message)
 			}
+			if got := causeMessages(e.Error.Causes); !equalStringSlices(got, []string{"list pull requests", "status 403, remaining 0"}) {
+				t.Fatalf("run_failed causes = %#v, want stage structured causes", got)
+			}
+			if e.Error.Causes[1].Code != "github_rate_limited" || e.Error.Causes[1].Class != "infra" {
+				t.Fatalf("run_failed typed cause = %+v, want code/class metadata", e.Error.Causes[1])
+			}
 		}
 	}
 	if !sawCause {
 		t.Fatal("expected a run_failed error event naming stage \"implement\" (#305 pattern)")
 	}
+}
+
+func causeMessages(causes []journal.ErrorCause) []string {
+	out := make([]string, len(causes))
+	for i, cause := range causes {
+		out[i] = cause.Message
+	}
+	return out
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestRunnerResultCarriesFailureCauseAtLastStage covers the AC's second shape

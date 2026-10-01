@@ -3264,6 +3264,10 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
 	code, message := failureCauseFrom(cause)
 	journaledMessage := message
+	var causes []journal.ErrorCause
+	if cause != nil {
+		causes = journalErrorCausesFrom(cause.Causes)
+	}
 	var terminalRunner map[string]any
 	if code != "" {
 		// Code-prefixed for the on-disk cause event only (matching #545's
@@ -3281,7 +3285,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	}
 	if aerr := jr.Append(journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage, Causes: causes},
 		Runner: terminalRunner,
 	}); aerr != nil {
 		// This degenerate journal-write failure routes through failTerminal,
