@@ -169,7 +169,7 @@ func TestDetectCandidateFindingsWithCreditAppliesThresholdsAndGuardrails(t *test
 	thresholds.MinCreditFailureShare = 0.4
 	thresholds.MaxFlaggedRuns = 2
 	result, err := detectCandidateFindingsWithCausalCredit(
-		rollupDB,
+		context.Background(), rollupDB,
 		creditStore,
 		24*time.Hour,
 		start.Add(-time.Minute),
@@ -246,7 +246,7 @@ func TestDetectCandidateFindingsLoadsStoredAttributionCohorts(t *testing.T) {
 	thresholds.MinCreditRuns = 1
 	thresholds.MinCreditFailureShare = 0
 	result, err := detectCandidateFindingsWithCausalCredit(
-		db,
+		context.Background(), db,
 		store,
 		24*time.Hour,
 		time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC),
@@ -398,11 +398,11 @@ func TestTelemetryQueryArtifactDeterministicForFixedInput(t *testing.T) {
 	thresholds.MinErrorSignatureCount = 1
 	since := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
 	aggregates := telemetryAggregateValues{telemetryAggregateStageFailureRate, telemetryAggregateErrorSignature}
-	first, err := detectCandidateFindingsWithCausalCredit(db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
+	first, err := detectCandidateFindingsWithCausalCredit(context.Background(), db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := detectCandidateFindingsWithCausalCredit(db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
+	second, err := detectCandidateFindingsWithCausalCredit(context.Background(), db, nil, 24*time.Hour, since, "", "", "", aggregates, nil, thresholds)
 	if err != nil {
 		t.Fatal(err)
 	}

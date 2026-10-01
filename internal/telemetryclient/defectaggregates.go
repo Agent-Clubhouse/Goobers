@@ -511,7 +511,13 @@ func (h *HTTP) DefectAggregates(ctx context.Context, req DefectAggregateRequest)
 	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
 	request.Header.Set("Accept", "application/json")
 
-	response, err := h.cfg.Client.Do(request)
+	// This aggregate derives four families over as much as a week of rollups.
+	// The ordinary 30-second plane budget has expired in live nomination runs.
+	// Copy the client so other telemetry reads keep their short bound, while
+	// the caller's context can still impose a shorter deadline.
+	client := *h.cfg.Client
+	client.Timeout = DefectAggregateTimeout
+	response, err := client.Do(request)
 	if err != nil {
 		return DefectAggregateResponse{}, fmt.Errorf("telemetryclient: read defect aggregates: %w", err)
 	}

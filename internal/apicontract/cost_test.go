@@ -8,8 +8,8 @@ import (
 
 // clientAbort is the portal's own request timeout.
 //
-// Every server budget must be strictly below it, so the SERVER is what decides a
-// request has run too long. If a budget met or exceeded it, the client would
+// Every Portal-facing server budget must be strictly below it, so the SERVER
+// is what decides a request has run too long. If a budget met or exceeded it, the client would
 // abort first and the user would see a generic network failure instead of the
 // 503 + Retry-After the server would have sent — the same outcome, with none of
 // the information.
@@ -59,6 +59,11 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		// motivates this rule does not apply. TestCredentialResolveBudget
 		// below pins the mint-containment reasoning.
 		if route.ID == RouteCredentialResolve || route.ID == RouteCredentialRefresh {
+			continue
+		}
+		// Defect nomination is a stage-pod read with its own five-minute
+		// client deadline, not a Portal request with a ten-second abort.
+		if route.ID == RouteTelemetryDefectAggregates {
 			continue
 		}
 		// Worker recovery uploads stream a bounded binary archive; they do
@@ -143,6 +148,17 @@ func TestTelemetryCostsUsesAggregateBudget(t *testing.T) {
 	}
 	if route.Cost != CostAggregate || route.Budget != BoundedBudget {
 		t.Fatalf("telemetryCosts route = cost %q budget %s", route.Cost, route.Budget)
+	}
+}
+
+func TestDefectAggregateRouteHasItsOwnBoundedBudget(t *testing.T) {
+	route, ok := V1Route(RouteTelemetryDefectAggregates)
+	if !ok {
+		t.Fatal("defect aggregate route is not in the V1 contract")
+	}
+	if route.Cost != CostAggregate || route.Budget != DefectAggregateBudget ||
+		DefectAggregateBudget <= BoundedBudget || DefectAggregateBudget >= 5*time.Minute {
+		t.Fatalf("defect aggregate route = cost %q budget %s", route.Cost, route.Budget)
 	}
 }
 
