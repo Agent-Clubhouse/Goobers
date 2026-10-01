@@ -119,7 +119,7 @@ var synopsisByID = map[string]string{
 	"apply-verdict":          "  goobers apply-verdict [--gate <name>]  publish a managed or advisory merge-review verdict (a workflow stage)\n",
 	"elect-lander":           "  goobers elect-lander [--gate <name>]   elect the landing PR among a merge-review cohort (a workflow stage)\n",
 	"update-behind-pr":       "  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)\n",
-	"pr-claim":               "  goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)\n",
+	"pr-claim":               "  goobers pr-claim [--release] [--verify-feedback] [--classify-feedback-repass]  check PR liveness, revision and feedback, or release its remediation claim (a workflow stage)\n",
 	"gather-pr-context":      "  goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)\n",
 	"gather-review-threads":  "  goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)\n",
 	"resolve-review-threads": "  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)\n",

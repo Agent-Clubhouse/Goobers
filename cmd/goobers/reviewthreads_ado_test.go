@@ -27,6 +27,8 @@ type adoReviewThread struct {
 	status  string
 	path    string
 	replies []map[string]any
+	// root overrides the reviewer's root comment text ("finding <id>").
+	root string
 }
 
 type fakeADOReviewThreads struct {
@@ -35,6 +37,30 @@ type fakeADOReviewThreads struct {
 	threads  map[int]*adoReviewThread
 	order    []string
 	resolved []int
+	// head, when set, overrides the served source head so a test can move
+	// the PR between stages.
+	head string
+	// fault is a one-shot injected failure at a mutation boundary (#6131):
+	// "reply"/"resolve" fail unapplied, "reply-applied"/"resolve-applied"
+	// apply and then fail, the way a lost response does.
+	fault string
+}
+
+// takeFault consumes the armed fault when it is one of kinds.
+func (f *fakeADOReviewThreads) takeFault(kinds ...string) string {
+	for _, kind := range kinds {
+		if f.fault == kind {
+			f.fault = ""
+			return kind
+		}
+	}
+	return ""
+}
+
+func writeInjectedADOFault(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write([]byte(`{"message":"injected fault"}`))
 }
 
 func (f *fakeADOReviewThreads) threadsJSON() map[string]any {
@@ -62,8 +88,12 @@ func (f *fakeADOReviewThreads) threadsJSON() map[string]any {
 	}
 	for _, id := range ids {
 		thread := f.threads[id]
+		root := thread.root
+		if root == "" {
+			root = "finding " + strconv.Itoa(id)
+		}
 		comments := []map[string]any{{
-			"id": 1, "parentCommentId": 0, "content": "finding " + strconv.Itoa(id), "commentType": "text",
+			"id": 1, "parentCommentId": 0, "content": root, "commentType": "text",
 			"author":        map[string]string{"id": "reviewer-guid", "displayName": "Reviewer"},
 			"publishedDate": "2026-09-01T10:00:00Z",
 		}}
@@ -84,6 +114,12 @@ func (f *fakeADOReviewThreads) server(repo providers.RepositoryRef, publishedHea
 		writeJSONResp(t, w, map[string]any{"authenticatedUser": map[string]any{"id": "self-guid", "providerDisplayName": "Goobers"}})
 	})
 	mux.HandleFunc(pr, func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		publishedHead := publishedHead
+		if f.head != "" {
+			publishedHead = f.head
+		}
+		f.mu.Unlock()
 		writeJSONResp(t, w, map[string]any{
 			"pullRequestId": 77, "status": "active", "title": "t",
 			"sourceRefName": "refs/heads/goobers/work", "targetRefName": "refs/heads/main",
@@ -125,12 +161,21 @@ func (f *fakeADOReviewThreads) server(repo providers.RepositoryRef, publishedHea
 			if body["parentCommentId"] != float64(1) {
 				t.Errorf("reply parentCommentId = %v, want the root comment 1", body["parentCommentId"])
 			}
+			fault := f.takeFault("reply", "reply-applied")
+			if fault == "reply" {
+				writeInjectedADOFault(w)
+				return
+			}
 			reply := map[string]any{
 				"id": len(thread.replies) + 2, "parentCommentId": 1, "content": body["content"], "commentType": "text",
 				"author": map[string]string{"id": "self-guid", "displayName": "Goobers"},
 			}
 			thread.replies = append(thread.replies, reply)
 			f.order = append(f.order, "reply:"+rest[0])
+			if fault != "" {
+				writeInjectedADOFault(w)
+				return
+			}
 			writeJSONResp(t, w, reply)
 		case r.Method == http.MethodPatch && len(rest) == 1:
 			if len(thread.replies) == 0 {
@@ -139,9 +184,18 @@ func (f *fakeADOReviewThreads) server(repo providers.RepositoryRef, publishedHea
 			if len(body) != 1 || body["status"] != "fixed" {
 				t.Errorf("PATCH body = %v, want {status: fixed}", body)
 			}
+			fault := f.takeFault("resolve", "resolve-applied")
+			if fault == "resolve" {
+				writeInjectedADOFault(w)
+				return
+			}
 			thread.status = "fixed"
 			f.resolved = append(f.resolved, id)
 			f.order = append(f.order, "resolve:"+rest[0])
+			if fault != "" {
+				writeInjectedADOFault(w)
+				return
+			}
 			writeJSONResp(t, w, map[string]any{"id": id, "status": thread.status})
 		default:
 			t.Errorf("unexpected thread request: %s %s", r.Method, r.URL.Path)
@@ -200,7 +254,7 @@ func TestGatherReviewThreadsOnADO(t *testing.T) {
 		5: {status: "active", path: "worker.go"},
 		6: {status: "fixed", path: "old.go"},
 	}}
-	server := fake.server(repo, "head-sha")
+	server := fake.server(repo, revisionSelectedSHA)
 	defer server.Close()
 	routeADOStageProvider(t, server.URL)
 	dir := t.TempDir()

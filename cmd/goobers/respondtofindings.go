@@ -291,10 +291,12 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	if err := json.Unmarshal(data, &brief); err != nil {
 		return apiv1.Verdict{}, "", false, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
 	}
-	if brief.Schema != apiv1.RemediationBriefVersion {
+	// Any readable wire version: a run whose gather-pr-context wrote an older
+	// brief before this binary deployed must still be able to respond.
+	if !apiv1.SupportedRemediationBriefVersion(brief.Schema) {
 		return apiv1.Verdict{}, "", false, fmt.Errorf(
-			"remediation-brief.json artifact schema is %q, want %q",
-			brief.Schema, apiv1.RemediationBriefVersion,
+			"remediation-brief.json artifact schema is %q, want one of %s",
+			brief.Schema, strings.Join(apiv1.SupportedRemediationBriefVersions(), ", "),
 		)
 	}
 	if brief.GatherPRContext.Verdict == nil {
