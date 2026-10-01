@@ -92,7 +92,7 @@ func appendErrorCauses(causes *[]ErrorCause, err error) {
 	}
 	switch unwrapped := any(err).(type) {
 	case multiUnwrapper:
-		*causes = append(*causes, errorCauseFor(err, err.Error()))
+		appendCause(causes, errorCauseFor(err, err.Error()))
 		for _, child := range unwrapped.Unwrap() {
 			appendErrorCauses(causes, child)
 			if len(*causes) >= maxErrorCauses {
@@ -102,14 +102,21 @@ func appendErrorCauses(causes *[]ErrorCause, err error) {
 	case singleUnwrapper:
 		child := unwrapped.Unwrap()
 		cause := errorCauseFor(err, wrappedLayerMessage(err, child))
-		*causes = append(*causes, cause)
+		appendCause(causes, cause)
 		if child != nil && cause.Message == child.Error() && (cause.Code != "" || cause.Class != "") && !wrapsAnother(child) {
 			return
 		}
 		appendErrorCauses(causes, child)
 	default:
-		*causes = append(*causes, errorCauseFor(err, err.Error()))
+		appendCause(causes, errorCauseFor(err, err.Error()))
 	}
+}
+
+func appendCause(causes *[]ErrorCause, cause ErrorCause) {
+	if cause.Code == "" && cause.Class == "" && cause.Message == "" {
+		return
+	}
+	*causes = append(*causes, cause)
 }
 
 func errorCauseFor(err error, message string) ErrorCause {

@@ -545,13 +545,14 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 				},
 			}
 		case rerr != nil && !os.IsNotExist(rerr):
+			resultErr := fmt.Errorf("read result file %q: %w", resultFile, rerr)
 			return apiv1.ResultEnvelope{
 				Status:    apiv1.ResultFailure,
 				Outputs:   outputs,
 				Artifacts: stageArtifacts,
 				Metrics:   stageMetrics,
 				Summary:   "declared result file unreadable",
-				Error:     &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", resultFile, rerr)},
+				Error:     journal.ErrorInfoFor("result_file_unreadable", resultErr, false),
 			}
 		}
 	}

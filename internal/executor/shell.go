@@ -1267,11 +1267,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			// Untrusted declared path (#120): escapes the workspace lexically
 			// or via a symlink. Fail the stage closed, never follow it.
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{
-				Code:      "result_file_path_escape",
-				Message:   fmt.Sprintf("declared result file %q escapes the workspace: %v", resultFile, perr),
-				Retryable: false,
-			}
+			result.Error = journal.ErrorInfoFor("result_file_path_escape", fmt.Errorf("declared result file %q escapes the workspace: %w", resultFile, perr), false)
 			result.Summary = "declared result file path escapes the workspace"
 			return result, nil
 		default:

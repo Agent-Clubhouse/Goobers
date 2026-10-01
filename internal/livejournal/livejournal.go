@@ -1130,12 +1130,10 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			// run — degrade to a visible error event rather than failing the
 			// emit or dropping the span silently (the projection's own rule,
 			// internal/engine/projection.go adoptSpan).
+			spanErr := fmt.Errorf("span %q (%s): %w", s.Name, s.Ref.Digest, err)
 			appendErr := run.jr.Append(journal.Event{
 				Type: journal.EventError, Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
-				Error: &journal.ErrorDetail{
-					Code:    SpanUnavailableErrorCode,
-					Message: fmt.Sprintf("span %q (%s): %v", s.Name, s.Ref.Digest, err),
-				},
+				Error:  journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
 				Runner: map[string]any{EmitKeyRunnerField: op.Key},
 			})
 			if appendErr != nil {
@@ -1144,10 +1142,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			run.keys[op.Key] = run.jr.Seq()
 			w.notifyEvent(runID, journal.Event{
 				Type: journal.EventError, Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
-				Error: &journal.ErrorDetail{
-					Code:    SpanUnavailableErrorCode,
-					Message: fmt.Sprintf("span %q (%s): %v", s.Name, s.Ref.Digest, err),
-				},
+				Error: journal.ErrorDetailFor(SpanUnavailableErrorCode, spanErr),
 			})
 			return true, nil
 		}

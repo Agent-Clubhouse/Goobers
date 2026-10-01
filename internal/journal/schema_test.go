@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +94,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		{Type: EventRunnerMutationRecovered, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: map[string]any{"mutationReceiptId": "receipt"}},
 		{Type: EventWorkerConfigDivergence, Runner: map[string]any{"worker": "worker-a", "state": "not-active", "message": "checking is not active"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
+		{Type: EventError, Error: ErrorDetailFor("empty_wrapped_leaf", fmt.Errorf("outer: %w", errors.New("")))},
 		// Runner-scoped isolation posture record (#1305): payload entirely
 		// under runner.*, proving the schema keeps pace with the type. The
 		// payload mirrors the harness executor's actual emission shape
