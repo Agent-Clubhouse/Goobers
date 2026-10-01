@@ -43,8 +43,9 @@ func TestStaleBlockedOnSiblingMarkerHonoursTheRecordedBlockLedger(t *testing.T) 
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "459", State: "open", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(
 			context.Background(), provider, repo, item, blockedLedgerRecords(repo, "459", "458"),
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
@@ -62,8 +63,9 @@ func TestStaleBlockedOnSiblingMarkerHonoursTheRecordedBlockLedger(t *testing.T) 
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "460", State: "open", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(
 			context.Background(), provider, repo, item, blockedLedgerRecords(repo, "460", "461"),
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
@@ -80,8 +82,9 @@ func TestStaleBlockedOnSiblingMarkerHonoursTheRecordedBlockLedger(t *testing.T) 
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "462", State: "open", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(
 			context.Background(), provider, repo, item, blockedLedgerRecords(repo, "999", "463"),
+			nil,
 		)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
@@ -182,8 +185,9 @@ func TestDriftedBlockedOnSiblingBlockersLeavesStrongerDispositionsAlone(t *testi
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			blockers, err := driftedBlockedOnSiblingBlockers(
+			blockers, err := driftedBlockedOnSiblingBlockersBudgeted(
 				context.Background(), provider, repo, tt.item, blockedLedgerRecords(repo, tt.item.ID, "471"),
+				nil,
 			)
 			if err != nil {
 				t.Fatalf("driftedBlockedOnSiblingBlockers: %v", err)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"regexp"
 	"strings"
 
@@ -66,27 +65,6 @@ const infrastructureParkResolvedReason = "removed `goobers:needs-remediation` be
 // 2026-08-22). Clearing the label is enough to return the item to
 // query-backlog's candidate set, and curation then makes the readiness call on
 // its own terms — which is where that call belongs.
-func staleInfrastructureRemediationPark(
-	ctx context.Context,
-	provider *providers.GitHubProvider,
-	repo providers.RepositoryRef,
-	item providers.WorkItem,
-) (bool, error) {
-	if !item.HasLabel(needsRemediationLabel) {
-		return false, nil
-	}
-	// A pending human decision outranks anything this function could conclude:
-	// the item is parked for a reason that is not the substrate's.
-	if item.HasLabel(providers.LabelNeedsHuman) {
-		return false, nil
-	}
-	comments, err := provider.ListComments(ctx, repo, item.ID)
-	if err != nil {
-		return false, err
-	}
-	return latestParkIsInfrastructure(comments), nil
-}
-
 // latestParkIsInfrastructure reports whether the most recent park comment in
 // comments (ListComments' order is oldest first) is a remediation park whose
 // recorded reason is an infrastructure gate outcome.
