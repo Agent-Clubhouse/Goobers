@@ -481,6 +481,23 @@ func (c *Conditions) ActiveWorkflow(identity WorkflowIdentity) int {
 	return c.active[identity]
 }
 
+// WorkerAvailability reports instance-level capacity that is not currently
+// reserved. The boolean is false when capacity is unconfigured/unbounded, so
+// callers can distinguish unobservable capacity from a configured pool with
+// zero workers available.
+func (c *Conditions) WorkerAvailability() (available int, observable bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.instanceMaxParallel <= 0 {
+		return 0, false
+	}
+	available = c.instanceMaxParallel - c.totalActive
+	if available < 0 {
+		available = 0
+	}
+	return available, true
+}
+
 // pruneStarts drops start times older than window before now. starts is
 // assumed sorted ascending (Admit only ever appends now, which advances
 // monotonically call to call), so the retained tail is already sorted too.

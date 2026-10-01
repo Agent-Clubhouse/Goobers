@@ -38,6 +38,47 @@ func (f *fakeSpanStarter) count() int {
 	return len(f.calls)
 }
 
+type queueTelemetryRecorder struct {
+	fakeSpanStarter
+	mu      sync.Mutex
+	samples [][]telemetry.QueueSaturationSample
+	workers []*telemetry.WorkerAvailabilitySample
+}
+
+func (r *queueTelemetryRecorder) RecordSchedulerQueueSaturation(_ context.Context, samples []telemetry.QueueSaturationSample, workers *telemetry.WorkerAvailabilitySample) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.samples = append(r.samples, append([]telemetry.QueueSaturationSample(nil), samples...))
+	if workers == nil {
+		r.workers = append(r.workers, nil)
+		return
+	}
+	copy := *workers
+	r.workers = append(r.workers, &copy)
+}
+
+func (r *queueTelemetryRecorder) lastSamples() []telemetry.QueueSaturationSample {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.samples) == 0 {
+		return nil
+	}
+	return append([]telemetry.QueueSaturationSample(nil), r.samples[len(r.samples)-1]...)
+}
+
+type snapshotBacklogCounter struct {
+	snapshot BacklogSnapshot
+	err      error
+}
+
+func (c snapshotBacklogCounter) EligibleCount(context.Context) (int, error) {
+	return c.snapshot.Count, c.err
+}
+
+func (c snapshotBacklogCounter) EligibleSnapshot(context.Context) (BacklogSnapshot, error) {
+	return c.snapshot, c.err
+}
+
 // fakeStarter records every Start call and returns a canned result. It blocks
 // on a channel if one is set, so tests can control exactly when a run
 // "finishes" and its condition slot is released.
@@ -140,6 +181,231 @@ func TestDispatchRegistrationKeepsShutdownWaitUntilStarterCompletes(t *testing.T
 		t.Fatal("shutdown wait did not return after the starter completed")
 	}
 	scheduler.Wait()
+}
+
+func TestTickRecordsQueueSaturationFromCanonicalDemandState(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:              "scheduled",
+			Schedules:             []Schedule{fakeSchedule{d: time.Hour}},
+			ScheduleDemandCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 2, OldestReadyAt: base.Add(-20 * time.Minute)}},
+			Starter:               starter,
+		},
+		{
+			Workflow:       "backlog",
+			BacklogCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 3, OldestReadyAt: base.Add(-10 * time.Minute)}},
+			Starter:        starter,
+		},
+		{
+			Workflow:            "refill",
+			Readiness:           apiv1.ReadinessConditions{DesiredConcurrentRuns: 1, MaxConcurrentRuns: 4},
+			RefillDemandCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 5, OldestReadyAt: base.Add(-30 * time.Minute)}},
+			Starter:             starter,
+		},
+	}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base.Add(time.Hour))
+
+	samples := recorder.lastSamples()
+	if len(samples) != 3 {
+		t.Fatalf("queue samples = %+v, want schedule/backlog/refill", samples)
+	}
+	for _, want := range []struct {
+		kind   string
+		depth  int
+		oldest time.Time
+	}{
+		{kind: queueKindSchedule, depth: 2, oldest: base.Add(-20 * time.Minute)},
+		{kind: queueKindBacklog, depth: 3, oldest: base.Add(-10 * time.Minute)},
+		{kind: queueKindRefill, depth: 1, oldest: base.Add(-30 * time.Minute)},
+	} {
+		found := false
+		for _, sample := range samples {
+			if sample.QueueKind != want.kind {
+				continue
+			}
+			found = true
+			if sample.Depth != want.depth || !sample.OldestEnqueuedAt.Equal(want.oldest) || !sample.ObservedAt.Equal(base.Add(time.Hour)) {
+				t.Fatalf("%s sample = %+v, want depth=%d oldest=%s observed=%s", want.kind, sample, want.depth, want.oldest, base.Add(time.Hour))
+			}
+		}
+		if !found {
+			t.Fatalf("missing queue sample for %s in %+v", want.kind, samples)
+		}
+	}
+}
+
+func TestTickRecordsQueueSaturationWithoutOldestAgeWhenDemandLacksSource(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	counter := &fakeBacklogCounter{count: 2}
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "backlog",
+		BacklogCounter: counter,
+		Starter:        starter,
+	}}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	waitForCount(t, starter.count, 1)
+	scheduler.Wait()
+
+	backlog := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog)
+	if backlog.Depth != 2 {
+		t.Fatalf("backlog depth = %d, want 2", backlog.Depth)
+	}
+	if !backlog.OldestEnqueuedAt.IsZero() {
+		t.Fatalf("backlog oldest enqueue = %s, want omitted without authoritative demand source", backlog.OldestEnqueuedAt)
+	}
+}
+
+func TestTickRetainsBacklogQueueSnapshotBetweenPolls(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	counter := &fakeBacklogCounter{count: 2}
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "backlog",
+		BacklogCounter: counter,
+		Starter:        starter,
+	}}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("initial backlog depth = %d, want 2", depth)
+	}
+
+	counter.setCount(0)
+	scheduler.Tick(context.Background(), base.Add(time.Second))
+	if polls := counter.polls(); polls != 1 {
+		t.Fatalf("backlog polls = %d, want no repoll inside backlogPollInterval", polls)
+	}
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("retained backlog depth = %d, want last observed depth 2", depth)
+	}
+	scheduler.Wait()
+}
+
+func TestReloadDropsQueueSnapshotsForRemovedCounters(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:       "backlog",
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        starter,
+		},
+		{
+			Workflow:            "refill",
+			Readiness:           apiv1.ReadinessConditions{DesiredConcurrentRuns: 3, MaxConcurrentRuns: 3},
+			RefillDemandCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 4, OldestReadyAt: base.Add(-time.Minute)}},
+			Starter:             starter,
+		},
+	}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	initial := recorder.lastSamples()
+	if depth := queueSampleWithKind(t, initial, queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("initial backlog depth = %d, want 2", depth)
+	}
+	if depth := queueSampleWithKind(t, initial, queueKindRefill).Depth; depth != 3 {
+		t.Fatalf("initial refill depth = %d, want 3", depth)
+	}
+	scheduler.Wait()
+
+	if err := scheduler.Reload([]WorkflowEntry{
+		{Workflow: "backlog", Starter: starter},
+		{Workflow: "refill", Starter: starter},
+	}, nil, base.Add(time.Second), "old", "new"); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	scheduler.Tick(context.Background(), base.Add(2*time.Second))
+	reloaded := recorder.lastSamples()
+	if depth := queueSampleWithKind(t, reloaded, queueKindBacklog).Depth; depth != 0 {
+		t.Fatalf("reloaded backlog depth = %d, want 0 after backlog counter removal", depth)
+	}
+	if depth := queueSampleWithKind(t, reloaded, queueKindRefill).Depth; depth != 0 {
+		t.Fatalf("reloaded refill depth = %d, want 0 after refill counter removal", depth)
+	}
+}
+
+func TestTickOmitsBacklogOldestAgeWhenAnyContributorLacksSource(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{
+		{
+			Workflow:       "known-age",
+			BacklogCounter: snapshotBacklogCounter{snapshot: BacklogSnapshot{Count: 3, OldestReadyAt: base.Add(-10 * time.Minute)}},
+			Starter:        starter,
+		},
+		{
+			Workflow:       "unknown-age",
+			BacklogCounter: &fakeBacklogCounter{count: 2},
+			Starter:        starter,
+		},
+	}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	scheduler.Wait()
+
+	backlog := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog)
+	if backlog.Depth != 5 {
+		t.Fatalf("mixed-source backlog depth = %d, want 5", backlog.Depth)
+	}
+	if !backlog.OldestEnqueuedAt.IsZero() {
+		t.Fatalf("mixed-source backlog oldest enqueue = %s, want omitted when any non-empty contributor lacks a source", backlog.OldestEnqueuedAt)
+	}
+}
+
+func TestTickRecordsQueueSaturationDrainingQueueDepthToZero(t *testing.T) {
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	block := make(chan struct{})
+	counter := &fakeBacklogCounter{count: 2}
+	recorder := &queueTelemetryRecorder{}
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:       "backlog",
+		Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		BacklogCounter: counter,
+		Starter:        starter,
+	}}, WithClock(func() time.Time { return base }, time.After), WithTelemetry(recorder))
+
+	scheduler.Tick(context.Background(), base)
+	waitForCount(t, starter.count, 1)
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 2 {
+		t.Fatalf("initial backlog depth = %d, want 2", depth)
+	}
+
+	counter.setCount(1)
+	scheduler.Tick(context.Background(), base.Add(backlogPollInterval))
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 1 {
+		t.Fatalf("draining backlog depth = %d, want 1", depth)
+	}
+
+	close(block)
+	scheduler.Wait()
+	counter.setCount(0)
+	scheduler.Tick(context.Background(), base.Add(2*backlogPollInterval))
+	if depth := queueSampleWithKind(t, recorder.lastSamples(), queueKindBacklog).Depth; depth != 0 {
+		t.Fatalf("empty backlog depth = %d, want final zero sample", depth)
+	}
+}
+
+func queueSampleWithKind(t *testing.T, samples []telemetry.QueueSaturationSample, kind string) telemetry.QueueSaturationSample {
+	t.Helper()
+	for _, sample := range samples {
+		if sample.QueueKind == kind {
+			return sample
+		}
+	}
+	t.Fatalf("missing queue sample for %s in %+v", kind, samples)
+	return telemetry.QueueSaturationSample{}
 }
 
 func TestRunRefreshesHeartbeatAndCapsIdleWait(t *testing.T) {

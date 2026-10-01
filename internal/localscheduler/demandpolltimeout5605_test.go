@@ -163,8 +163,8 @@ func TestPollDemandFailureClassification(t *testing.T) {
 			sched, _ := newTestScheduler(t, nil)
 			tc.poll.counter = &fakeBacklogCounter{err: tc.err}
 			entry := WorkflowEntry{Workflow: "pr-remediation"}
-			if got := sched.pollDemand(context.Background(), entry, tc.poll); got != tc.want {
-				t.Fatalf("pollDemand() = %d, want %d", got, tc.want)
+			if got := sched.pollDemand(context.Background(), entry, tc.poll); got.ready != tc.want {
+				t.Fatalf("pollDemand() = %d, want %d", got.ready, tc.want)
 			}
 		})
 	}
@@ -174,8 +174,8 @@ func TestPollDemandFailureClassification(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		poll := demandPoll{schedule: true, counter: &fakeBacklogCounter{err: deadline}}
-		if got := sched.pollDemand(ctx, WorkflowEntry{Workflow: "pr-remediation"}, poll); got != 0 {
-			t.Fatalf("pollDemand() under shutdown = %d, want 0", got)
+		if got := sched.pollDemand(ctx, WorkflowEntry{Workflow: "pr-remediation"}, poll); got.ready != 0 {
+			t.Fatalf("pollDemand() under shutdown = %d, want 0", got.ready)
 		}
 	})
 }
@@ -209,8 +209,8 @@ func TestConsecutiveDemandPollFailuresJournalOneStarvedEvent(t *testing.T) {
 		t.Fatalf("starved reason = %q, want the failing poll kind named", reasons[0])
 	}
 
-	if got := sched.pollDemand(ctx, entry, healthy); got != 2 {
-		t.Fatalf("healthy poll = %d, want 2", got)
+	if got := sched.pollDemand(ctx, entry, healthy); got.ready != 2 {
+		t.Fatalf("healthy poll = %d, want 2", got.ready)
 	}
 	for i := 0; i < demandPollFailureThreshold; i++ {
 		sched.pollDemand(ctx, entry, failing)

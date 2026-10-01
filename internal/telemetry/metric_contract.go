@@ -267,6 +267,33 @@ var firstClassMetricRegistry = []metricContract{
 		AllowedDimensions: []string{MetricAttrStorageTier},
 		Lifecycle:         stableContractLifecycle(),
 	},
+	{
+		Name:              MetricQueueDepth,
+		Kind:              metricKindGauge,
+		NumberType:        metricNumberTypeInt64,
+		Unit:              "{item}",
+		Description:       "Scheduler-visible queued work by queue kind and operating system.",
+		AllowedDimensions: []string{MetricAttrQueueKind, MetricAttrOS},
+		Lifecycle:         stableContractLifecycle(),
+	},
+	{
+		Name:              MetricQueueOldestAge,
+		Kind:              metricKindGauge,
+		NumberType:        metricNumberTypeInt64,
+		Unit:              "s",
+		Description:       "Age in seconds of the oldest scheduler-visible queue item by queue kind and operating system.",
+		AllowedDimensions: []string{MetricAttrQueueKind, MetricAttrOS},
+		Lifecycle:         stableContractLifecycle(),
+	},
+	{
+		Name:              MetricWorkersAvailable,
+		Kind:              metricKindGauge,
+		NumberType:        metricNumberTypeInt64,
+		Unit:              "{worker}",
+		Description:       "Configured scheduler capacity not currently reserved, by operating system.",
+		AllowedDimensions: []string{MetricAttrOS},
+		Lifecycle:         stableContractLifecycle(),
+	},
 }
 
 var resourceAttributeRegistry = []resourceAttributeContract{

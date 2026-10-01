@@ -193,6 +193,126 @@
                       }
                     },
                     {
+                      "name": "goobers.queue.depth",
+                      "description": "Scheduler-visible queued work by queue kind and operating system.",
+                      "unit": "{item}",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "backlog"
+                                }
+                              }
+                            ],
+                            "as_int": "4"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "refill"
+                                }
+                              }
+                            ],
+                            "as_int": "1"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "schedule"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.queue.oldest_age",
+                      "description": "Age in seconds of the oldest scheduler-visible queue item by queue kind and operating system.",
+                      "unit": "s",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "backlog"
+                                }
+                              }
+                            ],
+                            "as_int": "90"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "refill"
+                                }
+                              }
+                            ],
+                            "as_int": "30"
+                          },
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              },
+                              {
+                                "key": "goobers.queue.kind",
+                                "value": {
+                                  "string_value": "schedule"
+                                }
+                              }
+                            ],
+                            "as_int": "0"
+                          }
+                        ]
+                      }
+                    },
+                    {
                       "name": "goobers.recovery.restore.failures",
                       "description": "Recovery bundle restore failures, by reason.",
                       "unit": "{failure}",
@@ -1389,6 +1509,26 @@
                               }
                             ],
                             "as_int": "8192"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "name": "goobers.workers.available",
+                      "description": "Configured scheduler capacity not currently reserved, by operating system.",
+                      "unit": "{worker}",
+                      "gauge": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.os",
+                                "value": {
+                                  "string_value": "linux"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
                           }
                         ]
                       }

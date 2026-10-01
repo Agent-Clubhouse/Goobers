@@ -374,6 +374,60 @@ func TestBacklogCounterResolvesTokenPerCallAndQueriesProvider(t *testing.T) {
 	}
 }
 
+func TestBacklogCounterRealListWorkItemsOmitReadyTimeWhenProviderLacksReadyAt(t *testing.T) {
+	t.Setenv("BACKLOG_TOK", "backlog-token-value")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "acme", "web")
+	server.addIssue(1, "Old issue newly eligible")
+	createdAt := time.Now().Add(-30 * 24 * time.Hour).UTC()
+	enqueuedAt := time.Now().Add(-5 * time.Minute).UTC()
+	server.mu.Lock()
+	server.issues[1].createdAt = createdAt
+	server.issues[1].updatedAt = enqueuedAt
+	server.issues[1].labels = append(server.issues[1].labels, "goobers:ready")
+	server.appendLabelEventLocked(1, "goobers:ready", true, enqueuedAt)
+	server.mu.Unlock()
+	prev := newGitHubProvider
+	newGitHubProvider = server.newGitHubProvider
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	counter := &backlogCounter{
+		ref:      "acme/web",
+		repo:     providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labels:   []string{"goobers:ready"},
+		resolver: resolver,
+		reg:      &backlogTestRegistrar{},
+	}
+
+	snapshot, err := counter.EligibleSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("EligibleSnapshot: %v", err)
+	}
+	if snapshot.Count != 1 {
+		t.Fatalf("snapshot count = %d, want 1", snapshot.Count)
+	}
+	if !snapshot.OldestReadyAt.IsZero() {
+		t.Fatalf("OldestReadyAt = %s, want omitted when provider did not expose an authoritative ready time", snapshot.OldestReadyAt)
+	}
+}
+
+func TestBacklogItemReadyAtUsesAuthoritativeReadyAtOnly(t *testing.T) {
+	createdAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	readyAt := time.Date(2026, 9, 30, 12, 0, 0, 0, time.FixedZone("offset", -7*60*60))
+
+	if got := backlogItemReadyAt(providers.WorkItem{CreatedAt: &createdAt}); !got.IsZero() {
+		t.Fatalf("readyAt from CreatedAt-only item = %s, want omitted", got)
+	}
+	got := backlogItemReadyAt(providers.WorkItem{CreatedAt: &createdAt, ReadyAt: &readyAt})
+	if !got.Equal(readyAt.UTC()) {
+		t.Fatalf("readyAt = %s, want authoritative ready time %s", got, readyAt.UTC())
+	}
+}
+
 func TestBacklogCounterAdvancesBoundedPagesAndTracksProviderQuota(t *testing.T) {
 	t.Setenv("BACKLOG_TOK", "backlog-token-value")
 	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "acme/web", Env: "BACKLOG_TOK"}})
