@@ -13,7 +13,7 @@ import (
 )
 
 func TestPRRemediationLifecycleRechecksAndReleasesTerminalPRClaim(t *testing.T) {
-	st := &remediationCheckpointServerState{number: 77, state: "open"}
+	st := &remediationCheckpointServerState{number: 77, state: "open", headSHA: revisionSelectedSHA}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	root := remediationCheckpointEnv(t, server.URL, false)
 	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
@@ -71,7 +71,7 @@ func TestPRRemediationLifecycleRechecksAndReleasesTerminalPRClaim(t *testing.T) 
 }
 
 func TestPRRemediationLifecycleKeepsOpenPRClaim(t *testing.T) {
-	st := &remediationCheckpointServerState{number: 77, state: "open"}
+	st := &remediationCheckpointServerState{number: 77, state: "open", headSHA: revisionSelectedSHA}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	root := remediationCheckpointEnv(t, server.URL, false)
 	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {

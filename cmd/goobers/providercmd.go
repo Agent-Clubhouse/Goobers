@@ -809,6 +809,25 @@ func failProviderStage(stderr io.Writer, what string, err error, resultFileDefau
 	return 1
 }
 
+// failProviderStageWithCode is failProviderStage for a failure whose code the
+// stage already knows: it writes that code, non-retryable, instead of
+// classifying err as a provider error.
+func failProviderStageWithCode(stderr io.Writer, what string, err error, code, resultFileDefault string) int {
+	pf(stderr, "error: %s: %v\n", what, err)
+	resultFile := providerInput("resultFile", resultFileDefault)
+	if resultFile == "" {
+		return 1
+	}
+	if werr := writeProviderStageResult(resultFile, map[string]interface{}{
+		executor.OutputErrorCode:      code,
+		executor.OutputErrorMessage:   fmt.Sprintf("%s: %v", what, err),
+		executor.OutputErrorRetryable: false,
+	}); werr != nil {
+		pf(stderr, "warning: write typed error result %s: %v\n", resultFile, werr)
+	}
+	return 1
+}
+
 // withClaimLock serializes fn against every other process (a concurrent
 // `goobers backlog-query` from a racing run, or `goobers up`'s periodic
 // RecoverExpired) touching the same instance's claim ledger, via a bounded

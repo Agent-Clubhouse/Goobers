@@ -1965,13 +1965,17 @@ errors), 1 = business error, 2 = usage/IO error.
 Usage: goobers pr-claim [--release] [path]
 
 At a pr-remediation stage boundary, verify that this run's claimed pull
-request is still open. If it has merged or closed, release the claim and
-return a structured no-work result so the runner stops the workflow.
+request is still open and still at the exact source revision this run
+selected (or itself published). If it has merged or closed, release the
+claim and return a terminal no-work result; if it moved to a different
+head, release the claim and return a distinct stale-selection no-work
+result, so the runner stops the workflow either way. A missing or
+malformed head fails closed.
 With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
-Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
-2 = usage/IO error.
+Exit codes: 0 = PR current, terminal/stale no-work, or released;
+1 = business error; 2 = usage/IO error.
 
 ### pr-comment-watch
 Usage: goobers pr-comment-watch [path]
