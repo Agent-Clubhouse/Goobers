@@ -597,6 +597,7 @@ var adoStageCredentialCases = []adoStageCredentialCase{
 	{command: "merge-queue-poll", inputs: map[string]string{"pullNumber": "77"}, want: []string{string(capability.ADOPRComplete)}},
 	{command: "open-pr", want: []string{string(capability.ProviderPRWrite)}},
 	{command: "post-merge", inputs: map[string]string{"pullNumber": "77"}, want: []string{credPRWrite, credIssuesWrite}},
+	{command: "pr-comment-watch", want: []string{credPRWrite}},
 	{command: "pr-select", inputs: map[string]string{"selfIdentity": "goober"}, want: []string{credPRWrite}},
 	{command: "push-remediated", want: []string{credPRWrite}},
 	{command: "rebase-pr", inputs: map[string]string{"selectedNumber": "77", "head": "goobers/pr-remediation/run"}, want: []string{credPRWrite}},
@@ -637,7 +638,6 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 // is consumed at all.
 var adoCredentialExempt = map[string]string{
 	"file-issues":           "Refuses every non-GitHub provider before building one (TestFileIssuesRefusesNonGitHubProviders).",
-	"pr-comment-watch":      "Refuses the ado repository provider before building one.",
 	"security-alerts-query": "Refuses every non-GitHub provider before building one (TestSecurityAlertsQueryRefusesNonGitHubProviders).",
 	"telemetry-query":       "Its only provider access is the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
 	"update-behind-pr":      "Reports not-applicable on Azure DevOps and routes to full remediation without building a provider (ADO-N15).",

@@ -386,6 +386,33 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				URL:       "https://example.test/issues/1704",
 				Integrity: apiv1.IntegrityMaintainer,
 			}},
+			Ancestry: &apiv1.RemediationAncestry{
+				Status:       "incomplete",
+				Provider:     "ado",
+				MaxDepth:     3,
+				MaxItems:     10,
+				CrossProject: "deny",
+				IncludeTypes: []string{"Feature", "Initiative"},
+				Items: []apiv1.RemediationAncestor{{
+					QualifiedID: "ado:project:1700",
+					Provider:    "ado",
+					Project:     "project",
+					ID:          "1700",
+					Depth:       1,
+					ParentOf:    []string{"ado:project:1704"},
+					Type:        "Initiative",
+					Title:       "Schema discipline",
+					State:       "Active",
+					URL:         "https://example.test/workitems/1700",
+					Fields: []apiv1.RemediationAncestorField{{
+						Name: "System.Description", Value: "Keep every schema closed.", Truncated: true,
+					}},
+					Integrity: apiv1.IntegrityUnapproved,
+				}},
+				Omissions: []apiv1.RemediationAncestryOmission{{
+					Child: "ado:project:1700", Parent: "1600", Depth: 2, Reason: "access-denied", Detail: "forbidden",
+				}},
+			},
 		},
 		FeedbackSnapshot: &apiv1.PRFeedbackSnapshot{
 			Schema:      apiv1.PRFeedbackSnapshotVersion,

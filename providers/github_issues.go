@@ -33,6 +33,20 @@ const ErrorCodeRateLimited = "github_rate_limited"
 // with 401 or a permission-denied 403.
 const ErrorCodeAuthFailed = "github_auth_failed"
 
+// ErrorCodeProviderAuthFailed is the provider-neutral code for a credential a
+// forge other than GitHub rejects — today an Azure DevOps delivered
+// credential (ErrADODeliveredCredentialRejected, Goobers#6120), which used to
+// be reported as github_auth_failed. Consumers that react to an auth failure
+// match both codes through IsAuthFailureCode.
+const ErrorCodeProviderAuthFailed = "provider_auth_failed"
+
+// IsAuthFailureCode reports whether code is either stable auth-failure code.
+// Existing consumers keyed on github_auth_failed keep working; new ones should
+// call this instead of comparing against one code.
+func IsAuthFailureCode(code string) bool {
+	return code == ErrorCodeAuthFailed || code == ErrorCodeProviderAuthFailed
+}
+
 // RateLimitError is the typed error send() returns when a rate-limited
 // request cannot be absorbed by in-request backoff — the reset is further out
 // than the wait budget, or the retry budget is exhausted (#614). Callers can
@@ -700,6 +714,12 @@ func (p *GitHubProvider) restoreOwnedClaimLabel(ctx context.Context, repo Reposi
 	return p.applyLabelChanges(ctx, repo, id, []string{label}, nil)
 }
 
+const (
+	claimLabelConvergenceWindow  = 5 * time.Second
+	claimLabelConvergenceBase    = 100 * time.Millisecond
+	claimLabelConvergenceMaxWait = time.Second
+)
+
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
 func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner, label string) (ClaimResult, error) {
@@ -709,7 +729,10 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 	}
 	claimed := winner == runID
 	if claimed && !item.HasLabel(label) {
-		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
+		item, err = p.waitForClaimLabel(ctx, repo, id, runID, label)
+		if err != nil {
+			return ClaimResult{}, err
+		}
 	}
 	providerRunID := ""
 	if !claimed {
@@ -724,6 +747,51 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 		},
 	})
 	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
+}
+
+func (p *GitHubProvider) waitForClaimLabel(ctx context.Context, repo RepositoryRef, id, runID, label string) (WorkItem, error) {
+	deadline := p.now().Add(claimLabelConvergenceWindow)
+	for attempt := 0; ; attempt++ {
+		delay := claimLabelConvergenceDelay(attempt, p.jitter)
+		if remaining := deadline.Sub(p.now()); remaining <= 0 {
+			return WorkItem{}, &ClaimMetadataDriftError{Provider: ProviderGitHub, ItemID: id, RunID: runID, Label: label}
+		} else if delay > remaining {
+			delay = remaining
+		}
+		if err := p.sleep(ctx, delay); err != nil {
+			return WorkItem{}, err
+		}
+		item, err := p.GetWorkItem(ctx, repo, id)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if item.HasLabel(label) {
+			return item, nil
+		}
+	}
+}
+
+func claimLabelConvergenceDelay(attempt int, jitter func(time.Duration) time.Duration) time.Duration {
+	ceiling := claimLabelConvergenceBase << attempt
+	if ceiling <= 0 || ceiling > claimLabelConvergenceMaxWait {
+		ceiling = claimLabelConvergenceMaxWait
+	}
+	floor := ceiling / 2
+	if floor <= 0 {
+		floor = ceiling
+	}
+	window := ceiling - floor
+	if jitter == nil {
+		return floor
+	}
+	offset := jitter(window)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > window {
+		offset = window
+	}
+	return floor + offset
 }
 
 // applyLabelChanges adds labels (additive; GitHub ignores duplicates) and removes

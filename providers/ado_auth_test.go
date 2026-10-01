@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,14 +19,16 @@ import (
 )
 
 type adoAuthRunner struct {
-	name string
-	args []string
-	env  []string
-	out  []byte
-	err  error
+	calls int
+	name  string
+	args  []string
+	env   []string
+	out   []byte
+	err   error
 }
 
 func (r *adoAuthRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls++
 	r.name = name
 	r.args = append([]string(nil), args...)
 	return r.out, r.err
@@ -39,24 +42,31 @@ func (r *adoAuthRunner) RunWithEnv(_ context.Context, env []string, name string,
 }
 
 func TestAzureCLICredentialSourceCachesAndParsesToken(t *testing.T) {
-	expires := time.Now().Add(time.Hour).Unix()
-	runner := &adoAuthRunner{out: []byte(`{"accessToken":"entra-token","expires_on":` + strconv.FormatInt(expires, 10) + `}`)}
-	source := NewAzureCLIADOCredentialSource(runner, "tenant-id")
+	for _, tenant := range []string{"", "tenant.example.test"} {
+		t.Run("tenant="+tenant, func(t *testing.T) {
+			expires := time.Now().Add(time.Hour).Unix()
+			runner := &adoAuthRunner{out: []byte(`{"accessToken":"entra-token","expires_on":` + strconv.FormatInt(expires, 10) + `}`)}
+			source := NewAzureCLIADOCredentialSource(runner, tenant)
 
-	first, err := source.Credential(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := source.Credential(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Kind != adoCredentialBearer || first.Secret != "entra-token" || second.Secret != first.Secret {
-		t.Fatalf("credentials = %#v, %#v", first, second)
-	}
-	if runner.name != "az" || strings.Join(runner.args, " ") !=
-		"account get-access-token --resource "+AzureDevOpsResourceID+" --output json --tenant tenant-id" {
-		t.Fatalf("az invocation = %q %#v", runner.name, runner.args)
+			first, err := source.Credential(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := source.Credential(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.Kind != adoCredentialBearer || first.Secret != "entra-token" || second.Secret != first.Secret {
+				t.Fatalf("credentials = %#v, %#v", first, second)
+			}
+			wantArgs := []string{"account", "get-access-token", "--resource", AzureDevOpsResourceID, "--output", "json"}
+			if tenant != "" {
+				wantArgs = append(wantArgs, "--tenant", tenant)
+			}
+			if runner.calls != 1 || runner.name != "az" || !slices.Equal(runner.args, wantArgs) {
+				t.Fatalf("az invocation = %q %#v (%d calls), want %#v once", runner.name, runner.args, runner.calls, wantArgs)
+			}
+		})
 	}
 }
 

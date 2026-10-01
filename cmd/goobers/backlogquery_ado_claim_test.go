@@ -43,6 +43,7 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 				"System.Title":        "ADO ready item",
 				"System.State":        "Active",
 				"System.Tags":         tags,
+				"Microsoft.VSTS.Common.AcceptanceCriteria": "Respect the ready-label contract.",
 			},
 		}}})
 	})
@@ -93,6 +94,7 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 				"System.Title":        "ADO ready item",
 				"System.State":        "Active",
 				"System.Tags":         tags,
+				"Microsoft.VSTS.Common.AcceptanceCriteria": "Respect the ready-label contract.",
 			},
 		})
 	})
@@ -147,13 +149,21 @@ func TestADOBacklogQueryReadOnlyAndClaimAgreeWithReadyLabel(t *testing.T) {
 	// so a claim whose selector names the ready tag records when that tag was
 	// added rather than omitting the field.
 	var claimed struct {
-		ReadyAt *time.Time `json:"readyAt"`
+		ReadyAt            *time.Time `json:"readyAt"`
+		Body               string     `json:"body"`
+		AcceptanceCriteria string     `json:"acceptanceCriteria"`
 	}
 	if err := json.Unmarshal(data, &claimed); err != nil {
 		t.Fatalf("decode claimed item: %v\n%s", err, data)
 	}
 	if claimed.ReadyAt == nil || !claimed.ReadyAt.Equal(readyAt) {
 		t.Fatalf("ADO claim readyAt = %v, want %s: %s", claimed.ReadyAt, readyAt.Format(time.RFC3339), data)
+	}
+	if claimed.AcceptanceCriteria != "Respect the ready-label contract." {
+		t.Fatalf("ADO claim acceptanceCriteria = %q: %s", claimed.AcceptanceCriteria, data)
+	}
+	if claimed.Body != "## Acceptance Criteria\n\nRespect the ready-label contract." {
+		t.Fatalf("ADO claim body = %q: %s", claimed.Body, data)
 	}
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
 	if err != nil {

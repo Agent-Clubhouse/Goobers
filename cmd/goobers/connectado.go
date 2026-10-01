@@ -100,7 +100,7 @@ func connectRewriteADOGaggleFile(path string, opts connectOptions) (bool, error)
 	if !placeholder && !current && !opts.replace {
 		return false, nil
 	}
-	changed := false
+	changed := connectRewriteGaggleDisplayName(spec, connectPlaceholderOwner+"/your-project/"+connectPlaceholderName, a.String(), opts.replace)
 	for key, value := range map[string]string{"owner": a.Organization, "project": a.Project, "name": a.Repository} {
 		node := yamlMapValue(project, key)
 		if node == nil {

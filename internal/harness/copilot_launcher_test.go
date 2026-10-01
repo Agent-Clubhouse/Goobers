@@ -3,8 +3,10 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -162,6 +164,7 @@ func TestLauncherV2AuthProbeFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var authAttempts int
 	adapter := &CopilotAdapter{
 		Command:                 []string{program, "forwarding-launcher"},
 		RequireLauncherContract: true,
@@ -176,6 +179,7 @@ func TestLauncherV2AuthProbeFailsClosed(t *testing.T) {
 				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
 				return ProcessResult{}, err
 			default:
+				authAttempts++
 				return ProcessResult{ExitCode: 1, Transcript: []byte("credential is invalid or revoked")}, nil
 			}
 		}),
@@ -186,6 +190,172 @@ func TestLauncherV2AuthProbeFailsClosed(t *testing.T) {
 		!strings.Contains(err.Error(), "credential is invalid or revoked") ||
 		!strings.Contains(err.Error(), "sign in") {
 		t.Fatalf("invalid credential error = %v", err)
+	}
+	if authAttempts != 1 {
+		t.Fatalf("credential failure was retried %d times, want one attempt", authAttempts)
+	}
+}
+
+func TestLauncherV2AuthProbeRetriesTransientFailure(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authAttempts int
+	adapter := &CopilotAdapter{
+		Command:                 []string{program, "forwarding-launcher"},
+		RequireLauncherContract: true,
+		VersionArgs:             []string{"version"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch {
+			case req.Command[len(req.Command)-1] == launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+				return ProcessResult{}, err
+			case req.Command[len(req.Command)-1] == "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				authAttempts++
+				if authAttempts == 1 {
+					return ProcessResult{ExitCode: 1, Transcript: []byte("session bootstrap failed before auth status completed")}, nil
+				}
+				return ProcessResult{}, nil
+			}
+		}),
+	}
+	if _, err := adapter.Preflight(context.Background()); err != nil {
+		t.Fatalf("Preflight after transient launcher failure: %v", err)
+	}
+	if authAttempts != 2 {
+		t.Fatalf("auth attempts = %d, want retry after transient launcher failure", authAttempts)
+	}
+}
+
+func TestLauncherV2AuthProbeReportsNonAuthFailureSeparately(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authAttempts int
+	adapter := &CopilotAdapter{
+		Command:                 []string{program, "forwarding-launcher"},
+		RequireLauncherContract: true,
+		VersionArgs:             []string{"version"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch {
+			case req.Command[len(req.Command)-1] == launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+				return ProcessResult{}, err
+			case req.Command[len(req.Command)-1] == "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				authAttempts++
+				return ProcessResult{ExitCode: 1, Transcript: []byte("session bootstrap failed before auth status completed")}, nil
+			}
+		}),
+	}
+	_, err = adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected non-auth launcher probe failure")
+	}
+	if authAttempts != 2 {
+		t.Fatalf("auth attempts = %d, want one retry for transient launcher failure", authAttempts)
+	}
+	message := err.Error()
+	if !strings.Contains(message, "forwarding launcher failed") || !strings.Contains(message, "session bootstrap failed") {
+		t.Fatalf("error did not classify launcher bootstrap failure: %v", err)
+	}
+	if strings.Contains(message, "sign in") || strings.Contains(message, "authentication failure") {
+		t.Fatalf("launcher bootstrap failure was misclassified as auth: %v", err)
+	}
+}
+
+func TestLauncherV2AuthProbeDoesNotRetryAmbiguousFailure(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		exitCode   int
+		runErr     error
+		transcript []byte
+	}{
+		{name: "empty", exitCode: 1},
+		{name: "unrecognized", exitCode: 1, transcript: []byte("access denied")},
+		{name: "ambiguous negative exit", exitCode: -1, runErr: errors.New("process exited before writing diagnostics")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var authAttempts int
+			adapter := &CopilotAdapter{
+				Command:                 []string{program, "forwarding-launcher"},
+				RequireLauncherContract: true,
+				VersionArgs:             []string{"version"},
+				Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+					switch {
+					case req.Command[len(req.Command)-1] == launcherContractFlag:
+						_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+						return ProcessResult{}, err
+					case req.Command[len(req.Command)-1] == "version":
+						_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+						return ProcessResult{}, err
+					default:
+						authAttempts++
+						return ProcessResult{ExitCode: tc.exitCode, Transcript: tc.transcript}, tc.runErr
+					}
+				}),
+			}
+			_, err := adapter.Preflight(context.Background())
+			if err == nil {
+				t.Fatal("expected ambiguous launcher probe failure")
+			}
+			if authAttempts != 1 {
+				t.Fatalf("auth attempts = %d, want no retry for ambiguous failure", authAttempts)
+			}
+			message := err.Error()
+			if !strings.Contains(message, "sign in") {
+				t.Fatalf("ambiguous failure should keep auth guidance: %v", err)
+			}
+			if strings.Contains(message, "forwarding launcher failed") || strings.Contains(message, "launcher/session bootstrap") {
+				t.Fatalf("ambiguous failure was misclassified as launcher bootstrap: %v", err)
+			}
+		})
+	}
+}
+
+func TestLauncherV2AuthProbeReportsProcessErrorSeparately(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command:                 []string{program, "forwarding-launcher"},
+		RequireLauncherContract: true,
+		VersionArgs:             []string{"version"},
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			switch {
+			case req.Command[len(req.Command)-1] == launcherContractFlag:
+				_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+				return ProcessResult{}, err
+			case req.Command[len(req.Command)-1] == "version":
+				_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+				return ProcessResult{}, err
+			default:
+				return ProcessResult{ExitCode: -1, Transcript: []byte("launcher process failed before auth status completed")}, &exec.Error{Name: "forwarding-launcher", Err: exec.ErrNotFound}
+			}
+		}),
+	}
+	_, err = adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected launcher process failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "forwarding launcher failed") || !strings.Contains(message, "executable file not found") {
+		t.Fatalf("error did not classify launcher process failure: %v", err)
+	}
+	if strings.Contains(message, "sign in") || strings.Contains(message, "authentication failure") {
+		t.Fatalf("launcher process failure was misclassified as auth: %v", err)
 	}
 }
 

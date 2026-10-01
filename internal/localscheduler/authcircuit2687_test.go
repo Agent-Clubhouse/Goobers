@@ -32,11 +32,19 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 		ScheduleDemandCounter: failing,
 		Starter:               &fakeStarter{},
 	}
-	sched, dir := newTestScheduler(t, []WorkflowEntry{entry})
 	now := time.Now()
+	clock := newFakeClock(now)
+	sched, dir := newTestScheduler(t, []WorkflowEntry{entry}, WithClock(clock.Now, time.After))
 
-	sched.Tick(context.Background(), now.Add(2*time.Hour))
-	sched.Tick(context.Background(), now.Add(3*time.Hour))
+	// Both ticks fall inside the circuit's cooldown, so the second must not
+	// poll the rejected credential again (#2687). The cooldown's expiry is
+	// covered by authcircuitcooldown6166_test.go.
+	tick := func(at time.Time) {
+		clock.now.Store(&at)
+		sched.Tick(context.Background(), at)
+	}
+	tick(now.Add(2 * time.Hour))
+	tick(now.Add(2*time.Hour + authCircuitBaseCooldown - time.Minute))
 	if got := failing.polls(); got != 1 {
 		t.Fatalf("polls after permanent auth failure = %d, want 1", got)
 	}
@@ -62,7 +70,7 @@ func TestAuthFailureCircuitStopsBacklogPollingUntilReload(t *testing.T) {
 	if err := sched.Reload([]WorkflowEntry{entry}, nil, now, "old", "new"); err != nil {
 		t.Fatal(err)
 	}
-	sched.Tick(context.Background(), now.Add(4*time.Hour))
+	tick(now.Add(2*time.Hour + authCircuitBaseCooldown - 30*time.Second))
 	if got := repaired.polls(); got != 1 {
 		t.Fatalf("polls after credential configuration reload = %d, want 1", got)
 	}
@@ -92,7 +100,7 @@ func TestAuthFailureCircuitStopsRunRedispatch(t *testing.T) {
 			}
 			identity := WorkflowIdentity{Gaggle: "goobers-site", Workflow: "implementation"}
 			waitForCount(t, func() int {
-				if sched.authCircuitOpen(identity) {
+				if sched.authCircuitOpen(identity, sched.now()) {
 					return 1
 				}
 				return 0
@@ -204,7 +212,7 @@ func TestCredentialMaterializationFailureOpensRunCircuit(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCount(t, func() int {
-		if sched.authCircuitOpen(identity) {
+		if sched.authCircuitOpen(identity, sched.now()) {
 			return 1
 		}
 		return 0

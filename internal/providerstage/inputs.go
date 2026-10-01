@@ -132,7 +132,11 @@ var inputSchemas = map[string][]Input{
 	),
 	"gather-ci-failures":       schema(pathsIn("resultFile"), durationsIn("timeout")),
 	"gather-implement-context": schema(stringsIn("base"), integersIn("maxHotFiles"), pathsIn("resultFile"), durationsIn("timeout")),
-	"gather-issue-context":     schema(pathsIn("resultFile"), durationsIn("timeout")),
+	"gather-issue-context": schema(
+		stringsIn("parentCrossProject"), stringListsIn("parentFields", "parentIncludeTypes"),
+		booleansIn("parentTraversal"), integersIn("parentMaxDepth", "parentMaxFieldBytes", "parentMaxItems"),
+		pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"gather-pr-context": schema(
 		stringsIn("base", "headPrefix", "minSeverity", "remediationAlgorithm", "selectedNumber"),
 		pathsIn("resultFile"), durationsIn("timeout"),
@@ -164,7 +168,7 @@ var inputSchemas = map[string][]Input{
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),

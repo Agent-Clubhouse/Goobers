@@ -296,7 +296,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
-				ScratchDir: deterministicScratchDir, CredentialStores: stores,
+				ScratchDir: deterministicScratchDir, CredentialStores: stores, CredentialGrants: stageGrantMinterFor(instanceRoot),
 			})
 			if err != nil {
 				return nil, err
@@ -869,6 +869,24 @@ func requireLabelsByGaggle(set *instance.ConfigSet) map[string]string {
 	for i := range set.Gaggles {
 		g := &set.Gaggles[i]
 		out[g.Name] = strings.Join(g.Spec.RequireLabels, ",")
+	}
+	return out
+}
+
+func backlogLabelsByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = strings.Join(g.Spec.Backlog.Labels, ",")
+	}
+	return out
+}
+
+func backlogLabelPredicatesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = g.Spec.Backlog.LabelPredicate
 	}
 	return out
 }

@@ -311,6 +311,57 @@ func TestCleanupGuardPreservesEvidenceOnEveryDestructivePath(t *testing.T) {
 	}
 }
 
+func TestStaleReplacementUsesOwnershipWhenPrimaryMarkerMissing(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	var targets []CleanupTarget
+	if err := m.SetCleanupGuard("recovery", func(_ context.Context, target CleanupTarget) error {
+		targets = append(targets, target)
+		if target.OwnerRunID == "" || target.RepositoryDigest == "" {
+			return errors.New("recovery cleanup requires verified repository and run ownership")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		owner  = "owner"
+		runID  = "owner-local-ci"
+		branch = "goobers/test/owner"
+	)
+	stale, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, OwnerRunID: owner, BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+	if err := os.Remove(m.markerPath(stale.key, stale.RunID)); err != nil {
+		t.Fatalf("remove primary marker: %v", err)
+	}
+
+	replacement, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, OwnerRunID: owner, BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("replacement Create: %v", err)
+	}
+	if replacement.Path != stale.Path {
+		t.Fatalf("replacement path = %q, want exact stale path %q", replacement.Path, stale.Path)
+	}
+	if len(targets) != 1 || targets[0].WorktreeID != runID || targets[0].OwnerRunID != owner ||
+		targets[0].RepositoryDigest != RepositoryDigest(repo) || targets[0].BaseRef != "refs/heads/main" {
+		t.Fatalf("cleanup target = %+v, want durable ownership from ownership record", targets)
+	}
+	current, err := readMarker(m.markerPath(stale.key, runID))
+	if err != nil {
+		t.Fatalf("read replacement marker: %v", err)
+	}
+	if current.OwnerRunID != owner || current.Status != statusActive {
+		t.Fatalf("replacement marker = %+v, want active owner marker", current)
+	}
+}
+
 func TestKeepingWorktreeDoesNotInvokeCleanupGuard(t *testing.T) {
 	ctx := context.Background()
 	m, err := NewManager(t.TempDir(), WithMutationReceiptCleanup(func(context.Context, CleanupTarget) error {

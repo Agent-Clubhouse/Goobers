@@ -1457,6 +1457,11 @@ jobs:
       - name: Windows credential files
         run: go test ./internal/credentials
 
+      - name: Windows Azure CLI credential diagnostics
+        env:
+          TESTDEP_STRICT: '1'
+        run: go test -tags=integration ./providers -run '^(TestAzureCLICredential|TestIntegrationAzureCLI)' -count=1 -timeout=3m
+
       - name: Windows self-update
         run: go test ./internal/selfupdate
 

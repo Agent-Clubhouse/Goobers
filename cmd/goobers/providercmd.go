@@ -18,6 +18,7 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -411,6 +412,12 @@ const (
 	// see one) — a real permission failure. Never retryable: retrying with
 	// the same bad or expired credential cannot succeed.
 	errorCodeAuthFailed = providers.ErrorCodeAuthFailed
+	// errorCodeProviderAuthFailed is a delivered Azure DevOps credential that
+	// Azure DevOps rejected (providers.ErrADODeliveredCredentialRejected):
+	// the same verdict as errorCodeAuthFailed under a code that does not
+	// name GitHub (Goobers#6120). Never retryable at this layer — the one
+	// re-resolve a refreshable credential gets already happened in send().
+	errorCodeProviderAuthFailed = providers.ErrorCodeProviderAuthFailed
 	// errorCodeNetwork is either a transport-level failure (dial/DNS/reset/
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
@@ -498,6 +505,13 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if code, ok := classifyLandingRefusal(err); ok {
 		return code, false, nil
 	}
+	var claimDrift *providers.ClaimMetadataDriftError
+	if errors.As(err, &claimDrift) {
+		return "claim_metadata_drift", true, nil
+	}
+	if strings.Contains(message, "claim metadata drift") {
+		return "claim_metadata_drift", true, nil
+	}
 	// Checked ahead of IsAuthenticationError (ADO-N26): a policy-protected
 	// push's underlying git failure carries no HTTP status a credential
 	// classifier could recognize, but its message text alone must never be
@@ -506,7 +520,10 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if errors.As(err, &policyPush) {
 		return errorCodeBranchPolicyProtected, false, nil
 	}
-	if providers.IsAuthenticationError(err) {
+	if isADODeliveredCredentialRejection(err, message) {
+		return errorCodeProviderAuthFailed, false, nil
+	}
+	if providers.IsAuthenticationError(err) || isUnrefreshedRejection(err, message) {
 		return errorCodeAuthFailed, false, nil
 	}
 	if status, ok := statusCodeFrom(err); ok {
@@ -548,6 +565,21 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		return telemetry.ErrCodeInfraJournal, true, nil
 	}
 	return errorCodeProvider, false, nil
+}
+
+// isADODeliveredCredentialRejection recognizes an Azure DevOps rejection of a
+// delivered credential, typed in process or by its stable message prefix once
+// it has crossed a process boundary as text. lowered is err's lowercased text.
+func isADODeliveredCredentialRejection(err error, lowered string) bool {
+	return errors.Is(err, providers.ErrADODeliveredCredentialRejected) ||
+		strings.Contains(lowered, strings.ToLower(providers.ErrADODeliveredCredentialRejected.Error()))
+}
+
+// isUnrefreshedRejection recognizes a GitHub credential the provider rejected
+// and the stage's credential-refresh grant could not re-resolve (#6120).
+func isUnrefreshedRejection(err error, lowered string) bool {
+	return errors.Is(err, credentials.ErrRejectedCredentialNotRefreshed) ||
+		strings.Contains(lowered, strings.ToLower(credentials.ErrRejectedCredentialNotRefreshed.Error()))
 }
 
 // classifyLandingRefusal names the typed landing refusals (ADO-N9) ahead of

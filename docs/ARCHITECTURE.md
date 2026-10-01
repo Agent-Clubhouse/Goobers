@@ -346,7 +346,10 @@ Contract rules:
   every ADO auth kind resolves in the daemon, a stage receives only the
   `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
   the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
-  states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`),
+  states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`;
+  a deterministic goobers-CLI stage with such a value also gets a stage
+  credential-refresh grant, `GOOBERS_CREDENTIAL_ENDPOINT` +
+  `GOOBERS_CREDENTIAL_GRANT`, that re-resolves only those capabilities, #6120),
   and no stage reads
   `repos[].auth` (see [the stage contract](stage-contract.md)). When a
   gaggle keeps its backlog on another provider than its code (topology (b):

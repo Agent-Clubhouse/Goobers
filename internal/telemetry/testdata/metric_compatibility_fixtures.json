@@ -149,6 +149,28 @@
                       }
                     },
                     {
+                      "name": "goobers.journal.exports_dropped",
+                      "description": "Committed journal events never handed to the OTLP Logs exporter, by cause. The journal file stays authoritative.",
+                      "unit": "{event}",
+                      "sum": {
+                        "data_points": [
+                          {
+                            "attributes": [
+                              {
+                                "key": "goobers.journal.drop_cause",
+                                "value": {
+                                  "string_value": "queue_full"
+                                }
+                              }
+                            ],
+                            "as_int": "2"
+                          }
+                        ],
+                        "aggregation_temporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                        "is_monotonic": true
+                      }
+                    },
+                    {
                       "name": "goobers.journal.redactions_total",
                       "description": "Scrub events that removed secret material, separated by layer.",
                       "unit": "{event}",

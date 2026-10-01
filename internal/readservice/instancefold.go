@@ -76,7 +76,7 @@ func (s *instanceState) apply(event journal.Event) {
 			delete(s.refillBlocked, localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow})
 		}
 	case journal.EventError:
-		if event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed && event.Workflow != "" {
+		if event.Error != nil && providers.IsAuthFailureCode(event.Error.Code) && event.Workflow != "" {
 			s.blockRefill(event.Gaggle, event.Workflow, localscheduler.ReasonProviderAuth)
 		}
 	case journal.EventPollShed:

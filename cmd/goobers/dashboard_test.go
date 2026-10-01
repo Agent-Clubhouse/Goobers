@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -362,19 +363,48 @@ func freeNonLoopbackTestPort(t *testing.T) int {
 	return port
 }
 
-func useLoopbackDashboardTestListener(t *testing.T) {
+func useLoopbackDashboardTestListener(t *testing.T) int {
 	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
 	original := listenDashboardTCP
+	var listenerMu sync.Mutex
 	listenDashboardTCP = func(network, address string) (net.Listener, error) {
-		_, port, err := net.SplitHostPort(address)
+		_, requestedPort, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err
 		}
-		return net.Listen(network, net.JoinHostPort("127.0.0.1", port))
+		if requestedPort != port {
+			return nil, fmt.Errorf("dashboard test listener got port %s, want %s", requestedPort, port)
+		}
+		listenerMu.Lock()
+		defer listenerMu.Unlock()
+		if listener == nil {
+			return nil, fmt.Errorf("dashboard test listener for port %s was already used", port)
+		}
+		owned := listener
+		listener = nil
+		return owned, nil
 	}
 	t.Cleanup(func() {
 		listenDashboardTCP = original
+		listenerMu.Lock()
+		defer listenerMu.Unlock()
+		if listener != nil {
+			_ = listener.Close()
+		}
 	})
+	portNumber, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return portNumber
 }
 
 // TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth pins the
@@ -406,8 +436,7 @@ func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
 	// publication, but never expose the disposable test binary off-loopback.
 	// Windows Defender otherwise asks for a persistent firewall decision for
 	// the temporary goobers.test.exe.
-	useLoopbackDashboardTestListener(t)
-	port := freeNonLoopbackTestPort(t)
+	port := useLoopbackDashboardTestListener(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &dashboardURLWriter{url: make(chan string, 1)}
 	done := make(chan int, 1)
@@ -434,12 +463,22 @@ func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
 	loopbackAddress := "http://127.0.0.1:" + strings.TrimPrefix(address, "http://0.0.0.0:")
 	// Unauthenticated: the standalone handler enforces api.auth even when the
 	// bind itself was permitted, so a bare request is refused.
-	response, err := http.Get(loopbackAddress + "api/v1/health")
+	client := &http.Client{
+		Transport: &http.Transport{DisableKeepAlives: true},
+		Timeout:   time.Second,
+	}
+	response, err := client.Get(loopbackAddress + "api/v1/health")
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	_ = response.Body.Close()
+	_, readErr := io.Copy(io.Discard, response.Body)
+	closeErr := response.Body.Close()
+	client.CloseIdleConnections()
+	if readErr != nil || closeErr != nil {
+		cancel()
+		t.Fatal(errors.Join(readErr, closeErr))
+	}
 	if response.StatusCode != http.StatusUnauthorized {
 		cancel()
 		t.Fatalf("unauthenticated API status = %d, want 401", response.StatusCode)

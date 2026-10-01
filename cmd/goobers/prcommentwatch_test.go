@@ -546,7 +546,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 		_, fresh := latestUnaddressedHumanComment([]providers.Comment{
 			comment("bot", "", at(time.Hour)),
 			comment("dev", "", at(2*time.Hour)),
-		}, "bot", nil)
+		}, dedicatedLoginClassifier("bot"))
 		if !fresh {
 			t.Fatal("expected trigger")
 		}
@@ -557,7 +557,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 			comment("bot", "", at(time.Hour)),
 			comment("dev", "", at(2*time.Hour)),
 			comment("bot", "", at(3*time.Hour)),
-		}, "bot", nil)
+		}, dedicatedLoginClassifier("bot"))
 		if fresh {
 			t.Fatal("expected quiet")
 		}
@@ -568,7 +568,7 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 		got, fresh := latestUnaddressedHumanComment([]providers.Comment{
 			comment("bot", "", nil),
 			comment("dev", "", nil),
-		}, "bot", nil)
+		}, dedicatedLoginClassifier("bot"))
 		if !fresh || got.Author != "dev" {
 			t.Fatalf("got %+v fresh=%v, want dev trigger", got, fresh)
 		}
@@ -579,15 +579,39 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 		_, fresh := latestUnaddressedHumanComment([]providers.Comment{
 			comment("dev", "", at(time.Hour)),
 			comment("bot", "", at(time.Hour)),
-		}, "bot", nil)
+		}, dedicatedLoginClassifier("bot"))
 		if fresh {
 			t.Fatal("expected quiet when the equal-timestamp bot comment is last")
 		}
 	})
 
 	t.Run("empty list is quiet", func(t *testing.T) {
-		if _, fresh := latestUnaddressedHumanComment(nil, "bot", nil); fresh {
+		if _, fresh := latestUnaddressedHumanComment(nil, dedicatedLoginClassifier("bot")); fresh {
 			t.Fatal("expected quiet for an empty thread")
+		}
+	})
+
+	t.Run("a marked comment is Goobers' own whoever posted it", func(t *testing.T) {
+		// Goobers may post through a second credential (another login); its
+		// attribution footer still makes the response Goobers'.
+		marked := comment("other-app", "", at(2*time.Hour))
+		marked.Body = stampOwnFixtureBody("done", "comment")
+		if _, fresh := latestUnaddressedHumanComment([]providers.Comment{
+			comment("dev", "", at(time.Hour)),
+			marked,
+		}, dedicatedLoginClassifier("bot")); fresh {
+			t.Fatal("expected quiet: the newest comment carries Goobers' marker")
+		}
+	})
+
+	t.Run("shared identity: an unmarked own-login comment is human", func(t *testing.T) {
+		shared := newPRCommentClassifier(prCommentWatchIdentity{login: "bot", key: "bot"},
+			prCommentWatchSettings{identityMode: prCommentWatchIdentityShared})
+		own := comment("bot", "", at(time.Hour))
+		own.Body = stampOwnFixtureBody("verdict", "comment")
+		got, fresh := latestUnaddressedHumanComment([]providers.Comment{own, comment("bot", "", at(2*time.Hour))}, shared)
+		if !fresh || got.Author != "bot" {
+			t.Fatalf("got %+v fresh=%v, want the unmarked own-login comment to trigger", got, fresh)
 		}
 	})
 
@@ -595,8 +619,14 @@ func TestLatestUnaddressedHumanComment(t *testing.T) {
 		// The only human is the token owner under a different case: no signal.
 		if _, fresh := latestUnaddressedHumanComment([]providers.Comment{
 			comment("Bot-Account", "", at(time.Hour)),
-		}, "bot-account", nil); fresh {
+		}, dedicatedLoginClassifier("bot-account")); fresh {
 			t.Fatal("expected quiet when the sole author is the bot under a different case")
 		}
 	})
+}
+
+// dedicatedLoginClassifier is the GitHub/Gitea default: a dedicated bot login.
+func dedicatedLoginClassifier(login string) prCommentClassifier {
+	return newPRCommentClassifier(prCommentWatchIdentity{login: login, key: login},
+		prCommentWatchSettings{identityMode: prCommentWatchIdentityDedicated})
 }

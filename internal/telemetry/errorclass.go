@@ -41,6 +41,10 @@ const (
 	// ErrorClassExecutor is a genuine runner/executor defect — the residual
 	// left once every recognized external cause has its own class.
 	ErrorClassExecutor ErrorClass = "executor"
+	// ErrorClassOperator is an explicit human/operator action such as a live
+	// run cancel. It is expected/external control flow, not evidence of runner
+	// loss or work failure.
+	ErrorClassOperator ErrorClass = "operator"
 	// ErrorClassItemJudgment is a stage's correct terminal conclusion about
 	// the ITEM it was handed, not a failure of the work (#3363): the item is
 	// stale, already done, or otherwise not applicable. Re-running the stage
@@ -85,9 +89,17 @@ const (
 	ErrCodeProviderFailed = "provider_error"
 	ErrCodePollProvider   = "poll_provider_error"
 	ErrCodeGitHubAuth     = "github_auth_failed"
+	// ErrCodeProviderAuth is the provider-neutral auth failure (an Azure
+	// DevOps delivered credential rejected, Goobers#6120); it classifies
+	// exactly as ErrCodeGitHubAuth.
+	ErrCodeProviderAuth = "provider_auth_failed"
 	// ErrCodeCredentialUnavailable identifies a declared credential whose
 	// configured source cannot currently be materialized.
 	ErrCodeCredentialUnavailable = "credential_unavailable"
+	// ErrCodeRunCanceled identifies an explicit operator-requested live run
+	// cancellation. It is emitted by internal/runner's cancel path and should
+	// remain distinct from unexpected run loss.
+	ErrCodeRunCanceled = "run_canceled"
 	// ErrCodeNoWorkUnsubstantiated is the runner's refusal of a no-work claim
 	// no upstream stage delivered evidence for (#2736). Spelled here so the
 	// refusal is reportable in operator health numbers instead of landing in
@@ -145,7 +157,9 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeProviderFailed:        ErrorClassProvider,
 	ErrCodePollProvider:          ErrorClassProvider,
 	ErrCodeGitHubAuth:            ErrorClassProvider,
+	ErrCodeProviderAuth:          ErrorClassProvider,
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
+	ErrCodeRunCanceled:           ErrorClassOperator,
 	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
 	// The run's evidence contract, not the work: the claim did not hold up
 	// against what the journal says its upstream produced.

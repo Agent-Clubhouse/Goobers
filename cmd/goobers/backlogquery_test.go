@@ -293,6 +293,81 @@ func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryClaimWaitsForProviderLabelProjection(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Eventually visible claim", "goobers:approved")
+	server.hideIssueLabelOnNextGets(7, providers.LabelClaimed, 1)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "lagged-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-item.json")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("claim with lagged label projection: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := ledger.Lookup("7")
+	if !held || entry.RunID != "lagged-run" || entry.Verification.State != "verified" {
+		t.Fatalf("ledger entry = %+v, held=%v, want verified lagged-run claim", entry, held)
+	}
+	data, err := os.ReadFile("claimed-item.json")
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var item providers.WorkItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if !item.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("claimed-item.json labels = %v, want %s", item.Labels, providers.LabelClaimed)
+	}
+	if item.Integrity != apiintegrity.Maintainer {
+		t.Fatalf("claimed-item.json integrity = %q, want %q", item.Integrity, apiintegrity.Maintainer)
+	}
+}
+
+func TestBacklogQueryClaimReportsProviderLabelProjectionDrift(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Never visible claim", "goobers:approved")
+	server.hideIssueLabelOnNextGets(7, providers.LabelClaimed, 99)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "drift-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-item.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 for claim metadata drift; stdout = %q stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if result[executor.OutputErrorCode] != "claim_metadata_drift" || result[executor.OutputErrorRetryable] != true {
+		t.Fatalf("result = %#v, want retryable claim_metadata_drift", result)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); held {
+		t.Fatalf("failed claim retained ledger entry: %+v", entry)
+	}
+}
+
 // TestBacklogQueryRepeatedContentionSkipsOnlyThatItem pins #5468 Lever D: a
 // repeated provider contention against one owner (the bd63a5681 drift
 // signal) skips that item and keeps claiming the rest of the batch. It used to
@@ -439,6 +514,17 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 	}
 	if entry, held := ledger.Lookup("7"); !held || entry.RunID != "recovering-run" {
 		t.Fatalf("ledger entry for item 7 = %+v, held=%v, want held by recovering-run", entry, held)
+	}
+	resultData, err := os.ReadFile(filepath.Join(workdir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var resultItem providers.WorkItem
+	if err := json.Unmarshal(resultData, &resultItem); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if !resultItem.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("claimed-item.json labels = %v, want %s", resultItem.Labels, providers.LabelClaimed)
 	}
 	data, err := os.ReadFile(filepath.Join(workdir, mutationsSidecarFile))
 	if err != nil {

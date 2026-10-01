@@ -135,8 +135,10 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// its own, exactly as dispatchTask does. A dispatch that leaves them
 		// empty hands the stage no partition, and on a shared backlog that
 		// claims the sibling instance's goobers:local items.
-		BacklogQueryAssignedTo:    selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
-		BacklogQueryRequireLabels: requireLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryAssignedTo:     selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
+		BacklogQueryRequireLabels:  requireLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryBacklogLabels:  backlogLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryLabelPredicate: backlogLabelPredicatesByGaggle(req.set)[req.gaggle],
 		// #3876: kit provenance, so an engine run's run.yaml names the same
 		// digest gooberDigestStarter stamps on a runner-driven one.
 		GooberDigest: req.gooberDigest,

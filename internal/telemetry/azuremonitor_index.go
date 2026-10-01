@@ -52,6 +52,9 @@ type azureReplayIndex struct {
 	dirty         bool // guarded by the root lock; retry a rolled-back mutation eagerly
 	firstAttempt  chan struct{}
 	firstErr      error // immutable after firstAttempt closes
+	retry         chan struct{}
+	coldDeferred  chan struct{}
+	coldOnce      sync.Once
 }
 
 func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
@@ -59,7 +62,7 @@ func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
 	if root == "" {
 		root, stream = cfg.dir, ""
 	}
-	absolute, err := filepath.Abs(root)
+	absolute, err := canonicalReplayRoot(root)
 	if err != nil {
 		return "", "", err
 	}
@@ -67,6 +70,17 @@ func replayIndexLocation(cfg azureReplayConfig) (string, string, error) {
 	// still coordinate aliases across index handles; initialization retries all
 	// filesystem work on its background goroutine.
 	return filepath.Clean(absolute), stream, nil
+}
+
+func canonicalReplayRoot(root string) (string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if canonical, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = canonical
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error) {
@@ -81,7 +95,7 @@ func acquireReplayIndex(cfg azureReplayConfig) (*azureReplayIndex, string, error
 		return index, stream, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), cancel: cancel, refs: 1}
+	index := &azureReplayIndex{root: root, streams: []string{"traces", "journal", "diagnostics"}, start: cfg.start, ready: make(chan struct{}), firstAttempt: make(chan struct{}), retry: make(chan struct{}, 1), cancel: cancel, refs: 1}
 	index.bootstrapOpen.Store(cfg.start != nil)
 	if stream == "" {
 		index.streams = []string{""}
@@ -117,6 +131,8 @@ func (x *azureReplayIndex) initialize(ctx context.Context) error {
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-timer.C:
+		case <-x.retry:
+			timer.Stop()
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
@@ -151,6 +167,7 @@ func (x *azureReplayIndex) awaitLargeColdBacklogStart(ctx context.Context) error
 			}
 		}
 		if count >= azureReplayLargeColdBacklogFiles {
+			x.signalColdDeferred()
 			select {
 			case <-x.start:
 				return nil
@@ -160,6 +177,13 @@ func (x *azureReplayIndex) awaitLargeColdBacklogStart(ctx context.Context) error
 		}
 	}
 	return nil
+}
+
+func (x *azureReplayIndex) signalColdDeferred() {
+	if x.coldDeferred == nil {
+		return
+	}
+	x.coldOnce.Do(func() { close(x.coldDeferred) })
 }
 
 func (x *azureReplayIndex) release(ctx context.Context) error {
@@ -210,10 +234,18 @@ func (x *azureReplayIndex) wait(ctx context.Context) error {
 		case <-x.ready:
 			return x.err
 		default:
+			x.signalRetry()
 			return x.firstErr
 		}
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+func (x *azureReplayIndex) signalRetry() {
+	select {
+	case x.retry <- struct{}{}:
+	default:
 	}
 }
 
@@ -578,12 +610,9 @@ func (x *azureReplayIndex) stats(ctx context.Context, stream string, now time.Ti
 // A live root uses its shared read-only pool; an external health command only
 // opens an existing manifest read-only. No scan or new exporter is started.
 func inspectReplayIndex(root string) (AzureReplayStats, bool) {
-	root, err := filepath.Abs(root)
+	root, err := canonicalReplayRoot(root)
 	if err != nil {
 		return AzureReplayStats{}, false
-	}
-	if canonical, err := filepath.EvalSymlinks(root); err == nil {
-		root = canonical
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -591,8 +620,17 @@ func inspectReplayIndex(root string) (AzureReplayStats, bool) {
 	x := azureReplayIndexes.roots[root]
 	azureReplayIndexes.Unlock()
 	if x != nil {
-		stats, _ := x.stats(ctx, "*", time.Now())
-		return stats, true
+		if stats, err := x.stats(ctx, "*", time.Now()); err == nil {
+			return stats, true
+		}
+		select {
+		case <-x.ready:
+			if x.err == nil {
+				return AzureReplayStats{AccountingReady: !x.hasBootstrapFiles()}, false
+			}
+		default:
+		}
+		return AzureReplayStats{}, false
 	}
 	path := filepath.Join(root, azureReplayIndexName)
 	if _, err = os.Stat(path); err != nil {

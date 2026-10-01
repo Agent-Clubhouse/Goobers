@@ -615,6 +615,11 @@ type adoPullRequestDetail struct {
 	LastMergeCommit   adoCommitRef          `json:"lastMergeCommit"`
 	CompletionOptions *adoCompletionOptions `json:"completionOptions,omitempty"`
 	AutoCompleteSetBy *adoIdentity          `json:"autoCompleteSetBy,omitempty"`
+	// CompletionQueueTime is set once ADO has queued the completion. ADO
+	// clears AutoCompleteSetBy when it starts completing an auto-complete PR
+	// and only then flips Status to "completed", so for a moment an active
+	// PR with no auto-complete is being completed, not evicted.
+	CompletionQueueTime string `json:"completionQueueTime,omitempty"`
 }
 
 type adoReviewer struct {
