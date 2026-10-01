@@ -62,15 +62,12 @@ type stageGrantIssuer struct {
 	endpoint string
 	now      func() time.Time
 
-	mu      sync.Mutex
-	revoked map[stageGrantKey]time.Time
+	mu sync.Mutex
+	// revoked is keyed by grant ID, not by run/stage/attempt: a revisited
+	// stage restarts its attempt numbering, so a later execution of the same
+	// stage can carry the same triple as a finished one.
+	revoked map[string]time.Time
 	buckets map[[sha256.Size]byte]*grantBucket
-}
-
-type stageGrantKey struct {
-	runID   string
-	stage   string
-	attempt int32
 }
 
 type grantBucket struct {
@@ -90,7 +87,7 @@ func newStageGrantIssuer(endpoint string) (*stageGrantIssuer, error) {
 	}
 	return &stageGrantIssuer{
 		key: key, endpoint: endpoint, now: time.Now,
-		revoked: map[stageGrantKey]time.Time{},
+		revoked: map[string]time.Time{},
 		buckets: map[[sha256.Size]byte]*grantBucket{},
 	}, nil
 }
@@ -154,12 +151,11 @@ func (s *daemonCredentialService) MintStageGrant(env apiv1.InvocationEnvelope, c
 		return executor.StageCredentialGrant{}, err
 	}
 	s.shared.Register([]byte(token))
-	key := stageGrantKey{runID: grant.RunID, stage: grant.Stage, attempt: grant.Attempt}
 	var once sync.Once
 	return executor.StageCredentialGrant{
 		Endpoint: s.grants.endpoint,
 		Token:    token,
-		Revoke:   func() { once.Do(func() { s.grants.revoke(key, grant.ExpiresAt) }) },
+		Revoke:   func() { once.Do(func() { s.grants.revoke(grant.ID, grant.ExpiresAt) }) },
 	}, nil
 }
 
@@ -250,17 +246,17 @@ func (s *daemonCredentialService) admitGrant(token, capabilityName string) (poda
 	return grant, nil
 }
 
-func (g *stageGrantIssuer) revoke(key stageGrantKey, expiresAt time.Time) {
+func (g *stageGrantIssuer) revoke(id string, expiresAt time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pruneLocked(g.now())
-	g.revoked[key] = expiresAt
+	g.revoked[id] = expiresAt
 }
 
 func (g *stageGrantIssuer) isRevoked(grant podauth.CredentialGrant) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	_, revoked := g.revoked[stageGrantKey{runID: grant.RunID, stage: grant.Stage, attempt: grant.Attempt}]
+	_, revoked := g.revoked[grant.ID]
 	return revoked
 }
 

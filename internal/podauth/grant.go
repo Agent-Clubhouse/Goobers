@@ -1,6 +1,7 @@
 package podauth
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -48,7 +49,13 @@ var ErrExpiredCredentialGrant = errors.New("podauth: credential grant expired")
 // holder may re-resolve, one at a time, the named Capabilities of exactly one
 // attempt of one deterministic stage of one run, until ExpiresAt. The claims
 // are inside the signed payload, so a holder cannot widen any of them.
+//
+// ID is a random per-mint identifier: two executions of one stage in one run
+// can carry the same RunID/Stage/Attempt (a workflow that revisits a stage
+// restarts its attempt numbering), so revocation keys on ID, never on the
+// attempt triple.
 type CredentialGrant struct {
+	ID           string    `json:"id"`
 	RunID        string    `json:"run"`
 	Stage        string    `json:"stage"`
 	Attempt      int32     `json:"attempt"`
@@ -82,6 +89,11 @@ func (s *SignedKey) MintCredentialGrant(grant CredentialGrant, ttl time.Duration
 	}
 	ttl = min(ttl, MaxCredentialGrantTTL)
 	grant.Capabilities = normalizeGrantCapabilities(grant.Capabilities)
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", CredentialGrant{}, fmt.Errorf("podauth: credential grant ID: %w", err)
+	}
+	grant.ID = base64.RawURLEncoding.EncodeToString(nonce)
 	grant.ExpiresAt = s.now().Add(ttl).UTC().Truncate(time.Second)
 	raw, err := json.Marshal(credentialGrantPayload{CredentialGrant: grant, Exp: grant.ExpiresAt.Unix()})
 	if err != nil {
@@ -126,7 +138,7 @@ func decodeGrantPayload(payload string) (CredentialGrant, error) {
 	}
 	grant := decoded.CredentialGrant
 	grant.ExpiresAt = time.Unix(decoded.Exp, 0).UTC()
-	if validateGrantClaims(grant) != nil || decoded.Exp <= 0 {
+	if validateGrantClaims(grant) != nil || decoded.Exp <= 0 || grant.ID == "" {
 		return CredentialGrant{}, ErrInvalidCredentialGrant
 	}
 	return grant, nil
