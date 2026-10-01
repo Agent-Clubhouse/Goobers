@@ -45,6 +45,31 @@ project:
   branch: main
 ```
 
+### Diagnosing Azure CLI failures
+
+When Azure CLI credential acquisition fails, Goobers reports whether executable
+lookup, process startup, cancellation, a deadline, or a nonzero exit caused the
+failure when the subprocess error identifies that condition. A nonzero exit
+includes its exit code, but does **not** by itself mean the user is signed out.
+Unclassified failures remain unclassified. Failed CLI output and arbitrary
+runner error text are withheld because they can contain partial credentials.
+Repository validation still fails; Goobers does not bypass authentication or
+change the configured credential source.
+
+For a command failure, run this token-free output check in the same user and
+process environment as Goobers:
+
+```powershell
+az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query expiresOn --output tsv
+```
+
+If `auth.tenant` is set, add `--tenant` with that same value. Use `az login`
+only if the check requests sign-in; otherwise follow the CLI's local diagnosis.
+For lookup or startup failures, check the installation, `PATH`, launcher and
+executable permissions. For a timeout, check CLI responsiveness and network
+access. Do not paste unfiltered token-command output into logs or support
+reports.
+
 ## Repository remote URL forms
 
 `goobers connect`, `push-branch`'s credential routing, and `validate`'s

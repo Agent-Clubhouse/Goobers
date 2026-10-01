@@ -27,6 +27,10 @@ var declared = map[string]Dependency{
 		Name:        "claude",
 		InstallHint: "install and sign in to Claude Code",
 	},
+	"cmd.exe": {
+		Name:        "cmd.exe",
+		InstallHint: "use the Windows command interpreter included with Windows; batch-launcher tests are Windows-only",
+	},
 	"bwrap": {
 		Name:        "bwrap",
 		InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)",
