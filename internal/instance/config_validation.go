@@ -42,6 +42,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 	return validateInOrder(
 		func() error { return c.Portal.validate() },
 		c.validateSpeech,
+		func() error { return c.DecisionGate.Validate() },
 		func() error { return c.Webhook.validateSecret(stores) },
 		c.validateTimezone,
 		c.Runner.validateDefaultStageTimeout,

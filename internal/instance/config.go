@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
@@ -145,6 +146,9 @@ type Config struct {
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Speech configures an opt-in local speech sink for the same terminal alerts.
 	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
+	// DecisionGate is the opt-in decision-model (System One) layer. Absent means off.
+	// It names environment variables for the endpoint and key; it never holds them.
+	DecisionGate *decisiongate.Settings `json:"decisionGate,omitempty" yaml:"decisionGate,omitempty"`
 	// UpdateCheck configures the daemon's notify-only release check (#4903).
 	// Nil keeps the defaults: enabled, the stable channel, once a day. The
 	// check only tells the operator a newer release exists — applying it stays
