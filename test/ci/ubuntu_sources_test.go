@@ -30,6 +30,15 @@ func TestDistroDependencyJobsUseUbuntuSources(t *testing.T) {
 			}
 		})
 	}
+	t.Run("checks waits for boot-time apt work", func(t *testing.T) {
+		script := w.Jobs["checks"].step(t, "Install Portal dependencies and pinned Chromium").Run
+		wait := strings.Index(script, "for _ in $(seq 1 60); do")
+		probe := strings.Index(script, "pgrep -x 'apt|apt-.*|dpkg|unattended-upgr' >/dev/null || break")
+		chromium := strings.Index(script, "playwright install --with-deps chromium")
+		if wait < 0 || probe <= wait || chromium <= probe {
+			t.Fatal("checks must wait, with a finite bound, for runner apt/dpkg work to exit before the Playwright --with-deps install")
+		}
+	})
 	data, err := os.ReadFile(filepath.Join(moduleRoot(t), ".github", "apt", "ubuntu-only.conf"))
 	if err != nil {
 		t.Fatal(err)
