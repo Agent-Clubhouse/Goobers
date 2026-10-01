@@ -412,8 +412,9 @@ const (
 
 // Route budgets.
 //
-// These come from Wave 0's measured p99.9 against §14.12's absolute targets, not
-// from taste, and every one is strictly below the portal's 10s client abort.
+// Portal-facing budgets come from Wave 0's measured p99.9 against §14.12's
+// targets and stay below the portal's 10s client abort. Stage-only routes with
+// slower work have explicit, separately tested exceptions.
 const (
 	// BoundedBudget covers indexed list and aggregate reads. Measured p50 for a
 	// read-model list page is single-digit milliseconds; 8s is three orders of

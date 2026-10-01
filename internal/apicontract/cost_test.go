@@ -8,8 +8,8 @@ import (
 
 // clientAbort is the portal's own request timeout.
 //
-// Every server budget must be strictly below it, so the SERVER is what decides a
-// request has run too long. If a budget met or exceeded it, the client would
+// Every Portal-facing server budget must be strictly below it, so the SERVER
+// is what decides a request has run too long. If a budget met or exceeded it, the client would
 // abort first and the user would see a generic network failure instead of the
 // 503 + Retry-After the server would have sent — the same outcome, with none of
 // the information.
