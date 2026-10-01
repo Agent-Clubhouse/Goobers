@@ -74,8 +74,11 @@ func newRefreshFixture(t *testing.T, endpoint string) (*daemonCredentialService,
 	return service, minted, runID
 }
 
+// pushBranchEnvelope is push-branch's envelope as the local runner shapes it:
+// TaskID is the run-scoped "<runId>:<stage>" id, not the bare stage name
+// (Goobers#6193 — a bare TaskID here hid that every local refresh failed).
 func pushBranchEnvelope(runID string, attempt int32) apiv1.InvocationEnvelope {
-	return apiv1.InvocationEnvelope{RunID: runID, TaskID: "push-branch", Attempt: attempt}
+	return runnerStageEnvelope(runID, "push-branch", attempt)
 }
 
 func mintTestGrant(t *testing.T, service *daemonCredentialService, grant podauth.CredentialGrant, ttl time.Duration) string {

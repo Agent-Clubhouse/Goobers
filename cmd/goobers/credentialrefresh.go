@@ -140,12 +140,21 @@ func localCredentialEndpoint(listenAddress string, tls bool) (string, error) {
 // MintStageGrant implements executor.StageCredentialGrants for the local
 // runner: a grant for exactly capabilities of env's attempt, revoked when the
 // attempt returns.
+//
+// The grant names the bare stage, never env.TaskID. The local runner's
+// envelope TaskID is the run-scoped "<runId>:<stage>" instance id, while the
+// refresh route verifies grant.Stage against the run's PINNED definition by
+// stage name, so stamping the composite id refused every local refresh with
+// 404 stage_unknown (Goobers#6193). It is the same run qualifier #4119 strips
+// from stage-artifact names, so the same helper strips it here. Only this
+// run's own prefix is stripped: a TaskID of any other shape is carried
+// verbatim and the pinned-definition check still refuses it.
 func (s *daemonCredentialService) MintStageGrant(env apiv1.InvocationEnvelope, capabilities []string, ttl time.Duration) (executor.StageCredentialGrant, error) {
 	if s.grants == nil {
 		return executor.StageCredentialGrant{}, errors.New("credential refresh is not enabled on this daemon")
 	}
 	token, grant, err := s.grants.key.MintCredentialGrant(podauth.CredentialGrant{
-		RunID: env.RunID, Stage: env.TaskID, Attempt: env.Attempt, Capabilities: capabilities,
+		RunID: env.RunID, Stage: stageArtifactName(env.RunID, env.TaskID), Attempt: env.Attempt, Capabilities: capabilities,
 	}, ttl)
 	if err != nil {
 		return executor.StageCredentialGrant{}, err
