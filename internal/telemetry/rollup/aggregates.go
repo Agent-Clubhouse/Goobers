@@ -976,7 +976,7 @@ const telemetryErrorsCTE = `
 		JOIN runs r ON r.run_id = e.run_id
 		UNION ALL
 		SELECT s.seq, s.code, s.error_class, s.message, s.occurred_at, se.run_id, NULL, NULL,
-		       se.workflow, NULL
+		       NULL, NULL
 		FROM scheduler_errors s
 		JOIN scheduler_events se ON se.seq = s.seq
 	)`
