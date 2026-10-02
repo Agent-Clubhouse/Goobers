@@ -1162,9 +1162,12 @@ func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[stri
 }
 
 const (
-	// SecretStoreKindAzureKeyVault is the only supported secret store kind
-	// today (SEC-010); the seam is vendor-neutral by name+kind indirection.
+	// SecretStoreKindAzureKeyVault fetches Azure Key Vault secrets.
 	SecretStoreKindAzureKeyVault = "azure-key-vault"
+	// SecretStoreKindKeyVaultKey wraps data keys using Azure Key Vault keys.
+	SecretStoreKindKeyVaultKey = "keyvault-key"
+	// SecretStoreKindFileKey wraps data keys using operator-provisioned RSA keys.
+	SecretStoreKindFileKey = "file-key"
 	// SecretStoreAuthWorkloadIdentity selects federated Azure workload identity.
 	SecretStoreAuthWorkloadIdentity = "workload-identity"
 	// SecretStoreAuthManagedIdentity selects an Azure managed identity.
@@ -1173,21 +1176,23 @@ const (
 	SecretStoreAuthAzureCLI = "azure-cli"
 )
 
-// SecretStoreConfig declares one named external secret store (#683). Token
+// SecretStoreConfig declares a named secret-fetching or key-wrapping store. Token
 // refs opt in per ref via store: "<name>/<secretName>"; declaring a store a
-// ref never uses is harmless. Auth to the store itself always uses an ambient
-// identity chain — never a token ref, which would be circular.
+// ref never uses is harmless. Azure authentication always uses an ambient
+// identity — never a token ref, which would be circular.
 type SecretStoreConfig struct {
 	// Name is the handle store-backed token refs address this store by.
 	// DNS-label shaped so it can never be confused with the "/"-separated
 	// secret name that follows it in a ref.
 	Name string `json:"name" yaml:"name"`
-	// Kind is the store vendor; only "azure-key-vault" is supported.
+	// Kind selects secret fetching or key wrapping.
 	Kind string `json:"kind" yaml:"kind"`
 	// VaultURI is the https vault endpoint, e.g. "https://acme.vault.azure.net".
-	VaultURI string `json:"vaultURI" yaml:"vaultURI"`
+	VaultURI string `json:"vaultURI,omitempty" yaml:"vaultURI,omitempty"`
+	// Directory is an absolute directory of versioned RSA keys for file-key.
+	Directory string `json:"directory,omitempty" yaml:"directory,omitempty"`
 	// Auth selects how this process authenticates to the store.
-	Auth *SecretStoreAuthConfig `json:"auth" yaml:"auth"`
+	Auth *SecretStoreAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 	// CacheTTLSeconds bounds the in-memory cache of resolved secrets so
 	// rotation in the store is picked up without hammering it per resolve.
 	// Zero/omitted leaves the resolver's default in effect.
@@ -2580,7 +2585,7 @@ func (c *Config) Validate() error {
 // validateSecretStores checks every secretStores entry fail-closed at load
 // (#683): a malformed store is a typo nothing later could resolve, and the
 // scheduler-time alternative is an opaque credential failure mid-run. Returns
-// the set of declared store names for store-ref checks.
+// declared store names, with true for secret stores and false for key stores.
 func (c *Config) validateSecretStores() (map[string]bool, error) {
 	if len(c.SecretStores) == 0 {
 		return nil, nil
@@ -2605,7 +2610,9 @@ func validateStoreRef(scope string, ref TokenRef, stores map[string]bool) error 
 	if !ok || name == "" || secret == "" || strings.Contains(secret, "/") {
 		return fmt.Errorf("%s: store ref %q must have the form \"<storeName>/<secretName>\"", scope, ref.Store)
 	}
-	if !stores[name] {
+	if secretStore, declared := stores[name]; declared && !secretStore {
+		return fmt.Errorf("%s: store ref names key store %q, which cannot fetch secrets", scope, name)
+	} else if !declared {
 		return fmt.Errorf("%s: store ref %q names secret store %q, which is not declared under secretStores", scope, ref.Store, name)
 	}
 	return nil

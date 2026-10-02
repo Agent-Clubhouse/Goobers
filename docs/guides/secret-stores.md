@@ -19,7 +19,7 @@ secretStores:
     # cacheTTLSeconds: 300
 ```
 
-`azure-key-vault` is the only kind today. The identity behind `auth` needs
+`azure-key-vault` fetches secrets. The identity behind `auth` needs
 Key Vault data-plane read access (the `Key Vault Secrets User` RBAC role).
 `secretStores` is read once at process start; changing it requires a daemon
 restart, like the rest of `instance.yaml`.
@@ -68,7 +68,7 @@ happens to work.
 
 ## Caching and rotation
 
-Each store carries a per-secret in-memory TTL cache (default 300 seconds,
+Each secret-fetching store carries a per-secret in-memory TTL cache (default 300 seconds,
 `cacheTTLSeconds` to tune). A burst of stage starts costs one vault
 round-trip per secret; a value rotated in the vault is picked up within the
 TTL without restarting the daemon. Errors are never cached.
@@ -93,3 +93,55 @@ TTL without restarting the daemon. Errors are never cached.
 - One-shot commands (`goobers validate --check-repos`, `goobers status`,
   `goobers push-branch`) build their own short-lived store registry; the
   daemon builds one registry per process so every consumer shares one cache.
+
+
+## Key wrapping library
+
+`keyvault-key` and `file-key` declarations provide a separate `KeyStore` library
+surface using RSA-OAEP-256. Declaring them does not enable run encryption or
+change any runtime default. The secret resolver skips these entries, and token
+refs cannot address them. A typed `instance.KeyRef{Store, Name, Version}` cannot
+address an `azure-key-vault` secret store.
+
+```yaml
+secretStores:
+  - name: wrapping-vault
+    kind: keyvault-key
+    vaultURI: https://acme.vault.azure.net
+    auth:
+      kind: workload-identity
+  - name: local-wrapping
+    kind: file-key
+    directory: /private/var/lib/goobers/wrapping-keys
+```
+
+Callers explicitly construct `secretstore.NewKeyRegistry` and invoke `Wrap` or
+`Unwrap`. Azure uses exactly the declared authentication kind, as above, and
+requires data-plane wrap/unwrap access to the chosen key. Returned Azure key
+identifiers must match the configured vault, requested name, and any pinned
+version. Calls have a 30-second ceiling and honor shorter caller deadlines.
+Unwrapped material is never cached; the caller owns its lifetime. Key stores
+reject nonzero `cacheTTLSeconds`.
+
+`Wrap` accepts an empty version to select the backend's current version, and
+returns its concrete backend version alongside ciphertext. Persist both that
+version and the original store/name with the ciphertext. `Unwrap` requires an
+explicit version; it never falls back to the latest key. These versions are
+backend identifiers, independent of application signing-key IDs.
+
+For `file-key`, operators provision 2048–8192-bit RSA private keys in unencrypted
+PKCS#1 or PKCS#8 PEM files at `<directory>/<name>/<version>.pem`. The directory
+and name subdirectory must be private (0700); PEM files and the `active` marker
+must be private regular files (0600). Final file symlinks are rejected and reads
+are confined to the configured directory. Names and versions contain only
+letters, digits, and hyphens, with a maximum of 127 characters. The `active`
+file contains a version, optionally followed by a newline. Reads are bounded
+(16 KiB PEM, 128 bytes marker). Files are loaded on demand; no key files are
+created, overwritten, or cached by the library.
+
+To rotate a local key, provision a new immutable version file and atomically
+replace `active` with the new version. Retain old version files until all
+ciphertext using them is retired. Never replace key material under an existing
+version. Apply the same retention rule to Azure key versions. This API wraps
+small data keys, not bulk content: RSA-OAEP-256's plaintext limit is the RSA
+modulus size in bytes minus 66 bytes.
