@@ -140,6 +140,8 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		BacklogQueryRequireLabels:  requireLabelsByGaggle(req.set)[req.gaggle],
 		BacklogQueryBacklogLabels:  backlogLabelsByGaggle(req.set)[req.gaggle],
 		BacklogQueryLabelPredicate: backlogLabelPredicatesByGaggle(req.set)[req.gaggle],
+		IssueOwnershipAssignees:    issueOwnershipAssigneesByGaggle(req.set)[req.gaggle],
+		IssueOwnershipUnassigned:   issueOwnershipUnassignedByGaggle(req.set)[req.gaggle],
 		// #3876: kit provenance, so an engine run's run.yaml names the same
 		// digest gooberDigestStarter stamps on a runner-driven one.
 		GooberDigest: req.gooberDigest,

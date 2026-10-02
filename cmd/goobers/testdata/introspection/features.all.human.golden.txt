@@ -21,6 +21,9 @@ gaggle.spec.enabled                                      2.0          ga        
 gaggle.spec.isolation.identityRef                        2.0          ga               supported        dev
 gaggle.spec.isolation.namespace                          2.0          ga               supported        dev
 gaggle.spec.isolation.serviceAccount                     2.0          ga               supported        dev
+gaggle.spec.issueOwnershipScope                          2.0          ga               supported        dev
+gaggle.spec.issueOwnershipScope.assignees                2.0          ga               supported        dev
+gaggle.spec.issueOwnershipScope.unassigned               2.0          ga               supported        dev
 gaggle.spec.outboxMirrorPath                             2.0          ga               supported        dev
 gaggle.spec.project                                      2.0          ga               supported        dev
 gaggle.spec.project.baseUrl                              2.0          ga               supported        dev
@@ -210,6 +213,9 @@ gaggle.spec.enabled                                      3.0          ga        
 gaggle.spec.isolation.identityRef                        3.0          ga               preview          dev
 gaggle.spec.isolation.namespace                          3.0          ga               preview          dev
 gaggle.spec.isolation.serviceAccount                     3.0          ga               preview          dev
+gaggle.spec.issueOwnershipScope                          3.0          ga               preview          dev
+gaggle.spec.issueOwnershipScope.assignees                3.0          ga               preview          dev
+gaggle.spec.issueOwnershipScope.unassigned               3.0          ga               preview          dev
 gaggle.spec.outboxMirrorPath                             3.0          ga               preview          dev
 gaggle.spec.project                                      3.0          ga               preview          dev
 gaggle.spec.project.baseUrl                              3.0          ga               preview          dev
@@ -419,6 +425,9 @@ gaggle.spec.enabled                                      3.1          ga        
 gaggle.spec.isolation.identityRef                        3.1          ga               preview          dev
 gaggle.spec.isolation.namespace                          3.1          ga               preview          dev
 gaggle.spec.isolation.serviceAccount                     3.1          ga               preview          dev
+gaggle.spec.issueOwnershipScope                          3.1          ga               preview          dev
+gaggle.spec.issueOwnershipScope.assignees                3.1          ga               preview          dev
+gaggle.spec.issueOwnershipScope.unassigned               3.1          ga               preview          dev
 gaggle.spec.outboxMirrorPath                             3.1          ga               preview          dev
 gaggle.spec.project                                      3.1          ga               preview          dev
 gaggle.spec.project.baseUrl                              3.1          ga               preview          dev
@@ -616,4 +625,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-616 feature/version row(s)
+625 feature/version row(s)

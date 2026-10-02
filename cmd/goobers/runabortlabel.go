@@ -29,9 +29,11 @@ import (
 // carrying it (mergepr.go), even with a green verdict and passing CI —
 // defense in depth so a bypass of selection can't bypass the block too.
 //
-// pr-select may clear a stale marker only when the live PR is open, mergeable,
-// green, and has no prior PR comments (#5437). Anything less still requires a
-// human removing the label after deciding how to take over the orphan.
+// pr-select may clear a stale marker when the live PR is open, mergeable and
+// green and either has no prior review attention (#5437), or carries
+// provider-issued proof that a later reviewed remediation was published with
+// no unresolved feedback or newer abort (#6407). Anything less still requires
+// a human removing the label after deciding how to take over the orphan.
 const abortedRunLabel = "goobers:run-aborted"
 
 // prOpenOperation is the runner.operation value the mutation-sidecar replay

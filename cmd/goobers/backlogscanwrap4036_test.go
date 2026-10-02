@@ -285,7 +285,7 @@ func TestBacklogQueryResumedScanClaimsTheEligibleItemItUsedToSkip(t *testing.T) 
 		t.Fatalf("provider repo: %v", err)
 	}
 	cursorKey := backlogScanCursorKey(
-		backlogRepoRefForStage(root, repo), "goobers:approved", "", "", nil, excludeLabels, "",
+		backlogRepoRefForStage(root, repo), "goobers:approved", "", "", nil, excludeLabels, "", issueOwnershipScope{},
 	)
 	cursorPath := filepath.Join(root, "scheduler", cursorKey)
 	if err := os.WriteFile(cursorPath, []byte(`{"cursor":"`+resumeCursor+`"}`), 0o644); err != nil {

@@ -654,6 +654,11 @@ type Config struct {
 	// selectors.
 	BacklogQueryBacklogLabels  string
 	BacklogQueryLabelPredicate string
+	// IssueOwnershipAssignees and IssueOwnershipUnassigned are the gaggle's
+	// provider-visible issue-write ownership defaults. Every deterministic task
+	// inherits them unless it declares the matching ownership* input.
+	IssueOwnershipAssignees  string
+	IssueOwnershipUnassigned string
 }
 
 func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
@@ -3748,6 +3753,10 @@ func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]st
 	return defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
 }
 
+func (r *Runner) defaultIssueOwnershipInputs(inputs map[string]string) map[string]string {
+	return backlogdefaults.ApplyIssueOwnershipScope(inputs, r.cfg.IssueOwnershipAssignees, r.cfg.IssueOwnershipUnassigned)
+}
+
 func (r *Runner) applyInvocationBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]interface{}) (map[string]interface{}, error) {
 	return backlogdefaults.ApplyBacklogScopeToInvocation(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
 }
@@ -3808,6 +3817,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err)
 	}
 	taskInputs = r.defaultBacklogQueryInputs(t, taskInputs)
+	taskInputs = r.defaultIssueOwnershipInputs(taskInputs)
 	var experiment bandit.Config
 	var assignment bandit.Assignment
 	var experimentObservations []bandit.Observation
