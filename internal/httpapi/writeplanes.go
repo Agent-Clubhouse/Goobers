@@ -424,6 +424,18 @@ func registerClaimRoute(
 // podPrincipalSubject is the Principal.Subject a pod token for runID carries.
 func podPrincipalSubject(runID string) string { return "run:" + runID }
 
+func applyPodClaimScope(w http.ResponseWriter, request *http.Request, runID, action string) (podScoped, ok bool) {
+	principal, exists := PrincipalFromRequest(request)
+	if !exists || !IsPodPrincipal(principal) {
+		return false, true
+	}
+	if principal.Subject != podPrincipalSubject(runID) {
+		writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only "+action)
+		return false, false
+	}
+	return true, true
+}
+
 // registerClaimListRoute serves the claims plane's read. The same containment
 // as the mutations (a pod principal names only its own run) plus one more:
 // a pod's namespace listing is flagged PodScoped so the service confines it
@@ -459,13 +471,11 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "scope must be run or namespace")
 			return
 		}
-		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-			if principal.Subject != podPrincipalSubject(input.RunID) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only list its own run's claims")
-				return
-			}
-			input.PodScoped = true
+		podScoped, ok := applyPodClaimScope(w, request, input.RunID, "list its own run's claims")
+		if !ok {
+			return
 		}
+		input.PodScoped = podScoped
 		response, err := claims.List(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "list claims", err)
@@ -502,13 +512,11 @@ func registerClaimRecoverRoute(router *Router, claims ClaimService, errorLog *lo
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required")
 			return
 		}
-		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-			if principal.Subject != podPrincipalSubject(input.RunID) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only request claim recovery as its own run")
-				return
-			}
-			input.PodScoped = true
+		podScoped, ok := applyPodClaimScope(w, request, input.RunID, "request claim recovery as its own run")
+		if !ok {
+			return
 		}
+		input.PodScoped = podScoped
 		response, err := claims.Recover(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "recover claims", err)
