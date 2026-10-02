@@ -117,22 +117,27 @@ func TestWindowsGoTestInvocationsParseStepCommands(t *testing.T) {
 		"go test -v ./a ./b/... -count=1\n" +
 		"go test -tags=integration ./c -run ^TestX -timeout=3m\n" +
 		"go test ./d -run 'TestY|TestZ'\n" +
+		"go test ./e \\\n  -run=TestW\n" +
+		"go test ./f -skip TestSlow\n" +
 		"go build ./...\n")
 	want := []windowsTestInvocation{
 		{packages: []string{"./a", "./b/..."}},
 		{packages: []string{"./c"}, run: "^TestX"},
 		{packages: []string{"./d"}, run: "TestY|TestZ"},
+		{packages: []string{"./e"}, run: "TestW"},
+		{packages: []string{"./f"}, run: "-skip TestSlow"},
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("parseGoTestInvocations = %+v, want %+v", got, want)
 	}
-	coverage, err := windowsPackageCoverage([]string{"a", "b", "b/x", "c", "d", "e"}, got)
+	coverage, err := windowsPackageCoverage([]string{"a", "b", "b/x", "c", "d", "e", "f", "g"}, got)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantCoverage := map[string]string{
 		"a": windowsCoverageWhole, "b": windowsCoverageWhole, "b/x": windowsCoverageWhole,
-		"c": windowsCoveragePartial, "d": windowsCoveragePartial, "e": windowsCoverageNone,
+		"c": windowsCoveragePartial, "d": windowsCoveragePartial, "e": windowsCoveragePartial,
+		"f": windowsCoveragePartial, "g": windowsCoverageNone,
 	}
 	if fmt.Sprint(coverage) != fmt.Sprint(wantCoverage) {
 		t.Fatalf("coverage = %v, want %v", coverage, wantCoverage)
@@ -165,8 +170,15 @@ func windowsGateTestInvocations(t *testing.T, workflow ciWorkflow) []windowsTest
 		t.Fatal("ci.yml must keep a windows-smoke job on windows-latest; update the Windows skip inventory test if the gate moved")
 	}
 	var invocations []windowsTestInvocation
+	if job.If != "" || job.ContinueOnError {
+		t.Fatal("windows-smoke must run unconditionally for its selection to count as Windows coverage")
+	}
 	for _, step := range job.Steps {
-		invocations = append(invocations, parseGoTestInvocations(step.Run)...)
+		stepInvocations := parseGoTestInvocations(step.Run)
+		if len(stepInvocations) > 0 && (step.If != "" || step.ContinueOnError) {
+			t.Fatalf("windows-smoke step %q runs go test conditionally or non-fatally; it cannot count as Windows coverage", step.Name)
+		}
+		invocations = append(invocations, stepInvocations...)
 	}
 	shipped := workflow.Jobs["shipped"]
 	if shipped.step(t, "Shipped-workflow contracts").Run != "go run ./test/ci group shipped" {
@@ -217,6 +229,9 @@ func shippedHasWindowsLeg(t *testing.T) bool {
 // run script.
 func parseGoTestInvocations(script string) []windowsTestInvocation {
 	var invocations []windowsTestInvocation
+	// Join shell line continuations first, so a `-run` on a continuation
+	// line still narrows the command it belongs to.
+	script = strings.ReplaceAll(strings.ReplaceAll(script, "\r\n", "\n"), "\\\n", " ")
 	for _, line := range strings.Split(script, "\n") {
 		words := shellWords(line)
 		if len(words) >= 2 && words[0] == "go" && words[1] == "test" {

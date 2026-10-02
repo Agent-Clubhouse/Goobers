@@ -1119,8 +1119,8 @@
     {
       "package": "test/windowsvalidate",
       "coverage": "none",
-      "category": "not-selected",
-      "reason": "The gate runs this driver via go run against a real daemon; the driver's own unit tests run only on Linux."
+      "category": "windows-source-unrun",
+      "reason": "The whole package is //go:build windows. The gate runs the driver via go run against a real daemon, but its own unit tests run on no platform: Linux builds exclude them and no Windows step tests the package. Candidate for a whole-package gate step."
     },
     {
       "package": "test/workflowinventory",
