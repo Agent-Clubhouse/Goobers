@@ -2642,24 +2642,24 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		return exec.LookPath(name)
 	}
 	t.Cleanup(func() { runnerLookPath = previousLookPath })
-	definitions, err := buildSchedulerDefinitions(
-		layout,
-		&instance.Config{},
-		set,
-		nil,
-		&wg,
-		newDaemonRunnerRegistry(),
-		nil,
-		nil,
-		nil,
-		log,
-		journal.NewRegistryScrubber(),
-		nil,
-		localscheduler.NewProviderQuotaState(),
-		nil,
-		nil,
-		nil,
-	)
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           layout,
+		Config:           &instance.Config{},
+		Definitions:      set,
+		Validation:       nil,
+		WaitGroup:        &wg,
+		RunnerRegistry:   newDaemonRunnerRegistry(),
+		Telemetry:        nil,
+		RollupDB:         nil,
+		Watermarks:       nil,
+		InstanceLog:      log,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		WorktreeManagers: nil,
+		ProviderQuota:    localscheduler.NewProviderQuotaState(),
+		TerminalNotifier: nil,
+		CredentialStores: nil,
+		StartupProgress:  nil,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
