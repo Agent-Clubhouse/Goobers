@@ -124,7 +124,7 @@ func TestConcurrencyLimit(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			g.JudgeNoul(context.Background(), ClaimQuestion, i, claimQuestion)
+			_, _ = g.JudgeNoul(context.Background(), ClaimQuestion, i, claimQuestion)
 		}(i)
 	}
 	wg.Wait()
