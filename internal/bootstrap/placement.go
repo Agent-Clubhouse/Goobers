@@ -124,7 +124,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 	}
 	ledgerFor := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
 	for _, task := range def.Spec.Tasks {
-		if cfg.SelfExecutionDenied() && task.Run != nil && executor.StageRequiresInstanceRoot(task.Run.Command, strings.TrimSpace(task.Inputs[executor.InputKind])) {
+		if selfDeniedInstanceRootTask(cfg, task) {
 			return nil, fmt.Errorf("workflow %q stage %q: placement.selfExecution: deny forbids this instance-root-only workflow command; migrate it to a remote-safe equivalent", def.Name, task.Name)
 		}
 		if _, dup := ledgerFor[task.Name]; dup {
@@ -194,4 +194,9 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		placements = append(placements, pin)
 	}
 	return placements, nil
+}
+
+func selfDeniedInstanceRootTask(cfg *instance.Config, task apiv1.Task) bool {
+	return cfg.SelfExecutionDenied() && task.Run != nil &&
+		executor.StageRequiresInstanceRoot(task.Run.Command, strings.TrimSpace(task.Inputs[executor.InputKind]))
 }
