@@ -1,11 +1,14 @@
 package baseline
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/flake"
 )
 
 // executorFailureMessage matches the message a failing shell stage carries:
@@ -26,6 +29,32 @@ var failureMessageTrailer = regexp.MustCompile(`; (?:hint|warnings): |; \d+ dist
 // gate that evaluates several target platforms from one host (test/deadcode,
 // #4434) uses to say a finding holds on only some of them.
 var platformQualifier = regexp.MustCompile(`\[platforms: ([^\]]+)\]`)
+
+// truncationMarker ends a failure window the executor cut at its size bound
+// (internal/executor boundDiagnostic).
+const truncationMarker = "..."
+
+// signatureVisibleLines is how many lines flake.NormalizeSignature keeps.
+const signatureVisibleLines = 3
+
+// failureSignature is the comparable identity of one piece of failure
+// evidence: flake.NormalizeSignature over its reduced diagnostic, extended
+// with a digest of EVERY finding line when there are more than the normalizer
+// keeps. Without that a branch adding a fourth finding to a base already
+// failing three would share the base's signature and be parked behind a
+// failure that is partly its own (#4477). Panic and race signatures, which
+// the normalizer derives structurally rather than from the leading lines,
+// are left as they are.
+func failureSignature(text string) string {
+	reduced := FailureSignatureText(text)
+	signature := flake.NormalizeSignature(reduced)
+	lines := flake.NormalizedLines(reduced)
+	if len(lines) <= signatureVisibleLines || signature != strings.Join(lines[:signatureVisibleLines], " | ") {
+		return signature
+	}
+	return fmt.Sprintf("%s | +%d more line(s) [sha256:%x]", signature, len(lines)-signatureVisibleLines,
+		sha256.Sum256([]byte(strings.Join(lines, "\n"))))
+}
 
 // FailureSignatureText reduces one piece of failure evidence to the diagnostic
 // a signature is derived from. Both halves of a baseline comparison go through
@@ -61,8 +90,13 @@ func FailureSignatureText(text string) string {
 		if next := executorFailureMessage.FindStringIndex(diagnostic); next != nil {
 			diagnostic = diagnostic[:next[0]]
 		}
-		if trailer := failureMessageTrailer.FindStringIndex(diagnostic); trailer != nil {
-			diagnostic = diagnostic[:trailer[0]]
+		diagnostic = strings.TrimSpace(diagnostic)
+		// The trailers follow the diagnostic, so they can only be on its last
+		// line; an earlier finding that happens to contain "; hint: " is
+		// evidence, not a trailer.
+		lastLine := strings.LastIndexByte(diagnostic, '\n') + 1
+		if trailer := failureMessageTrailer.FindStringIndex(diagnostic[lastLine:]); trailer != nil {
+			diagnostic = diagnostic[:lastLine+trailer[0]]
 		}
 		if diagnostic = strings.TrimSpace(diagnostic); diagnostic != "" {
 			return signatureLines(diagnostic)
@@ -96,6 +130,12 @@ func signatureLines(diagnostic string) string {
 	}
 	if first := slices.IndexFunc(lines, executor.IsFailureLine); first > 0 {
 		lines = lines[first:]
+	}
+	// A window the executor cut at its size bound ends in a partial line
+	// whose cut point depends on how long that checkout's paths are, so it
+	// never matches across checkouts. Only the complete lines are evidence.
+	if len(lines) > 1 && strings.HasSuffix(lines[len(lines)-1], truncationMarker) {
+		lines = lines[:len(lines)-1]
 	}
 	for index, part := range lines {
 		if rest := strings.TrimPrefix(part, "--- FAIL:"); rest != part {

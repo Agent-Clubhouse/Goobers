@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/flake"
 )
 
@@ -100,6 +101,102 @@ func TestFailureSignatureTextDropsTheDigestAndHintTrailers(t *testing.T) {
 	got := FailureSignatureText("command exited 2; failure: a.go:1:2: boom; hint: retry later; 3 distinct failure line(s) recorded in failureDigest")
 	if strings.Contains(got, "hint") || strings.Contains(got, "distinct failure") {
 		t.Fatalf("FailureSignatureText = %q, want the run-local trailers dropped", got)
+	}
+}
+
+// deadcodeFindings renders one deadcode finding per name under root, at a
+// realistic package depth.
+func deadcodeFindings(root string, names ...string) string {
+	var b strings.Builder
+	for _, name := range names {
+		b.WriteString(root + "/internal/runner/recoveryinventory/" + name + "_windows.go:112:6: unreviewed dead code: " +
+			"github.com/goobers/goobers/internal/runner/recoveryinventory." + name + " [platforms: windows]\n")
+	}
+	return b.String()
+}
+
+const (
+	realisticRunRoot   = "/home/operator/.goobers/instances/main/workcopies/run-9f8e7d6c5b4a/repo"
+	realisticProbeRoot = "/var/folders/xy/abcdefgh/T/goobers-baseline-probe-1234567/checkout"
+	deadcodeTrailer    = "exit status 1\nmake: *** [Makefile:202: deadcode] Error 1\n"
+)
+
+// classifyDeadcode classifies a run whose stage message is exactly what the
+// executor derives from runFindings on stderr, against a base whose combined
+// transcript carries probeFindings.
+func classifyDeadcode(t *testing.T, runFindings, probeFindings string) Decision {
+	t.Helper()
+	diagnostic := executor.FailureDiagnostic(nil, []byte(runFindings+deadcodeTrailer))
+	message := "command exited 2; failure: " + diagnostic + "; 3 distinct failure line(s) recorded in failureDigest"
+	probe := "go run ./test/deadcode -go go\n" + probeFindings + deadcodeTrailer
+	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: probe}})
+	decision, err := e.Classify(context.Background(), Request{
+		Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"make", "ci"},
+		FailureText: message + "\n" + message,
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	return decision
+}
+
+// TestInheritedDeadcodeMatchesAtRealisticPathLengths uses the executor's own
+// extraction on the run side and production-length checkout roots.
+func TestInheritedDeadcodeMatchesAtRealisticPathLengths(t *testing.T) {
+	decision := classifyDeadcode(t,
+		deadcodeFindings(realisticRunRoot, "alphaHelper"),
+		deadcodeFindings(realisticProbeRoot, "alphaHelper"))
+	if decision.Class != ClassSharedBaselineFailure {
+		t.Fatalf("class = %q (%s), want %q", decision.Class, decision.Reason, ClassSharedBaselineFailure)
+	}
+}
+
+// TestBranchFindingBeyondTheVisibleSignatureIsPRIntroduced is the collision
+// guard: flake.NormalizeSignature keeps three lines, so a branch adding a
+// FOURTH dead symbol to a base already failing three must still be blamed for
+// it rather than parked behind the base.
+func TestBranchFindingBeyondTheVisibleSignatureIsPRIntroduced(t *testing.T) {
+	// Short findings, so the window holds all of them untruncated.
+	findings := func(root string, names ...string) string {
+		var b strings.Builder
+		for _, name := range names {
+			b.WriteString(root + "/p/" + name + ".go:1:6: unreviewed dead code: example.com/p." + name + "\n")
+		}
+		return b.String()
+	}
+	const runRoot, probeRoot = "/w/run-1/repo", "/tmp/probe-1234567/checkout"
+	shared := classifyDeadcode(t,
+		findings(runRoot, "a", "b", "c", "d"),
+		findings(probeRoot, "a", "b", "c", "d"))
+	if shared.Class != ClassSharedBaselineFailure {
+		t.Fatalf("identical four-finding failure: class = %q (%s), want %q", shared.Class, shared.Reason, ClassSharedBaselineFailure)
+	}
+	added := classifyDeadcode(t,
+		findings(runRoot, "a", "b", "c", "d"),
+		findings(probeRoot, "a", "b", "c"))
+	if added.Class != ClassPRIntroduced {
+		t.Fatalf("branch-added fourth finding: class = %q, want %q", added.Class, ClassPRIntroduced)
+	}
+}
+
+// TestTruncatedMultiFindingWindowFailsOpen pins the known limit: the executor
+// bounds a failure window at 512 bytes, so several long findings are cut at a
+// point that depends on each checkout's path length and recipe echo. The two
+// windows then hold different complete findings and the comparison must fail
+// OPEN, to the pre-existing branch attribution, never park.
+func TestTruncatedMultiFindingWindowFailsOpen(t *testing.T) {
+	decision := classifyDeadcode(t,
+		deadcodeFindings(realisticRunRoot, "alphaHelper", "betaHelper", "gammaHelper"),
+		deadcodeFindings(realisticProbeRoot, "alphaHelper", "betaHelper", "gammaHelper"))
+	if decision.Class == ClassSharedBaselineFailure || decision.Park {
+		t.Fatalf("class = %q park = %v, want a truncated window never parked", decision.Class, decision.Park)
+	}
+}
+
+func TestFailureSignatureTextKeepsATrailerLookalikeInAnEarlierFinding(t *testing.T) {
+	got := FailureSignatureText("command exited 1; failure: a.go:1:2: saw '; hint: x'\nb.go:3:4: boom; 1 distinct failure line(s) recorded in failureDigest")
+	if !strings.Contains(got, "b.go:3:4: boom") || strings.Contains(got, "distinct failure") {
+		t.Fatalf("FailureSignatureText = %q, want only the final line's trailer dropped", got)
 	}
 }
 
