@@ -25,7 +25,6 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/mutationsidecar"
@@ -4785,8 +4784,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			}
 		}
 
-		attemptCtx = launchreceipt.WithJournalStart(attemptCtx, jr, journal.Event{Type: journal.EventStageStarted, Stage: t.Name, Branch: branch, Attempt: int(attempt), AttemptClass: class}, tf.startedSeq)
-		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
+		attemptCtx, heartbeat := r.startTaskAttemptHeartbeat(attemptCtx, tf, branch, int(attempt), class)
 		attemptAddendum := instructionAddendum
 		var usage attemptUsageCollector
 		if t.Type == apiv1.TaskAgentic {

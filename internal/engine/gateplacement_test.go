@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -730,6 +731,10 @@ type skewedDispatchHost struct{ real *Activities }
 
 func (h *skewedDispatchHost) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
 	return h.real.InvokeGoober(ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout)
+}
+
+func (h *skewedDispatchHost) InvokeGooberPrepared(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string, binding launchreceipt.Binding) (stageActivityResult, error) {
+	return h.real.InvokeGooberPrepared(ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout, binding)
 }
 
 func (h *skewedDispatchHost) DispatchStage(context.Context, DispatchStageInput) (stageActivityResult, error) {

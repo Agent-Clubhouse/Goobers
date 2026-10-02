@@ -376,9 +376,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
 	}, cfg, tel)
-	if tel != nil {
-		rc.Telemetry = tel
-	}
+	rc.Telemetry = tel
 	wtMgr.SetPathLengthLimits(pathLimits)
 	// Refreshed unconditionally, exactly like the path-length limits above —
 	// on BOTH the newly-constructed and the reused-manager path (#4405). A
