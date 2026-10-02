@@ -418,7 +418,7 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	// cache key (a short un-gated job would win that race with a near-empty
 	// cache).
 	for _, job := range []string{
-		"deadcode", "checks", "deploy-reference", "lint", "darwin-build",
+		"cmdgoobers-growth", "deadcode", "checks", "deploy-reference", "lint", "darwin-build",
 		"unit-linux-coverage", "shipped", "integration",
 		"windows-smoke", "vulnerability-scan", "sandbox", "linux-validation",
 	} {
@@ -585,7 +585,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
@@ -639,7 +639,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
+		"needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
@@ -652,7 +652,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
@@ -697,7 +697,7 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 	if !found {
 		t.Fatal("escalate-main-failure must have a step that closes the resolved main failure issue")
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'success'"
 		if !strings.Contains(closeStep, want) {
 			t.Errorf("close step must require %q: only a fully-green push lane resolves the incident", want)

@@ -208,6 +208,7 @@ command instead. **CI:** each validation job maps to the same contract:
 | GitHub Actions job | Tier correspondence |
 |---|---|
 | `preflight (lint · format · policy · vet · build)` | Fast source, policy, vet, build, and configuration admission gate |
+| `cmd/goobers growth ratchet` | Non-test Go line/file ceilings; run `make cmdgoobers-growth` locally |
 | `dead-code analysis` | Reachability checks for Go and portal production code |
 | `checks` | Portal, canvas-extension, generated-contract, and manifest slice of `make ci` |
 | `deploy reference manifests` | Render and schema validation for the shipped reference deployment |
@@ -676,3 +677,25 @@ versions, the answer is fix-forward-and-migrate.
 
 Use a short imperative subject (`area: do the thing`), a body explaining *why* when it's
 not obvious, and reference issues (`Closes #123`). Keep unrelated changes out of the commit.
+
+### cmd/goobers growth baseline
+
+`make cmdgoobers-growth` checks physical lines and file count of direct non-test
+Go files in `cmd/goobers`, including all build tags, comments, and blank lines.
+Decreases pass without editing the baseline; run `make cmdgoobers-growth-update`
+to retain a lower ceiling in `test/cmdgoobersgrowth/baseline.txt`.
+
+Growth requires a visible re-pin in the same PR. Add an exact-target directive
+for each growing dimension to the baseline (fields are separated by tabs):
+
+```text
+!non-test-line-count-justification<TAB><new count><TAB><why growth is needed>
+!non-test-file-count-justification<TAB><new count><TAB><why growth is needed>
+```
+
+Then run `make cmdgoobers-growth-update` and commit the resulting baseline.
+Justifications follow the complexity gate convention and authorize only their
+exact count. CI checks the baseline against the PR or merge-group base revision
+(and the previous main revision on pushes), so committing an unjustified larger
+baseline does not bypass the check. To reproduce that comparison locally, use
+`go run ./test/cmdgoobersgrowth -base-ref <base commit>`.
