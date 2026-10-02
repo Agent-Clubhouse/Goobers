@@ -100,6 +100,13 @@ func TestRefreshADONormalizesAndUsesProviderRequestShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	secondRaw, err := canonical(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, secondRaw) {
+		t.Fatalf("canonical ADO fixture bytes changed across refreshes\nfirst:\n%s\nsecond:\n%s", raw, secondRaw)
+	}
 	for _, want := range []string{
 		`"provider": "ado"`,
 		`"owner": "fixture-org"`,
@@ -151,6 +158,24 @@ func TestRefreshADORejectsInvalidConfiguration(t *testing.T) {
 				t.Fatal("RefreshADO() succeeded with invalid configuration")
 			}
 		})
+	}
+}
+
+func TestRefreshADOPreservesMaxResponseSizeError(t *testing.T) {
+	t.Parallel()
+
+	_, err := RefreshADO(context.Background(), ADORefreshConfig{
+		OrganizationURL: "https://dev.azure.com/acme",
+		Project:         "Widgets",
+		WorkItem:        "7",
+		Token:           "ado-pat",
+		Client: httpClientFunc(func(*http.Request) (*http.Response, error) {
+			return fixtureHTTPResponse(http.StatusOK, bytes.Repeat([]byte("x"), maxResponseBytes+1)), nil
+		}),
+	})
+	want := fmt.Sprintf("list-open-work-items response exceeds %d bytes", maxResponseBytes)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("RefreshADO() error = %v, want containing %q", err, want)
 	}
 }
 
