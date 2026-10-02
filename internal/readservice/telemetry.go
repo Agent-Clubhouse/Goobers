@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -1061,6 +1062,13 @@ func (s *Local) attachStoredAttributionCohorts(ctx context.Context, req Telemetr
 		return err
 	}
 	result.FaultAudit = &audit
+	if s.sources.CreditAdvisory != nil {
+		if err := StoredModelAssistedShadow(
+			ctx, s.sources.Layout.Root, s.sources.ReadModel, query, *s.sources.CreditAdvisory,
+		); err != nil {
+			slog.Warn("creditgraph advisory shadow update failed", "error", err)
+		}
+	}
 	return nil
 }
 

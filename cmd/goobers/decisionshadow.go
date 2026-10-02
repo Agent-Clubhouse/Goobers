@@ -2,12 +2,35 @@ package main
 
 import (
 	"log/slog"
+	"os"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 )
+
+func newCreditAdvisoryClassifier(cfg *instance.Config, log *slog.Logger) *creditgraph.AdvisoryClassifier {
+	if cfg == nil || cfg.DecisionGate.EffectiveMode() != decisiongate.ModeShadow {
+		return nil
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	gate, err := cfg.DecisionGate.Resolve(nil, nil)
+	if err != nil {
+		log.Warn("creditgraph advisory disabled", "error", err.Error())
+		return nil
+	}
+	model := strings.TrimSpace(os.Getenv(cfg.DecisionGate.ModelEnv))
+	if model == "" {
+		log.Warn("creditgraph advisory disabled", "error", "pinned model is empty")
+		return nil
+	}
+	return &creditgraph.AdvisoryClassifier{Gate: gate, Model: model}
+}
 
 // newDecisionShadowObserver returns an advisory harness observer when the
 // instance opted in to decisionGate shadow mode, else nil. A misconfigured or

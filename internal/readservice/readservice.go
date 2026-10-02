@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
@@ -154,7 +155,11 @@ type LocalSources struct {
 	// is the whole point of the interface split — reconcileIndex writing to
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
-	ReadModel      readmodel.Reader
+	ReadModel readmodel.Reader
+	// CreditAdvisory enables the model-assisted failure classifier only in
+	// explicitly configured shadow mode. Its findings are persisted separately
+	// and never alter attribution or promotion signals.
+	CreditAdvisory *creditgraph.AdvisoryClassifier
 	RetentionStats func() readmodel.RetentionStats
 	// InstanceLogStats is present only in the live daemon. Dropped appends are
 	// process-lifetime state because the failing journal cannot persist its own

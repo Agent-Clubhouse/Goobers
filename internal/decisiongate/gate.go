@@ -84,6 +84,8 @@ type Outcome struct {
 	Probability float64 // yes-probability for noul
 	Choice      string  // top option for choice
 	Confidence  float64
+	Model       string
+	StateDigest string
 	Cached      bool
 }
 
@@ -183,6 +185,56 @@ func (g *Gate) JudgeNoul(ctx context.Context, name string, state any, q decider.
 		o.Decision = Yes
 	case *ans.Yes <= th.Reject:
 		o.Decision = No
+	}
+	o.Model = resp.Model
+	o.StateDigest = digest
+	g.store(digest, o)
+	return g.finish(name, digest, o, nil, start)
+}
+
+// JudgeChoice asks a multiple-choice question. A response below MinConfidence
+// remains Uncertain while retaining the answer and its audit metadata.
+func (g *Gate) JudgeChoice(ctx context.Context, name string, state any, q decider.Question) (Outcome, error) {
+	start := g.now()
+	if q.Type != decider.KindChoice {
+		return g.finish(name, "", Outcome{Name: name, Decision: Uncertain}, fmt.Errorf("decisiongate: %q is not a choice question", name), start)
+	}
+	digest, err := digestOf(name, state, q)
+	if err != nil {
+		return g.finish(name, "", Outcome{Name: name, Decision: Uncertain}, err, start)
+	}
+	if o, hit := g.lookup(digest); hit {
+		o.Cached = true
+		return g.finish(name, digest, o, nil, start)
+	}
+
+	select {
+	case g.sem <- struct{}{}:
+		defer func() { <-g.sem }()
+	case <-ctx.Done():
+		return g.finish(name, digest, Outcome{Name: name, Decision: Uncertain, StateDigest: digest}, ctx.Err(), start)
+	}
+	cctx, cancel := context.WithTimeout(ctx, g.cfg.CallTimeout)
+	defer cancel()
+	resp, err := g.d.Decide(cctx, decider.Request{State: state, Questions: map[string]decider.Question{name: q}})
+	if err != nil {
+		return g.finish(name, digest, Outcome{Name: name, Decision: Uncertain, StateDigest: digest}, err, start)
+	}
+	ans, ok := resp.Answers[name]
+	if !ok || ans.Type != decider.KindChoice || ans.Choice == "" || ans.Confidence == nil {
+		return g.finish(name, digest, Outcome{Name: name, Decision: Uncertain, StateDigest: digest}, fmt.Errorf("decisiongate: no choice answer for %q", name), start)
+	}
+	probability, ok := ans.Probabilities[ans.Choice]
+	if !ok {
+		return g.finish(name, digest, Outcome{Name: name, Decision: Uncertain, StateDigest: digest}, fmt.Errorf("decisiongate: choice answer for %q has no probability", name), start)
+	}
+	o := Outcome{
+		Name: name, Decision: Uncertain, Choice: ans.Choice,
+		Probability: probability, Confidence: *ans.Confidence,
+		Model: resp.Model, StateDigest: digest,
+	}
+	if o.Confidence >= g.cfg.MinConfidence {
+		o.Decision = Yes
 	}
 	g.store(digest, o)
 	return g.finish(name, digest, o, nil, start)

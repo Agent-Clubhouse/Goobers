@@ -20,3 +20,27 @@ func TestDecisionShadowObserverIsOffUnlessOptedIn(t *testing.T) {
 		t.Fatal("unresolvable endpoint must degrade to no observer, not fail the run")
 	}
 }
+
+func TestCreditAdvisoryClassifierPinsConfiguredShadowModel(t *testing.T) {
+	const (
+		urlEnv   = "GOOBERS_TEST_ADVISORY_URL"
+		keyEnv   = "GOOBERS_TEST_ADVISORY_KEY"
+		modelEnv = "GOOBERS_TEST_ADVISORY_MODEL"
+	)
+	t.Setenv(urlEnv, "http://127.0.0.1:1")
+	t.Setenv(keyEnv, "test-key")
+	t.Setenv(modelEnv, "failure-classifier-v1")
+	settings := &decisiongate.Settings{
+		Mode: decisiongate.ModeShadow, BaseURLEnv: urlEnv, KeyEnv: keyEnv,
+		ModelEnv: modelEnv, Fallback: decisiongate.FallbackAgent,
+	}
+	classifier := newCreditAdvisoryClassifier(&instance.Config{DecisionGate: settings}, nil)
+	if classifier == nil || classifier.Gate == nil || classifier.Model != "failure-classifier-v1" {
+		t.Fatalf("classifier = %+v, want pinned shadow classifier", classifier)
+	}
+
+	settings.Mode = decisiongate.ModeEnforce
+	if classifier := newCreditAdvisoryClassifier(&instance.Config{DecisionGate: settings}, nil); classifier != nil {
+		t.Fatalf("enforce classifier = %+v, want shadow-only integration", classifier)
+	}
+}

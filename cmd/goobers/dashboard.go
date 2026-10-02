@@ -776,12 +776,13 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	}
 
 	reads, err := readservice.NewLocal(readservice.LocalSources{
-		Layout:      layout,
-		Config:      config,
-		Definitions: definitions,
-		Validation:  report,
-		Telemetry:   telemetry,
-		ReadModel:   readStore,
+		Layout:         layout,
+		Config:         config,
+		Definitions:    definitions,
+		Validation:     report,
+		Telemetry:      telemetry,
+		ReadModel:      readStore,
+		CreditAdvisory: newCreditAdvisoryClassifier(config, nil),
 	}, func() bool { return true })
 	if err != nil {
 		if telemetry != nil {

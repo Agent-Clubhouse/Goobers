@@ -20,6 +20,26 @@ type fake struct {
 	peak  atomic.Int32
 }
 
+type choiceFake struct {
+	answer      string
+	probability float64
+	confidence  float64
+	calls       atomic.Int32
+}
+
+func (f *choiceFake) Decide(_ context.Context, r decider.Request) (decider.Response, error) {
+	f.calls.Add(1)
+	answers := make(map[string]decider.Answer, len(r.Questions))
+	for id := range r.Questions {
+		confidence := f.confidence
+		answers[id] = decider.Answer{
+			Type: decider.KindChoice, Choice: f.answer, Confidence: &confidence,
+			Probabilities: map[string]float64{f.answer: f.probability, "unknown": 1 - f.probability},
+		}
+	}
+	return decider.Response{Model: "pinned-model", Answers: answers}, nil
+}
+
 func (f *fake) Decide(ctx context.Context, r decider.Request) (decider.Response, error) {
 	f.calls.Add(1)
 	n := f.live.Add(1)
@@ -56,6 +76,36 @@ func TestThresholds(t *testing.T) {
 		if err != nil || o.Decision != tc.want {
 			t.Fatalf("p=%v got %v err=%v want %v", tc.yes, o.Decision, err, tc.want)
 		}
+	}
+}
+
+func TestChoiceConfidenceAndAuditMetadata(t *testing.T) {
+	question := decider.Choice("classify", map[string]any{"environment": nil, "unknown": nil})
+	f := &choiceFake{answer: "environment", probability: 0.8, confidence: 0.7}
+	g, _ := New(f, Config{MinConfidence: 0.75, CacheEntries: 8}, nil)
+
+	below, err := g.JudgeChoice(context.Background(), "failure-class", "same evidence", question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if below.Decision != Uncertain || below.Choice != "environment" || below.Probability != 0.8 ||
+		below.Confidence != 0.7 || below.Model != "pinned-model" || below.StateDigest == "" {
+		t.Fatalf("outcome = %+v", below)
+	}
+
+	g.cfg.MinConfidence = 0.7
+	accepted, err := g.JudgeChoice(context.Background(), "failure-class", "different evidence", question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Decision != Yes {
+		t.Fatalf("decision = %q, want accepted choice", accepted.Decision)
+	}
+	if _, err := g.JudgeChoice(context.Background(), "failure-class", "different evidence", question); err != nil {
+		t.Fatal(err)
+	}
+	if f.calls.Load() != 2 {
+		t.Fatalf("calls = %d, want digest cache reuse", f.calls.Load())
 	}
 }
 
