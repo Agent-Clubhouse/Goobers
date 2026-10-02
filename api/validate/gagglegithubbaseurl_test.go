@@ -31,6 +31,12 @@ spec:
       baseUrl: https://ghe.example.com
       owner: acme
       name: docs
+  siblings:
+    - project:
+        provider: github
+        baseUrl: https://ghe.example.com
+        owner: acme
+        name: web
   isolation:
     namespace: gaggle-alpha
 `
@@ -48,7 +54,7 @@ spec:
 			got = append(got, issue.Message)
 		}
 	}
-	want := []string{"spec.project.baseUrl", "spec.backlog.baseUrl", "spec.additionalRepos[0].baseUrl"}
+	want := []string{"spec.project.baseUrl", "spec.backlog.baseUrl", "spec.additionalRepos[0].baseUrl", "spec.siblings[0].project.baseUrl"}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d %s errors, got %d: %v", len(want), errorGaggleGitHubBaseURL, len(got), report.Issues)
 	}
