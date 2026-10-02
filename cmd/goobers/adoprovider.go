@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/stageenv"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -99,22 +100,24 @@ func buildADOProviderForStage(routed providers.RepositoryRef, credential provide
 // expired or was revoked. A missing or unreadable expiry is ignored: it only
 // sharpens that error.
 func stageADOCredentialSource(cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
-	kind, err := stageADOCredentialKind()
+	return stageADOCredentialSourceFrom(nil, cap, token)
+}
+
+// stageADOCredentialSourceFrom is stageADOCredentialSource reading the scheme
+// and expiry from env (nil: the process environment).
+func stageADOCredentialSourceFrom(env stageenv.Lookup, cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
+	kind, err := adoCredentialKindForScheme(env.Get(executor.RepoAuthSchemeEnvVar))
 	if err != nil {
 		return nil, err
 	}
-	if refreshing := stageRefreshingToken(cap, token); refreshing != nil {
+	if refreshing := stageRefreshingTokenFrom(env, cap, token); refreshing != nil {
 		// The stage holds a credential-refresh grant (Goobers#6120): the
 		// provider's 401 path re-resolves this value once, and it is
 		// refreshed ahead of its stated expiry.
 		return providers.NewADORefreshingDeliveredCredentialSource(kind, string(cap), refreshing)
 	}
-	expiresAt, _ := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
+	expiresAt, _ := capability.ParseCredentialExpiry(env.Get(capability.CredentialExpiryEnvVar(string(cap))))
 	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
-}
-
-func stageADOCredentialKind() (string, error) {
-	return adoCredentialKindForScheme(os.Getenv(executor.RepoAuthSchemeEnvVar))
 }
 
 // adoCredentialKindForScheme maps the authorization scheme the daemon stated

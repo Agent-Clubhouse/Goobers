@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -46,7 +45,7 @@ func stageCredentialIsBacklogFamily(cfg stageProviderConfig) bool {
 		return isBacklogRoleCapability(cfg.capability)
 	}
 	for _, c := range backlogRoleCapabilities {
-		if delivered := os.Getenv(executor.CredentialEnvVar(string(c))); delivered != "" && delivered == cfg.token {
+		if delivered := cfg.env.Get(executor.CredentialEnvVar(string(c))); delivered != "" && delivered == cfg.token {
 			return true
 		}
 	}

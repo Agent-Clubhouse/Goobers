@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/stageenv"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -42,6 +43,9 @@ type stageProviderConfig struct {
 	tokenSource       providers.TokenSource
 	observeToken      func(string)
 	quota             *localscheduler.ProviderQuotaState
+	// env is where the delivered credential is read from; nil is the process
+	// environment. See withStageProviderEnv.
+	env stageenv.Lookup
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -109,6 +113,15 @@ func withStageProviderRetriesDisabled() stageProviderOption {
 func withStageProviderTokenObserver(observer func(string)) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.observeToken = observer
+	}
+}
+
+// withStageProviderEnv reads the delivered credential, and the scheme, expiry
+// and refresh-grant variables beside it, from env instead of the process
+// environment, so a test can deliver a per-test credential without t.Setenv.
+func withStageProviderEnv(env stageenv.Lookup) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.env = env
 	}
 }
 
@@ -389,7 +402,7 @@ func stageProviderToken(cfg stageProviderConfig) (string, error) {
 		token = cfg.token
 	} else {
 		var err error
-		token, err = providerToken(cfg.capability)
+		token, err = providerTokenFrom(cfg.env, cfg.capability)
 		if err != nil {
 			return "", err
 		}
@@ -448,7 +461,7 @@ func stageGitHubTokenSource(cfg stageProviderConfig, token string) []func(*provi
 	if cfg.token != "" {
 		return nil
 	}
-	refreshing := stageRefreshingToken(cfg.capability, token)
+	refreshing := stageRefreshingTokenFrom(cfg.env, cfg.capability, token)
 	if refreshing == nil {
 		return nil
 	}
@@ -482,7 +495,7 @@ func newBrokeredADOProviderForStage(cfg stageProviderConfig) (*providers.ADOProv
 	if err != nil {
 		return nil, err
 	}
-	source, err := stageADOCredentialSource(cfg.capability, token)
+	source, err := stageADOCredentialSourceFrom(cfg.env, cfg.capability, token)
 	if err != nil {
 		return nil, err
 	}

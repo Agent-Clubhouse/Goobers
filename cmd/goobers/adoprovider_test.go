@@ -131,11 +131,13 @@ func TestADOStageProviderUsesTheDeclaredCapabilityCredential(t *testing.T) {
 			root, repo := adoConfiguredPATFixture(t)
 			server, headers := adoWorkItemServer(t)
 			pointADOStageProviderAt(t, server)
-			t.Setenv(executor.CredentialEnvVar("github:issues:write"), "issues-write-token")
-			t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "wrong-pr-token")
-			t.Setenv(executor.RepoAuthSchemeEnvVar, tc.scheme)
+			env := stageEnvFor(map[string]string{
+				executor.CredentialEnvVar("github:issues:write"): "issues-write-token",
+				executor.CredentialEnvVar("provider:pr:write"):   "wrong-pr-token",
+				executor.RepoAuthSchemeEnvVar:                    tc.scheme,
+			})
 
-			provider, err := newProviderForStage(root, repo, false)
+			provider, err := newProviderForStage(root, repo, false, withStageProviderEnv(env))
 			if err != nil {
 				t.Fatalf("build ADO stage provider: %v", err)
 			}
@@ -167,10 +169,12 @@ func TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure(t *testing.T)
 	}))
 	t.Cleanup(server.Close)
 	pointADOStageProviderAt(t, server)
-	t.Setenv(executor.CredentialEnvVar("github:issues:write"), "issues-write-token")
-	t.Setenv(executor.RepoAuthSchemeEnvVar, "basic")
+	env := stageEnvFor(map[string]string{
+		executor.CredentialEnvVar("github:issues:write"): "issues-write-token",
+		executor.RepoAuthSchemeEnvVar:                    "basic",
+	})
 
-	provider, err := newProviderForStage(root, repo, false)
+	provider, err := newProviderForStage(root, repo, false, withStageProviderEnv(env))
 	if err != nil {
 		t.Fatalf("build ADO stage provider: %v", err)
 	}
@@ -196,9 +200,10 @@ func TestADOStageProviderRejectedCredentialClassifiesAsAuthFailure(t *testing.T)
 // nothing still fails, naming the variable it needed.
 func TestADOStageProviderWithoutDeclaredCapabilityHasNoCredential(t *testing.T) {
 	root, repo := adoConfiguredPATFixture(t)
-	t.Setenv(executor.CredentialEnvVar("github:issues:write"), "")
-	t.Setenv(executor.CredentialEnvVar("provider:pr:write"), "other-capability-token")
-	_, err := newProviderForStage(root, repo, false)
+	env := stageEnvFor(map[string]string{
+		executor.CredentialEnvVar("provider:pr:write"): "other-capability-token",
+	})
+	_, err := newProviderForStage(root, repo, false, withStageProviderEnv(env))
 	if err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_GITHUB_ISSUES_WRITE") {
 		t.Fatalf("error = %v, want a missing GOOBERS_CRED_GITHUB_ISSUES_WRITE failure", err)
 	}
@@ -210,9 +215,8 @@ func TestADOStageProviderWithoutDeclaredCapabilityHasNoCredential(t *testing.T) 
 func TestADOOperatorProviderKeepsConfiguredAuth(t *testing.T) {
 	root, repo := adoConfiguredPATFixture(t)
 	server, headers := adoWorkItemServer(t)
-	t.Setenv(executor.CredentialEnvVar("github:issues:read"), "")
-
-	provider, err := newProviderForStage(root, repo, true, withStageProviderConfiguredADOAuth())
+	// No delivered credential: the configured path must not need one.
+	provider, err := newProviderForStage(root, repo, true, withStageProviderConfiguredADOAuth(), withStageProviderEnv(stageEnvFor(nil)))
 	if err != nil {
 		t.Fatalf("build ADO operator provider: %v", err)
 	}

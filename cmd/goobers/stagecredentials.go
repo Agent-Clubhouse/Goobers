@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"sync"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/stageenv"
 )
 
 // stagecredentials.go is the stage side of mid-stage credential refresh
@@ -32,15 +32,21 @@ var stageRefreshingTokens sync.Map // capability name -> *credentials.Refreshing
 // for cap, or nil when the static value must be used: no grant, no stated
 // expiry, or token is not the delivered value.
 func stageRefreshingToken(cap capability.Capability, token string) *credentials.RefreshingToken {
-	endpoint := os.Getenv(executor.CredentialEndpointEnvVar)
-	grant := os.Getenv(executor.CredentialGrantEnvVar)
-	if endpoint == "" || grant == "" || token == "" || token != os.Getenv(executor.CredentialEnvVar(string(cap))) {
+	return stageRefreshingTokenFrom(nil, cap, token)
+}
+
+// stageRefreshingTokenFrom is stageRefreshingToken reading the delivered
+// variables from env (nil: the process environment).
+func stageRefreshingTokenFrom(env stageenv.Lookup, cap capability.Capability, token string) *credentials.RefreshingToken {
+	endpoint := env.Get(executor.CredentialEndpointEnvVar)
+	grant := env.Get(executor.CredentialGrantEnvVar)
+	if endpoint == "" || grant == "" || token == "" || token != env.Get(executor.CredentialEnvVar(string(cap))) {
 		return nil
 	}
 	if cached, ok := stageRefreshingTokens.Load(string(cap)); ok {
 		return cached.(*credentials.RefreshingToken)
 	}
-	expiresAt, ok := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
+	expiresAt, ok := capability.ParseCredentialExpiry(env.Get(capability.CredentialExpiryEnvVar(string(cap))))
 	if !ok {
 		return nil
 	}

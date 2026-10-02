@@ -40,8 +40,8 @@ func TestADOStageProviderEmitsRateLimitDelayTelemetry(t *testing.T) {
 	dir := telemetry.PrepareStageTelemetryDir(t.TempDir())
 	t.Setenv(telemetry.StageTelemetryEnv, dir)
 
-	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
-	source, err := stageADOCredentialSource(capability.RepoPush, credential)
+	env := stageEnvFor(map[string]string{executor.RepoAuthSchemeEnvVar: "bearer"})
+	source, err := stageADOCredentialSourceFrom(env, capability.RepoPush, credential)
 	if err != nil {
 		t.Fatalf("stageADOCredentialSource: %v", err)
 	}

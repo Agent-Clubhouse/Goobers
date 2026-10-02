@@ -20,12 +20,13 @@ import (
 // lacks access. Without the variable (a standalone invocation), or with an
 // unreadable one, the error keeps the combined wording.
 func TestStageADOCredentialSourceReportsExpiryFromTheDeliveredVariable(t *testing.T) {
+	t.Parallel()
 	const credential = "ado-expiry-token-canary"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte("TF400813: not authorized"))
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close) // not defer: the parallel subtests outlive this function body
 
 	for _, tc := range []struct {
 		name   string
@@ -38,9 +39,12 @@ func TestStageADOCredentialSourceReportsExpiryFromTheDeliveredVariable(t *testin
 		{name: "unreadable expiry", expiry: "soon", want: "(expired, revoked, or without access to this resource)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
-			t.Setenv(capability.CredentialExpiryEnvVar(string(capability.RepoPush)), tc.expiry)
-			source, err := stageADOCredentialSource(capability.RepoPush, credential)
+			t.Parallel()
+			env := stageEnvFor(map[string]string{
+				executor.RepoAuthSchemeEnvVar:                                  "bearer",
+				capability.CredentialExpiryEnvVar(string(capability.RepoPush)): tc.expiry,
+			})
+			source, err := stageADOCredentialSourceFrom(env, capability.RepoPush, credential)
 			if err != nil {
 				t.Fatalf("stageADOCredentialSource: %v", err)
 			}

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/stageenv"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -22,11 +23,17 @@ func tokenGitAuthEnvironment(token string) gitAuthEnvironmentResolver {
 // in the daemon (docs/design/ado-parity-dsl-2-0.md §4.1), so a stage that did
 // not declare repo:push gets no Git credential, locally or in a pod.
 func adoRemediationGitAuthEnvironment() (gitAuthEnvironmentResolver, error) {
-	token, err := providerToken(capability.RepoPush)
+	return adoRemediationGitAuthEnvironmentFrom(nil)
+}
+
+// adoRemediationGitAuthEnvironmentFrom is adoRemediationGitAuthEnvironment
+// reading the delivered credential from env (nil: the process environment).
+func adoRemediationGitAuthEnvironmentFrom(env stageenv.Lookup) (gitAuthEnvironmentResolver, error) {
+	token, err := providerTokenFrom(env, capability.RepoPush)
 	if err != nil {
 		return nil, err
 	}
-	source, err := stageADOCredentialSource(capability.RepoPush, token)
+	source, err := stageADOCredentialSourceFrom(env, capability.RepoPush, token)
 	if err != nil {
 		return nil, err
 	}

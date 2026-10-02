@@ -15,18 +15,19 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/stageenv"
 	"github.com/goobers/goobers/providers"
 )
 
 func TestNewProviderForStageDispatchesGitHub(t *testing.T) {
 	root := initDemo(t)
-	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-token")
+	env := stageEnvFor(map[string]string{executor.CredentialEnvVar(string(capability.GitHubIssuesRead)): "read-token"})
 
 	provider, err := newProviderForStage(root, providers.RepositoryRef{
 		Provider: providers.ProviderGitHub,
 		Owner:    "your-org",
 		Name:     "your-repo",
-	}, true)
+	}, true, withStageProviderEnv(env))
 	if err != nil {
 		t.Fatalf("newProviderForStage: %v", err)
 	}
@@ -343,7 +344,7 @@ func TestNewProviderForStageRejectsUnregisteredProvider(t *testing.T) {
 
 func TestNewProviderForStageUsesRequestedCapability(t *testing.T) {
 	const token = "pr-token"
-	t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), token)
+	env := stageEnvFor(map[string]string{executor.CredentialEnvVar(string(capability.ProviderPRWrite)): token})
 
 	previous := newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = previous })
@@ -358,6 +359,7 @@ func TestNewProviderForStageUsesRequestedCapability(t *testing.T) {
 		providers.RepositoryRef{Provider: providers.ProviderGitHub},
 		false,
 		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderEnv(env),
 	)
 	if err != nil {
 		t.Fatalf("newProviderForStage: %v", err)
@@ -368,6 +370,7 @@ func TestNewProviderForStageUsesRequestedCapability(t *testing.T) {
 }
 
 func TestNewProviderForStageUsesBrokeredADOCredentialWithoutInstanceRoot(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		scheme            string
@@ -379,8 +382,11 @@ func TestNewProviderForStageUsesBrokeredADOCredentialWithoutInstanceRoot(t *test
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(executor.RepoAuthSchemeEnvVar, tc.scheme)
-			t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "stage-token")
+			t.Parallel()
+			env := stageEnvFor(map[string]string{
+				executor.RepoAuthSchemeEnvVar:                                 tc.scheme,
+				executor.CredentialEnvVar(string(capability.ProviderPRWrite)): "stage-token",
+			})
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if got := r.Header.Get("Authorization"); got != tc.wantAuthorization {
@@ -399,6 +405,7 @@ func TestNewProviderForStageUsesBrokeredADOCredentialWithoutInstanceRoot(t *test
 				providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"},
 				false,
 				withStageProviderCapability(capability.ProviderPRWrite),
+				withStageProviderEnv(env),
 			)
 			if err != nil {
 				t.Fatalf("newProviderForStage: %v", err)
@@ -419,7 +426,8 @@ func TestNewProviderForStageUsesBrokeredADOCredentialWithoutInstanceRoot(t *test
 
 func TestNewProviderForStageObservesResolvedToken(t *testing.T) {
 	const token = "branch-token"
-	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), token)
+	t.Parallel()
+	env := stageEnvFor(map[string]string{executor.CredentialEnvVar(string(capability.GitHubBranchDelete)): token})
 
 	var observed string
 	_, err := newProviderForStage(
@@ -428,6 +436,7 @@ func TestNewProviderForStageObservesResolvedToken(t *testing.T) {
 		false,
 		withStageProviderCapability(capability.GitHubBranchDelete),
 		withStageProviderTokenObserver(func(token string) { observed = token }),
+		withStageProviderEnv(env),
 	)
 	if err != nil {
 		t.Fatalf("newProviderForStage: %v", err)
@@ -438,14 +447,25 @@ func TestNewProviderForStageObservesResolvedToken(t *testing.T) {
 }
 
 func TestNewProviderForStageAsRejectsUnsupportedConcreteOperation(t *testing.T) {
-	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesRead)), "read-token")
+	t.Parallel()
+	env := stageEnvFor(map[string]string{executor.CredentialEnvVar(string(capability.GitHubIssuesRead)): "read-token"})
 
 	_, err := newProviderForStageAs[*providers.ADOProvider](
 		t.TempDir(),
 		providers.RepositoryRef{Provider: providers.ProviderGitHub},
 		true,
+		withStageProviderEnv(env),
 	)
 	if err == nil || !strings.Contains(err.Error(), "does not support this stage operation") {
 		t.Fatalf("error = %v, want unsupported-operation error", err)
+	}
+}
+
+// stageEnvFor is a stage environment holding exactly vars, for delivering a
+// per-test credential through withStageProviderEnv instead of t.Setenv.
+func stageEnvFor(vars map[string]string) stageenv.Lookup {
+	return func(key string) (string, bool) {
+		value, ok := vars[key]
+		return value, ok
 	}
 }

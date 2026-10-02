@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/pushrejection"
+	"github.com/goobers/goobers/internal/stageenv"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -247,11 +248,17 @@ func validateRoutedRepo(routed providers.RepositoryRef) error {
 // independently, so it stays covered by the run's registrar-based secret
 // scrubbing rather than becoming a second, unregistered copy of the secret.
 func providerToken(cap capability.Capability) (string, error) {
+	return providerTokenFrom(nil, cap)
+}
+
+// providerTokenFrom is providerToken reading the credential from env (nil: the
+// process environment).
+func providerTokenFrom(env stageenv.Lookup, cap capability.Capability) (string, error) {
 	if err := requireCurrentStageMergeAuthority(cap); err != nil {
 		return "", err
 	}
 	envVar := executor.CredentialEnvVar(string(cap))
-	token := os.Getenv(envVar)
+	token := env.Get(envVar)
 	if token == "" {
 		return "", fmt.Errorf("no credential in %s env var — this subcommand must run as a stage declaring capabilities: [%q] (or set %s directly for standalone use)", envVar, cap, envVar)
 	}

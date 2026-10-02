@@ -38,9 +38,10 @@ func TestADORemediationGitAuthEnvironmentUsesDeliveredRepoPush(t *testing.T) {
 		{name: "no scheme defaults to basic", wantHeader: "AUTHORIZATION: Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:delivered-push-token"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(executor.CredentialEnvVar("repo:push"), "delivered-push-token")
-			t.Setenv(executor.RepoAuthSchemeEnvVar, tc.scheme)
-			resolve, err := adoRemediationGitAuthEnvironment()
+			resolve, err := adoRemediationGitAuthEnvironmentFrom(stageEnvFor(map[string]string{
+				executor.CredentialEnvVar("repo:push"): "delivered-push-token",
+				executor.RepoAuthSchemeEnvVar:          tc.scheme,
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,16 +65,18 @@ func TestADORemediationGitAuthEnvironmentUsesDeliveredRepoPush(t *testing.T) {
 // delivered repo:push there is no Git credential, whatever the instance
 // config says.
 func TestADORemediationGitAuthEnvironmentRequiresDeclaredRepoPush(t *testing.T) {
-	t.Setenv(executor.CredentialEnvVar("repo:push"), "")
-	if _, err := adoRemediationGitAuthEnvironment(); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_REPO_PUSH") {
+	t.Parallel()
+	if _, err := adoRemediationGitAuthEnvironmentFrom(stageEnvFor(nil)); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_REPO_PUSH") {
 		t.Fatalf("error = %v, want a missing GOOBERS_CRED_REPO_PUSH failure", err)
 	}
 }
 
 func TestADORemediationGitAuthEnvironmentRejectsUnknownScheme(t *testing.T) {
-	t.Setenv(executor.CredentialEnvVar("repo:push"), "delivered-push-token")
-	t.Setenv(executor.RepoAuthSchemeEnvVar, "digest")
-	_, err := adoRemediationGitAuthEnvironment()
+	t.Parallel()
+	_, err := adoRemediationGitAuthEnvironmentFrom(stageEnvFor(map[string]string{
+		executor.CredentialEnvVar("repo:push"): "delivered-push-token",
+		executor.RepoAuthSchemeEnvVar:          "digest",
+	}))
 	if err == nil || !strings.Contains(err.Error(), executor.RepoAuthSchemeEnvVar) || strings.Contains(err.Error(), "delivered-push-token") {
 		t.Fatalf("error = %v, want an unsupported-scheme failure that does not echo the token", err)
 	}
