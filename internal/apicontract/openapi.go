@@ -10,10 +10,12 @@ import (
 
 var pathParameterPattern = regexp.MustCompile(`\{([^}]+)\}`)
 
-// OpenAPIDocument renders the daemon's machine-readable HTTP contract.
-func OpenAPIDocument(authenticated bool) ([]byte, error) {
+// OpenAPIDocument renders the daemon's machine-readable HTTP contract,
+// including any optional routes configured on this daemon.
+func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error) {
 	paths := map[string]any{}
-	for _, route := range V1Routes() {
+	routes := append(V1Routes(), optionalRoutes...)
+	for _, route := range routes {
 		operation := map[string]any{
 			"operationId":                route.ID,
 			"summary":                    humanizeRouteID(route.ID),
@@ -84,6 +86,10 @@ func openAPIParameters(route Route) []map[string]any {
 		parameters = append(parameters,
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}},
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
+		)
+	case RouteConfigSourceDocument:
+		parameters = append(parameters,
+			map[string]any{"name": "path", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
 		)
 	case RouteRuns:
 		parameters = append(parameters,

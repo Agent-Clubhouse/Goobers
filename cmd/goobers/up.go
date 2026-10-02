@@ -16,9 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
+	"github.com/goobers/goobers/internal/configauthoring"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -140,6 +142,26 @@ func daemonReadHandlerOptions(root string, setup *schedulerSetup) []httpapi.Hand
 		options = append(options, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	return options
+}
+
+func newConfigAuthoringReader(ctx context.Context, layout instance.Layout, config *instance.Config) (configauthoring.Reader, error) {
+	root := layout.ConfigDir()
+	kind := apicontract.ConfigSourceLocal
+	writable := true
+	if config != nil && config.WorkflowSource != nil {
+		switch config.WorkflowSource.Kind {
+		case instance.WorkflowSourceKindLocalDir:
+			var err error
+			root, err = (instance.LocalDirSource{Path: config.WorkflowSource.Path}).Resolve(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("resolve local configuration source: %w", err)
+			}
+		case instance.WorkflowSourceKindGit:
+			kind = apicontract.ConfigSourceGit
+			writable = false
+		}
+	}
+	return configauthoring.NewReader(root, kind, writable)
 }
 
 func appendWorkerDivergenceHandlerOption(options []httpapi.HandlerOption, setup *schedulerSetup) ([]httpapi.HandlerOption, error) {
@@ -872,6 +894,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	apiHandlerOpts := daemonReadHandlerOptions(l.Root, setup)
+	configReader, err := newConfigAuthoringReader(ctx, l, setup.Config)
+	if err != nil {
+		return reportDaemonStartupError(stderr, "initialize configuration source reader", err)
+	}
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigAuthoringReader(configReader))
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	// #3883 (decision 005 R8): give the intervention surface a second
 	// destination. Runner-driven runs keep the in-process path untouched;
