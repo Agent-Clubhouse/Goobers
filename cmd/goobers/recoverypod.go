@@ -25,6 +25,12 @@ import (
 // Success acknowledges host custody of both dirty and committed work; it does
 // not make either eligible as a successful cross-stage workspace delta.
 func publishPodRecovery(ctx context.Context, repository string) error {
+	return publishPodRecoveryWithTrace(ctx, repository, nil)
+}
+
+type podRecoveryTrace func(phase string, elapsed time.Duration, err error)
+
+func publishPodRecoveryWithTrace(ctx context.Context, repository string, trace podRecoveryTrace) error {
 	if !stageWorkspaceIsWritableRepo() {
 		return nil
 	}
@@ -34,7 +40,12 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if err != nil {
 		return err
 	}
-	claims, err := client.ForRunAll(ctx, runID)
+	var claims []claimsclient.Entry
+	err = podRecoveryPhase(ctx, trace, "claim lookup", func(ctx context.Context) error {
+		var err error
+		claims, err = client.ForRunAll(ctx, runID)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -62,8 +73,11 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if base == "" {
 		base = "main"
 	}
-	base, err = resolveRecoveryBaseRefWithFetch(ctx, repository, base)
-	if err != nil {
+	if err := podRecoveryPhase(ctx, trace, "resolve base ref", func(ctx context.Context) error {
+		var err error
+		base, err = resolveRecoveryBaseRefWithFetch(ctx, repository, base)
+		return err
+	}); err != nil {
 		return err
 	}
 	// The in-pod checkout is materialized outside worktree.Manager, so it never
@@ -72,9 +86,18 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	// `status --porcelain` and the capture below select untracked files, so
 	// without this a stage that only wrote its own result file and mutation
 	// sidecar publishes a bookkeeping-only archive and consumes a slot (#5119).
-	executor.ExcludeStageArtifacts(ctx, repository, os.Getenv(executor.InputEnvVar(executor.InputResultFile)))
-	needed, err := podWorkspaceNeedsRecovery(ctx, repository, base)
-	if err != nil {
+	if err := podRecoveryPhase(ctx, trace, "exclude stage artifacts", func(ctx context.Context) error {
+		executor.ExcludeStageArtifacts(ctx, repository, os.Getenv(executor.InputEnvVar(executor.InputResultFile)))
+		return nil
+	}); err != nil {
+		return err
+	}
+	var needed bool
+	if err := podRecoveryPhase(ctx, trace, "inspect workspace", func(ctx context.Context) error {
+		var err error
+		needed, err = podWorkspaceNeedsRecovery(ctx, repository, base)
+		return err
+	}); err != nil {
 		return err
 	}
 	if !needed {
@@ -86,8 +109,12 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 	if err != nil {
 		return err
 	}
-	inventory, err := prepareRecoveryInventory(root)
-	if err != nil {
+	var inventory string
+	if err := podRecoveryPhase(ctx, trace, "prepare inventory", func(ctx context.Context) error {
+		var err error
+		inventory, err = prepareRecoveryInventory(root)
+		return err
+	}); err != nil {
 		return err
 	}
 	publisher := recovery.HTTPArchivePublisher{BaseURL: endpoint, Token: token, RunID: runID}
@@ -106,11 +133,31 @@ func publishPodRecovery(ctx context.Context, repository string) error {
 		},
 	}
 	publication := recoveryCleanupJournal{directory: filepath.Join(root, "journal"), scrubber: journal.NewRegistryScrubber()}
-	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
+	if err := podRecoveryPhase(ctx, trace, "retain abandoned preparation", func(ctx context.Context) error {
+		return recovery.RetainAbandonedPreparation(ctx, request, publication)
+	}); err != nil {
 		return err
 	}
-	_, _, err = recovery.Retain(ctx, request, publication)
-	return err
+	return podRecoveryPhase(ctx, trace, "retain archive", func(ctx context.Context) error {
+		_, _, err := recovery.Retain(ctx, request, publication)
+		return err
+	})
+}
+
+func podRecoveryPhase(ctx context.Context, trace podRecoveryTrace, phase string, run func(context.Context) error) error {
+	start := time.Now()
+	err := run(ctx)
+	elapsed := time.Since(start)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if trace != nil {
+		trace(phase, elapsed, err)
+	}
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", phase, err)
 }
 
 // podWorkspaceNeedsRecovery reports whether a writable workspace has either

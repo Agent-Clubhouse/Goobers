@@ -181,6 +181,10 @@ const (
 	// execution bound (which stops an orphan's container after the margin,
 	// rather than defining the stage's own timeout or deleting its Pod object).
 	EnvStageTimeout = "GOOBERS_STAGE_TIMEOUT"
+	// EnvRecoveryCustodyTimeout carries the post-stage recovery custody budget
+	// (Go duration string). dispatch-exec also clamps custody to the claim
+	// expiry, so this is an upper bound, not authority to retain work longer.
+	EnvRecoveryCustodyTimeout = "GOOBERS_RECOVERY_CUSTODY_TIMEOUT"
 	// EnvStageCapabilities carries the stage's declared credential capability
 	// NAMES as a JSON array. Names only: the pod resolves them against the
 	// credential plane itself, so no secret ever rides a pod spec — which is
@@ -342,7 +346,7 @@ var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivileged
 // self-authorization by another name.
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
-	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
+	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvRecoveryCustodyTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvArtifactPublication,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
 	EnvStageSyncBase, EnvCheckoutCapability,
@@ -1188,6 +1192,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		env = append(env, corev1.EnvVar{Name: EnvStageScript, Value: literalPodEnv(attempt.Script)})
 	}
 	env = append(env, corev1.EnvVar{Name: EnvStageTimeout, Value: attempt.stageTimeout().String()})
+	env = append(env, corev1.EnvVar{Name: EnvRecoveryCustodyTimeout, Value: cfg.recoveryCustodyTimeout().String()})
 	for _, key := range sortedKeys(attempt.Env) {
 		env = append(env, corev1.EnvVar{Name: key, Value: attempt.Env[key]})
 	}
