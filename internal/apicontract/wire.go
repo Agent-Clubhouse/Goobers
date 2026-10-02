@@ -132,6 +132,20 @@ func queueEligibilityWireFixture(at time.Time) readservice.QueueEligibilityView 
 	return readservice.QueueEligibilityView{Gaggle: report.Gaggle, Workflow: report.Workflow, AsOf: at, Status: "observed", SourceRunID: report.RunID, SourceStage: "select", Report: &report}
 }
 
+func healthStartupWireFixture(startedAt, timestamp time.Time) *readservice.StartupStatus {
+	return &readservice.StartupStatus{
+		Phase: "crash-resume", Target: "candidates=6", Since: startedAt,
+		ElapsedSeconds: 120, WorktreeCount: 1, RecoveryRunCount: 6, AccumulationCount: 7,
+		BudgetSeconds: 60, BudgetUsedPercent: 200, BudgetState: "exceeded",
+		BlockingCandidate: &readservice.StartupRecoveryCandidate{
+			Progress: readservice.StartupRecoveryProgress{Total: 6, Examined: 6, Resumed: 5},
+			RunID:    "0123456789abcdef0123456789abcdef", Gaggle: "goobers", Workflow: "implement",
+			Disposition: "resolving-generation", Operation: "resolve execution generation",
+			StartedAt: startedAt, LastProgressAt: timestamp, ElapsedSeconds: 120, ProgressAgeSecs: 5,
+		},
+	}
+}
+
 func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt time.Time) readservice.Instance {
 	return readservice.Instance{
 		APIVersion:    readservice.APIVersion,
@@ -425,6 +439,7 @@ func newWireFixtures() wireFixtures {
 		QueueEligibility:        queueEligibilityWireFixture(timestamp),
 		Health: readservice.Health{
 			DefinitionReload: &readservice.DefinitionReloadStatus{AppliedDigest: "sha256:applied", ObservedDigest: "sha256:observed", ObservedAt: timestamp, Watching: true, State: "rejected"},
+			Startup:          healthStartupWireFixture(startedAt, timestamp),
 			APIVersion:       readservice.APIVersion,
 			SchemaVersion:    readservice.SchemaVersion,
 			Build:            readservice.BuildMetadata{Version: "v1.2.3", Commit: "abc1234", Date: "2026-07-18T12:00:00Z"},

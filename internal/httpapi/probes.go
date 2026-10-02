@@ -74,14 +74,41 @@ type ReadinessStatus struct {
 
 // StartupStatus identifies the operation currently blocking daemon readiness.
 type StartupStatus struct {
-	Phase             string    `json:"phase"`
-	Since             time.Time `json:"since"`
-	WorktreeCount     int       `json:"worktreeCount"`
-	RecoveryRunCount  int       `json:"recoveryRunCount"`
-	AccumulationCount int       `json:"accumulationCount"`
-	BudgetSeconds     float64   `json:"budgetSeconds"`
-	BudgetUsedPercent float64   `json:"budgetUsedPercent"`
-	BudgetState       string    `json:"budgetState"`
+	Phase             string                   `json:"phase"`
+	Target            string                   `json:"target,omitempty"`
+	Since             time.Time                `json:"since"`
+	WorktreeCount     int                      `json:"worktreeCount"`
+	RecoveryRunCount  int                      `json:"recoveryRunCount"`
+	AccumulationCount int                      `json:"accumulationCount"`
+	BudgetSeconds     float64                  `json:"budgetSeconds"`
+	BudgetUsedPercent float64                  `json:"budgetUsedPercent"`
+	BudgetState       string                   `json:"budgetState"`
+	BlockingCandidate *RecoveryCandidateStatus `json:"blockingCandidate,omitempty"`
+}
+
+// RecoveryCandidateStatus reports bounded crash-resume progress.
+type RecoveryCandidateStatus struct {
+	Progress        RecoveryProgress `json:"progress"`
+	RunID           string           `json:"runId,omitempty"`
+	Gaggle          string           `json:"gaggle,omitempty"`
+	Workflow        string           `json:"workflow,omitempty"`
+	Disposition     string           `json:"disposition,omitempty"`
+	Phase           string           `json:"phase,omitempty"`
+	Operation       string           `json:"operation,omitempty"`
+	StartedAt       time.Time        `json:"startedAt,omitempty"`
+	LastProgressAt  time.Time        `json:"lastProgressAt,omitempty"`
+	ElapsedSeconds  float64          `json:"elapsedSeconds,omitempty"`
+	ProgressAgeSecs float64          `json:"progressAgeSeconds,omitempty"`
+}
+
+// RecoveryProgress is the aggregate crash-resume pass position.
+type RecoveryProgress struct {
+	Total      int `json:"total"`
+	Examined   int `json:"examined"`
+	Resumed    int `json:"resumed"`
+	Reattached int `json:"reattached"`
+	Terminal   int `json:"terminal"`
+	Skipped    int `json:"skipped"`
 }
 
 // probeHandler serves the two bare probe paths itself and forwards
