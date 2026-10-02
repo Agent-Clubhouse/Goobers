@@ -1016,7 +1016,7 @@ jobs:
           path: ~/.nuget/packages
           # Exact key only, as with the apt archives: a prefix match would hand
           # the leg a package set resolved for different project files.
-          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
 
       - name: Provision .NET fixture packages
         timeout-minutes: 8
@@ -1047,7 +1047,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.nuget/packages
-          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
 
       - name: Restore Python fixture wheelhouse
         id: python-fixture-cache
@@ -1194,7 +1194,7 @@ jobs:
     name: warm declared-dependency apt cache
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - name: Checkout
@@ -1320,7 +1320,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.nuget/packages
-          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
 
       - name: Warm .NET fixture NuGet packages
         id: dotnet-fixture-warm
@@ -1341,7 +1341,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.nuget/packages
-          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj', 'test/e2e/testdata/dotnetservice/**/*.props') }}
 
       - name: Restore Python fixture wheelhouse
         id: python-fixture-cache
