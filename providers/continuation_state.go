@@ -123,6 +123,11 @@ func (c *restMutationClient) labels(ctx context.Context, repo RepositoryRef, id 
 }
 
 func (c *restMutationClient) label(ctx context.Context, repo RepositoryRef, id, label string, add bool) error {
+	if c.kind == ProviderGitea && add {
+		if _, err := c.ensureLabel(ctx, repo, WorkItemLabel{Name: label, Color: "ededed"}); err != nil {
+			return err
+		}
+	}
 	action := "label-remove"
 	if add {
 		action = "label-add"
@@ -174,9 +179,12 @@ func (c *restMutationClient) writeLabel(ctx context.Context, repo RepositoryRef,
 		return doStatus(ctx, p, http.MethodDelete, path, nil, nil, []int{http.StatusNotFound})
 	case *GiteaProvider:
 		if add {
-			ids, err := p.giteaLabelIDs(mutationreceipt.FreshRead(ctx), repo, []string{label})
+			ids, err := p.resolveExistingLabelIDs(mutationreceipt.FreshRead(ctx), repo, []string{label})
 			if err != nil {
 				return err
+			}
+			if len(ids) != 1 {
+				return fmt.Errorf("%w: label definition disappeared", ErrMutationUnresolved)
 			}
 			return p.do(ctx, http.MethodPost, endpoint, map[string][]int64{"labels": ids}, nil)
 		}

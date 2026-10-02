@@ -270,6 +270,9 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 // DeleteComment removes an issue/PR comment. A missing comment is already in
 // the desired state, so deletion is idempotent for concurrent reconcilers.
 func (p *GitHubProvider) DeleteComment(ctx context.Context, repo RepositoryRef, commentID string) error {
+	if client := continuationClient(p); client != nil {
+		return client.deleteComment(ctx, repo, commentID)
+	}
 	if err := requireOwnerRepo(repo); err != nil {
 		return err
 	}

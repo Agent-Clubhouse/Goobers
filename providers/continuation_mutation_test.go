@@ -445,13 +445,15 @@ func TestContinuationRESTCapturedWritesDoNotRetry(t *testing.T) {
 					if got := forge.count(path); got != 1 {
 						t.Fatalf("public mutations=%d, want one", got)
 					}
-					if len(log.receipts) != 1 || log.receipts[0].Phase != "intent" {
+					unknown := log.receipts[len(log.receipts)-1]
+					if unknown.Phase != "intent" {
 						t.Fatalf("uncertain write receipts=%+v", log.receipts)
 					}
 					if err := invoke(makeProvider(resumedSession(log))); err != nil {
 						t.Fatal(err)
 					}
-					if forge.count(path) != 1 || len(log.receipts) != 2 || log.receipts[1].Phase != "completed" {
+					completed := log.receipts[len(log.receipts)-1]
+					if forge.count(path) != 1 || completed.ID != unknown.ID || completed.Phase != "completed" {
 						t.Fatalf("reconciliation writes=%d receipts=%+v", forge.count(path), log.receipts)
 					}
 				})

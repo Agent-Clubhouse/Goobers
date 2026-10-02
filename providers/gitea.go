@@ -517,6 +517,9 @@ func (p *GiteaProvider) OpenPullRequest(ctx context.Context, req PullRequestRequ
 	if err := p.ready(); err != nil {
 		return PullRequestResult{}, err
 	}
+	if client := continuationClient(p); client != nil {
+		return client.openPull(ctx, req)
+	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
 	}
@@ -647,6 +650,9 @@ func (p *GiteaProvider) listOpenPulls(ctx context.Context, repo RepositoryRef, b
 func (p *GiteaProvider) RequestReview(ctx context.Context, req ReviewRequest) error {
 	if err := p.ready(); err != nil {
 		return err
+	}
+	if client := continuationClient(p); client != nil {
+		return client.requestReview(ctx, req)
 	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return err
@@ -1418,6 +1424,9 @@ func (p *GiteaProvider) pullRequestStatusHead(ctx context.Context, req PullReque
 func (p *GiteaProvider) PublishPullRequestStatus(ctx context.Context, req PullRequestStatusRequest) (PullRequestStatusResult, error) {
 	if err := p.ready(); err != nil {
 		return PullRequestStatusResult{}, err
+	}
+	if client := continuationClient(p); client != nil {
+		return client.publishStatus(ctx, req)
 	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestStatusResult{}, err

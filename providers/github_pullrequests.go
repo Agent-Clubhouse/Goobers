@@ -25,6 +25,9 @@ import (
 // sidesteps this package's lack of a typed HTTP-status error to match against
 // (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
+	if client := continuationClient(p); client != nil {
+		return client.openPull(ctx, req)
+	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
 	}
@@ -1754,6 +1757,9 @@ func normalizeCheckRunState(status, conclusion string) CheckState {
 
 // RequestReview requests GitHub reviewers for a pull request.
 func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) error {
+	if client := continuationClient(p); client != nil {
+		return client.requestReview(ctx, req)
+	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return err
 	}

@@ -518,6 +518,9 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 	repo RepositoryRef,
 	labels []WorkItemLabel,
 ) (EnsureWorkItemLabelsResult, error) {
+	if client := continuationClient(p); client != nil {
+		return client.ensureLabels(ctx, repo, labels)
+	}
 	if err := requireOwnerRepo(repo); err != nil {
 		return EnsureWorkItemLabelsResult{}, err
 	}
