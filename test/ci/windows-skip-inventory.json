@@ -817,6 +817,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/tracefollow",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Transcript-follow tests were not selected by the Windows CLI gate before extraction; no Windows-specific seam identified."
+    },
+    {
       "package": "internal/triggerqueue",
       "coverage": "none",
       "category": "not-selected",

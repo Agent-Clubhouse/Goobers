@@ -174,31 +174,6 @@ func TestTraceFollowTranscriptsWaitsWithoutInitialTranscript(t *testing.T) {
 	}
 }
 
-func TestTraceFollowTranscriptErrorsRemainVisible(t *testing.T) {
-	root := t.TempDir()
-	const runID = "broken-transcript-follow"
-	run := newTraceTestRun(t, root, runID)
-	defer func() { _ = run.Close() }()
-	if _, err := run.RecordSpan("implement", "legacy.transcript", []byte("content")); err != nil {
-		t.Fatal(err)
-	}
-	reads, err := readservice.NewOfflineRuns(instance.NewLayout(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := errors.New("transcript integrity failed")
-	err = followTraceTranscripts(t.Context(), transcriptFailureReader{OfflineRuns: reads, err: want}, runID, "", 0, true, false, io.Discard)
-	if !errors.Is(err, want) {
-		t.Fatalf("integrity failure hidden: %v", err)
-	}
-	for _, jsonOutput := range []bool{false, true} {
-		err = followTraceTranscripts(t.Context(), reads, runID, "", 0, true, jsonOutput, transcriptShortWriter{})
-		if !errors.Is(err, io.ErrShortWrite) {
-			t.Fatalf("short output write hidden: %v", err)
-		}
-	}
-}
-
 func TestTraceAfterSeqRequiresTranscriptFollow(t *testing.T) {
 	for _, args := range [][]string{{"--after-seq=3", "run-id"}, {"--after-seq=3", "--follow", "run-id"}, {"--after-seq=3", "--transcripts", "run-id"}} {
 		var stdout, stderr bytes.Buffer
@@ -207,19 +182,6 @@ func TestTraceAfterSeqRequiresTranscriptFollow(t *testing.T) {
 		}
 	}
 }
-
-type transcriptFailureReader struct {
-	readservice.OfflineRuns
-	err error
-}
-
-func (r transcriptFailureReader) Transcript(context.Context, string, uint64) (readservice.TranscriptContent, error) {
-	return readservice.TranscriptContent{}, r.err
-}
-
-type transcriptShortWriter struct{}
-
-func (transcriptShortWriter) Write(p []byte) (int, error) { return len(p) / 2, nil }
 
 func finishTranscriptTestRun(t *testing.T, run *journal.Run) {
 	t.Helper()
@@ -258,4 +220,18 @@ func decodeFollowTranscripts(t *testing.T, data string) []traceTranscriptRecord 
 		}
 		records = append(records, record)
 	}
+}
+
+// traceTranscriptRecord describes the CLI JSON wire contract.
+type traceTranscriptRecord struct {
+	RunID           string `json:"runId"`
+	Seq             uint64 `json:"seq"`
+	Stage           string `json:"stage"`
+	Name            string `json:"name"`
+	Content         string `json:"content"`
+	Partial         bool   `json:"partial,omitempty"`
+	Capture         string `json:"capture,omitempty"`
+	Stream          string `json:"stream,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	ReplacesCapture string `json:"replacesCapture,omitempty"`
 }

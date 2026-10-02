@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/tracefollow"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -486,15 +487,7 @@ func writeFollowEvent(stdout io.Writer, event readservice.RunEvent, jsonOutput b
 }
 
 func traceEventsTerminal(events []readservice.RunEvent) bool {
-	for i := len(events) - 1; i >= 0; i-- {
-		switch events[i].Type {
-		case journal.EventRunResumed:
-			return false
-		case journal.EventRunFinished:
-			return true
-		}
-	}
-	return false
+	return tracefollow.EventsTerminal(events)
 }
 
 type traceJSONResult struct {
