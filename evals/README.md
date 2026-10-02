@@ -45,7 +45,7 @@ tree that does run: `evals-tests.yml` exercises it.
 cd evals
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.txt
 pytest
 ```
 
@@ -53,9 +53,26 @@ Adding a new sample suite: drop a new `*.json` file under `samples/` — it's
 picked up automatically by the parametrized tests above, no test-code change
 needed.
 
+### Dependency lock
+
+`requirements.in` lists the direct dependencies as version ranges.
+`requirements.txt` is the fully resolved lock (direct and transitive pins with
+sha256 hashes) generated from it; do not edit it by hand. To refresh it, from
+`evals/` under Python 3.11 (the version CI uses):
+
+```sh
+python3.11 -m venv /tmp/evals-lock && /tmp/evals-lock/bin/pip install pip-tools
+/tmp/evals-lock/bin/pip-compile --generate-hashes --strip-extras \
+  --output-file=requirements.txt requirements.in
+```
+
+Add `--upgrade` (or `--upgrade-package <name>`) to pick up newer versions.
+Commit both files together.
+
 ### CI
 
-`.github/workflows/evals-tests.yml` installs the pinned dependencies and runs
+`.github/workflows/evals-tests.yml` installs the locked dependencies
+(`pip install --require-hashes -r requirements.txt`) and runs
 `pytest` on every push/PR that touches this directory (test discovery covers
 the whole `evals/` tree, not just `tests/` — sibling child issues land their
 own test directories as they're implemented), failing the check on any
