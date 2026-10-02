@@ -125,7 +125,7 @@ func (r *orphanReaper) sweep() {
 		// Name what was reaped: these exist only because some child exited
 		// without waiting for its own children, and the command name is the
 		// lead to that root cause.
-		_, _ = fmt.Fprintf(os.Stderr, "warning: reaped abandoned zombie child pid %d (%s) after %s in state Z (#5421)\n",
+		_, _ = fmt.Fprintf(os.Stderr, "warning: reaped abandoned zombie child pid %d (%s) after at least %s in state Z (#5421)\n",
 			pid, procComm(pid), sameSessionZombieGrace)
 		reapPID(pid)
 	}
