@@ -65,7 +65,7 @@ func TestMigrateV30ToV31Golden(t *testing.T) {
 func TestMigrateV31PreservesSourceFormatting(t *testing.T) {
 	for _, pin := range []string{`3.0`, `"3.0"`, `'3.0'`} {
 		for _, eol := range []string{"\n", "\r\n"} {
-			source := "# untouched π\n{kind: Workflow, dslVersion: " + pin + ", spec: {tasks: []}} # tail\n"
+			source := "# untouched π\n{kind: Workflow, metadata: {annotations: {note: \"éé🌻\"}}, dslVersion: " + pin + ", spec: {tasks: []}} # tail\n"
 			source = strings.ReplaceAll(source, "\n", eol)
 			result, err := dslmigrate.Migrate([]byte(source), "3.1")
 			if err != nil {

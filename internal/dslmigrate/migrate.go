@@ -13,6 +13,7 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -287,8 +288,17 @@ func sourceOffset(source []byte, line, column int) (int, error) {
 		}
 		offset += next + 1
 	}
-	offset += column - 1
-	if offset < 0 || offset >= len(source) {
+	// yaml.Node columns count Unicode code points, while source edits use
+	// byte offsets. A multibyte scalar earlier on a flow-mapping line must
+	// not move the version edit into the preceding key or value.
+	for current := 1; current < column; current++ {
+		if offset >= len(source) || source[offset] == '\n' {
+			return 0, fmt.Errorf("source has no column %d on line %d", column, line)
+		}
+		_, width := utf8.DecodeRune(source[offset:])
+		offset += width
+	}
+	if line < 1 || column < 1 || offset >= len(source) || source[offset] == '\n' {
 		return 0, fmt.Errorf("source has no column %d on line %d", column, line)
 	}
 	return offset, nil
