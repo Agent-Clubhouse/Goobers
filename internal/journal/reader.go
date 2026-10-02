@@ -519,6 +519,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		releaseRunLock(lock)
 		return nil, RecoverReport{}, err
 	}
+	r.configureObserver(cfg)
 	return r, report, nil
 }
 

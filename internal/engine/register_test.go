@@ -50,8 +50,8 @@ func TestRegisterWithPinsWorkflowsToCurrentBuild(t *testing.T) {
 	w := &recordingWorker{}
 	RegisterWith(w, &Activities{})
 
-	if got := len(w.workflowOpts); got != 5 {
-		t.Fatalf("registered workflows = %d, want 5", got)
+	if got := len(w.workflowOpts); got != 2 {
+		t.Fatalf("registered workflows = %d, want 2", got)
 	}
 	for i, opts := range w.workflowOpts {
 		if got := opts.VersioningBehavior; got != workflow.VersioningBehaviorPinned {

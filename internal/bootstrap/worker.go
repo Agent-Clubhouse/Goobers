@@ -52,16 +52,15 @@ type EngineDeps struct {
 // Every deployable worker entrypoint calls this so the worker is identical.
 func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDeps) {
 	engine.RegisterWith(w, &engine.Activities{
-		Goober:          deps.Goober,
-		Det:             deps.Det,
-		Auto:            deps.Auto,
-		ScheduleService: temporalClient.WorkflowService(),
-		Workspaces:      deps.Workspaces,
-		Scrubber:        deps.Scrubber,
-		Journal:         deps.Journal,
-		Canary:          deps.Canary,
-		Dispatcher:      deps.Dispatcher,
-		Surrenders:      deps.Surrenders,
+		Goober:     deps.Goober,
+		Det:        deps.Det,
+		Auto:       deps.Auto,
+		Workspaces: deps.Workspaces,
+		Scrubber:   deps.Scrubber,
+		Journal:    deps.Journal,
+		Canary:     deps.Canary,
+		Dispatcher: deps.Dispatcher,
+		Surrenders: deps.Surrenders,
 	})
 }
 

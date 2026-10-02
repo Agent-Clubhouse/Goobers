@@ -1016,6 +1016,8 @@ export interface RunDetail extends RunSummary {
   escalation?: EscalationCause;
   /** The same cause projection as escalation, present for every non-completed terminal phase (#4246). */
   terminalCause?: EscalationCause;
+  /** Availability of a durable cause record; absent on older daemons. */
+  terminalCauseStatus?: "recorded" | "unavailable" | "not-applicable";
   /** The business decision a completed run reached, distinct from phase (the execution axis). */
   outcome?: RunOutcome;
   /** The run's exact executed workflow-graph transition history — never inferred from "both endpoint nodes were visited". */

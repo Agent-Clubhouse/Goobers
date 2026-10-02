@@ -8,12 +8,11 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
-// R9 (finding 002, decision 005): four local-runner behaviours have NO engine
+// R9 (finding 002, decision 005): local-runner behaviours have NO engine
 // walk implementation and are not being ported. Every one of them is silently
 // ignored by the walk today — a definition declaring them starts, runs, and
 // completes as if the declaration were absent, which is the worst possible
-// shape for a safety knob (an experiment arm that never splits, a token budget
-// that never caps, an outbox that never exports, a fan-out that never fans).
+// shape for a safety knob (an experiment arm that never splits, an outbox that never exports, a fan-out that never fans).
 // These sentinels make each one a REFUSAL instead: loud, named, and testable.
 //
 // The refusal is applied at the run-start boundary (Registry.StartInputVersion,
@@ -39,11 +38,9 @@ var (
 	// and observation recording: internal/runner/run.go's AssignAndRecord /
 	// recordBanditResult arms).
 	ErrExperimentUnsupported = errors.New("task.experiment (bandit arm assignment) is not implemented on the engine walk")
-	// ErrUsageLimitsUnsupported refuses task.limits.maxTokens /
-	// task.limits.maxCostUSD (the local runner's cumulative
-	// enforceStageBudget). MaxDurationSeconds is NOT refused — the engine
-	// enforces it through the stage activity's StartToCloseTimeout.
-	ErrUsageLimitsUnsupported = errors.New("task.limits.maxTokens/maxCostUSD (cumulative agentic usage budgets) are not implemented on the engine walk")
+	// ErrRemoteUsageLimitsUnsupported refuses budgeted agentic pod dispatch:
+	// the remote surrender protocol does not yet carry trusted adapter usage.
+	ErrRemoteUsageLimitsUnsupported = errors.New("task.limits.maxTokens/maxCostUSD on remote agentic tasks are not implemented on the engine walk")
 	// ErrOutboxUnsupported refuses task.outbox (internal/runner/outbox.go's
 	// workspace-relative export, #1552).
 	ErrOutboxUnsupported = errors.New("task.outbox (workspace file export) is not implemented on the engine walk")
@@ -131,9 +128,6 @@ func unsupportedEngineFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureErr
 		if t.Experiment != nil {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.experiment", Err: ErrExperimentUnsupported})
 		}
-		if t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) {
-			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrUsageLimitsUnsupported})
-		}
 		if len(t.Outbox) > 0 {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.outbox", Err: ErrOutboxUnsupported})
 		}
@@ -191,6 +185,32 @@ func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
 		if err := refuseHumanGate(g); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// RefusePlacedDefinition also checks features whose support depends on the
+// pinned executor. Local agentic usage budgets are supported; remote usage
+// must be carried in the surrender protocol before that refusal can be lifted.
+func RefusePlacedDefinition(name string, spec apiv1.WorkflowSpec, placements []PinnedPlacement) error {
+	if err := RefuseDefinition(name, spec); err != nil {
+		return err
+	}
+	return refuseRemoteUsage(name, spec, placements)
+}
+
+func refuseRemoteUsage(name string, spec apiv1.WorkflowSpec, placements []PinnedPlacement) error {
+	var refusals []*UnsupportedFeatureError
+	for _, t := range spec.Tasks {
+		if t.Type != apiv1.TaskAgentic || t.Limits == nil || (t.Limits.MaxTokens <= 0 && t.Limits.MaxCostUSD <= 0) {
+			continue
+		}
+		if _, remote := remotePlacementFor(RunInput{Placements: placements}, t.Name); remote {
+			refusals = append(refusals, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.limits.maxTokens/maxCostUSD", Err: ErrRemoteUsageLimitsUnsupported})
+		}
+	}
+	if len(refusals) > 0 {
+		return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
 	}
 	return nil
 }

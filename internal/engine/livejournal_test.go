@@ -451,6 +451,15 @@ func TestLiveJournalEmitExhaustionFailsAttemptAsInfra(t *testing.T) {
 		t.Fatalf("projection terminal = %+v, want run.finished failed", terminal)
 	}
 
+	cause := terminal.TerminalCause
+	if cause == nil || cause.Classification != journal.TerminalInfrastructureFailure ||
+		cause.SelectorKind != "stage" || cause.Selector != "implement" || cause.Retry == nil ||
+		cause.Retry.Consumed != int(runner.DefaultMaxInfrastructureAttempts)-1 ||
+		cause.Retry.Allowed != int(runner.DefaultMaxInfrastructureAttempts)-1 ||
+		cause.CausalEventSeq == 0 || cause.CausalEmitKey == "" {
+		t.Fatalf("journal emission exhaustion cause = %+v", cause)
+	}
+
 	// On disk: only the opening emission landed; the run is wedged
 	// non-terminal — exactly what StalledRunTimeout keys off and what the
 	// demoted reconciler backfills.

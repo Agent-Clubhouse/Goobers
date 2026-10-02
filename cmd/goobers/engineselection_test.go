@@ -359,6 +359,7 @@ func TestSelectEngineForEntryDeclinesDefinitionsTheEngineWalkRefuses(t *testing.
 		{
 			"task.limits",
 			func(def workflow.Definition) workflow.Definition {
+				def.Spec.Tasks[0].Type = apiv1.TaskAgentic
 				def.Spec.Tasks[0].Limits = &apiv1.Limits{MaxTokens: 1000}
 				return def
 			},

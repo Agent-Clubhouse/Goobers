@@ -31,19 +31,6 @@ func NewRegistry() *Registry {
 	return &Registry{defs: make(map[string][]wf.Definition)}
 }
 
-// NewRegistryWithPreviewFeatures returns an empty Registry that treats every
-// definition registered into it as preview-acknowledged, bypassing each
-// definition's own annotation. It exists for tests exercising preview DSL
-// syntax/semantics directly; production wiring uses NewRegistry and lets each
-// Workflow's own goobers.dev/allow-preview-features annotation (carried on
-// wf.Definition.Annotations) govern its own compilation (#4220).
-func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
-	return &Registry{
-		defs:                 make(map[string][]wf.Definition),
-		forcePreviewFeatures: enabled,
-	}
-}
-
 // RegisterDefinition appends a parsed workflow definition, assigning its
 // registry run-pin version while retaining its independent DSL version.
 // Version assignment, validation, and the append run under one critical
@@ -249,12 +236,15 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 // annotation does not authorize it.
 func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s StartSpec) (RunInput, error) {
 	// R9 run-start refusal: a definition declaring parallels, a bandit
-	// experiment, a cumulative usage budget or an outbox has no engine walk
+	// experiment or an outbox has no engine walk
 	// implementation, and the walk would otherwise IGNORE the declaration
 	// silently. Refusing here rather than at RegisterDefinition keeps a
 	// gaggle's other lanes startable — see registryrefusal.go for why that
 	// placement is load-bearing.
 	if err := refuseUnsupportedEngineFeatures(name, def.Spec); err != nil {
+		return RunInput{}, err
+	}
+	if err := refuseRemoteUsage(name, def.Spec, s.Placements); err != nil {
 		return RunInput{}, err
 	}
 	previewEnabled := allowPreviewFeatures

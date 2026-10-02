@@ -179,3 +179,7 @@ func TestWorkflowLivenessScansOncePerPass(t *testing.T) {
 		t.Fatalf("open-workflow scans = %d, want 1 (cached within the pass)", fake.listCalls)
 	}
 }
+
+func scheduledRunWorkflowID(claimID string) string {
+	return claimID + scheduledRunWorkflowIDSuffix
+}
