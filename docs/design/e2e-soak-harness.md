@@ -181,6 +181,13 @@ document is not inventing parallel vocabulary for the same concept:
 - After the ramp completes, the driver holds exactly N concurrent runs for the
   sustained window (§6's `Duration`), starting a replacement run promptly
   whenever one finishes — steady-state contention, not a decaying burst.
+  The driver verifies positive-duration N-way overlap during ramp from actual
+  run start/finish timestamps, rather than counting queued acceptances or runs
+  that started at different times. Replacement during sustain has a fixed 10s
+  grace, matching the CLI admission timeout: any continuous interval below N
+  lasting 10s fails a separate `sustainedConcurrency` signal even if throughput
+  remains non-zero. The longest such interval is reported. Short runs between
+  polls are included by reconstructing their actual execution intervals.
 
 This directly answers the prior review's "admission ordering... underspecified":
 ramp-then-hold-steady, staggered starts, retry-with-backoff-until-deadline, and a

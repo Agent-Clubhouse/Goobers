@@ -41,18 +41,18 @@ func (wallClock) Wait(ctx context.Context, d time.Duration) error {
 
 type slot struct {
 	acceptance, runID string
-	activated         bool
 	submitted         time.Time
 }
 
 type driver struct {
-	backend  backend
-	clock    clock
-	result   result
-	slots    []slot
-	seen     map[string]readservice.RunSummary
-	sequence int
-	logError error
+	backend     backend
+	clock       clock
+	result      result
+	slots       []slot
+	seen        map[string]readservice.RunSummary
+	sequence    int
+	logError    error
+	rampChecked bool
 }
 
 func run(ctx context.Context, p Profile, b backend, c clock) result {
@@ -108,6 +108,9 @@ func run(ctx context.Context, p Profile, b backend, c clock) result {
 		}
 	}
 	d.finish()
+	if d.logError != nil {
+		d.result.invalidate(observationLost, d.logError)
+	}
 	return d.result
 }
 
@@ -139,9 +142,6 @@ func (d *driver) observe(ctx context.Context, now time.Time) error {
 	for i := range d.slots {
 		s := &d.slots[i]
 		if r, ok := d.seen[s.runID]; ok {
-			if !r.StartedAt.After(d.result.SustainStarted) {
-				s.activated = true
-			}
 			if r.Terminal {
 				s.acceptance, s.runID = "", ""
 			}
@@ -210,14 +210,14 @@ func (d *driver) refresh(ctx context.Context, now time.Time) error {
 }
 
 func (d *driver) checkRamp(now time.Time) {
-	if d.result.RampRefused {
+	if d.rampChecked {
 		return
 	}
-	for _, s := range d.slots {
-		if !s.activated {
-			d.result.RampRefused = true
-			d.log(now, refusedDeadline, s)
-		}
+	d.rampChecked = true
+	reached, _ := occupancy(d.seen, d.result.Started, d.result.SustainStarted, d.result.Profile.Runs)
+	if !reached {
+		d.result.RampRefused = true
+		d.log(now, refusedDeadline, slot{})
 	}
 }
 
@@ -271,15 +271,75 @@ func (d *driver) finish() {
 	count := len(completed)
 	d.result.Completed, d.result.ExpectedFailures = &count, &expectedFailures
 	throughput := rollingThroughput(completed, d.result.SustainStarted, d.result.SustainEnded)
+	rampReached, _ := occupancy(d.seen, d.result.Started, d.result.SustainStarted, d.result.Profile.Runs)
+	if !rampReached && !d.result.RampRefused {
+		d.result.RampRefused = true
+		d.log(d.clock.Now(), refusedDeadline, slot{})
+	}
+	_, underfill := occupancy(d.seen, d.result.SustainStarted, d.result.SustainEnded, d.result.Profile.Runs)
+	concurrency := underfill < replacementWindow
+	d.result.LongestUnderfill = &underfill
 	noInfra, noWedge := len(d.result.UnexpectedFailures) == 0, len(d.result.Wedged) == 0
-	d.result.Signals = signals{&throughput, &noInfra, &noWedge}
+	d.result.Signals = signals{Throughput: &throughput, NoInfraEscalations: &noInfra, NoWedgedRuns: &noWedge, SustainedConcurrency: &concurrency}
 	if d.result.RampRefused {
 		d.result.Signals.Throughput = nil
+		d.result.Signals.SustainedConcurrency = nil
+		d.result.LongestUnderfill = nil
 		d.result.Completed = nil
 	}
-	if throughput && noInfra && noWedge && !d.result.RampRefused {
+	if throughput && concurrency && noInfra && noWedge && !d.result.RampRefused {
 		d.result.Verdict = "pass"
 	}
+}
+
+// Reconstruct actual occupancy, including runs that finish between polls. An
+// acceptance waiting for dispatch contributes nothing. Tied finish/start times
+// do not manufacture positive-duration overlap. Unfinished runs occupy their
+// interval through end; the separate drain signal still catches wedged runs.
+func occupancy(runs map[string]readservice.RunSummary, start, end time.Time, target int) (bool, time.Duration) {
+	type boundary struct {
+		at    time.Time
+		delta int
+	}
+	events := []boundary{{end, 0}}
+	for _, r := range runs {
+		left, right := r.StartedAt, end
+		if r.Terminal {
+			if r.FinishedAt == nil {
+				continue
+			}
+			right = *r.FinishedAt
+		}
+		if left.Before(start) {
+			left = start
+		}
+		if right.After(end) {
+			right = end
+		}
+		if left.Before(right) {
+			events = append(events, boundary{left, 1}, boundary{right, -1})
+		}
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].at.Before(events[j].at) })
+	previous := start
+	active := 0
+	reached := false
+	var gap, longest time.Duration
+	for _, event := range events {
+		if elapsed := event.at.Sub(previous); elapsed > 0 {
+			if active >= target {
+				reached, gap = true, 0
+			} else {
+				gap += elapsed
+				if gap > longest {
+					longest = gap
+				}
+			}
+		}
+		active += event.delta
+		previous = event.at
+	}
+	return reached, longest
 }
 
 // Every empty 60s interval, including either edge, fails even after recovery.

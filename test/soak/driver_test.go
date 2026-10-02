@@ -25,6 +25,7 @@ func (c *fakeClock) Wait(ctx context.Context, d time.Duration) error {
 
 type fakeSubmission struct {
 	at      time.Time
+	started time.Time
 	failure bool
 }
 type fakeBackend struct {
@@ -36,10 +37,19 @@ type fakeBackend struct {
 	unexpected        bool
 	recordErr         error
 	invalidAt         time.Time
+	serializeAt       time.Time
 }
 
 func (b *fakeBackend) Submit(_ context.Context, failure bool) (string, error) {
-	b.submissions = append(b.submissions, fakeSubmission{b.clock.Now(), failure})
+	started := b.clock.Now().Add(b.latency)
+	if !b.serializeAt.IsZero() && !b.clock.Now().Before(b.serializeAt) {
+		for _, s := range b.submissions {
+			if finish := s.started.Add(b.duration); finish.After(started) {
+				started = finish
+			}
+		}
+	}
+	b.submissions = append(b.submissions, fakeSubmission{b.clock.Now(), started, failure})
 	return fmt.Sprint(len(b.submissions)), nil
 }
 func (b *fakeBackend) Resolve(_ context.Context, id string) (apicontract.TriggerStatusResponse, error) {
@@ -47,7 +57,7 @@ func (b *fakeBackend) Resolve(_ context.Context, id string) (apicontract.Trigger
 	if _, err := fmt.Sscan(id, &index); err != nil {
 		return apicontract.TriggerStatusResponse{}, err
 	}
-	if b.clock.Now().Before(b.submissions[index-1].at.Add(b.latency)) {
+	if b.clock.Now().Before(b.submissions[index-1].started) {
 		return apicontract.TriggerStatusResponse{State: "accepted", Reason: "conditions: instance max-parallel"}, nil
 	}
 	return apicontract.TriggerStatusResponse{State: "dispatched", RunID: id}, nil
@@ -58,7 +68,7 @@ func (b *fakeBackend) List(_ context.Context, o readservice.RunListOptions) ([]r
 	}
 	var runs []readservice.RunSummary
 	for i, s := range b.submissions {
-		start := s.at.Add(b.latency)
+		start := s.started
 		if b.clock.Now().Before(start) {
 			continue
 		}
@@ -106,7 +116,7 @@ func fakeSetup() (Profile, *fakeClock, *fakeBackend) {
 func TestDriverRampsSustainsAndDrainsRealisticAdmissions(t *testing.T) {
 	p, c, b := fakeSetup()
 	r := run(context.Background(), p, b, c)
-	if r.Verdict != "pass" || r.ExpectedFailures == nil || *r.ExpectedFailures == 0 || r.Completed == nil || *r.Completed == 0 {
+	if r.Verdict != "pass" || r.ExpectedFailures == nil || *r.ExpectedFailures == 0 || r.Completed == nil || *r.Completed == 0 || r.Signals.SustainedConcurrency == nil || !*r.Signals.SustainedConcurrency {
 		t.Fatalf("result: %+v", r)
 	}
 	if c.Now().After(r.SustainEnded.Add(drainWindow)) {
@@ -145,7 +155,7 @@ func TestDriverClassifiesInvalidAndHealthFailures(t *testing.T) {
 			p, c, b := fakeSetup()
 			b.invalid = reason
 			r := run(context.Background(), p, b, c)
-			if r.Verdict != "invalid" || r.InvalidReason != reason || r.Signals.Throughput != nil || r.Signals.NoInfraEscalations != nil || r.Signals.NoWedgedRuns != nil {
+			if r.Verdict != "invalid" || r.InvalidReason != reason || r.Signals.Throughput != nil || r.Signals.NoInfraEscalations != nil || r.Signals.NoWedgedRuns != nil || r.Signals.SustainedConcurrency != nil || r.LongestUnderfill != nil {
 				t.Fatalf("result: %+v", r)
 			}
 		})
@@ -173,6 +183,60 @@ func TestDriverUnexpectedFailureAndWedge(t *testing.T) {
 	}
 	if !c.Now().Equal(r.SustainEnded.Add(drainWindow)) {
 		t.Fatalf("drain ended at %v", c.Now())
+	}
+}
+
+func TestDriverRefusesSerializedRampDespiteHealthyCompletions(t *testing.T) {
+	p, c, b := fakeSetup()
+	b.duration, b.serializeAt = 3*time.Second, c.Now()
+	r := run(context.Background(), p, b, c)
+	if r.Verdict != "fail" || !r.RampRefused || r.Signals.SustainedConcurrency != nil || r.LongestUnderfill != nil {
+		t.Fatalf("serialized work passed the concurrency ramp: %+v", r)
+	}
+	if !*r.Signals.NoWedgedRuns || !*r.Signals.NoInfraEscalations {
+		t.Fatalf("serialization must fail independently of terminal health: %+v", r)
+	}
+	if len(b.submissions) <= p.Runs {
+		t.Fatal("regression did not exercise replacements during ramp")
+	}
+}
+
+func TestDriverFailsSustainedUnderfillDespiteHealthyThroughput(t *testing.T) {
+	p, c, b := fakeSetup()
+	b.duration, b.serializeAt = 3*time.Second, c.Now().Add(p.RampWindow)
+	r := run(context.Background(), p, b, c)
+	if r.Verdict != "fail" || r.RampRefused || r.Signals.SustainedConcurrency == nil || *r.Signals.SustainedConcurrency {
+		t.Fatalf("serialized replacements passed sustain: %+v", r)
+	}
+	if !*r.Signals.Throughput || !*r.Signals.NoWedgedRuns || !*r.Signals.NoInfraEscalations || *r.LongestUnderfill < replacementWindow {
+		t.Fatalf("underfill must fail independently of the other signals: %+v", r)
+	}
+}
+
+func TestOccupancyUsesActualIntervalsAndContinuousUnderfill(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		intervals [][2]int
+		reached   bool
+		gap       time.Duration
+	}{
+		{"serial touching boundaries", [][2]int{{0, 10}, {10, 20}, {20, 30}}, false, 30 * time.Second},
+		{"overlap between polls", [][2]int{{0, 30}, {4, 5}, {14, 15}, {24, 25}}, true, 9 * time.Second},
+		{"exact replacement deadline", [][2]int{{0, 30}, {0, 10}, {20, 30}}, true, replacementWindow},
+		{"clipped intervals", [][2]int{{-10, 40}, {-5, 5}, {25, 35}}, true, 20 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runs := map[string]readservice.RunSummary{}
+			for i, interval := range tc.intervals {
+				finished := start.Add(time.Duration(interval[1]) * time.Second)
+				runs[fmt.Sprint(i)] = readservice.RunSummary{StartedAt: start.Add(time.Duration(interval[0]) * time.Second), FinishedAt: &finished, Terminal: true}
+			}
+			reached, gap := occupancy(runs, start, start.Add(30*time.Second), 2)
+			if reached != tc.reached || gap != tc.gap {
+				t.Fatalf("got reached=%v gap=%v; want reached=%v gap=%v", reached, gap, tc.reached, tc.gap)
+			}
+		})
 	}
 }
 

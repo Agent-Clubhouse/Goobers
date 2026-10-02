@@ -52,10 +52,16 @@ and stays alive through the bounded drain. Its early exit invalidates measuremen
 The driver opens slots gradually during ramp and replaces completed runs on a
 one-second polling cadence. Durable trigger acceptances are tracked until the
 public trigger-status API supplies run IDs; capacity holds are reobserved rather
-than duplicated. A slot not observed starting by the ramp deadline causes refusal,
-stops new submissions, and enters drain. Otherwise the full sustained window
-begins after ramp. Daemon admission may still queue a replacement; queued work
-counts against the driver's outstanding slots and cannot silently disappear.
+than duplicated. Actual run `StartedAt`/`FinishedAt` intervals must show a
+positive-duration overlap of N runs during ramp. Otherwise the ramp is refused,
+new submissions stop, and drain begins. The ramp is checked again against final
+terminal timestamps so stale running summaries cannot manufacture overlap.
+During sustain, every continuous interval below N running workflows must stay
+under 10 seconds, the fixed replacement grace matching the CLI submission
+timeout. Reaching 10 seconds fails the distinct `sustainedConcurrency` signal,
+even when completions remain frequent. Queued acceptances occupy outstanding
+slots but contribute nothing to actual concurrency. Interval reconstruction also
+counts short runs that start and finish between polls.
 
 Run observations use the paginated public HTTP `readservice.RunListOptions` seam,
 filtered by workflow, phase, and the outstanding submissions' start-time window.
@@ -81,8 +87,10 @@ The final JSON has `verdict` (`pass`, `fail`, `invalid`), the resolved profile
 (durations are Go duration nanoseconds), distinct health signals, admission
 decisions, completion count, expected failures, unexpected run IDs, and wedged
 identities. Exit codes are 0/1/2 respectively. Invalid results have null health
-signals, not fabricated zeros. A refused ramp has null throughput because no full
-sustained window was measured. Invalid reasons are the closed set in the design:
+signals, not fabricated zeros. `longestUnderfill` reports the longest continuous
+sustained interval below N, in duration nanoseconds. A refused ramp has null
+throughput, sustained concurrency, and longest underfill because no full sustained
+window was measured. Invalid reasons are the closed set in the design:
 `container-launch-failed`, `daemon-health-check-failed`, `load-injector-crashed`,
 `host-oom-killed` (outer supervisor), and `observation-path-lost`.
 

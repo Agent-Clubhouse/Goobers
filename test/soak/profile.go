@@ -25,6 +25,7 @@ var Presets = map[string]Profile{
 
 const drainWindow = 60 * time.Second // fixture's per-stage timeout
 const pollInterval = time.Second
+const replacementWindow = 10 * time.Second // maximum continuous time below target concurrency
 const fixtureFailure = "soak_fixture_failure"
 const fixtureFailureReason = fixtureFailure + ": " + fixtureFailure
 
@@ -53,32 +54,35 @@ type decision struct {
 }
 
 type signals struct {
-	Throughput         *bool `json:"throughput"`
-	NoInfraEscalations *bool `json:"noInfraEscalations"`
-	NoWedgedRuns       *bool `json:"noWedgedRuns"`
+	Throughput           *bool `json:"throughput"`
+	NoInfraEscalations   *bool `json:"noInfraEscalations"`
+	NoWedgedRuns         *bool `json:"noWedgedRuns"`
+	SustainedConcurrency *bool `json:"sustainedConcurrency"`
 }
 
 type result struct {
-	Profile            Profile       `json:"profile"`
-	Verdict            string        `json:"verdict"`
-	InvalidReason      invalidReason `json:"invalidReason,omitempty"`
-	Error              string        `json:"error,omitempty"`
-	Started            time.Time     `json:"started"`
-	SustainStarted     time.Time     `json:"sustainStarted"`
-	SustainEnded       time.Time     `json:"sustainEnded"`
-	Signals            signals       `json:"signals"`
-	Admissions         []decision    `json:"admissions"`
-	Completed          *int          `json:"completed"`
-	ExpectedFailures   *int          `json:"expectedFailures"`
-	UnexpectedFailures []string      `json:"unexpectedFailures,omitempty"`
-	Wedged             []string      `json:"wedged,omitempty"`
-	RampRefused        bool          `json:"rampRefused"`
+	Profile            Profile        `json:"profile"`
+	Verdict            string         `json:"verdict"`
+	InvalidReason      invalidReason  `json:"invalidReason,omitempty"`
+	Error              string         `json:"error,omitempty"`
+	Started            time.Time      `json:"started"`
+	SustainStarted     time.Time      `json:"sustainStarted"`
+	SustainEnded       time.Time      `json:"sustainEnded"`
+	Signals            signals        `json:"signals"`
+	Admissions         []decision     `json:"admissions"`
+	Completed          *int           `json:"completed"`
+	ExpectedFailures   *int           `json:"expectedFailures"`
+	UnexpectedFailures []string       `json:"unexpectedFailures,omitempty"`
+	Wedged             []string       `json:"wedged,omitempty"`
+	RampRefused        bool           `json:"rampRefused"`
+	LongestUnderfill   *time.Duration `json:"longestUnderfill"`
 }
 
 func (r *result) invalidate(reason invalidReason, err error) {
 	r.Verdict, r.InvalidReason = "invalid", reason
 	r.Signals = signals{} // unavailable is not a measured zero
 	r.Completed, r.ExpectedFailures = nil, nil
+	r.LongestUnderfill = nil
 	if err != nil {
 		r.Error = err.Error()
 	}
