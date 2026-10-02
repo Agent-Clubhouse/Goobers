@@ -197,7 +197,10 @@ func requiredCoverage(name string, reaching map[string]map[string]bool) map[stri
 // stage, the reaching-last-producer set must be exactly covered by its
 // repoFrom declaration — an undeclared chain, an uncovered reaching producer,
 // and a dead entry (a declared stage that can never immediately precede the
-// consumer as its last producer) are each errors.
+// consumer as its last producer) are each errors. Agentic gates inherit their
+// subject's repo state rather than declaring repoFrom, so a repo-readonly gate
+// with a reaching producer is refused: it would otherwise review the pinned
+// base while appearing to judge the subject's commits.
 func repoHandoffProblems(def Definition) []string {
 	reaching, producers, ok := reachingProducers(def)
 	if !ok {
@@ -257,6 +260,18 @@ func repoHandoffProblems(def Definition) []string {
 					"task %q repoFrom names %q, but no forward path reaches %q with %q as its last producer — a dead entry (WF022)", t.Name, d, t.Name, d))
 			}
 		}
+	}
+	for _, g := range def.Spec.Gates {
+		if g.Evaluator != apiv1.EvaluatorAgentic || g.Agentic == nil || g.Agentic.Workspace != apiv1.WorkspaceRepoReadOnly {
+			continue
+		}
+		required := requiredCoverage(g.Name, reaching)
+		if len(required) == 0 {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"gate %q uses agentic.workspace: repo-readonly after producer(s) %s; agentic gates inherit the subject's repo state, but repo-readonly checks out the pinned base and would review the wrong tree — use workspace: repo to review the subject's commits, or take the gate off the repo path",
+			g.Name, quotedList(setKeys(required))))
 	}
 	return problems
 }

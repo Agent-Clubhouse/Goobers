@@ -51,7 +51,8 @@ func TestImplicitWritableWorkspaceWarnings(t *testing.T) {
 			wantText: []string{
 				"agentic gate",
 				"agentic.workspace",
-				"agentic: {goober: reviewer, workspace: repo-readonly}",
+				"agentic: {goober: reviewer, workspace: repo}",
+				"repo-readonly only when intentionally inspecting the pinned base",
 			},
 		},
 		{
