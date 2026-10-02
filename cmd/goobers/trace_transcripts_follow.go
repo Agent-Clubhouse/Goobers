@@ -106,7 +106,7 @@ func verifiedFollowCaptures(ctx context.Context, reads readservice.OfflineRuns, 
 }
 
 func traceTranscriptEvent(event readservice.RunEvent, runID, stage string) bool {
-	if !event.KnownSchema || event.Type != journal.EventSpanRecorded || (stage != "" && strings.TrimPrefix(event.Stage, runID+":") != stage) {
+	if !event.KnownSchema || event.Type != journal.EventSpanRecorded || (stage != "" && stageArtifactName(runID, event.Stage) != stage) {
 		return false
 	}
 	return event.Name == "transcript" || strings.HasSuffix(event.Name, ".transcript") ||
