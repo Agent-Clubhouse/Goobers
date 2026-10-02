@@ -102,7 +102,7 @@ func TestReadinessConfiguredCredentialAndCopilotNeverPrompt(t *testing.T) {
 	}
 }
 func TestReadinessConfigurationMismatchIsDistinct(t *testing.T) {
-	check := readinessConfig(&ClaudeAdapter{}, apiv1.GooberSpec{Model: "not-a-model-opaque-secret"})
+	check := CheckReadinessConfig(&ClaudeAdapter{}, apiv1.GooberSpec{Model: "not-a-model-opaque-secret"})
 	if check.Code != "harness_configuration_mismatch" || strings.Contains(check.Detail, "opaque-secret") {
 		t.Fatalf("%+v", check)
 	}

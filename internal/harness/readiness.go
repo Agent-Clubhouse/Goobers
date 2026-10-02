@@ -40,7 +40,7 @@ func readinessCheck(category, code, outcome, detail string) ReadinessCheck {
 // path; Copilot's prompt-based auth fallback is deliberately not invoked.
 func ProbeReadiness(ctx context.Context, adapter Adapter, spec apiv1.GooberSpec, configuredCredential bool) Readiness {
 	report := Readiness{}
-	report.Checks = append(report.Checks, readinessConfig(adapter, spec))
+	report.Checks = append(report.Checks, CheckReadinessConfig(adapter, spec))
 	command, runner, env := readinessProcess(adapter)
 	if len(command) == 0 {
 		report.Checks = append(report.Checks, readinessCheck("unavailable_tool", "harness_executable_unobservable", "unobservable", "adapter exposes no read-only executable probe"))
@@ -52,7 +52,9 @@ func ProbeReadiness(ctx context.Context, adapter Adapter, spec apiv1.GooberSpec,
 	return report
 }
 
-func readinessConfig(adapter Adapter, spec apiv1.GooberSpec) ReadinessCheck {
+// CheckReadinessConfig validates only the static adapter contract, without
+// credential resolution, launcher negotiation, or model discovery.
+func CheckReadinessConfig(adapter Adapter, spec apiv1.GooberSpec) ReadinessCheck {
 	var err error
 	switch a := adapter.(type) {
 	case *CopilotAdapter:

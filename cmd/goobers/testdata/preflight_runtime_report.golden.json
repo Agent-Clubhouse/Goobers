@@ -609,6 +609,12 @@
       },
       "checks": [
         {
+          "category": "capability_mismatch",
+          "code": "harness_model_unobservable",
+          "outcome": "unobservable",
+          "detail": "option shape accepted; model availability and model-dependent options require live catalogue evidence"
+        },
+        {
           "category": "unobservable",
           "code": "harness_probe_unobservable",
           "outcome": "unobservable",

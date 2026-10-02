@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -9,7 +10,10 @@ import (
 	"github.com/goobers/goobers/internal/credreadiness"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runtimeplan"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 type runtimePreflightHarness struct {
@@ -100,6 +104,11 @@ func runtimePreflightReadiness(ctx context.Context, cfg *instance.Config, gaggle
 	var harnessChecks []runtimePreflightHarness
 	for _, stage := range stages {
 		keys := append([]string(nil), stage.CredentialCapabilities...)
+		for _, key := range mcpconfig.BYOCredentialKeys(goobers[stage.Goober].MCPServers) {
+			if !containsString(keys, key) {
+				keys = append(keys, key)
+			}
+		}
 		if stage.Harness != "" && !containsString(keys, "agent:model") {
 			keys = append(keys, "agent:model")
 		}
@@ -115,6 +124,10 @@ func runtimePreflightReadiness(ctx context.Context, cfg *instance.Config, gaggle
 			check, ok := sources[byCapability[capability]]
 			if !ok {
 				check = credreadiness.Check{Kind: credreadiness.SourceUnsupported, Status: credreadiness.StatusUnobservable, Detail: "no configured credential grant for this capability; credential requirement unverified"}
+				if mcpconfig.IsBYOCredentialKey(capability) {
+					check.Status = credreadiness.StatusAbsent
+					check.Detail = "required named MCP credential grant is absent"
+				}
 			}
 			check.Name = capability
 			credentialChecks = append(credentialChecks, runtimeplan.CredentialObservation(stage.Name, check, process))
@@ -131,17 +144,49 @@ var runtimeReadinessAdapterFor = adapterFor
 func runtimeHarnessReadiness(ctx context.Context, cfg *instance.Config, stage runtimePreflightStage, spec apiv1.GooberSpec, process runtimeplan.Process, probe bool) runtimePreflightHarness {
 	result := runtimePreflightHarness{Stage: stage.Name, Harness: stage.Harness, Process: process,
 		Source: runtimeplan.Source{Fidelity: "unobservable", Detail: "harness subprocess probes disabled; use --check-readiness; target daemon/worker remains unobservable"}}
-	if !probe {
-		result.Checks = []harness.ReadinessCheck{{Category: "unobservable", Code: "harness_probe_unobservable", Outcome: "unobservable", Detail: "bounded read-only probes not requested"}}
-		return result
-	}
-	result.Source = runtimeplan.Source{Fidelity: "observed", Detail: "bounded read-only reporting-process probes; no target identity attestation"}
 	adapter, err := runtimeReadinessAdapterFor(apiv1.Harness(stage.Harness), harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, nil)
 	if err != nil {
 		result.Checks = []harness.ReadinessCheck{{Category: "unavailable_tool", Code: "harness_adapter_unsupported", Outcome: "unsupported", Detail: "configured harness adapter unavailable; diagnostic values omitted"}}
 		return result
 	}
+	if !probe {
+		result.Checks = []harness.ReadinessCheck{harness.CheckReadinessConfig(adapter, spec), {Category: "unobservable", Code: "harness_probe_unobservable", Outcome: "unobservable", Detail: "bounded read-only probes not requested"}}
+		return result
+	}
+	result.Source = runtimeplan.Source{Fidelity: "observed", Detail: "bounded read-only reporting-process probes; no target identity attestation"}
 	grant, _ := agentModelGrant(cfg, apiv1.Harness(stage.Harness))
 	result.Readiness = harness.ProbeReadiness(ctx, adapter, spec, grant != nil)
 	return result
+}
+
+// Preserve invalid harness configuration as a report finding. Execution still
+// uses strict admission. Only the typed harness-model/options failure gets this
+// diagnostic path; all workflow structural checks and digest code are shared.
+func compileRuntimePreflight(configDir string, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, instructions map[string]string, cfg *instance.Config) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, error) {
+	machines, digests, resolved, _, err := compiledMachinesWithGooberDigestsAndWarnings(configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, true, nil, knownExternalTelemetryConnectorNames(cfg))
+	var mismatch *gooberHarnessConfigError
+	if !errors.As(err, &mismatch) {
+		return machines, digests, resolved, err
+	}
+	registry, err := buildHarnessRegistry(nil, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, "", "", true, nil, false)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, spec := range goobers {
+		h := spec.Harness
+		if h == "" {
+			h = apiv1.HarnessCopilot
+		}
+		if err := mcpconfig.ValidateForHarness(h, spec.MCPServers, spec.Capabilities, spec.Tools); err != nil {
+			return nil, nil, nil, errors.New("invalid MCP configuration; diagnostic values omitted")
+		}
+	}
+	machines, err = compileWorkflowMachines(set, goobers, registry.Names(), knownExternalTelemetryConnectorNames(cfg))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	digests, err = computeMachineGooberDigests(machines, goobers, instructions, func(gaggle string, specs map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
+		return loadGooberSkillPackages(configDir, gaggle, specs)
+	})
+	return machines, digests, goobers, err
 }

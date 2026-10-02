@@ -195,17 +195,7 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
-	machines, gooberDigests, resolvedGoobers, _, err := compiledMachinesWithGooberDigestsAndWarnings(
-		layout.ConfigDir(),
-		set,
-		goobers,
-		instructions,
-		harnessEnvironmentPolicy(cfg.Runner),
-		cfg.Runner.HarnessCommand,
-		true,
-		nil,
-		knownExternalTelemetryConnectorNames(cfg),
-	)
+	machines, gooberDigests, resolvedGoobers, err := compileRuntimePreflight(layout.ConfigDir(), set, goobers, instructions, cfg)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
