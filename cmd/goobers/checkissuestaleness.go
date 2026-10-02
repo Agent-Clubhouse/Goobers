@@ -38,16 +38,14 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	root, ok := providerStageRootArg(fs)
+	env, ok := parseProviderStageEnv(fs, stderr)
 	if !ok {
-		return 2
-	}
-
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+		if fs.NArg() > 1 {
+			return 2
+		}
 		return 1
 	}
+	repo := env.repoRef()
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
 		pf(stderr, "error: pullNumber is required (inputsFrom pr-select's number output)\n")
@@ -64,7 +62,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	// project from the routed code repo the PR/branch landed in — so its
 	// GetWorkItem read must target the backlog project (backlogRepoRefForStage).
 	issuesRepo := repo
-	prProvider, err := newMergeReviewProvider(root, repo, false,
+	prProvider, err := providerForEnvAs[providers.Provider](env, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
 		withStageProviderMutations("pr"),
@@ -74,14 +72,16 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if repo.Provider == providers.ProviderADO {
-		issuesRepo = backlogRepoRefForStage(root, repo)
+		issuesRepo = env.backlogRepoRef()
 	}
 	// The PR poll and the originating-issue read authenticate with distinct
 	// capabilities (github:pr:write vs github:issues:write), the same split
 	// gather-issue-context uses, so issue resolution never fails on a
 	// PR-scoped credential and vice versa — on Azure DevOps too, where the
 	// issue is a backlog work item (docs/design/ado-parity-dsl-2-0.md §3.1).
-	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, issuesRepo), false,
+	issuesEnv := env
+	issuesEnv.repo = backlogProviderRepo(repo, issuesRepo)
+	issuesProvider, err := providerForEnvAs[providers.Provider](issuesEnv, false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderCache(),
 	)

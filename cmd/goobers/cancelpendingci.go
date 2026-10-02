@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,13 +31,7 @@ type cancelPendingCIResult struct {
 }
 
 func runCancelPendingCI(args []string, stdout, stderr io.Writer) int {
-	return runCancelPendingCIWithProvider(args, stdout, stderr, func(root string, repo providers.RepositoryRef) (providers.Provider, error) {
-		return newProviderForStage(
-			root, repo, false,
-			withStageProviderCapability(capability.ProviderCICancel),
-			withStageProviderMutations("pr"),
-		)
-	})
+	return runCancelPendingCIWithProvider(args, stdout, stderr, nil)
 }
 
 func runCancelPendingCIWithProvider(
@@ -66,18 +61,31 @@ func runCancelPendingCIWithProvider(
 		pf(stderr, "error: maxRuns must be an integer between 1 and 100\n")
 		return 1
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
-	stageProvider, err := providerForStage(root, repo)
+	repo := env.repoRef()
+	var stageProvider providers.Provider
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if providerForStage == nil {
+		stageProvider, ctx, cancel, err = openProviderAs[providers.Provider](
+			env, false,
+			withStageProviderCapability(capability.ProviderCICancel),
+			withStageProviderMutations("pr"),
+		)
+	} else {
+		stageProvider, err = providerForStage(root, repo)
+		if err == nil {
+			ctx, cancel = providerCommandContext()
+		}
+	}
 	if err != nil {
 		return writeCancelPendingCIResult(resultFile, cancelPendingCIResult{
 			Status: "failed", Reason: "provider setup failed", HeadSHA: headSHA, PullNumber: pullNumber,
 		}, stdout, stderr)
 	}
-	ctx, cancel := providerCommandContext()
 	defer cancel()
 	result, err := providers.NewDispatcher(stageProvider).CancelPendingChecks(ctx, providers.CancelPendingChecksRequest{
 		Repository: repo,
