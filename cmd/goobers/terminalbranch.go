@@ -42,19 +42,14 @@ var newGiteaTerminalBranchDeleter = func(baseURL string, source providers.TokenS
 }
 
 func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource) (providers.BranchDeleter, error) {
-	repo := terminalRepositoryRefForProject(cfg, project)
-	switch repo.Provider {
-	case providers.ProviderGitea:
-		baseURL, err := terminalGiteaBaseURLForProject(cfg, project)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaTerminalBranchDeleter(baseURL, source), nil
-	case providers.ProviderGitHub:
-		return newTerminalBranchDeleter(source), nil
-	default:
-		return nil, terminalBranchDeleteSupported(repo.Provider)
-	}
+	return terminalProviderForProject(
+		cfg,
+		project,
+		source,
+		newTerminalBranchDeleter,
+		newGiteaTerminalBranchDeleter,
+		terminalBranchDeleteSupported,
+	)
 }
 
 // terminalBranchDeleteSupported reports whether terminal branch cleanup has a

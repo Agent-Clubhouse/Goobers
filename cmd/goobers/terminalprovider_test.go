@@ -289,6 +289,41 @@ func TestTerminalBranchDeleteProviderRoutesByRepoKind(t *testing.T) {
 	}
 }
 
+func TestTerminalBranchDeleteProviderKeepsGitHubArm(t *testing.T) {
+	previousGitea := newGiteaTerminalBranchDeleter
+	newGiteaTerminalBranchDeleter = func(string, providers.TokenSource) providers.BranchDeleter {
+		t.Error("github-routed terminal branch delete constructed the Gitea provider")
+		return nil
+	}
+	t.Cleanup(func() { newGiteaTerminalBranchDeleter = previousGitea })
+
+	previousGitHub := newTerminalBranchDeleter
+	var gotToken string
+	newTerminalBranchDeleter = func(source providers.TokenSource) providers.BranchDeleter {
+		token, err := source.Token(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotToken = token
+		return fakeBranchDeleter(func(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+			return providers.DeleteBranchResult{}, nil
+		})
+	}
+	t.Cleanup(func() { newTerminalBranchDeleter = previousGitHub })
+
+	cfg := &instance.Config{Repos: []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "app"}}}
+	deleter, err := newTerminalBranchDeleteProviderForProject(cfg, apiv1.RepoRef{}, staticTerminalTokenSource("ghp-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleter == nil {
+		t.Fatal("nil deleter")
+	}
+	if gotToken != "ghp-token" {
+		t.Fatalf("token = %q", gotToken)
+	}
+}
+
 // TestBuildTerminalRunAbortLabelerUsesGiteaOnGiteaInstance walks the real
 // builder (credential injector included) on a Gitea instance and asserts the
 // label lands on the Gitea host, not api.github.com.
