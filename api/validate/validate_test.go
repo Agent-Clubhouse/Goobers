@@ -1386,6 +1386,64 @@ func TestSubprocessTimeoutWarningWiredIntoValidate(t *testing.T) {
 	}
 }
 
+// TestProviderInputDefaultedWarningWiredIntoValidate pins #2737 end to end: a
+// remediation-checkpoint stage that leaves a per-cause budget unset validates
+// with a WF027 warning per unset budget (the stage defaults it to 2) and no
+// error, and declaring every budget is clean.
+func TestProviderInputDefaultedWarningWiredIntoValidate(t *testing.T) {
+	if got, want := WarningProviderInputDefaulted, WarningCode("WF027"); got != want {
+		t.Fatalf("WarningProviderInputDefaulted = %q, want stable code %q", got, want)
+	}
+	allBudgets := map[string]string{
+		"conflictBudget": "2", "substantiveBudget": "2", "failingCIBudget": "2",
+		"siblingOverlapBudget": "2", "humanCommentBudget": "2",
+	}
+	tests := []struct {
+		name         string
+		inputs       map[string]string
+		wantWarnings int
+	}{
+		{name: "no budgets declared warns once per budget", wantWarnings: 5},
+		{name: "every budget declared is clean", inputs: allBudgets},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := apiv1.Task{
+				Name: "checkpoint", Type: apiv1.TaskDeterministic, Goal: "Checkpoint remediation.",
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "remediation-checkpoint"}},
+				Inputs: tc.inputs,
+			}
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
+				DSLVersion: supportmatrix.V2DSLVersion,
+				Spec:       apiv1.WorkflowSpec{Gaggle: "example", Start: task.Name, Tasks: []apiv1.Task{task}},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == WarningProviderInputDefaulted {
+					got = append(got, issue)
+				}
+				if issue.Code == errorProviderStageInput || issue.Code == errorStageRequiredInput {
+					t.Fatalf("unexpected input error: %s", joinIssues(report))
+				}
+			}
+			if len(got) != tc.wantWarnings {
+				t.Fatalf("WF027 warnings = %v, want %d; report: %s", got, tc.wantWarnings, joinIssues(report))
+			}
+			for _, issue := range got {
+				if issue.Severity != Warning {
+					t.Fatalf("severity = %q, want warning", issue.Severity)
+				}
+			}
+		})
+	}
+}
+
 func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
 	tests := []struct {
 		name      string
