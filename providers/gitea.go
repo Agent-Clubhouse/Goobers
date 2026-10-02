@@ -791,36 +791,21 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 	if req.ExpectedHeadSHA != "" {
 		body["head_commit_id"] = req.ExpectedHeadSHA
 	}
-	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
-	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitea, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
+	receipt, err := prepareRESTMergeReceipt(ctx, p.recorder, ProviderGitea, req.Repository, p.BaseURL, req.PullID, req.ExpectedHeadSHA)
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
 	if err := p.postDirectMerge(ctx, endpoint, body); err != nil {
 		return MergePullRequestResult{}, err
 	}
-	number, convErr := strconv.Atoi(req.PullID)
-	if convErr != nil {
-		number = 0
-	}
 	mergeSHA := ""
 	if pr, err := p.getPull(ctx, req.Repository, req.PullID); err == nil {
 		mergeSHA = pr.MergeCommitSHA
 	}
-	confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, mergeSHA)
-	if intent != nil {
-		confirmation.IntentID = intent.ID
+	if err := receipt.record(ctx, mergeSHA, true); err != nil {
+		return MergePullRequestResult{Number: receipt.number, Merged: true, MergeSHA: mergeSHA}, err
 	}
-	if err := recordLandingReceipt(ctx, p.recorder, ExternalRef{
-		MergeConfirmation: confirmation,
-		Provider:          ProviderGitea,
-		Ref:               issueRef(req.Repository, req.PullID),
-		Operation:         "merge",
-		Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
-	}); err != nil {
-		return MergePullRequestResult{Number: number, Merged: true, MergeSHA: mergeSHA}, err
-	}
-	return MergePullRequestResult{Number: number, Merged: true, MergeSHA: mergeSHA}, nil
+	return MergePullRequestResult{Number: receipt.number, Merged: true, MergeSHA: mergeSHA}, nil
 }
 
 // DetectMergePolicy always reports MergePolicyDirect with no HTTP call: Gitea
