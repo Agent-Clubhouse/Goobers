@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -58,13 +57,17 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 	if rawMax == "" {
 		return backlogResweepPolicy{}, false, nil
 	}
-	resweepMax, err := strconv.Atoi(rawMax)
-	if err != nil || resweepMax < 1 || resweepMax > maxItems {
-		return backlogResweepPolicy{}, false, fmt.Errorf(
-			"invalid resweepMaxItems %q (want an integer from 1 through maxItems=%d)",
-			rawMax,
-			maxItems,
-		)
+	resweepMax, err := parseProviderIntInput(
+		"resweepMaxItems",
+		"",
+		true,
+		func(value int) bool { return value >= 1 && value <= maxItems },
+		func(raw string, _ error) string {
+			return fmt.Sprintf("invalid resweepMaxItems %q (want an integer from 1 through maxItems=%d)", raw, maxItems)
+		},
+	)
+	if err != nil {
+		return backlogResweepPolicy{}, false, err
 	}
 	readyLabel := strings.TrimSpace(providerInput("resweepReadyLabel", providers.LabelReady))
 	if readyLabel == "" {
