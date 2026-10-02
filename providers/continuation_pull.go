@@ -48,7 +48,7 @@ func (c *restMutationClient) openPull(ctx context.Context, req PullRequestReques
 				if !containsExactLine(pull.Body, continuationMarker(receipt)) {
 					continue
 				}
-				semanticBody := continuationRunFooter.ReplaceAllString(continuationBody(pull.Body), "")
+				semanticBody := StripAttribution(continuationRunFooter.ReplaceAllString(continuationBody(pull.Body), ""))
 				if found != nil || pull.Number <= 0 || pull.State != "open" || pull.Title != title || semanticBody != StripAttribution(req.Body) || (c.kind == ProviderGitHub && pull.Draft != req.Draft) {
 					return nil, fmt.Errorf("%w: conflicting pull request evidence", ErrMutationUnresolved)
 				}

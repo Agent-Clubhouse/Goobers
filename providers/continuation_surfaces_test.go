@@ -457,3 +457,38 @@ func TestContinuationReviewerBatchCrashPreservesIndividualRequests(t *testing.T)
 		})
 	}
 }
+
+func TestContinuationPullCrashReconcilesBodyWhitespace(t *testing.T) {
+	for _, kind := range []ProviderKind{ProviderGitHub, ProviderGitea} {
+		for _, action := range []string{"open", "reuse"} {
+			for _, body := range []string{"semantic body\n", "semantic body\r\n", " \tsemantic body \t\n\n", "", " \t\n"} {
+				t.Run(string(kind)+"/"+action+"/"+body, func(t *testing.T) {
+					forge, makeProvider := surfaceFixture(t, kind)
+					path := "/repos/acme/app/pulls/7"
+					if action == "open" {
+						forge.pull.Number = 0
+						path = "/repos/acme/app/pulls"
+					}
+					log := &continuationLog{}
+					source := makeProvider(mutationreceipt.NewSession("source", log, nil))
+					injectCommittedResponseLoss(t, source, path, "500")
+					req := PullRequestRequest{Repository: RepositoryRef{Owner: "acme", Name: "app"}, Head: "work", Base: "main", Title: "title", Body: body, RunID: "source"}
+					if _, err := source.OpenPullRequest(t.Context(), req); err == nil {
+						t.Fatal("lost response accepted")
+					}
+					req.RunID = "continuation"
+					resumed := makeProvider(resumedSession(log))
+					if _, err := resumed.OpenPullRequest(t.Context(), req); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := resumed.OpenPullRequest(t.Context(), req); err != nil {
+						t.Fatal(err)
+					}
+					if forge.count(path) != 1 || log.receipts[len(log.receipts)-1].Phase != "completed" {
+						t.Fatal("whitespace caused repeated mutation or incomplete reconciliation")
+					}
+				})
+			}
+		}
+	}
+}
