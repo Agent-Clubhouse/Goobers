@@ -314,7 +314,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg),
-				Observer: decisionObserver,
+				Observer:               decisionObserver,
 			})
 			if err != nil {
 				return nil, err

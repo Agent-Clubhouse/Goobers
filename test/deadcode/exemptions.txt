@@ -284,7 +284,6 @@ github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Sim
 # these entries in the PR that adds the caller.
 github.com/goobers/goobers/internal/decider.Choice # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
 github.com/goobers/goobers/internal/decider.Score # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Question.validate # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDenials # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.resolveReadDenial # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.pathContains # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
