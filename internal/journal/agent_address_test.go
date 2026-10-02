@@ -45,6 +45,23 @@ func TestResolveAgentAddress(t *testing.T) {
 		}
 	})
 
+	t.Run("agentic gate live", func(t *testing.T) {
+		events := []Event{
+			{Type: EventGateStarted, Seq: 1, Gate: "review", Runner: map[string]any{"repassAttempt": 1}},
+			agentLifecycleEvent(now, "copilot:reviewer", "", runID, "review", 1, AgentWaiting, AgentUsage{}),
+		}
+		events[1].Seq = 2
+		resolved, err := ResolveAgentAddress(events, runID, AgentAddress{
+			RunID: runID, Stage: "review", Attempt: 1, AgentID: encodeJournalAgentToken("copilot:reviewer", 1),
+		}.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Status != AgentAddressLive || resolved.Agent == nil || resolved.Agent.ID != "copilot:reviewer" {
+			t.Fatalf("resolved = %+v", resolved)
+		}
+	})
+
 	t.Run("nested live", func(t *testing.T) {
 		parent := agentLifecycleEvent(now, "copilot:implement", "", runID, "implement", 1, AgentWaiting, AgentUsage{})
 		parent.Seq = 2

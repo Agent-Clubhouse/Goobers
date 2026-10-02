@@ -253,6 +253,10 @@ type executionJournal interface {
 	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 	AppendBatchIfAbsent(context.Context, []journal.Event, func(journal.Event) string) (int, error)
 	Dir() string
+	Seq() uint64
+	AcceptOperatorMessage(apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error)
+	AcknowledgeOperatorMessage(apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error)
+	CompleteOperatorMessage(apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error)
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)
 	ExportOutbox(stage string, attempt int, class journal.AttemptClass, files []journal.OutboxFile) ([]journal.Ref, error)
@@ -5311,10 +5315,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		if err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
-		agentInvocation = &gooberInvocation{
-			Goober:                 ag,
-			activateAssetPathGuard: workspace.ActivateAssetPathGuard,
-		}
+		agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, t.Name, attempt, t.Goober)
 		if err := recordContextManifest(jr, env, t.Name, attempt, class); err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("task %q: record context manifest: %w", t.Name, err)
 		}
@@ -6023,16 +6024,14 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			// different agentic gates in the same run may target different
 			// reviewer goobers. gate.Evaluator reads this field fresh on every
 			// Evaluate call, so mutating it here between calls is safe.
-			agentInvocation = &gooberInvocation{
-				Goober:                 ag,
-				activateAssetPathGuard: workspace.ActivateAssetPathGuard,
-			}
+			reviewerAttempt := gateEval.Attempts[g.Name] + 1
+			agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, g.Name, reviewerAttempt, gooberName)
 			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: gateHeartbeatGoober{
 				goober:  agentInvocation,
 				runner:  r,
 				journal: jr,
 				stage:   g.Name,
-				attempt: gateEval.Attempts[g.Name] + 1,
+				attempt: reviewerAttempt,
 			}}
 		}
 	}

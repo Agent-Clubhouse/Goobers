@@ -44,6 +44,7 @@ var ErrDeclaredArtifactPathEscape = errors.New("harness: declared artifact file 
 // stages (GBO-051) — checked at compile time so a signature drift is caught
 // here, not at the runner's wiring site.
 var _ invoke.Goober = (*Executor)(nil)
+var _ invoke.OperatorMessageTarget = (*Executor)(nil)
 
 // SpanRecorder captures a schema-aware within-stage trace span (GBO-020) —
 // satisfied by (*internal/journal.Run).RecordSpanWithSchema without this
@@ -433,6 +434,26 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	}
 	verdict.Evidence = append(verdict.Evidence, out.DiagnosticArtifacts...)
 	return verdict, nil
+}
+
+// OperatorMessageDeliveryModes reports the live delivery modes supported by
+// the selected adapter.
+func (e *Executor) OperatorMessageDeliveryModes() []string {
+	target, ok := e.adapter.(invoke.OperatorMessageTarget)
+	if !ok {
+		return nil
+	}
+	return target.OperatorMessageDeliveryModes()
+}
+
+// DeliverOperatorMessage routes a durable operator message to the selected
+// adapter when it supports live delivery.
+func (e *Executor) DeliverOperatorMessage(ctx context.Context, req invoke.OperatorMessageDeliveryRequest) error {
+	target, ok := e.adapter.(invoke.OperatorMessageTarget)
+	if !ok {
+		return fmt.Errorf("harness: %s does not support operator-message delivery", e.adapter.Name())
+	}
+	return target.DeliverOperatorMessage(ctx, req)
 }
 
 // declaredArtifactFailure classifies an error from liftArtifactFile as a
