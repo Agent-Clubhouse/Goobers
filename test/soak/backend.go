@@ -60,12 +60,8 @@ func initialize(ctx context.Context, binary, root string, p Profile) error {
 }
 
 func installFixtures(root string, p Profile) error {
-	script, err := fixtures.ReadFile("fixtures/churn.sh")
+	fixtureBinary, err := os.Executable()
 	if err != nil {
-		return err
-	}
-	scriptPath := filepath.Join(root, "soak-fixture.sh")
-	if err := os.WriteFile(scriptPath, script, 0o700); err != nil {
 		return err
 	}
 	data, err := fixtures.ReadFile("fixtures/workflow.yaml")
@@ -87,7 +83,7 @@ func installFixtures(root string, p Profile) error {
 		if name == "soak-failure" {
 			mode = "failure"
 		}
-		workflow.Spec.Tasks[0].Run.Command = []string{"sh", scriptPath, mode}
+		workflow.Spec.Tasks[0].Run.Command = []string{fixtureBinary, "fixture", mode}
 		data, err := yaml.Marshal(workflow)
 		if err != nil {
 			return err

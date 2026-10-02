@@ -23,6 +23,9 @@ func main() {
 }
 
 func runMain(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "fixture" {
+		return runFixture(ctx, args[1:], stderr)
+	}
 	fs := flag.NewFlagSet("soak", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	name := fs.String("profile", "standard", "versioned preset: smoke, standard, hostile")

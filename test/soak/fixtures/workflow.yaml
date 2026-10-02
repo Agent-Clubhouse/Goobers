@@ -21,4 +21,4 @@ spec:
       run:
         network: none
         workspace: scratch
-        command: [sh, fixture.sh, success]
+        command: [soak, fixture, success]

@@ -2,7 +2,7 @@
 
 This is the driver delivered by #1479. It runs the real `goobers init --demo`,
 `goobers up`, and `goobers run --force --no-wait` commands. It replaces the demo
-workflow with the embedded offline fixture, which creates temporary files, opens
+workflow with the offline native Go fixture subcommand, which creates temporary files, opens
 file descriptors in subprocesses, commits a small local git repository, and
 cleans up. Every tenth submission deliberately fails with the exact structured
 `soak_fixture_failure` code/message. No provider writes or model calls are used.
@@ -11,7 +11,7 @@ The **environment supervisor remains #1480**. This command does not launch Docke
 apply resource flags, verify block-device throttling, attribute host OOMs, collect
 SIGQUIT dumps, or package evidence. The supervisor must provision one exclusive
 container on native Linux with the selected profile's CPU, memory and disk limits,
-install `goobers`, `git`, `sh`, and `stress-ng`, and permit the existing
+install `goobers`, `soak`, `git`, and `stress-ng`, and permit the existing
 `run.network: none` isolation mechanism. It must collect evidence before teardown
 and override an inner verdict with `invalid/host-oom-killed` when host evidence
 shows the observer or workload was killed. An inner pass alone does not attest
@@ -29,6 +29,13 @@ Inside the provisioned native Linux container:
 ```sh
 ./soak --profile smoke --goobers /opt/goobers --root /evidence/new-instance > /evidence/result.json
 ```
+
+Workflow commands invoke the running driver's executable as `soak fixture success`
+or `soak fixture failure`; no shell script or runtime Go build is used. Keep that
+binary available through drain. The fixture uses a 50-second internal deadline,
+context-bound git subprocesses, and a temporary repository inside the disposable
+stage workspace. It removes the repository before returning, ignores ambient git
+configuration, and holds a three-second overlap window before writing its result.
 
 The root must not exist. The driver retains it on every outcome. It refuses native
 macOS/Windows, missing Docker markers, recognized Docker Desktop/WSL kernels, and
