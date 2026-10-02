@@ -110,11 +110,11 @@ func (h *httpHandler) transform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxHTTPBodyBytes))
+	defer clear(body)
 	if err != nil {
 		http.Error(w, "invalid or oversized codec request", http.StatusBadRequest)
 		return
 	}
-	defer clear(body)
 	var payloads commonpb.Payloads
 	if err := protojson.Unmarshal(body, &payloads); err != nil {
 		http.Error(w, "invalid codec request", http.StatusBadRequest)
@@ -130,11 +130,11 @@ func (h *httpHandler) transform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response, err := protojson.Marshal(&payloads)
+	defer clear(response)
 	if err != nil || len(response) > MaxHTTPBodyBytes {
 		http.Error(w, "codec operation failed", http.StatusBadRequest)
 		return
 	}
-	defer clear(response)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(response)
 }
