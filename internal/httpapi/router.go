@@ -430,10 +430,7 @@ func RequireRoles() Authorizer {
 			return errors.New("only an authenticated worker may report config divergence")
 		}
 		if principal.Issuer == ControllerJournalPrincipalIssuer {
-			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
-				return nil
-			}
-			return errors.New("controller journal capability is confined to journal emission")
+			return authorizeControllerJournal(request)
 		}
 		if handled, err := authorizeLaunchReceipt(request, principal); handled {
 			return err

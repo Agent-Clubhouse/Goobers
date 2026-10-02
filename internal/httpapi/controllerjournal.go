@@ -48,3 +48,10 @@ func emitJournalWithAuthority(request *http.Request, input livejournal.EmitReque
 	}
 	return controller.EmitController(request.Context(), input)
 }
+
+func authorizeControllerJournal(request *http.Request) error {
+	if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
+		return nil
+	}
+	return errors.New("controller journal capability is confined to journal emission")
+}

@@ -4,15 +4,20 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 )
 
 const dispatchAttemptClassChange = "dispatch-attempt-class-v1"
 
-// Preserve the activity payload of histories recorded before pod artifact
-// lineage was carried across dispatch. New histories carry the retry driver's
-// class; the version marker prevents replay from changing a scheduled payload.
-func dispatchAttemptClass(ctx workflow.Context, class journal.AttemptClass) journal.AttemptClass {
-	if workflow.GetVersion(ctx, dispatchAttemptClassChange, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
+// Preserve historical nil-binding payloads and their workflow-wide marker.
+// A newly versioned per-start binding instead carries the durable start's class,
+// including a retry scheduled after a legacy workflow resumes on new code.
+func dispatchAttemptClass(ctx workflow.Context, class journal.AttemptClass, binding *launchreceipt.Binding) journal.AttemptClass {
+	version := workflow.GetVersion(ctx, dispatchAttemptClassChange, workflow.DefaultVersion, 1)
+	if binding != nil {
+		return binding.Class
+	}
+	if version == workflow.DefaultVersion {
 		return ""
 	}
 	return class

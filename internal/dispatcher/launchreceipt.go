@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -90,4 +91,14 @@ func preparedSeccomp(p *corev1.SeccompProfile) string {
 	default:
 		return "unknown"
 	}
+}
+
+func (d *Dispatcher) createPreparedPod(ctx context.Context, attempt Attempt, pod *corev1.Pod) error {
+	if err := d.recordPreparedLaunch(ctx, attempt, pod); err != nil {
+		return fmt.Errorf("dispatcher: persist prepared launch: %w", err)
+	}
+	if err := d.pods.CreatePod(ctx, pod); err != nil {
+		return fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	}
+	return nil
 }

@@ -901,11 +901,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
 
-	if err := d.recordPreparedLaunch(ctx, attempt, pod); err != nil {
-		return report, fmt.Errorf("dispatcher: persist prepared launch: %w", err)
-	}
-	if err := d.pods.CreatePod(ctx, pod); err != nil {
-		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	if err := d.createPreparedPod(ctx, attempt, pod); err != nil {
+		return report, err
 	}
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()
