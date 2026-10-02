@@ -125,6 +125,25 @@ func TestRunDeclaredStageTimeoutIsAFailure(t *testing.T) {
 	}
 }
 
+func TestDispatchRecoveryCustodyTimeoutUsesStampedValueAndDefault(t *testing.T) {
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "")
+	if got := dispatchRecoveryCustodyTimeout(); got != dispatcher.DefaultRecoveryCustodyTimeout {
+		t.Fatalf("unset recovery custody timeout = %s, want %s", got, dispatcher.DefaultRecoveryCustodyTimeout)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "27m")
+	if got := dispatchRecoveryCustodyTimeout(); got != 27*time.Minute {
+		t.Fatalf("configured recovery custody timeout = %s, want 27m", got)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "90s")
+	if got := dispatchRecoveryCustodyTimeout(); got != 90*time.Second {
+		t.Fatalf("explicit 90s recovery custody timeout = %s, want 90s", got)
+	}
+	t.Setenv(dispatcher.EnvRecoveryCustodyTimeout, "not-a-duration")
+	if got := dispatchRecoveryCustodyTimeout(); got != dispatcher.DefaultRecoveryCustodyTimeout {
+		t.Fatalf("malformed recovery custody timeout = %s, want default %s", got, dispatcher.DefaultRecoveryCustodyTimeout)
+	}
+}
+
 // A malformed GOOBERS_STAGE_COMMAND payload (a version-skewed dispatcher, a
 // corrupted env var) fails the STAGE, not the wrapper — dispatch-exec still
 // has a well-formed envelope to surrender.

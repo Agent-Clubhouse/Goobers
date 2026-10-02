@@ -45,6 +45,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		func() error { return c.Webhook.validateSecret(stores) },
 		c.validateTimezone,
 		c.Runner.validateDefaultStageTimeout,
+		c.Runner.validateRecoveryCustodyTimeout,
 		c.Runner.validateStageMemoryLimit,
 		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
 		c.validateExternalTelemetry,
@@ -200,6 +201,11 @@ func (c *Config) validateTimezone() error {
 
 func (c RunnerConfig) validateDefaultStageTimeout() error {
 	_, err := c.DefaultStageTimeoutDuration()
+	return err
+}
+
+func (c RunnerConfig) validateRecoveryCustodyTimeout() error {
+	_, err := c.RecoveryCustodyTimeoutDuration()
 	return err
 }
 

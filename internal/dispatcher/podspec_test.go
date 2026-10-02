@@ -523,14 +523,15 @@ func TestRenderPodEnvContract(t *testing.T) {
 		env[e.Name] = e.Value
 	}
 	for name, want := range map[string]string{
-		EnvRunID:        "run-2026-08-22-0001",
-		EnvInstanceID:   attempt.InstanceID,
-		EnvStage:        "build",
-		EnvAttempt:      "1",
-		EnvBlobEndpoint: "http://goobers-api.goobers-system:7777",
-		EnvDaemonAPI:    "http://goobers-api.goobers-system:7777",
-		EnvPodToken:     "goobers-pod.tok",
-		EnvStageTimeout: DefaultStageTimeout.String(),
+		EnvRunID:                  "run-2026-08-22-0001",
+		EnvInstanceID:             attempt.InstanceID,
+		EnvStage:                  "build",
+		EnvAttempt:                "1",
+		EnvBlobEndpoint:           "http://goobers-api.goobers-system:7777",
+		EnvDaemonAPI:              "http://goobers-api.goobers-system:7777",
+		EnvPodToken:               "goobers-pod.tok",
+		EnvStageTimeout:           DefaultStageTimeout.String(),
+		EnvRecoveryCustodyTimeout: DefaultRecoveryCustodyTimeout.String(),
 	} {
 		if env[name] != want {
 			t.Errorf("env %s = %q, want %q", name, env[name], want)
@@ -541,6 +542,22 @@ func TestRenderPodEnvContract(t *testing.T) {
 	}
 	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Errorf("restartPolicy = %q, want Never (one attempt per pod)", pod.Spec.RestartPolicy)
+	}
+}
+
+func TestRenderPodEnvContractCarriesConfiguredRecoveryCustodyTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.RecoveryCustodyTimeout = 17 * time.Minute
+	pod, err := RenderPod(cfg, testAttempt(), linuxRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	env := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if got := env[EnvRecoveryCustodyTimeout]; got != "17m0s" {
+		t.Fatalf("env %s = %q, want 17m0s", EnvRecoveryCustodyTimeout, got)
 	}
 }
 
