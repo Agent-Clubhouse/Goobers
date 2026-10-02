@@ -493,17 +493,21 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 // repo backing this gaggle's project, resolved so its configured token can
 // authenticate mirror clone/fetch (#667).
 func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	return repoForGaggleProvider(cfg, project, apiv1.ProviderGitHub, string(providers.ProviderGitHub))
+}
+
+func repoForGaggleProvider(cfg *instance.Config, project apiv1.RepoRef, apiProvider apiv1.Provider, instanceProvider string) (instance.RepoRef, bool) {
 	if cfg == nil {
 		return instance.RepoRef{}, false
 	}
-	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "github" {
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == instanceProvider {
 		return cfg.Repos[0], true
 	}
-	if project.Provider != apiv1.ProviderGitHub {
+	if project.Provider != apiProvider {
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == instanceProvider && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -579,21 +583,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 // project repo, mirroring githubRepoForGaggle. A single-repo instance with an
 // unspecified project provider resolves to its sole Gitea repo.
 func giteaRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
-	if cfg == nil {
-		return instance.RepoRef{}, false
-	}
-	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "gitea" {
-		return cfg.Repos[0], true
-	}
-	if project.Provider != apiv1.ProviderGitea {
-		return instance.RepoRef{}, false
-	}
-	for _, repo := range cfg.Repos {
-		if repo.Provider == string(providers.ProviderGitea) && repo.Owner == project.Owner && repo.Name == project.Name {
-			return repo, true
-		}
-	}
-	return instance.RepoRef{}, false
+	return repoForGaggleProvider(cfg, project, apiv1.ProviderGitea, string(providers.ProviderGitea))
 }
 
 // giteaWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
