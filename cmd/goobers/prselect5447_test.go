@@ -13,22 +13,31 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T) {
-	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, false, false)
+	testPRSelectBranchOccupancy(t, false, "active", "live", true)
 }
 
 func TestPRSelectDefersBranchOwnedInPinnedWorkspace(t *testing.T) {
-	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, true, false)
+	testPRSelectBranchOccupancy(t, true, "active", "live", true)
 }
 
-func TestPRSelectDefersBranchWithCleanupPending(t *testing.T) {
-	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, false, true)
+func TestPRSelectSelectsBranchWithCleanupPending(t *testing.T) {
+	testPRSelectBranchOccupancy(t, false, "cleanup-pending", "live", false)
 }
 
-func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned, cleanupPending bool) {
+func TestPRSelectSelectsBranchKeptForDebugging(t *testing.T) {
+	testPRSelectBranchOccupancy(t, false, "kept", "live", false)
+}
+
+func TestPRSelectSelectsStaleActiveBranchFromSettledRun(t *testing.T) {
+	testPRSelectBranchOccupancy(t, false, "active", "terminal", false)
+}
+
+func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, ownerState string, wantDeferred bool) {
 	t.Helper()
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -73,12 +82,16 @@ func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cleanupPending {
+	switch occupancyStatus {
+	case "cleanup-pending":
 		if err := manager.SetCleanupGuard("blocked", func(context.Context, worktree.CleanupTarget) error {
 			return errors.New("handoff blocked")
 		}); err != nil {
 			t.Fatal(err)
 		}
+	case "active", "kept":
+	default:
+		t.Fatalf("unknown occupancy status %q", occupancyStatus)
 	}
 	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
 		RepoURL: repo, RunID: "implementation-stage", OwnerRunID: "implementation-run",
@@ -88,10 +101,34 @@ func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(context.Background(), worktree.RemoveOptions{}) })
-	if cleanupPending {
+	switch occupancyStatus {
+	case "cleanup-pending":
 		if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); !errors.Is(err, worktree.ErrCleanupDeferred) {
 			t.Fatalf("Remove error = %v, want deferred cleanup", err)
 		}
+	case "kept":
+		if err := wt.Remove(context.Background(), worktree.RemoveOptions{Keep: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "implementation-run", Workflow: "implementation",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ownerState == "terminal" {
+		if err := run.Append(journal.Event{
+			Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	} else if ownerState != "live" {
+		t.Fatalf("unknown owner state %q", ownerState)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
@@ -103,14 +140,24 @@ func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned, 
 	if code != 0 {
 		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, exclusionBranchOccupied) || !strings.Contains(stdout, "implementation-run") {
-		t.Fatalf("stdout = %q, want live branch owner exclusion", stdout)
-	}
 	data, err := os.ReadFile(filepath.Join(workDir, "selected-pr.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"noWork":true`) || !strings.Contains(string(data), exclusionBranchOccupied) {
-		t.Fatalf("result = %s, want no-work with branch occupancy evidence", data)
+	if wantDeferred {
+		if !strings.Contains(stdout, exclusionBranchOccupied) || !strings.Contains(stdout, "implementation-run") {
+			t.Fatalf("stdout = %q, want live branch owner exclusion", stdout)
+		}
+		if !strings.Contains(string(data), `"noWork":true`) || !strings.Contains(string(data), exclusionBranchOccupied) {
+			t.Fatalf("result = %s, want no-work with branch occupancy evidence", data)
+		}
+		return
+	}
+	var selected map[string]string
+	if err := decodePRSelectionTestResult(data, &selected); err != nil {
+		t.Fatalf("unmarshal selected-pr.json: %v", err)
+	}
+	if selected["number"] != "5447" {
+		t.Fatalf("selected PR = %q, want non-live occupied PR #5447", selected["number"])
 	}
 }
