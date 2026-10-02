@@ -526,7 +526,7 @@ func (c *Client) Flush(ctx context.Context) error {
 				return fmt.Errorf("flush telemetry traces: %w", err)
 			}
 		} else if c.exporterHealth != nil && c.exporterHealth.TraceExporterInstalled() {
-			c.exporterHealth.RecordTraceSuccess()
+			c.exporterHealth.recordTraceProviderSuccess()
 		}
 	}
 	// Metric export is strictly best-effort: unlike traces it has no local
@@ -536,7 +536,7 @@ func (c *Client) Flush(ctx context.Context) error {
 	// handler; it must never fail the caller's work.
 	if c.meterProvider != nil {
 		if err := c.meterProvider.ForceFlush(ctx); err == nil && c.exporterHealth != nil && c.exporterHealth.MetricExporterInstalled() {
-			c.exporterHealth.RecordMetricSuccess()
+			c.exporterHealth.recordMetricProviderSuccess()
 		}
 	}
 	if c.journalLogs != nil {
@@ -581,7 +581,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
 			}
 		} else if c.exporterHealth != nil && c.exporterHealth.TraceExporterInstalled() {
-			c.exporterHealth.RecordTraceSuccess()
+			c.exporterHealth.recordTraceProviderSuccess()
 		}
 	}
 	if c.journalLogs != nil {
@@ -604,7 +604,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 			metricCtx, cancel = context.WithTimeout(context.Background(), time.Second)
 		}
 		if err := c.meterProvider.Shutdown(metricCtx); err == nil && c.exporterHealth != nil && c.exporterHealth.MetricExporterInstalled() {
-			c.exporterHealth.RecordMetricSuccess()
+			c.exporterHealth.recordMetricProviderSuccess()
 		}
 		cancel()
 	}
@@ -635,7 +635,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		}
 		var remote sdktrace.SpanExporter = azure
 		if cfg.ExporterHealth != nil {
-			cfg.ExporterHealth.ConfigureTrace()
+			cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterAzureMonitor)
 			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
 		}
 		return append(exporters, remote), nil
@@ -647,7 +647,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		}
 		var remote sdktrace.SpanExporter = azure
 		if cfg.ExporterHealth != nil {
-			cfg.ExporterHealth.ConfigureTrace()
+			cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterAzureMonitor)
 			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
 		}
 		return append(exporters, remote), nil
@@ -714,7 +714,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	}
 	exporters = append(exporters, exporter)
 	if cfg.ExporterHealth != nil && cfg.Exporter == ExporterOTLP {
-		cfg.ExporterHealth.ConfigureTrace()
+		cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterOTLP)
 		exporters[len(exporters)-1] = observedSpanExporter{next: exporters[len(exporters)-1], health: cfg.ExporterHealth, exporter: exporterHealthExporterOTLP}
 	}
 	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
@@ -724,7 +724,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		}
 		var remote sdktrace.SpanExporter = azure
 		if cfg.ExporterHealth != nil {
-			cfg.ExporterHealth.ConfigureTrace()
+			cfg.ExporterHealth.configureTraceExporter(exporterHealthExporterAzureMonitor)
 			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
 		}
 		exporters = append(exporters, remote)

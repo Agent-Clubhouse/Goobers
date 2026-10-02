@@ -62,6 +62,7 @@ type ExporterSignalStatus struct {
 type exporterSignalHealth struct {
 	configured              bool
 	exporterInstalled       bool
+	installedExporters      map[string]struct{}
 	unhealthy               bool
 	failingExporters        map[string]string
 	lastSuccessAt           time.Time
@@ -128,25 +129,40 @@ func DisabledExporterHealthSnapshot() ExporterHealthSnapshot {
 // ConfigureTrace marks the trace exporter as configured for later provider
 // flush/shutdown observations.
 func (h *ExporterHealth) ConfigureTrace() {
+	h.configureTraceExporter(exporterHealthExporterDefault)
+}
+
+func (h *ExporterHealth) configureTraceExporter(exporter string) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	h.trace.configured = true
-	h.trace.exporterInstalled = true
+	h.configureExporterLocked(&h.trace, exporter)
 	h.mu.Unlock()
 }
 
 // ConfigureMetric marks the metric exporter as configured for later provider
 // flush/shutdown observations.
 func (h *ExporterHealth) ConfigureMetric() {
+	h.configureMetricExporter(exporterHealthExporterDefault)
+}
+
+func (h *ExporterHealth) configureMetricExporter(exporter string) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	h.metric.configured = true
-	h.metric.exporterInstalled = true
+	h.configureExporterLocked(&h.metric, exporter)
 	h.mu.Unlock()
+}
+
+func (h *ExporterHealth) configureExporterLocked(signal *exporterSignalHealth, exporter string) {
+	signal.configured = true
+	signal.exporterInstalled = true
+	if signal.installedExporters == nil {
+		signal.installedExporters = make(map[string]struct{})
+	}
+	signal.installedExporters[boundedExporterHealthExporter(exporter)] = struct{}{}
 }
 
 // TraceExporterInstalled reports whether a remote trace exporter was installed.
@@ -193,8 +209,16 @@ func (h *ExporterHealth) recordTraceExporterSuccess(exporter string) {
 	h.recordSuccess("trace", &h.trace, exporter)
 }
 
+func (h *ExporterHealth) recordTraceProviderSuccess() {
+	h.recordInstalledExportersSuccess("trace", &h.trace)
+}
+
 func (h *ExporterHealth) recordMetricExporterSuccess(exporter string) {
 	h.recordSuccess("metric", &h.metric, exporter)
+}
+
+func (h *ExporterHealth) recordMetricProviderSuccess() {
+	h.recordInstalledExportersSuccess("metric", &h.metric)
 }
 
 func (h *ExporterHealth) recordTraceExporterFailure(exporter string, err error) {
@@ -203,6 +227,32 @@ func (h *ExporterHealth) recordTraceExporterFailure(exporter string, err error) 
 
 func (h *ExporterHealth) recordMetricExporterFailure(exporter string, err error) {
 	h.recordFailure("metric", &h.metric, exporter, err)
+}
+
+func (h *ExporterHealth) recordInstalledExportersSuccess(signalName string, signal *exporterSignalHealth) {
+	if h == nil {
+		return
+	}
+	exporters := h.installedExporters(signal)
+	for _, exporter := range exporters {
+		h.recordSuccess(signalName, signal, exporter)
+	}
+}
+
+func (h *ExporterHealth) installedExporters(signal *exporterSignalHealth) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(signal.installedExporters) == 0 {
+		if !signal.exporterInstalled {
+			return nil
+		}
+		return []string{exporterHealthExporterDefault}
+	}
+	exporters := make([]string, 0, len(signal.installedExporters))
+	for exporter := range signal.installedExporters {
+		exporters = append(exporters, exporter)
+	}
+	return exporters
 }
 
 func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignalHealth, exporter string) {

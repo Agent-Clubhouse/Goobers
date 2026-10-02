@@ -575,7 +575,7 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 	}
 	var observed metric.Exporter = exporter
 	if cfg.ExporterHealth != nil {
-		cfg.ExporterHealth.ConfigureMetric()
+		cfg.ExporterHealth.configureMetricExporter(exporterHealthExporterOTLP)
 		observed = observedMetricExporter{next: observed, health: cfg.ExporterHealth, exporter: exporterHealthExporterOTLP}
 	}
 	return observed, nil

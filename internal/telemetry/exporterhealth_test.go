@@ -234,6 +234,41 @@ func TestClientFlushDoesNotClearStartupDegradeWithoutRemoteExporter(t *testing.T
 	}
 }
 
+func TestClientFlushProviderSuccessRecoversInstalledExporterFailures(t *testing.T) {
+	health := NewExporterHealth(true, "custom", "collector.example.com:4317")
+	health.configureTraceExporter(exporterHealthExporterOTLP)
+	health.configureTraceExporter(exporterHealthExporterAzureMonitor)
+	health.recordTraceExporterFailure(exporterHealthExporterOTLP, context.DeadlineExceeded)
+	health.recordTraceExporterFailure(exporterHealthExporterAzureMonitor, errors.New("azure monitor unavailable"))
+	client := &Client{tracerProvider: sdktrace.NewTracerProvider(), exporterHealth: health}
+
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := health.Snapshot().Trace
+	if got.State != "healthy" || got.RecoveryTransitions != 1 || got.ConsecutiveFailures != 0 || got.LastSuccessAt == nil {
+		t.Fatalf("provider ForceFlush did not recover installed exporter failures: %+v", got)
+	}
+}
+
+func TestClientFlushProviderSuccessPreservesUncoveredSiblingFailure(t *testing.T) {
+	health := NewExporterHealth(true, "custom", "collector.example.com:4317")
+	health.configureTraceExporter(exporterHealthExporterOTLP)
+	health.recordTraceExporterFailure(exporterHealthExporterOTLP, context.DeadlineExceeded)
+	health.recordTraceExporterFailure(exporterHealthExporterAzureMonitor, errors.New("azure monitor unavailable"))
+	client := &Client{tracerProvider: sdktrace.NewTracerProvider(), exporterHealth: health}
+
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := health.Snapshot().Trace
+	if got.State != "unhealthy" || got.RecoveryTransitions != 0 || got.ConsecutiveFailures != 2 {
+		t.Fatalf("provider ForceFlush masked uncovered sibling failure: %+v", got)
+	}
+}
+
 func TestClientFlushFailedTraceExportIncrementsOnce(t *testing.T) {
 	health := NewExporterHealth(true, string(ExporterOTLP), "127.0.0.1:4317")
 	health.ConfigureTrace()
