@@ -40,6 +40,9 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"refs\") fetches the remote tip, rebases the local branch onto it, and\n" +
 	"retries up to 2 more times before failing, so a fully-validated diff is\n" +
 	"not discarded because a concurrent writer advanced the branch (#3366).\n" +
+	"A push the remote refuses outright (an ADO branch policy, or a GitHub\n" +
+	"App lacking the `workflows` permission for a .github/workflows change)\n" +
+	"fails immediately without retrying.\n" +
 	"[path] defaults to the current directory (the stage's worktree).\n" +
 	"Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.\n"
 
@@ -133,14 +136,15 @@ func pushBranchWithRetry(dir, branch string, auth pushBranchAuthEnv, stderr io.W
 		if err == nil {
 			return nil
 		}
-		// Checked ahead of isPushRaceError: a policy-protected rejection also
-		// prints "failed to push some refs" (git's own generic trailer for
-		// ANY rejected update), which isPushRaceError alone would misread as
-		// a ref race worth a fetch-rebase-retry. Rebasing onto the same
-		// protected branch and pushing again hits the identical policy, so
-		// this returns immediately instead of spending the retry budget.
-		var policyErr *policyProtectedPushError
-		if errors.As(err, &policyErr) {
+		// Checked ahead of isPushRaceError: a policy-protected or
+		// workflow-permission rejection also prints "failed to push some
+		// refs" (git's own generic trailer for ANY rejected update), which
+		// isPushRaceError alone would misread as a ref race worth a
+		// fetch-rebase-retry. Rebasing and pushing again hits the identical
+		// refusal, so this returns immediately instead of spending the retry
+		// budget (and, for a never-created branch, failing the rebase with a
+		// "couldn't find remote ref" that buries the real cause, #5502).
+		if isTerminalPushRejection(err) {
 			return err
 		}
 		if attempt >= pushRaceAttempts || !isPushRaceError(err) {
@@ -501,14 +505,73 @@ func gitPushBranch(dir, branch string, env []string) error {
 	cmd.Env = composeGitEnv(dir, env)
 	out, err := workspaceGitCombinedOutput(cmd)
 	if err != nil {
-		wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-		if isADOPolicyProtectedPush(string(out)) {
-			return &policyProtectedPushError{branch: branch, err: wrapped}
-		}
-		return wrapped
+		return classifyRejectedPush(branch, string(out), err)
 	}
 	return nil
 }
+
+// classifyRejectedPush wraps a failed push's error with git's combined output
+// and, when that output names a refusal no retry can clear, types it so
+// callers stop instead of treating it as a ref race or a credential problem.
+// Shared by gitPushBranch and forcePushWithLeaseWithAuth.
+func classifyRejectedPush(branch, output string, err error) error {
+	wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
+	if isADOPolicyProtectedPush(output) {
+		return &policyProtectedPushError{branch: branch, err: wrapped}
+	}
+	if isGitHubWorkflowPermissionPush(output) {
+		return &workflowPermissionPushError{branch: branch, err: wrapped}
+	}
+	return wrapped
+}
+
+// isTerminalPushRejection reports whether err is a typed push refusal that
+// retrying — as a ref race or with a fresh credential — can never clear.
+func isTerminalPushRejection(err error) bool {
+	var policyErr *policyProtectedPushError
+	var workflowErr *workflowPermissionPushError
+	return errors.As(err, &policyErr) || errors.As(err, &workflowErr)
+}
+
+// githubWorkflowPermissionMarker is the stable prefix (lower-cased) of
+// GitHub's refusal of a push, by a GitHub App installation, that creates or
+// updates a file under .github/workflows/ without the App's `workflows`
+// permission:
+//
+//	! [remote rejected] <ref> -> <ref> (refusing to allow a GitHub App to
+//	create or update workflow `.github/workflows/ci.yml` without `workflows`
+//	permission)
+//
+// The parenthetical can reach a log truncated ("workflow `.github/wo..."),
+// so only the prefix is matched.
+const githubWorkflowPermissionMarker = "refusing to allow a github app to create or update workflow"
+
+// isGitHubWorkflowPermissionPush reports whether output — git's combined
+// stdout+stderr from a rejected push — is GitHub's refusal of a
+// workflow-file change by an App installation lacking the `workflows`
+// permission (#5502). Like TF402455 it carries git's generic "failed to push
+// some refs" trailer, so it is checked ahead of isPushRaceError.
+func isGitHubWorkflowPermissionPush(output string) bool {
+	return strings.Contains(strings.ToLower(output), githubWorkflowPermissionMarker)
+}
+
+// workflowPermissionPushError reports that GitHub refused a push because the
+// diff touches .github/workflows/ and the pushing GitHub App installation
+// lacks the `workflows` permission. The diff is fine and the branch did not
+// race: no retry can succeed until the installation is granted the
+// permission, so its message leads with that remedy rather than the raw git
+// rejection alone. classifyProviderError maps it to a distinct non-retryable
+// code.
+type workflowPermissionPushError struct {
+	branch string
+	err    error
+}
+
+func (e *workflowPermissionPushError) Error() string {
+	return fmt.Sprintf("push of branch %q was refused because it creates or updates a file under .github/workflows/ and the GitHub App installation lacks the `workflows` permission; grant the App installation the Workflows (read and write) permission, or push this change manually (retrying cannot succeed): %v", e.branch, e.err)
+}
+
+func (e *workflowPermissionPushError) Unwrap() error { return e.err }
 
 // isADOPolicyProtectedPush reports whether output — git's combined
 // stdout+stderr from a rejected push — carries the markers ADO's Git provider
