@@ -99,8 +99,9 @@ func TestGatherSiblingContextParksOversizedPR(t *testing.T) {
 
 // TestMergeReviewReevaluatesScopeGateAck is #1813's regression: an operator
 // ack must make a scope-gated PR selectable despite its stale remediation
-// label, then clear the gate and invalidate the pre-ack verdict without a
-// head/base change.
+// label and invalidate the pre-ack verdict without a head/base change. #1869
+// extends it: the PR stays selectable if the run dies after gather, and the
+// gate clears only once apply-verdict publishes the replacement verdict.
 func TestMergeReviewReevaluatesScopeGateAck(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -183,11 +184,92 @@ func TestMergeReviewReevaluatesScopeGateAck(t *testing.T) {
 	if released.ReviewDigest == preAckDigest || released.CachedVerdictJSON != "" {
 		t.Fatalf("post-ack result = %+v, want a new digest and no pre-ack cached verdict", released)
 	}
-	if issueHasLabel(server, 30, scopeGateLabel) {
-		t.Fatalf("%s still applied after operator ack", scopeGateLabel)
+	// #1869: the ack-driven clear is deferred to apply-verdict. Clearing here
+	// would remove one of the two labels pr-select's needs-remediation bypass
+	// requires, stranding the PR if the run died before a fresh verdict.
+	if !issueHasLabel(server, 30, scopeGateLabel) {
+		t.Fatalf("%s cleared by gather-sibling-context before a replacement verdict published", scopeGateLabel)
 	}
 	if !issueHasLabel(server, 30, needsRemediationLabel) {
 		t.Fatalf("%s was cleared before a fresh verdict replaced it", needsRemediationLabel)
+	}
+
+	// The run dies here (review or apply-verdict exhausts retries): the next
+	// cycle must still select the PR at an unchanged head/base.
+	retryDir := t.TempDir()
+	t.Chdir(retryDir)
+	if code, stdout, stderr := runArgs(t, "pr-select", root); code != 0 {
+		t.Fatalf("retry pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	retryData, err := os.ReadFile(filepath.Join(retryDir, "selected-pr.json"))
+	if err != nil {
+		t.Fatalf("read retry selected-pr.json: %v", err)
+	}
+	var retrySelected map[string]string
+	if err := decodePRSelectionTestResult(retryData, &retrySelected); err != nil {
+		t.Fatalf("unmarshal retry selected-pr.json: %v", err)
+	}
+	if retrySelected["number"] != "30" {
+		t.Fatalf("retry selected PR = %#v, want acknowledged PR #30 still selectable after a run died post-gather", retrySelected)
+	}
+
+	// Once a replacement verdict is durable, apply-verdict performs the clear.
+	t.Setenv("GOOBERS_CRED_GITHUB_PR_REVIEW", "review-token")
+	t.Setenv("GOOBERS_INPUT_SCOPEGATEPARKED", released.ScopeGateParked)
+	t.Setenv("GOOBERS_INPUT_REVIEWDIGEST", released.ReviewDigest)
+	seedGateVerdictJournal(t, root, "run-1813", apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		Summary:  "acknowledged oversized PR is clean",
+		HeadSHA:  headSHA,
+		BaseSHA:  baseSHA,
+	})
+	t.Chdir(t.TempDir())
+	if code, stdout, stderr := runArgs(t, "apply-verdict", root); code != 0 {
+		t.Fatalf("apply-verdict: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if issueHasLabel(server, 30, scopeGateLabel) {
+		t.Fatalf("%s still applied after apply-verdict published the post-ack verdict", scopeGateLabel)
+	}
+	if !issueHasLabel(server, 30, scopeGateAckLabel) {
+		t.Fatalf("%s removed; the operator ack is persistent", scopeGateAckLabel)
+	}
+}
+
+// TestReleaseAcknowledgedScopeGate pins #1869's deferred clear: only a PR
+// carrying both scope-gate labels whose verdict was published unparked is
+// released.
+func TestReleaseAcknowledgedScopeGate(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	both := []string{scopeGateLabel, scopeGateAckLabel}
+	for _, tc := range []struct {
+		name   string
+		labels []string
+		parked bool
+		want   bool
+	}{
+		{name: "acked and published unparked", labels: both, want: true},
+		{name: "parked when the verdict published", labels: both, parked: true},
+		{name: "gate without ack", labels: []string{scopeGateLabel}},
+		{name: "ack without gate", labels: []string{scopeGateAckLabel}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+			server.addIssue(40, "pr", tc.labels...)
+			released, err := releaseAcknowledgedScopeGate(context.Background(), server.newGitHubProvider("token"), repo, 40, tc.labels, tc.parked)
+			if err != nil {
+				t.Fatalf("releaseAcknowledgedScopeGate: %v", err)
+			}
+			if released != tc.want {
+				t.Fatalf("released = %v, want %v", released, tc.want)
+			}
+			hadGate := hasAnyLabel(tc.labels, []string{scopeGateLabel})
+			if got := issueHasLabel(server, 40, scopeGateLabel); got != (hadGate && !tc.want) {
+				t.Fatalf("%s present = %v, want %v", scopeGateLabel, got, hadGate && !tc.want)
+			}
+			if wantComments := map[bool]int{true: 1, false: 0}[tc.want]; issueCommentCount(server, 40) != wantComments {
+				t.Fatalf("comment count = %d, want %d", issueCommentCount(server, 40), wantComments)
+			}
+		})
 	}
 }
 
@@ -347,20 +429,23 @@ func TestReconcileScopeGate(t *testing.T) {
 		}
 	})
 
-	t.Run("operator ack releases it even while still over threshold", func(t *testing.T) {
+	t.Run("operator ack releases it even while still over threshold, clear deferred", func(t *testing.T) {
 		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
-		server.addIssue(14, "acked pr")
+		labels := []string{scopeGateLabel, scopeGateAckLabel}
+		server.addIssue(14, "acked pr", labels...)
 		provider := server.newGitHubProvider("token")
 		parked, changed, err := reconcileScopeGate(context.Background(), provider, repo, 14,
-			[]string{scopeGateLabel, scopeGateAckLabel}, 200, 5000, 50, 2000)
+			labels, 200, 5000, 50, 2000)
 		if err != nil {
 			t.Fatalf("reconcileScopeGate: %v", err)
 		}
 		if parked {
 			t.Fatal("parked = true, want false — an operator ack releases it despite the size")
 		}
-		if !changed {
-			t.Fatal("changed = false, want true — should have cleared the label")
+		// #1869: apply-verdict clears the label after the verdict is durable.
+		if changed || !issueHasLabel(server, 14, scopeGateLabel) {
+			t.Fatalf("changed = %v, label present = %v; want the ack clear deferred to apply-verdict",
+				changed, issueHasLabel(server, 14, scopeGateLabel))
 		}
 	})
 
