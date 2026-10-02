@@ -96,7 +96,7 @@ func TestWaitOrKillHelperProcess(t *testing.T) {
 	if os.Getenv("GOOBERS_WAIT_HELPER") != "1" {
 		return
 	}
-	select {}
+	time.Sleep(time.Hour)
 }
 
 func startWaitHelper(t *testing.T) (*Tree, <-chan error) {
