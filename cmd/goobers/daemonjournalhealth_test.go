@@ -17,6 +17,9 @@ func TestStatusDaemonReportsLiveDroppedAppends(t *testing.T) {
 	const identity = "0123456789abcdef0123456789abcdef"
 	t.Setenv("GOOBERS_API_TOKEN", "status-token")
 	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		if serveNoDaemonReadiness(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet || request.URL.Path != apicontract.InstancePath {
 			t.Errorf("request = %s %s, want GET %s", request.Method, request.URL.Path, apicontract.InstancePath)
 			http.NotFound(w, request)
@@ -51,6 +54,9 @@ func TestStatusDaemonReportsLiveStorageHealth(t *testing.T) {
 	const identity = "0123456789abcdef0123456789abcdef"
 	t.Setenv("GOOBERS_API_TOKEN", "status-token")
 	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		if serveNoDaemonReadiness(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet || request.URL.Path != apicontract.InstancePath {
 			t.Errorf("request = %s %s, want GET %s", request.Method, request.URL.Path, apicontract.InstancePath)
 			http.NotFound(w, request)
@@ -87,6 +93,9 @@ func TestStatusDaemonReportsWarningStorageFloorSource(t *testing.T) {
 	const identity = "0123456789abcdef0123456789abcdef"
 	t.Setenv("GOOBERS_API_TOKEN", "status-token")
 	root, _ := interventionCLIFixture(t, func(w http.ResponseWriter, request *http.Request) {
+		if serveNoDaemonReadiness(w, request) {
+			return
+		}
 		if request.Method != http.MethodGet || request.URL.Path != apicontract.InstancePath {
 			t.Errorf("request = %s %s, want GET %s", request.Method, request.URL.Path, apicontract.InstancePath)
 			http.NotFound(w, request)
@@ -143,4 +152,15 @@ func TestStatusDaemonOmitsHealthyStorageHealth(t *testing.T) {
 	if strings.Contains(stdout, "storage health") {
 		t.Fatalf("status --daemon output = %q, want no storage health line while healthy", stdout)
 	}
+}
+
+// serveNoDaemonReadiness answers the startup-readiness probe that status --daemon
+// issues before its instance read with 404, so fakes that only model the
+// instance endpoint keep their strict request checks.
+func serveNoDaemonReadiness(w http.ResponseWriter, request *http.Request) bool {
+	if request.URL.Path != apicontract.InstanceReadinessPath {
+		return false
+	}
+	http.NotFound(w, request)
+	return true
 }
