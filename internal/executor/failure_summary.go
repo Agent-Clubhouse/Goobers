@@ -33,7 +33,7 @@ const (
 	// The full roster (#5101). Separate from failureArtifact, which stays a
 	// pointer to one byte range in one stream.
 	outputFailureDigest = FailureDigestOutput
-	outputFailureCount  = "failureCount"
+	outputFailureCount  = FailureCountOutput
 )
 
 var (
@@ -157,23 +157,22 @@ func IsFailureLine(line string) bool {
 	return failureLineSpecificity(line) > specificityBuildTrailer
 }
 
-// FailureDigestOutput is the result output a failing shell stage records its
-// FailureDigest under.
-const FailureDigestOutput = "failureDigest"
+// FailureDigestOutput and FailureCountOutput are the result outputs a failing
+// shell stage records its FailureDigest and its count under.
+const (
+	FailureDigestOutput = "failureDigest"
+	FailureCountOutput  = "failureCount"
+)
 
 // FailureDigest is the full failure roster a failing stage records as its
-// failureDigest output, derived exactly as the shell executor derives it. The
+// failureDigest output, and the count of distinct failure lines it records as
+// failureCount, derived exactly as the shell executor derives them. The
 // recorded diagnostic is one window and can omit findings; a baseline
 // comparison (#4477) compares this roster so a finding outside the window
 // cannot pass as identical.
-func FailureDigest(stdout, stderr []byte) string {
-	return strings.Join(summarizeCommandFailure(stdout, stderr).digest, "\n")
-}
-
-// DigestTruncated reports whether a failure digest was cut at its size bound
-// (or carries a context window that was), so part of the roster is unseen.
-func DigestTruncated(digest string) bool {
-	return strings.Contains(digest, failureEvidenceTruncatedMarker)
+func FailureDigest(stdout, stderr []byte) (string, int) {
+	diagnostic := summarizeCommandFailure(stdout, stderr)
+	return strings.Join(diagnostic.digest, "\n"), diagnostic.count
 }
 
 // diagnosticTruncationMarker ends a diagnostic boundDiagnostic cut.

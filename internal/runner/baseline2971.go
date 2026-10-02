@@ -204,6 +204,9 @@ func (r *Runner) classifyBaselineFailure(ctx context.Context, ws *walkState, tas
 	if digest, ok := result.Outputs[executor.FailureDigestOutput].(string); ok {
 		req.FailureDigest = digest
 	}
+	if count, ok := result.Outputs[executor.FailureCountOutput].(float64); ok {
+		req.FailureCount = int(count)
+	}
 	if ws.in.Item != nil {
 		req.Waiter = ws.in.Item.ID
 	}

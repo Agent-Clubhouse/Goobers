@@ -6,9 +6,6 @@ import (
 	"unicode/utf8"
 )
 
-// failureEvidenceTruncatedMarker ends failure evidence cut at its size bound.
-const failureEvidenceTruncatedMarker = "... (failure evidence truncated; see output artifacts)"
-
 var failedCISectionPattern = regexp.MustCompile(`^ci: (.+): exit status \d+$`)
 
 // fallbackFailureEvidence treats wrapper-only recognition as a miss. Prefer
@@ -45,7 +42,7 @@ func fallbackFailureEvidence(stdout, stderr []byte, preferred diagnosticRange) (
 		if useful {
 			context := cleanOutputLine(raw)
 			if anchor > 0 && len(stream.data) > maxFailureDigestBytes || end < len(stream.data) && end-start >= maxFailureDigestBytes-3 {
-				context += "\n" + failureEvidenceTruncatedMarker
+				context += "\n... (failure evidence truncated; see output artifacts)"
 			}
 			contexts = append(contexts, context)
 		}
@@ -114,7 +111,7 @@ func boundFailureDigest(lines []string) []string {
 	if len(text) <= maxFailureDigestBytes {
 		return lines
 	}
-	const marker = "\n" + failureEvidenceTruncatedMarker
+	const marker = "\n... (failure evidence truncated; see output artifacts)"
 	end := maxFailureDigestBytes - len(marker)
 	for end > 0 && !utf8.ValidString(text[:end]) {
 		end--
