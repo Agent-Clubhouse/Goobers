@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
@@ -97,6 +100,40 @@ func TestPodRecoveryNonWritableWorkspaceNeedsNoCustody(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestPodRecoveryPhaseNamesDeadlineAndReportsTiming(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var tracedPhase string
+	var tracedElapsed time.Duration
+	var tracedErr error
+	err := podRecoveryPhase(ctx, func(phase string, elapsed time.Duration, err error) {
+		tracedPhase = phase
+		tracedElapsed = elapsed
+		tracedErr = err
+	}, "inspect workspace", func(context.Context) error {
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "inspect workspace") {
+		t.Fatalf("podRecoveryPhase error = %v, want inspect workspace context cancellation", err)
+	}
+	if tracedPhase != "inspect workspace" || !errors.Is(tracedErr, context.Canceled) {
+		t.Fatalf("trace = (%q, %v), want inspect workspace cancellation", tracedPhase, tracedErr)
+	}
+	if tracedElapsed < 0 {
+		t.Fatalf("trace elapsed = %s, want non-negative", tracedElapsed)
+	}
+}
+
+func TestPodRecoveryPhaseWrapsOperationErrorWithPhase(t *testing.T) {
+	boom := errors.New("boom")
+	err := podRecoveryPhase(t.Context(), nil, "retain archive", func(context.Context) error {
+		return boom
+	})
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "retain archive") {
+		t.Fatalf("podRecoveryPhase error = %v, want retain archive boom", err)
 	}
 }
 

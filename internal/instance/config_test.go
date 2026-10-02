@@ -3679,6 +3679,52 @@ func TestDefaultStageTimeoutDuration(t *testing.T) {
 	}
 }
 
+func TestRecoveryCustodyTimeoutDuration(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset", value: "", want: 0},
+		{name: "duration", value: "10m", want: 10 * time.Minute},
+		{name: "seconds", value: "90s", want: 90 * time.Second},
+		{name: "malformed", value: "ten minutes", wantErr: true},
+		{name: "zero", value: "0s", wantErr: true},
+		{name: "negative", value: "-1m", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := RunnerConfig{RecoveryCustodyTimeout: tc.value}.RecoveryCustodyTimeoutDuration()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("RecoveryCustodyTimeoutDuration(%q) = %s, want an error", tc.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RecoveryCustodyTimeoutDuration(%q): %v", tc.value, err)
+			}
+			if got != tc.want {
+				t.Fatalf("RecoveryCustodyTimeoutDuration(%q) = %s, want %s", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsMalformedRecoveryCustodyTimeout(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Runner: RunnerConfig{RecoveryCustodyTimeout: "ten minutes"}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want an error for a malformed runner.recoveryCustodyTimeout")
+	}
+	if !strings.Contains(err.Error(), "runner.recoveryCustodyTimeout") {
+		t.Fatalf("Validate() error = %q, want it to name runner.recoveryCustodyTimeout", err)
+	}
+}
+
 // A malformed baseline must fail `goobers validate` once, not every run at
 // dispatch — the value is consumed when the deterministic executor is built.
 func TestValidateRejectsMalformedDefaultStageTimeout(t *testing.T) {
