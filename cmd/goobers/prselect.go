@@ -257,7 +257,7 @@ func runPRSelectCore(
 			exclusions.recordPR(pr.Number, exclusionPolicy)
 			continue
 		}
-		if occupancy, occupied := branchOccupancies[pr.Head]; occupied && occupancy.Status == worktree.BranchOccupancyActive {
+		if occupancy, occupied := branchOccupancies[pr.Head]; occupied {
 			pf(stdout, "excluded PR #%d: branch %s is owned by live run %s\n",
 				pr.Number, pr.Head, occupancy.OwnerRunID)
 			exclusions.recordPR(pr.Number, exclusionBranchOccupied)

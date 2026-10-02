@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,14 +17,18 @@ import (
 )
 
 func TestPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T) {
-	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, false)
+	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, false, false)
 }
 
 func TestPRSelectDefersBranchOwnedInPinnedWorkspace(t *testing.T) {
-	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, true)
+	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, true, false)
 }
 
-func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned bool) {
+func TestPRSelectDefersBranchWithCleanupPending(t *testing.T) {
+	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, false, true)
+}
+
+func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned, cleanupPending bool) {
 	t.Helper()
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -68,6 +73,13 @@ func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned b
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cleanupPending {
+		if err := manager.SetCleanupGuard("blocked", func(context.Context, worktree.CleanupTarget) error {
+			return errors.New("handoff blocked")
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	wt, err := manager.Create(context.Background(), worktree.CreateOptions{
 		RepoURL: repo, RunID: "implementation-stage", OwnerRunID: "implementation-run",
 		BaseRef: "main", Branch: branch,
@@ -76,6 +88,11 @@ func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned b
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = wt.Remove(context.Background(), worktree.RemoveOptions{}) })
+	if cleanupPending {
+		if err := wt.Remove(context.Background(), worktree.RemoveOptions{}); !errors.Is(err, worktree.ErrCleanupDeferred) {
+			t.Fatalf("Remove error = %v, want deferred cleanup", err)
+		}
+	}
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
 	workDir := t.TempDir()
