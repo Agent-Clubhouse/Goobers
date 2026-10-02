@@ -116,7 +116,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	l := input.Layout
 	executionFence := runnerExecutionFence(input)
 	cfg, goobers := input.Config, input.Goobers
-	instructionsByGoober := input.InstructionsByGoober
 	skillPackages, skillErr := input.resolvedSkillFiles()
 	if skillErr != nil {
 		return runner.Config{}, nil, skillErr
@@ -246,7 +245,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
-		if _, ok := instructionsByGoober[name]; !ok {
+		if _, ok := input.InstructionsByGoober[name]; !ok {
 			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
 		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
@@ -309,7 +308,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
+				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
