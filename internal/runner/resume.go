@@ -331,6 +331,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
+	ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
 	if res, done, terr := r.resumeTerminalPhase(rd, jr, in); done || terr != nil {
 		return res, terr
 	}

@@ -1101,11 +1101,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
-		ctx = providers.WithAttributionContext(ctx, providers.Attribution{
-			Schema: 1, Goobers: true,
-			Gaggle: in.Gaggle, Workflow: in.Machine.Def.Name,
-			Goober: "runner", Run: in.RunID,
-		})
+		ctx = withRunAttribution(ctx, in.Gaggle, in.Machine.Def.Name, in.RunID)
 		setStalledAttemptContext(ctx)
 
 		// #735: verify the run's declared runtime toolchains are actually present
@@ -2986,6 +2982,18 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 		}
 	}
 	return nil
+}
+
+// withRunAttribution carries the run's durable identity to every daemon-side
+// provider write made on its behalf (#5178). Start, Resume and RerunStage all
+// attach it, so a resumed or rerun run's terminal handling can still satisfy
+// the daemon-write attribution guard.
+func withRunAttribution(ctx context.Context, gaggle, workflow, runID string) context.Context {
+	return providers.WithAttributionContext(ctx, providers.Attribution{
+		Schema: 1, Goobers: true,
+		Gaggle: gaggle, Workflow: workflow,
+		Goober: "runner", Run: runID,
+	})
 }
 
 func withRunnerAttributionTask(ctx context.Context, task string) context.Context {
