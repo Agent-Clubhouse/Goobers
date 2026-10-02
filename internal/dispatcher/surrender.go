@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -193,10 +194,10 @@ func (r SurrenderedResult) Validate() error {
 }
 
 // ReadSurrenderedResult fetches, decodes, and validates one attempt's
-// surrendered result. A document that decodes but does not validate is
-// refused: the engine treats an unreadable surrender as an infrastructure
-// fault and retries the attempt on a fresh pod, which is the right outcome
-// for a garbled or substituted document too.
+// surrendered result. Unavailable, garbled, or structurally invalid documents
+// remain infrastructure faults. A complete document with a malformed revision
+// control preserves its typed semantic error so the engine refuses it without
+// dispatching another pod.
 func ReadSurrenderedResult(ctx context.Context, plane SurrenderPlane, runID, stage string, attempt int) (SurrenderedResult, error) {
 	if plane == nil {
 		return SurrenderedResult{}, fmt.Errorf("dispatcher: no surrender plane configured for run %s stage %s attempt %d", runID, stage, attempt)
@@ -207,6 +208,9 @@ func ReadSurrenderedResult(ctx context.Context, plane SurrenderPlane, runID, sta
 	}
 	var result SurrenderedResult
 	if err := json.Unmarshal(data, &result); err != nil {
+		if revisionErr := workspacerevision.FromError(err); revisionErr != nil {
+			return SurrenderedResult{}, fmt.Errorf("dispatcher: malformed surrendered revision: %w", revisionErr)
+		}
 		return SurrenderedResult{}, fmt.Errorf("dispatcher: decode surrendered result for run %s stage %s attempt %d: %w", runID, stage, attempt, err)
 	}
 	if err := result.Validate(); err != nil {

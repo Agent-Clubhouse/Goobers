@@ -61,6 +61,10 @@
     },
     "item": { "$ref": "#/$defs/backlogItem", "description": "Bounded provider-neutral descriptor of the backlog item that started the run. Omitted when no item triggered the run." },
     "repoRef": { "$ref": "#/$defs/repoRef", "description": "Primary repository targeted by this run." },
+    "workspaceRevision": {
+      "description": "Optional immutable selected-revision authority; absent preserves legacy behavior.",
+      "$ref": "workspace-revision.schema.json"
+    },
     "additionalWorkspaces": {
       "type": "array",
       "description": "Read-only checkouts of the gaggle's reference repos (GaggleSpec.AdditionalRepos, MGV-11 #1286). The stage may read them; no push credential is provisioned, so they are read-only by construction. Surfaced as GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<path>.",
