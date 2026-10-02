@@ -131,7 +131,7 @@ func TestConvertedReadersFailClosedOnAHalfConfiguredPlane(t *testing.T) {
 	if _, err := readRemediationBriefArtifact(root, "seam-run", "gather-ci-failures"); err == nil {
 		t.Error("gather-ci-failures' reader degraded silently")
 	}
-	if _, _, _, err := readRemediationResponseInputs(root, "seam-run", false); err == nil {
+	if _, _, _, _, err := readRemediationResponseInputs(root, "seam-run", false); err == nil {
 		t.Error("respond-to-findings' reader degraded silently")
 	}
 	// gate-removal-guard's two readers tolerate a MISSING journal by design;
