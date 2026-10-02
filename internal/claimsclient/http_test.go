@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -163,6 +164,38 @@ func TestHTTPErrorFallbackTruncatesRawBody(t *testing.T) {
 	var planeErr *Error
 	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
 		t.Fatalf("error = %#v", planeErr)
+	}
+}
+
+func TestHTTPResponseBodyCeiling(t *testing.T) {
+	const limit = 4 << 20
+	response := `{"ok":true}`
+
+	for name, padding := range map[string]int{
+		"at limit":   limit - len(response),
+		"over limit": limit - len(response) + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, strings.Repeat(" ", padding)+response)
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewHTTP(HTTPConfig{BaseURL: server.URL, Token: "t", RunID: "run-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ok, _, err := client.ClaimScoped(t.Context(), Key{Gaggle: "g", Provider: "p", ExternalID: "1"}, "run-1", "w", time.Minute)
+			if name == "at limit" {
+				if err != nil || !ok {
+					t.Fatalf("ClaimScoped() = %v, %v; want a decoded response at %d bytes", ok, err, limit)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "decode response") {
+				t.Fatalf("ClaimScoped() error = %v, want decode failure above %d bytes", err, limit)
+			}
+		})
 	}
 }
 
