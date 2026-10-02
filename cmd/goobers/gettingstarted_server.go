@@ -381,9 +381,9 @@ func guidedCommand(executable string, args ...string) string {
 }
 
 func guidedWorkflowFacts(instancePath, executable string) ([]guidedWorkflowFact, error) {
-	set, _, err := instance.LoadConfigDir(instance.NewLayout(instancePath).ConfigDir())
+	set, report, err := instance.LoadConfigDir(instance.NewLayout(instancePath).ConfigDir())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w (%s)", err, validationIssueSummary(report))
 	}
 	disabledGaggles := make(map[string]bool, len(set.Gaggles))
 	for _, gaggle := range set.Gaggles {
