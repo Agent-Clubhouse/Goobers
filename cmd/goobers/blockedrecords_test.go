@@ -1296,6 +1296,50 @@ func TestBacklogQueryAllCandidatesBlockedIsDistinguishableFromEmptyBacklog(t *te
 	}
 }
 
+func TestBacklogQueryForwardCurationContinuesWhenAllCandidatesBlocked(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "prior-run"}}
+	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
+		t.Fatalf("seed blocked.json: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "no work:") {
+		t.Fatalf("forward curation must not emit ResultNoWork before curate runs: stdout = %q", stdout)
+	}
+	for _, want := range []string{
+		"1 blocked candidate(s) skipped this cycle",
+		"continuing curation with empty claimed-items artifact",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+	}
+	assertEmptyCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
+}
+
 // TestBacklogQueryEmptyBacklogHasNoBlockedOnlyAnnotation is #1907's trivial
 // no-candidates scenario: with nothing in goobers:ready at all, the run must
 // still report a clean no-work completion, but WITHOUT the

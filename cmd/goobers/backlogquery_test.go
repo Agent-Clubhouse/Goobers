@@ -1224,6 +1224,7 @@ func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:ready,goobers:needs-human")
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
 
@@ -1231,13 +1232,42 @@ func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "no work") {
-		t.Fatalf("stdout = %q, want ready-labeled item skipped as no work", stdout)
+	if strings.Contains(stdout, "no work:") {
+		t.Fatalf("stdout = %q, forward curation must continue instead of returning no-work", stdout)
 	}
-	assertNoWorkResultFile(t, workDir)
+	if !strings.Contains(stdout, "continuing curation with empty claimed-items artifact") {
+		t.Fatalf("stdout = %q, want empty-artifact continuation", stdout)
+	}
+	assertEmptyCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
 	if _, err := os.Stat(filepath.Join(root, "scheduler", "claims.json")); err == nil {
 		t.Fatal("curation should not claim an already-ready item")
 	}
+}
+
+func TestBacklogQueryForwardCurationEmptyBacklogContinuesWithEmptyArtifact(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", "goobers:ready,goobers:needs-human")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "no work:") {
+		t.Fatalf("stdout = %q, forward curation must continue on an empty backlog", stdout)
+	}
+	if !strings.Contains(stdout, "continuing curation with empty claimed-items artifact") {
+		t.Fatalf("stdout = %q, want empty-artifact continuation", stdout)
+	}
+	assertEmptyCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
 }
 
 // TestBacklogQueryUnlabeledItemNeverClaimed proves SEC-047 eligibility is
@@ -1307,6 +1337,24 @@ func assertNoWorkResultFile(t *testing.T, workDir string) {
 	}
 	if len(got) != 4 {
 		t.Fatalf("claimed-item.json = %v, want only claimed, noWork, noWorkReason, and integrity", got)
+	}
+}
+
+func assertEmptyCurationResultFile(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", filepath.Base(path), err)
+	}
+	var items []interface{}
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("unmarshal %s as curation continuation array: %v", filepath.Base(path), err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("%s = %v, want empty claimed-items array", filepath.Base(path), items)
+	}
+	if strings.Contains(string(data), executor.OutputNoWork) {
+		t.Fatalf("%s = %s, must not carry noWork because the curator is downstream", filepath.Base(path), data)
 	}
 }
 

@@ -128,8 +128,10 @@ func TestADOBacklogReconcileIsNotApplicable(t *testing.T) {
 // TestADOCurationClaimSkipsMetadataReconcile pins the second caller of the
 // same pass: backlog-curation's query-backlog stage (`--claim` with
 // curation: "true") reconciles metadata inline before scanning. On Azure
-// DevOps that inline pass is skipped, so the scan runs; an empty backlog ends
-// in the ordinary noWork result rather than the BL-033 failure.
+// DevOps that inline pass is skipped, so the scan runs; an empty forward
+// curation backlog writes an empty claimed-items array so the curator can
+// continue and observe that it owns no mutable items, rather than returning
+// BL-033 or terminal noWork.
 func TestADOCurationClaimSkipsMetadataReconcile(t *testing.T) {
 	provider, _ := newADOReconcileProvider(t)
 	var stdout, stderr bytes.Buffer
@@ -150,9 +152,16 @@ func TestADOCurationClaimSkipsMetadataReconcile(t *testing.T) {
 	if strings.Contains(stderr.String(), "BL-033") {
 		t.Errorf("stderr = %q, want no BL-033 refusal", stderr.String())
 	}
-	result := readReconciliationResult(t, filepath.Join(workDir, "claimed-items.json"))
-	if result[executor.OutputNoWork] != true {
-		t.Errorf("claimed-items.json = %v, want the empty-backlog noWork result", result)
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-items.json"))
+	if err != nil {
+		t.Fatalf("read claimed-items.json: %v", err)
+	}
+	var items []any
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("claimed-items.json = %s, want empty array: %v", data, err)
+	}
+	if len(items) != 0 || strings.Contains(string(data), executor.OutputNoWork) {
+		t.Errorf("claimed-items.json = %s, want empty array without noWork", data)
 	}
 }
 
