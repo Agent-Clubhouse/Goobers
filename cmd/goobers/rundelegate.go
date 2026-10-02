@@ -17,7 +17,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/stateclient"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
@@ -263,10 +262,6 @@ func triggerRequestLifetime(ctx context.Context, timeout time.Duration) (time.Ti
 }
 
 func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (requestID string, err error) {
-	reqDir := filepath.Join(schedulerDir, pendingTriggersDir)
-	if err := os.MkdirAll(reqDir, 0o755); err != nil {
-		return "", fmt.Errorf("delegate: create pending-triggers dir: %w", err)
-	}
 	// A keyed request's id — and therefore its published filename — is derived
 	// from the key, so repeat submissions of one logical ask converge on a
 	// single file instead of accumulating (#4326).
@@ -274,42 +269,26 @@ func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (reques
 	if req.Key != "" {
 		keyedID = keyedRequestID(req.Key)
 	}
-	if err := admitTriggerSubmission(reqDir, keyedID); err != nil {
-		return "", err
-	}
-	f, err := os.CreateTemp(reqDir, ".pending-*")
-	if err != nil {
-		return "", fmt.Errorf("delegate: create trigger request: %w", err)
-	}
-	tmpPath := f.Name()
-	cleanup := func() {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-	}
+	return writeDelegateRequestWithID(
+		schedulerDir,
+		triggerDelegateFileProtocol(),
+		keyedID,
+		req,
+		nil,
+		func(reqDir string) error { return admitTriggerSubmission(reqDir, keyedID) },
+	)
+}
 
-	data, err := json.Marshal(req)
-	if err != nil {
-		cleanup()
-		return "", err
+func triggerDelegateFileProtocol() delegateFileProtocol {
+	return delegateFileProtocol{
+		pendingDir:      pendingTriggersDir,
+		requestSuffix:   requestSuffix,
+		responseSuffix:  responseSuffix,
+		errorPrefix:     "delegate",
+		requestDirLabel: "pending-triggers dir",
+		requestLabel:    "trigger request",
+		staleAfter:      triggerDelegationTimeout,
 	}
-	if _, err := f.Write(data); err != nil {
-		cleanup()
-		return "", fmt.Errorf("delegate: write trigger request: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("delegate: close trigger request: %w", err)
-	}
-	requestID = strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
-	if keyedID != "" {
-		requestID = keyedID
-	}
-	finalPath := filepath.Join(reqDir, requestID+requestSuffix)
-	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("delegate: publish trigger request: %w", err)
-	}
-	return requestID, nil
 }
 
 // pollTriggerResponse waits for schedulerDir/pending-triggers/<requestID>
@@ -389,19 +368,10 @@ func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID strin
 }
 
 func readTriggerResponseFile(path string) (triggerResponse, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return triggerResponse{}, false
-	}
 	// The writer publishes via journal.WriteFileAtomic (hidden temp + rename),
 	// so a torn read should not occur in practice. Stay tolerant anyway:
 	// consuming before a clean parse would strand the real response.
-	var resp triggerResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return triggerResponse{}, false
-	}
-	_ = os.Remove(path)
-	return resp, true
+	return readAndRemoveDelegateJSON[triggerResponse](path)
 }
 
 func withdrawTriggerRequest(schedulerDir, requestID string) (bool, error) {
@@ -526,11 +496,11 @@ func claimTriggerRequest(reqDir, requestID string) (string, bool, error) {
 
 func writeTriggerResponse(reqDir, requestID string, resp triggerResponse) error {
 	resp.RequestID = requestID
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err)
-	}
-	if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+responseSuffix), data, 0o644); err != nil {
+	if err := writeDelegateJSON(filepath.Join(reqDir, requestID+responseSuffix), resp); err != nil {
+		var encodeErr *delegateJSONEncodeError
+		if errors.As(err, &encodeErr) {
+			return fmt.Errorf("delegate: encode trigger response %s: %w", requestID, err)
+		}
 		return fmt.Errorf("delegate: write trigger response %s: %w", requestID, err)
 	}
 	_ = os.Remove(filepath.Join(reqDir, requestID+ackSuffix))
@@ -539,11 +509,11 @@ func writeTriggerResponse(reqDir, requestID string, resp triggerResponse) error 
 
 func writeTriggerAck(reqDir, requestID string, resp triggerResponse) error {
 	resp.RequestID = requestID
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("delegate: encode trigger ack %s: %w", requestID, err)
-	}
-	if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+ackSuffix), data, 0o644); err != nil {
+	if err := writeDelegateJSON(filepath.Join(reqDir, requestID+ackSuffix), resp); err != nil {
+		var encodeErr *delegateJSONEncodeError
+		if errors.As(err, &encodeErr) {
+			return fmt.Errorf("delegate: encode trigger ack %s: %w", requestID, err)
+		}
 		return fmt.Errorf("delegate: write trigger ack %s: %w", requestID, err)
 	}
 	return nil
@@ -573,11 +543,7 @@ func acceptedTriggerExpiredResponse(requestID string, req triggerRequest) trigge
 }
 
 func requeueTriggerRequest(reqPath string, req triggerRequest) error {
-	data, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	return journal.WriteFileAtomic(reqPath, data, 0o644)
+	return writeDelegateJSON(reqPath, req)
 }
 
 func recoverActiveTriggerRequest(schedulerDir, reqDir, requestID string) (bool, error) {
@@ -645,12 +611,6 @@ func newDelegatedDispatchRunID() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
-func removeExpiredTriggerArtifact(path string, info os.FileInfo, now time.Time) {
-	if now.Sub(info.ModTime()) > triggerDelegationTimeout {
-		_ = os.Remove(path)
-	}
-}
-
 func discoverPendingTriggerCandidates(schedulerDir, reqDir string, entries []os.DirEntry, now func() time.Time, options triggerSweepOptions) ([]pendingTriggerCandidate, error) {
 	var candidates []pendingTriggerCandidate
 	var discoverErr error
@@ -662,7 +622,7 @@ func discoverPendingTriggerCandidates(schedulerDir, reqDir string, entries []os.
 		case strings.HasSuffix(e.Name(), responseSuffix), strings.HasSuffix(e.Name(), ackSuffix), strings.HasSuffix(e.Name(), abandonedSuffix):
 			info, err := e.Info()
 			if err == nil {
-				removeExpiredTriggerArtifact(filepath.Join(reqDir, e.Name()), info, now())
+				removeExpiredDelegateArtifact(filepath.Join(reqDir, e.Name()), info, now(), triggerDelegationTimeout)
 			}
 		case strings.HasSuffix(e.Name(), activeSuffix):
 			if !options.recoverActiveRequests {

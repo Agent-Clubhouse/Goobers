@@ -68,6 +68,38 @@ func TestWriteDelegateRequestPublishesHiddenTempAtomically(t *testing.T) {
 	}
 }
 
+func TestWriteDelegateRequestUsesCallerSuppliedID(t *testing.T) {
+	schedulerDir := t.TempDir()
+	cfg := delegateFileTestProtocol()
+
+	requestID, err := writeDelegateRequestWithID(
+		schedulerDir,
+		cfg,
+		"stable-request",
+		delegateFileTestRequest{Value: "ready"},
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestID != "stable-request" {
+		t.Fatalf("request id = %q, want stable-request", requestID)
+	}
+	path := filepath.Join(schedulerDir, cfg.pendingDir, requestID+cfg.requestSuffix)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req delegateFileTestRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Value != "ready" {
+		t.Fatalf("request = %+v, want ready", req)
+	}
+}
+
 func TestPollDelegateResponseToleratesMalformedJSONAndConsumesResponse(t *testing.T) {
 	schedulerDir := t.TempDir()
 	cfg := delegateFileTestProtocol()
