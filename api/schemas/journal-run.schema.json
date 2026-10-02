@@ -53,23 +53,28 @@
         ],
         "properties": {
           "schema": {
+            "description": "Version of the semantic receipt format; currently 1.",
             "const": 1
           },
           "id": {
+            "description": "Opaque identity shared by the intent and completion for one mutation invocation.",
             "type": "string",
             "minLength": 1
           },
           "runId": {
+            "description": "Run that originally attempted this mutation.",
             "type": "string",
             "minLength": 1
           },
           "phase": {
+            "description": "Intent means outcome unknown; completed means the provider callback confirmed success.",
             "enum": [
               "intent",
               "completed"
             ]
           },
           "mutation": {
+            "description": "Semantic provider action identity, excluding run attribution and presentation footers.",
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -81,22 +86,27 @@
             ],
             "properties": {
               "provider": {
+                "description": "Canonical provider kind for this action.",
                 "type": "string",
                 "minLength": 1
               },
               "repository": {
+                "description": "Canonical provider repository identity, including host and any organization or project.",
                 "type": "string",
                 "minLength": 1
               },
               "action": {
+                "description": "Provider operation being recorded.",
                 "type": "string",
                 "minLength": 1
               },
               "target": {
+                "description": "Provider resource or subresource affected by the action.",
                 "type": "string",
                 "minLength": 1
               },
               "contentDigest": {
+                "description": "SHA-256 digest of canonical semantic input; plaintext content is not retained.",
                 "type": "string",
                 "pattern": "^sha256:[0-9a-f]{64}$"
               }
