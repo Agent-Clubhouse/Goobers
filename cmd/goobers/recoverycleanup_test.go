@@ -150,7 +150,7 @@ func TestRecoveryCleanupRunningNoWorkTargetWithoutHEAD(t *testing.T) {
 	}
 }
 
-func TestRecoveryCleanupRunningDirtyStageDoesNotRetainCurrentWorktree(t *testing.T) {
+func TestRecoveryCleanupRunningDirtyHeadlessStageDoesNotRetainCurrentWorktree(t *testing.T) {
 	testdep.Require(t, "git")
 
 	layout := instance.NewLayout(initDemo(t))
@@ -159,6 +159,7 @@ func TestRecoveryCleanupRunningDirtyStageDoesNotRetainCurrentWorktree(t *testing
 		t.Fatal(err)
 	}
 	repository := createRecoveryCleanupSource(t)
+	makeWorkspaceUnborn(t, repository)
 	if err := os.WriteFile(filepath.Join(repository, "stage-output.txt"), []byte("ordinary stage output"), 0o600); err != nil {
 		t.Fatal(err)
 	}
