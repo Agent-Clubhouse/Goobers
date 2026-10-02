@@ -71,7 +71,8 @@ spec:
                       description: |-
                         BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                         required when provider=gitea (self-hosted Gitea has no fixed host) and
-                        omitted for github/ado.
+                        omitted for ado. It is rejected for github: GitHub Enterprise Server is
+                        unsupported, so a github reference always means github.com (#6347).
                       type: string
                     branch:
                       default: main
@@ -140,7 +141,8 @@ spec:
                     description: |-
                       BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                       required when provider=gitea (self-hosted Gitea has no fixed host) and
-                      omitted for github/ado.
+                      omitted for ado. It is rejected for github: GitHub Enterprise Server is
+                      unsupported, so a github reference always means github.com (#6347).
                     type: string
                   connectionRef:
                     description: |-
@@ -315,7 +317,8 @@ spec:
                     description: |-
                       BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                       required when provider=gitea (self-hosted Gitea has no fixed host) and
-                      omitted for github/ado.
+                      omitted for ado. It is rejected for github: GitHub Enterprise Server is
+                      unsupported, so a github reference always means github.com (#6347).
                     type: string
                   branch:
                     default: main
@@ -530,7 +533,8 @@ spec:
                           description: |-
                             BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
                             required when provider=gitea (self-hosted Gitea has no fixed host) and
-                            omitted for github/ado.
+                            omitted for ado. It is rejected for github: GitHub Enterprise Server is
+                            unsupported, so a github reference always means github.com (#6347).
                           type: string
                         branch:
                           default: main
