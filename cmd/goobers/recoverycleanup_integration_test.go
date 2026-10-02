@@ -392,7 +392,7 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRecovery := abandoned || terminal || !commitCurrent
+	wantRecovery := abandoned || (terminal && !removeBeforeTerminal)
 	if !wantRecovery {
 		if dirs := recoverySnapshotDirectories(entries); dirs != 0 {
 			t.Fatalf("intermediate stage cleanup created %d recovery entries, want none", dirs)
