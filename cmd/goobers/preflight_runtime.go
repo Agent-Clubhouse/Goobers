@@ -230,6 +230,14 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
+	controls, err := resolveWorkflowRunControls(cfg, gaggle.Project, apiv1.Gaggle{Spec: gaggle}, wf)
+	if err != nil {
+		return runtimePreflightReport{}, err
+	}
+	plan, err := runtimeplan.ResolveInputs(instance.Layout{Root: absRoot}.ForGaggle(wf.Spec.Gaggle).WithConfigDir(absConfig), cfg, gaggle, controls)
+	if err != nil {
+		return runtimePreflightReport{}, err
+	}
 	stages := runtimePreflightStages(wf, resolvedGoobers, placements, runnerFacts)
 	process := runtimeplan.ObserveProcess()
 	settings := runtimeplan.ResolveStages(machine.Def.Spec, resolvedGoobers)
@@ -265,7 +273,7 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		Execution: runtimePreflightExecution{
 			IdentityMode: identityMode,
 			Process:      process,
-			Plan:         runtimeplan.ResolveInputs(instance.Layout{Root: absRoot}.ForGaggle(wf.Spec.Gaggle).WithConfigDir(absConfig), cfg, gaggle),
+			Plan:         plan,
 			Source: runtimePreflightFactSrc{
 				Fidelity: "static",
 				Detail:   "static execution inputs and observed reporting-process identity; no provider, credential, sandbox, or harness probe was executed",

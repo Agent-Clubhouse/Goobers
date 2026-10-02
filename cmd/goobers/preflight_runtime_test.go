@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sigs.k8s.io/yaml"
 	"strings"
 	"testing"
 
@@ -515,5 +516,78 @@ func TestRuntimePreflightIdentityAndPlanAcrossDSLVersions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRuntimePreflightResolvesExecutionRunControlPolicy(t *testing.T) {
+	for _, higherOverrides := range []bool{false, true} {
+		t.Run(map[bool]string{false: "instance-and-repo", true: "all-layers"}[higherOverrides], func(t *testing.T) {
+			root := writeRuntimePreflightFixture(t)
+			policyCfg, policySet, _ := runControlsFixture()
+			cfg, err := instance.LoadConfig(filepath.Join(root, "instance.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.RunConditions = policyCfg.RunConditions
+			cfg.Repos[0].RunControls = policyCfg.Repos[0].RunControls
+			rewriteRuntimePreflightYAML(t, filepath.Join(root, "instance.yaml"), cfg)
+			gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+			workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "implement.yaml")
+			if higherOverrides {
+				var gaggle apiv1.Gaggle
+				raw, err := os.ReadFile(gagglePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := yaml.Unmarshal(raw, &gaggle); err != nil {
+					t.Fatal(err)
+				}
+				gaggle.Spec.RunControls = policySet.Gaggles[0].Spec.RunControls
+				rewriteRuntimePreflightYAML(t, gagglePath, gaggle)
+				var wf apiv1.Workflow
+				raw, err = os.ReadFile(workflowPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := yaml.Unmarshal(raw, &wf); err != nil {
+					t.Fatal(err)
+				}
+				wf.Spec.RunControls = policySet.Workflows[0].Spec.RunControls
+				rewriteRuntimePreflightYAML(t, workflowPath, wf)
+			}
+			got, err := buildRuntimePreflightReport(root, "implement", "actual")
+			if err != nil {
+				t.Fatal(err)
+			}
+			controls := got.Execution.Plan.Timeouts.RunControls
+			wantRepasses, wantStalled := int32(4), "1h30m0s"
+			if higherOverrides {
+				wantRepasses, wantStalled = 7, "2h0m0s"
+			}
+			if controls.MaxRepasses != wantRepasses || controls.StalledRunTimeout != wantStalled || controls.MaxRunDuration != "6h0m0s" {
+				t.Fatalf("preflight differs from execution policy: %+v", controls)
+			}
+		})
+	}
+}
+
+func rewriteRuntimePreflightYAML(t *testing.T, path string, value any) {
+	t.Helper()
+	raw, err := yaml.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// API objects carry runtime status, which definition files do not accept.
+	var definition map[string]interface{}
+	if err := yaml.Unmarshal(raw, &definition); err != nil {
+		t.Fatal(err)
+	}
+	delete(definition, "status")
+	raw, err = yaml.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

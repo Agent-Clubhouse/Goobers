@@ -91,7 +91,10 @@
         }
       },
       "timeouts": {
-        "runConditions": {},
+        "runControls": {
+          "maxRepasses": 3,
+          "stalledRunTimeout": "45m0s"
+        },
         "repositoryDefaults": [
           ""
         ],

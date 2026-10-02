@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runcontrol"
 )
 
 func TestIdentityNeverAttestsInteractiveChecksAsTarget(t *testing.T) {
@@ -56,7 +57,10 @@ func TestResolveInputsPreservesIsolationAndPathsWithoutReadingCredentials(t *tes
 		Runners:     []instance.RunnerEntry{{Name: "worker", Host: "example/worker:latest", Restrictions: []instance.RunnerRestriction{"no-host-mounts"}}},
 		Runner:      instance.RunnerConfig{DefaultStageTimeout: "2h", RequiredMCPSettleTimeout: "40s"},
 	}
-	got := ResolveInputs(instance.Layout{Root: root}.ForGaggle("sample"), cfg, apiv1.GaggleSpec{})
+	got, err := ResolveInputs(instance.Layout{Root: root}.ForGaggle("sample"), cfg, apiv1.GaggleSpec{}, runcontrol.Effective{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Sandbox.Agentic != "enforced" || got.Sandbox.Enforcement.Outcome != "unobservable" {
 		t.Fatalf("sandbox = %+v", got.Sandbox)
 	}
@@ -94,5 +98,48 @@ func TestStageTimeoutInputsRetainPrecedenceSurfaces(t *testing.T) {
 	settings := ResolveStages(apiv1.WorkflowSpec{Tasks: []apiv1.Task{task}}, map[string]apiv1.GooberSpec{"coder": {TimeoutSeconds: 120}})["work"]
 	if settings.TimeoutSeconds != 90 || settings.GooberTimeoutSeconds != 120 || settings.Limits.MaxDurationSeconds != 45 || settings.LegacyTimeout != "30s" || settings.Workspace != "repo" || settings.OnTimeout != "salvage" {
 		t.Fatalf("lost execution inputs: %+v", settings)
+	}
+}
+
+func TestResolveInputsUsesEffectiveWorkcopiesLayout(t *testing.T) {
+	root := t.TempDir()
+	cfg := &instance.Config{Workcopies: &instance.WorkcopiesConfig{Root: filepath.Join(root, "instance-workcopies")}}
+	gaggle := apiv1.GaggleSpec{Workcopies: &apiv1.GaggleWorkcopies{Root: filepath.Join(root, "gaggle-workcopies")}}
+	got, err := ResolveInputs(instance.Layout{Root: root}.ForGaggle("workers"), cfg, gaggle, runcontrol.Effective{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range got.Paths {
+		if p.Purpose == "workcopies" {
+			found = p.Path == filepath.Join(root, "gaggle-workcopies", "workers")
+		}
+	}
+	if !found {
+		t.Fatalf("gaggle override ignored: %+v", got.Paths)
+	}
+	gaggle.Workcopies.Root = "relative-workcopies"
+	if _, err := ResolveInputs(instance.Layout{Root: root}, cfg, gaggle, runcontrol.Effective{}); err == nil {
+		t.Fatal("invalid workcopy override did not fail closed")
+	}
+}
+
+func TestResolveInputsPreservesCredentialSourceKinds(t *testing.T) {
+	for _, authKind := range []string{instance.GitHubAuthPAT, instance.GitHubAuthAppToken} {
+		for _, source := range []struct {
+			name string
+			ref  instance.TokenRef
+		}{{"file", instance.TokenRef{File: "/missing/token"}}, {"env", instance.TokenRef{Env: "UNREAD_TOKEN"}}, {"keychain", instance.TokenRef{Keychain: "unread-token"}}} {
+			t.Run(authKind+"/"+source.name, func(t *testing.T) {
+				cfg := &instance.Config{Repos: []instance.RepoRef{{Token: source.ref, Auth: &instance.RepoAuthConfig{Kind: authKind}}}}
+				got, err := ResolveInputs(instance.Layout{Root: t.TempDir()}, cfg, apiv1.GaggleSpec{}, runcontrol.Effective{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.CredentialSources[0].Kind != source.name || got.CredentialSources[0].AuthKind != authKind {
+					t.Fatalf("lost source/auth distinction: %+v", got.CredentialSources)
+				}
+			})
+		}
 	}
 }

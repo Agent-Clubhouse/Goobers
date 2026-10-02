@@ -7,6 +7,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credreadiness"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runcontrol"
 )
 
 // Inputs are the declared runtime settings. Dynamic workspace allocations and
@@ -29,6 +30,7 @@ type CredentialSource struct {
 	Capability string `json:"capability,omitempty"`
 	Harness    string `json:"harness,omitempty"`
 	Kind       string `json:"kind"`
+	AuthKind   string `json:"authKind,omitempty"`
 }
 type Sandbox struct {
 	Agentic     string                    `json:"agentic"`
@@ -41,25 +43,25 @@ type RunnerIsolation struct {
 	Restrictions []instance.RunnerRestriction `json:"restrictions,omitempty"`
 }
 type Timeouts struct {
-	RunnerDefault      string                 `json:"runnerDefault,omitempty"`
-	RequiredMCPSettle  string                 `json:"requiredMCPSettle,omitempty"`
-	RunConditions      instance.RunConditions `json:"runConditions"`
-	RepositoryDefaults []string               `json:"repositoryDefaults,omitempty"`
-	Cancellation       Identity               `json:"cancellation"`
+	RunnerDefault      string            `json:"runnerDefault,omitempty"`
+	RequiredMCPSettle  string            `json:"requiredMCPSettle,omitempty"`
+	RunControls        apiv1.RunControls `json:"runControls"`
+	RepositoryDefaults []string          `json:"repositoryDefaults,omitempty"`
+	Cancellation       Identity          `json:"cancellation"`
 }
 
-func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.GaggleSpec) Inputs {
+func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.GaggleSpec, controls runcontrol.Effective) (Inputs, error) {
 	static := Source{"static", "loaded instance and workflow configuration; no path access or runtime enforcement probe"}
 	// The caller supplies an already gaggle-scoped layout. Keep that scope when
 	// applying the same workcopy override used by execution.
-	scoped := layout
-	if cfg.Workcopies != nil && cfg.Workcopies.Root != "" {
-		scoped = scoped.WithWorkcopiesRoot(cfg.Workcopies.Root)
+	scoped, err := instance.EffectiveWorkcopiesLayout(layout, cfg, &apiv1.Gaggle{Spec: gaggle})
+	if err != nil {
+		return Inputs{}, err
 	}
 	result := Inputs{Source: static, CredentialSources: []CredentialSource{}, Sandbox: Sandbox{
 		Agentic: string(instance.EffectiveAgenticSandbox(cfg, &apiv1.Gaggle{Spec: gaggle})), Isolation: cfg.Isolation,
 		Enforcement: Identity{"unobservable", "sandbox_enforcement_unobservable", "configured posture is not proof of enforcement on the target runner", Source{"unobservable", "target runner not probed"}},
-	}, Timeouts: Timeouts{RunnerDefault: cfg.Runner.DefaultStageTimeout, RequiredMCPSettle: cfg.Runner.RequiredMCPSettleTimeout, RunConditions: cfg.RunConditions,
+	}, Timeouts: Timeouts{RunnerDefault: cfg.Runner.DefaultStageTimeout, RequiredMCPSettle: cfg.Runner.RequiredMCPSettleTimeout, RunControls: controls.Overrides(),
 		Cancellation: Identity{"unobservable", "cancellation_unobservable", "attempt parent deadlines and process cleanup require target execution", Source{"unobservable", "no running attempt"}}}}
 	for _, entry := range []struct{ purpose, path string }{{"instance", layout.Root}, {"config", layout.ConfigDir()}, {"runs", scoped.RunsDir()}, {"workcopies", scoped.WorkcopiesDir()}, {"configMirror", cfg.ConfigMirrorPath}} {
 		if entry.path != "" {
@@ -68,11 +70,14 @@ func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.Ga
 	}
 	for i, repo := range cfg.Repos {
 		kind, _ := credreadiness.Describe(repo.Token.CredentialTokenRef(""))
-		k := string(kind)
+		authKind := ""
 		if repo.Auth != nil {
-			k = repo.Auth.Kind
+			authKind = repo.Auth.Kind
+			if authKind == instance.GitHubAuthApp {
+				kind = credreadiness.SourceGitHubApp
+			}
 		}
-		result.CredentialSources = append(result.CredentialSources, CredentialSource{Scope: fmt.Sprintf("repos[%d]", i), Kind: k})
+		result.CredentialSources = append(result.CredentialSources, CredentialSource{Scope: fmt.Sprintf("repos[%d]", i), Kind: string(kind), AuthKind: authKind})
 		result.Timeouts.RepositoryDefaults = append(result.Timeouts.RepositoryDefaults, repo.EffectiveDefaultStageTimeout(cfg.Runner.DefaultStageTimeout))
 	}
 	for _, grant := range cfg.Credentials {
@@ -84,7 +89,7 @@ func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.Ga
 		if grant.MCP != "" {
 			scope = "mcp"
 		}
-		result.CredentialSources = append(result.CredentialSources, CredentialSource{scope, grant.Capability, grant.Harness, string(kind)})
+		result.CredentialSources = append(result.CredentialSources, CredentialSource{Scope: scope, Capability: grant.Capability, Harness: grant.Harness, Kind: string(kind)})
 	}
 	if cfg.DaemonIdentity != nil {
 		kind := credreadiness.SourceUnsupported
@@ -100,5 +105,5 @@ func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.Ga
 		result.Sandbox.Runners = append(result.Sandbox.Runners, RunnerIsolation{runner.Name, runner.Restrictions})
 	}
 	sort.Slice(result.Sandbox.Runners, func(i, j int) bool { return result.Sandbox.Runners[i].Name < result.Sandbox.Runners[j].Name })
-	return result
+	return result, nil
 }
