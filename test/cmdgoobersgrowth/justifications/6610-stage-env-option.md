@@ -1,6 +1,6 @@
 # #6610: per-test stage credential environment
 
-The command package gains about 35 non-test lines and no files. The lookup
+The command package gains about 40 non-test lines and no files. The lookup
 itself (`stageenv.Lookup`, with the process environment as its nil default)
 lives in the new `internal/stageenv` package.
 

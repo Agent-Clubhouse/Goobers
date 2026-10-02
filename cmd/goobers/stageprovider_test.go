@@ -425,8 +425,8 @@ func TestNewProviderForStageUsesBrokeredADOCredentialWithoutInstanceRoot(t *test
 }
 
 func TestNewProviderForStageObservesResolvedToken(t *testing.T) {
-	const token = "branch-token"
 	t.Parallel()
+	const token = "branch-token"
 	env := stageEnvFor(map[string]string{executor.CredentialEnvVar(string(capability.GitHubBranchDelete)): token})
 
 	var observed string

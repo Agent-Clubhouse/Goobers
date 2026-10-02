@@ -118,6 +118,7 @@ github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-recor
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
 github.com/goobers/goobers/cmd/goobers.waitForRunTerminal # Run-wait seam retained for command tests with controlled contexts.
 github.com/goobers/goobers/cmd/goobers.listRuns # Run-list seam retained for command tests with controlled output.
+github.com/goobers/goobers/cmd/goobers.withStageProviderEnv # Per-test stage credential environment for provider-construction tests, so they need no t.Setenv and can run in parallel (#6610). expires=2027-04-01
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActions # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.cliSurfaceActionsFrom # Runtime-capability registry seam retained for parity tests.
 github.com/goobers/goobers/cmd/goobers.runTraceWithFollowContext # Trace follow seam retained for cancellation tests.
@@ -293,4 +294,3 @@ github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until
 github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
-github.com/goobers/goobers/cmd/goobers.withStageProviderEnv # Per-test stage credential environment for provider-construction tests, so they need no t.Setenv and can run in parallel (#6610).

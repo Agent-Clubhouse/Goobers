@@ -43,6 +43,9 @@ func stageRefreshingTokenFrom(env stageenv.Lookup, cap capability.Capability, to
 	if endpoint == "" || grant == "" || token == "" || token != env.Get(executor.CredentialEnvVar(string(cap))) {
 		return nil
 	}
+	// The cache is process-wide and keyed by capability alone, not by env: a
+	// test that injects a grant must reset it (resetStageRefreshingTokens) and
+	// cannot share it with a parallel test.
 	if cached, ok := stageRefreshingTokens.Load(string(cap)); ok {
 		return cached.(*credentials.RefreshingToken)
 	}

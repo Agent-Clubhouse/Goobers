@@ -116,9 +116,10 @@ func withStageProviderTokenObserver(observer func(string)) stageProviderOption {
 	}
 }
 
-// withStageProviderEnv reads the delivered credential, and the scheme, expiry
-// and refresh-grant variables beside it, from env instead of the process
-// environment, so a test can deliver a per-test credential without t.Setenv.
+// withStageProviderEnv reads the delivered credential, the scheme, expiry and
+// refresh-grant variables beside it, and the delivered values the backlog-family
+// check compares against, from env instead of the process environment, so a
+// test can deliver a per-test credential without t.Setenv.
 func withStageProviderEnv(env stageenv.Lookup) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.env = env
