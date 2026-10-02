@@ -54,3 +54,29 @@ func SelfExecutionBlockedResult(stage string) apiv1.ResultEnvelope {
 	err := &SelfExecutionRefusal{Stage: stage}
 	return apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Summary: err.Error(), Error: &apiv1.ErrorInfo{Code: SelfExecutionDeniedCode, Message: err.Error()}}
 }
+
+func (r *Runner) observeSelfExecution(refused bool) {
+	if r.cfg.SelfExecutionObserved != nil {
+		r.cfg.SelfExecutionObserved(refused)
+	}
+}
+
+func (r *Runner) refuseSelfTask(tf taskFrame) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	r.observeSelfExecution(true)
+	result := SelfExecutionBlockedResult(tf.t.Name)
+	if err := tf.jr.Append(journal.Event{Type: journal.EventError, Stage: tf.t.Name, Error: journal.ErrorDetailFor(SelfExecutionDeniedCode, &SelfExecutionRefusal{Stage: tf.t.Name})}); err != nil {
+		return apiv1.ResultEnvelope{}, nil, err
+	}
+	return result, nil, nil
+}
+
+func (r *Runner) admitSelfGate(ctx context.Context, jr executionJournal, in StartInput, g apiv1.Gate) error {
+	if g.Evaluator != apiv1.EvaluatorAgentic {
+		return nil
+	}
+	if r.cfg.SelfExecutionDenied {
+		return r.refuseSelfExecution(ctx, jr, in, g.Name)
+	}
+	r.observeSelfExecution(false)
+	return nil
+}

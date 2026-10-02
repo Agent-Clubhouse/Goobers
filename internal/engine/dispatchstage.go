@@ -735,15 +735,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return unconfirmedDispatchFailure(ctx, err, report)
 	}
 	if err == nil && report.Local {
-		if a.AdmitSelfExecution != nil {
-			if err := a.AdmitSelfExecution(input.Envelope.TaskID); err != nil {
-				return stageActivityResult{}, classifySelfAdmissionError(err)
-			}
-		}
-		// SelectRunner resolved self inside an eligible set the workflow routed
-		// remotely — the pin and the dispatcher disagree. Fail closed rather
-		// than silently executing nothing.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", input.Envelope.TaskID))
+		return stageActivityResult{}, a.refuseLocalDispatch(input.Envelope.TaskID)
 	}
 
 	// ErrStageFailed arrives with surrender CONFIRMED (the dispatcher checks
@@ -1026,4 +1018,14 @@ func renderInputValue(value any) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func (a *Activities) refuseLocalDispatch(stage string) error {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(stage); err != nil {
+			return classifySelfAdmissionError(err)
+		}
+	}
+	// The pin and dispatcher disagree: never silently execute nothing.
+	return classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", stage))
 }
