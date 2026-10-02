@@ -73,8 +73,9 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 			wait, ev := policy.planRateLimit(resp, endpoint, rateLimitRetries)
 			if rateLimitRetries >= policy.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
 				ev.Outcome = RateLimitOutcomeExhausted
+				finalResp, finalErr := policy.handleExhaustedRateLimit(resp, ev)
 				policy.observeRateLimit(ctx, ev)
-				return policy.handleExhaustedRateLimit(resp, ev)
+				return finalResp, finalErr
 			}
 			_ = resp.Body.Close()
 			if err := policy.sleep(ctx, wait); err != nil {

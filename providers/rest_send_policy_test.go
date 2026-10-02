@@ -20,6 +20,17 @@ func (b *trackingResponseBody) Close() error {
 	return nil
 }
 
+type bodyStateObserver struct {
+	body                *trackingResponseBody
+	observed            bool
+	bodyClosedAtObserve bool
+}
+
+func (o *bodyStateObserver) ObserveRateLimit(context.Context, RateLimitEvent) {
+	o.observed = true
+	o.bodyClosedAtObserve = o.body.closed
+}
+
 func TestGiteaRateLimitExhaustionReturnsFinalResponse(t *testing.T) {
 	body := &trackingResponseBody{Reader: strings.NewReader("rate limited")}
 	client := newProviderHTTPClient(time.Second)
@@ -50,6 +61,7 @@ func TestGiteaRateLimitExhaustionReturnsFinalResponse(t *testing.T) {
 
 func TestGitHubRateLimitExhaustionReturnsTypedError(t *testing.T) {
 	body := &trackingResponseBody{Reader: strings.NewReader("rate limited")}
+	observer := &bodyStateObserver{body: body}
 	client := newProviderHTTPClient(time.Second)
 	client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -61,6 +73,7 @@ func TestGitHubRateLimitExhaustionReturnsTypedError(t *testing.T) {
 	provider := NewGitHubProvider("token",
 		WithHTTPClient(client),
 		WithMaxRateLimitRetries(0),
+		WithRateLimitObserver(observer),
 	)
 
 	resp, err := provider.send(context.Background(), http.MethodGet, "https://api.github.example/repos/acme/app", nil)
@@ -70,6 +83,10 @@ func TestGitHubRateLimitExhaustionReturnsTypedError(t *testing.T) {
 	}
 	if !body.closed {
 		t.Fatal("exhausted GitHub 429 body was not closed")
+	}
+	if !observer.observed || !observer.bodyClosedAtObserve {
+		t.Fatalf("rate-limit observer = {observed:%t bodyClosed:%t}, want body closed before observation",
+			observer.observed, observer.bodyClosedAtObserve)
 	}
 }
 
