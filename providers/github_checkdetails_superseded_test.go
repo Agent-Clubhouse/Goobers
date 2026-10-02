@@ -24,6 +24,7 @@ type supersededCheckCase struct {
 	// wantJobLookups is how many workflow runs' job lists are fetched: only a
 	// passing run newer than a cancelled run of its workflow needs one.
 	wantJobLookups int32
+	wantErr        bool
 	wantState      CheckState
 	wantChecks     []CheckDetail
 }
@@ -181,15 +182,66 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 			wantChecks:     []CheckDetail{passing("CI")},
 		},
 		{
-			name: "actions fallback: an unreadable job list fails closed",
+			name: "actions fallback: an unreadable job list is an error, not a verdict",
 			actionsRuns: []map[string]interface{}{
 				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
 				actionsRunFixture(202, "CI", 7, "completed", "success"),
 			},
 			actionsJobs:    map[int64][]string{202: nil},
 			wantJobLookups: 1,
+			wantErr:        true,
+		},
+		{
+			name: "actions fallback: a newer in-progress run supersedes without a lookup",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "in_progress", ""),
+			},
+			wantState:  CheckStatePending,
+			wantChecks: []CheckDetail{{Name: "CI", State: CheckStatePending}},
+		},
+		{
+			name: "actions fallback: a newer failing run supersedes without a lookup",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "failure"),
+			},
+			wantState:  CheckStateFailing,
+			wantChecks: []CheckDetail{failing("CI", "failure")},
+		},
+		{
+			name: "actions fallback: two cancelled runs share one lookup of the run that supersedes both",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(203, "CI", 7, "completed", "success"),
+			},
+			wantJobLookups: 1,
+			wantState:      CheckStatePassing,
+			wantChecks:     []CheckDetail{passing("CI")},
+		},
+		{
+			name: "actions fallback: a real pass followed by an all-skipped edit run still passes",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "success"),
+				actionsRunFixture(203, "CI", 7, "completed", "success"),
+			},
+			actionsJobs:    map[int64][]string{203: {"skipped"}},
+			wantJobLookups: 1,
+			wantState:      CheckStatePassing,
+			wantChecks:     []CheckDetail{passing("CI"), passing("CI")},
+		},
+		{
+			name: "actions fallback: a neutral run is checked for executed jobs too",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "neutral"),
+			},
+			actionsJobs:    map[int64][]string{202: {"skipped"}},
+			wantJobLookups: 1,
 			wantState:      CheckStateFailing,
-			wantChecks:     []CheckDetail{failing("CI", "cancelled"), passing("CI")},
+			wantChecks:     []CheckDetail{failing("CI", "cancelled"), {Name: "CI", State: CheckStatePassing, Conclusion: "neutral"}},
 		},
 		{
 			name: "actions fallback: no cancelled run means no job lookups",
@@ -240,6 +292,15 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 
 			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
 			state, details, err := provider.combinedCheckState(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "deadbeef")
+			if got := jobLookups.Load(); got != tc.wantJobLookups {
+				t.Fatalf("job lookups = %d, want %d", got, tc.wantJobLookups)
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("combinedCheckState = %q, %+v; want an error", state, details)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("combinedCheckState: %v", err)
 			}
@@ -248,9 +309,6 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 			}
 			if !reflect.DeepEqual(details, tc.wantChecks) {
 				t.Fatalf("details = %+v, want %+v", details, tc.wantChecks)
-			}
-			if got := jobLookups.Load(); got != tc.wantJobLookups {
-				t.Fatalf("job lookups = %d, want %d", got, tc.wantJobLookups)
 			}
 		})
 	}
@@ -284,5 +342,51 @@ func TestGitHubProviderCIFailuresSkipsSupersededCancelledRun(t *testing.T) {
 	}
 	if len(failures) != 0 {
 		t.Fatalf("failures = %+v, want none (the cancelled run was superseded by a newer success)", failures)
+	}
+}
+
+// TestGitHubProviderActionsRunExecutedJobsPages pins that the job walk reads
+// past an all-skipped first page and stops at the first executed job.
+func TestGitHubProviderActionsRunExecutedJobsPages(t *testing.T) {
+	cases := []struct {
+		name         string
+		pages        [][]string
+		wantExecuted bool
+		wantPages    int32
+	}{
+		{"executed job on page two", [][]string{{"skipped"}, {"success"}}, true, 2},
+		{"stops at the first executed job", [][]string{{"success"}, {"skipped"}}, true, 1},
+		{"every page skipped", [][]string{{"skipped"}, {"skipped"}}, false, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var served atomic.Int32
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				page := 1
+				if r.URL.Query().Get("page") == "2" {
+					page = 2
+				}
+				served.Add(1)
+				if page < len(tc.pages) {
+					w.Header().Set("Link", "<"+server.URL+r.URL.Path+"?page=2&per_page=100>; rel=\"next\"")
+				}
+				jobs := []map[string]interface{}{}
+				for _, c := range tc.pages[page-1] {
+					jobs = append(jobs, map[string]interface{}{"status": "completed", "conclusion": c})
+				}
+				writeJSON(t, w, map[string]interface{}{"jobs": jobs})
+			}))
+			defer server.Close()
+
+			provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+			executed, err := provider.actionsRunExecutedJobs(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, 202)
+			if err != nil {
+				t.Fatalf("actionsRunExecutedJobs: %v", err)
+			}
+			if executed != tc.wantExecuted || served.Load() != tc.wantPages {
+				t.Fatalf("executed = %v after %d pages, want %v after %d", executed, served.Load(), tc.wantExecuted, tc.wantPages)
+			}
+		})
 	}
 }
