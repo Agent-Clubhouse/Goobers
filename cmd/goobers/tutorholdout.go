@@ -104,7 +104,6 @@ type tutorLiveVerificationArtifact struct {
 	Findings     []tutorHoldoutSummary `json:"findings"`
 	PendingCount int                   `json:"pendingCount"`
 	CanProceed   bool                  `json:"canProceed"`
-	NoWork       bool                  `json:"noWork,omitempty"`
 	Note         string                `json:"note,omitempty"`
 }
 
@@ -560,7 +559,8 @@ func verifyTutorHoldouts(
 		return artifact, err
 	}
 	if len(records) == 0 {
-		artifact.NoWork = true
+		// Deliberately not noWork: the runner ends the whole run on any stage
+		// noWork, and "nothing to verify" must let Tutor proceed to analysis.
 		artifact.Note = "no Tutor findings await live verification"
 		return artifact, nil
 	}

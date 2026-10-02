@@ -495,7 +495,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 				pf(stderr, "error: verify Tutor live holdouts: %v\n", verifyErr)
 				return 1
 			}
-			if !result.NoWork {
+			if len(result.Findings) > 0 {
 				result.Note = telemetryQueryNoRollupNote
 			}
 			return writeJSONArtifact(result, stdout, stderr)
