@@ -24,6 +24,7 @@ capabilities must also appear on its referenced Goober.
 | --- | --- |
 | `repo:read` | Read-only checkout of the target repository for the stage. |
 | `repo:push` | Commit/push authority for the run branch. |
+| `configrepo:write` | Push a branch and open a pull request in the instance's **config repository** (the `workflowSource` repository), and nowhere else. Used with `push-branch --config-repo` / `open-pr --config-repo` and `config-checkout`; see the "Config-repo target" section of `docs/guides/tutor-write-boundary.md`. Fails closed unless the instance has a github-app `workflowSource` (or an explicit `credentials:` entry for it). Never backed by a gaggle's product-repo token. |
 | `github:issues:read` | Read GitHub issues without mutation. |
 | `github:issues:write` | Query, create, edit, label, comment on, or close GitHub issues, excluding the trusted approval label. |
 | `github:milestones:write` | Assign an existing GitHub milestone. |

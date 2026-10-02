@@ -168,3 +168,75 @@ unreachable and that the check honors the configured root rather than a hardcode
 one. The end-to-end negative test (`cmd/goobers/configboundary_test.go`) drives
 the **real `open-pr` stage** over a git worktree whose run branch touches a
 platform file, and asserts the stage fails closed and opens **no** PR.
+
+## Config-repo target (`configrepo:write`)
+
+A tutor workflow runs in one gaggle but its improvement PRs belong in the
+instance **config repository** (the `workflowSource` repository), not in the
+gaggle's product repository. `push-branch` and `open-pr` therefore accept an
+opt-in `--config-repo` flag (TUT-A8, #1220; design:
+`docs/design/tutor-redesign.md` §4.8).
+
+```yaml
+- name: checkout-config            # clone workflowSource's repo at its ref, on the run branch
+  type: deterministic
+  run: {command: ["goobers", "config-checkout"]}
+  capabilities: [configrepo:write]
+# ... a stage edits ./config-repo/gaggles/<gaggle>/... and commits there ...
+- name: push-branch
+  run: {command: ["goobers", "push-branch", "--config-repo"]}
+  capabilities: [configrepo:write]
+- name: open-pr
+  run: {command: ["goobers", "open-pr", "--config-repo"]}
+  inputs:
+    confineToActionRoots: "true"
+    actionRoots: "gaggles/<gaggle>/workflows,skills"   # relative to the CONFIG repo root
+  capabilities: [configrepo:write]
+```
+
+The flag (not an input) selects the target so admission can swap the stage's
+required capability: with `--config-repo`, `push-branch` requires
+`configrepo:write` instead of `repo:push`, and `open-pr` requires it instead of
+`provider:pr:write`. Declare only the one the stage uses. Inputs (all
+optional): `configRepoDir` (checkout directory relative to
+the stage workspace, default `config-repo`), `head` (`config-checkout` only:
+branch name, default the run's stable branch, so `open-pr`'s default head
+matches), `base` (`open-pr`: default `workflowSource.ref`), and `configRepo` /
+`configRepoBase` (`owner/name` and base branch, used **only** where no instance
+config is readable, such as a stage pod; they must agree with `workflowSource`
+wherever it is readable).
+
+Credential model: `configrepo:write` is a separate grant. With a
+`github-app` `workflowSource` the daemon mints it from the same App
+installation, down-scoped to the config repository and to
+`contents:write` + `pull_requests:write`. With a token-authed `workflowSource`
+the operator provisions a PAT restricted to the config repository and sources
+it with a `credentials:` entry for `configrepo:write`; the read-only
+`workflowSource.token` is never reused. A config-targeted stage never reads
+`repo:push` / `provider:pr:write`, and a product-targeted stage never reads
+`configrepo:write`. With no `workflowSource`, a local one, or no credential, the
+stage fails closed with an error naming the capability. Only `github.com`
+config repositories are supported.
+
+`push-branch` refuses a checkout whose `origin` is not the `workflowSource`
+repository. The write-boundary and Tutor-classification diffs run inside the
+config checkout, so tutor branch naming (`<namespace>/tutor/...`) and
+risk classification are unchanged.
+
+Related behavior for config-repo-targeted stages:
+
+- **Validation.** `goobers validate` honours the flag: `push-branch --config-repo`
+  prescribes `push-config-repo-branch` and `open-pr --config-repo` prescribes
+  `open-or-update-config-pr`, both requiring only `configrepo:write` (never
+  `repo:push` / `provider:pr:write`). `configrepo:write` is accepted in the
+  workflow, goober and invocation schemas and in `instance.yaml` `credentials[]`.
+- **gate-removal-guard.** `gate-removal-guard --config-repo` runs its git
+  inspection inside the config checkout (`configRepoDir`, base = the
+  `workflowSource` ref), so a gate removal in the config repository is blocked
+  instead of passing vacuously.
+- **Live-verification holdouts.** `open-pr --config-repo` with
+  `recordLiveVerification` records the PR's repository (`configRepo`) with the
+  holdout; the merge-state refresh polls that PR number in the config repository
+  using the stage's `configrepo:write` credential. A stage without that
+  credential leaves such holdouts pending (stating why) rather than looking up
+  the product repository's same-numbered PR.

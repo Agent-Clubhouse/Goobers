@@ -575,6 +575,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"backlog-health": {
 		{name: "feedback", desc: "Include backlog feedback"},
 	},
+	"gate-removal-guard": {
+		{name: "config-repo", desc: "Inspect the instance config repository checkout"},
+	},
+	"push-branch": {
+		{name: "config-repo", desc: "Push the instance config repository checkout with configrepo:write"},
+	},
+	"open-pr": {
+		{name: "config-repo", desc: "Open the PR in the instance config repository with configrepo:write"},
+	},
 	"backlog-query": {
 		{name: "claim", desc: "Claim the first eligible item"},
 		{name: "resweep", desc: "Run scheduled re-sweep with --claim"},

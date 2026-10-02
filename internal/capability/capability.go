@@ -38,6 +38,14 @@ const (
 	// its repository. It is runner-only: workflow stages and goobers cannot
 	// declare it, and its credential never comes from a target repository.
 	ConfigRepoRead Capability = "configrepo:read"
+	// ConfigRepoWrite grants a stage push and pull-request authority on the
+	// instance's CONFIG repository (the repository workflowSource loads
+	// definitions from) and on nothing else (TUT-A8, #1220; docs/design/
+	// tutor-redesign.md §4.8). It is the write-sibling of ConfigRepoRead but,
+	// unlike it, stage-declarable: only a stage that names it receives the
+	// credential, which is minted from workflowSource's own App auth (or an
+	// explicit credentials: entry), never from a gaggle's product-repo token.
+	ConfigRepoWrite Capability = "configrepo:write"
 	// GitHubIssuesRead grants read-only GitHub issue queries.
 	GitHubIssuesRead Capability = "github:issues:read"
 	// GitHubIssuesWrite grants GitHub issue query/create/ordinary-label/close/
@@ -157,7 +165,7 @@ const (
 // All returns every canonical capability, in declaration order.
 func All() []Capability {
 	return []Capability{
-		RepoRead, RepoPush, ConfigRepoRead,
+		RepoRead, RepoPush, ConfigRepoRead, ConfigRepoWrite,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
 		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,

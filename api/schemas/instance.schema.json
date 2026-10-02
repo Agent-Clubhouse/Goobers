@@ -429,6 +429,7 @@
           "enum": [
             "repo:read",
             "repo:push",
+            "configrepo:write",
             "github:issues:read",
             "github:issues:write",
             "github:milestones:write",
