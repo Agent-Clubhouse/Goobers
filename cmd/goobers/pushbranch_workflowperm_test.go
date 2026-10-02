@@ -39,6 +39,9 @@ func TestClassifyRejectedPush(t *testing.T) {
 	}{
 		{"real GitHub workflows-permission rejection", githubWorkflowPermissionStderr, true, false, false},
 		{"truncated GitHub workflows-permission rejection", githubWorkflowPermissionTruncatedStderr, true, false, false},
+		{"personal access token missing workflow scope", " ! [remote rejected] b -> b (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)\nerror: failed to push some refs", true, false, false},
+		{"OAuth App missing workflow scope", " ! [remote rejected] b -> b (refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)\nerror: failed to push some refs", true, false, false},
+		{"fragments on separate lines do not match", "remote: refusing to allow a force push\nhint: to create or update workflow files, see docs\nerror: failed to push some refs", false, false, true},
 		{"real ADO TF402455 rejection", adoTF402455Stderr, false, true, false},
 		{"plain ref race", "! [rejected] main -> main (fetch first)\nerror: failed to push some refs", false, false, true},
 		{"non-fast-forward race", "! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs", false, false, true},
@@ -77,7 +80,7 @@ func TestClassifyRejectedPush(t *testing.T) {
 func TestWorkflowPermissionPushErrorMessageIsActionable(t *testing.T) {
 	err := classifyRejectedPush("feature", githubWorkflowPermissionStderr, errors.New("exit status 1"))
 	msg := err.Error()
-	for _, want := range []string{"`workflows` permission", ".github/workflows/", "grant the App installation", "push this change manually", "retrying cannot succeed", "refusing to allow a GitHub App"} {
+	for _, want := range []string{"`workflows`", "`workflow` scope", ".github/workflows/", "grant the GitHub App installation", "push this change manually", "retrying cannot succeed", "refusing to allow a GitHub App"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q missing %q", msg, want)
 		}
