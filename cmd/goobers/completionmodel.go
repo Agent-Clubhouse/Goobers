@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"temporal codec-server": {
+		{name: "listen", takesArg: true, desc: "TLS listener address"},
+		{name: "tls-cert", takesArg: true, desc: "TLS certificate PEM file"},
+		{name: "tls-key", takesArg: true, desc: "TLS private key PEM file"},
+		{name: "allow-origin", takesArg: true, desc: "Exact Temporal Web UI origin"},
+	},
 	"gaggle export": {
 		{name: "output", takesArg: true, desc: "Write the bundle to a file"},
 	},
@@ -242,6 +248,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"doctor": {
 		{name: "psa-namespaces", takesArg: true, desc: "Namespaces for rendered pod admission checks"},
 		{name: "psa-service-account", takesArg: true, desc: "Stage ServiceAccount for rendered pod admission checks"},
+		{name: "temporal-codec", desc: "Report configured Temporal payload codec"},
+		{name: "instance", takesArg: true, desc: "Instance config for Kubernetes Temporal checks"},
 		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
 		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},

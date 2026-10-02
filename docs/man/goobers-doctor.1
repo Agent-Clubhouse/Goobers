@@ -6,7 +6,7 @@ goobers doctor \- preflight a Kubernetes cluster, repository forge policy, or Wi
 \fBgoobers doctor\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
+Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
@@ -14,6 +14,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--psa-namespaces <namespace,...>] [--psa-service-account <name>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
+       goobers doctor --temporal-codec [--report text|json] [instance-root]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --harness-auth [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
@@ -78,6 +79,9 @@ correlate of enforcement — a CNI can serve it and still ignore policies
 silently. This check is API-discovery only; enforcement can only be proven
 by a denied attempt from an in-cluster negative control, never by doctor
 --k8s alone.
+
+--temporal-codec reports per-instance opt-in and strict mode without probing keys.
+--k8s --instance <root> applies the instance Temporal TLS and payload codec.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,

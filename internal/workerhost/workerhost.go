@@ -16,6 +16,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -48,6 +49,8 @@ type Config struct {
 	Namespace string
 	// TLS is the frontend transport security (#5289); nil dials plaintext.
 	TLS *temporaldial.TLS
+	// DataConverter is shared with all instance clients and memo readers.
+	DataConverter converter.DataConverter
 	// TaskQueues are the queues this process serves — one Temporal worker per
 	// queue, all registering the identical engine workflow/activity set.
 	TaskQueues []string
@@ -106,7 +109,9 @@ func New(cfg Config) (*Host, error) {
 		buildID: cfg.BuildVersion,
 		worker:  Identity(cfg.BuildVersion),
 	}}
-	h.dial = bootstrap.DialTemporal
+	h.dial = func(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
+		return bootstrap.DialTemporal(hostPort, namespace, tls, cfg.DataConverter)
+	}
 	h.newWorker = func(c client.Client, taskQueue string, opts worker.Options) managedWorker {
 		w := worker.New(c, taskQueue, opts)
 		bootstrap.RegisterEngine(w, c, cfg.Deps)

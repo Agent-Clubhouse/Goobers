@@ -171,6 +171,7 @@ Advanced operator commands:
   service task-uninstall remove a per-user Windows Scheduled Task supervisor
   speech            preflight and test local speech notifications
   telemetry         configure, test, query, export, mark fixes, prune, or compact telemetry
+  temporal          operate Temporal payload services
   versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
   work-items        List pull requests and issues changed by Goobers.
   worker            host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
@@ -902,7 +903,7 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 
 ### doctor
-Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
+Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
@@ -910,6 +911,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--psa-namespaces <namespace,...>] [--psa-service-account <name>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
+       goobers doctor --temporal-codec [--report text|json] [instance-root]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --harness-auth [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
@@ -974,6 +976,9 @@ correlate of enforcement — a CNI can serve it and still ignore policies
 silently. This check is API-discovery only; enforcement can only be proven
 by a denied attempt from an in-cluster negative control, never by doctor
 --k8s alone.
+
+--temporal-codec reports per-instance opt-in and strict mode without probing keys.
+--k8s --instance <root> applies the instance Temporal TLS and payload codec.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -3115,6 +3120,16 @@ the resolved root must be a real goobers instance.
 
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
+
+### temporal
+Usage: goobers temporal codec-server [flags] [path]
+
+Serve Temporal Web UI payload decoding over TLS with the instance OIDC view role.
+
+### temporal codec-server
+Usage: goobers temporal codec-server --tls-cert <pem> --tls-key <pem> [--listen 127.0.0.1:8444] [--allow-origin https://temporal.example.com] [path]
+
+Requires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POST requires an OIDC bearer token with view permission. Repeat --allow-origin for each exact Web UI origin. No anonymous mode.
 
 ### trace
 Usage: goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]

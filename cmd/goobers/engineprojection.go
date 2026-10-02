@@ -65,7 +65,7 @@ func launchEngineProjection(ctx context.Context, l instance.Layout, cfg *instanc
 	if watermarks != nil {
 		observe = watermarks.Observed
 	}
-	reconciler, err := engine.NewCompletedRunReconciler(c, engineConfig.Namespace, runsDirs, observe)
+	reconciler, err := engine.NewCompletedRunReconciler(c, engineConfig.Namespace, runsDirs, observe, engineClient.DataConverter())
 	if err != nil {
 		return nil, err
 	}

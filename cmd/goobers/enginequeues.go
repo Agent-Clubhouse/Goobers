@@ -30,6 +30,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/internal/temporaldial"
 )
 
@@ -131,7 +132,12 @@ func runEngineQueues(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS)
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		pf(stderr, "error: temporal payload codec: %v\n", err)
+		return 2
+	}
+	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS, dc)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

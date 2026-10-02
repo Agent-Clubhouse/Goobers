@@ -62,7 +62,7 @@ func attachEngineOpenRunResolver(ctx context.Context, client *daemonEngineClient
 	if client == nil || client.Temporal() == nil || guards == nil {
 		return guards, nil, nil
 	}
-	liveness := engine.NewWorkflowLiveness(client.Temporal(), client.Namespace())
+	liveness := engine.NewWorkflowLiveness(client.Temporal(), client.Namespace(), client.DataConverter())
 	// The resolver is installed FIRST and unconditionally: a boot scan that
 	// could not complete must not also cost the daemon its ability to resolve
 	// a scheduled run later, when visibility has recovered.

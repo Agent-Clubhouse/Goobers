@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/bootstrap"
@@ -22,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/temporalcodec"
 )
 
 // enginerunguards.go holds the daemon's guards for runs it does not drive.
@@ -94,8 +96,9 @@ var dialDaemonEngine = bootstrap.DialTemporal
 // type-1/type-2 topology: no client is dialed, and every guard degrades to
 // its pre-existing behaviour because no run can be engine-driven.
 type daemonEngineClient struct {
-	client    client.Client
-	namespace string
+	client        client.Client
+	namespace     string
+	dataConverter converter.DataConverter
 }
 
 // newDaemonEngineClient dials the daemon's shared Temporal client, or returns
@@ -105,11 +108,25 @@ func newDaemonEngineClient(cfg *instance.Config) (*daemonEngineClient, error) {
 		return nil, nil
 	}
 	engineConfig := cfg.EffectiveEngineConfig()
-	c, err := dialDaemonEngine(engineConfig.HostPort, engineConfig.Namespace, engineConfig.TLS)
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		return nil, err
+	}
+	c, err := dialDaemonEngine(engineConfig.HostPort, engineConfig.Namespace, engineConfig.TLS, dc)
 	if err != nil {
 		return nil, fmt.Errorf("dial temporal at %s: %w", engineConfig.HostPort, err)
 	}
-	return &daemonEngineClient{client: c, namespace: engineConfig.Namespace}, nil
+	return &daemonEngineClient{client: c, namespace: engineConfig.Namespace, dataConverter: dc}, nil
+}
+
+// DataConverter returns the converter shared by this client's memo readers.
+// Nil clients occur in local mode and test seams; reader constructors retain
+// their legacy default in that case.
+func (e *daemonEngineClient) DataConverter() converter.DataConverter {
+	if e == nil {
+		return nil
+	}
+	return e.dataConverter
 }
 
 // Temporal returns the shared client, or nil when no engine is configured.

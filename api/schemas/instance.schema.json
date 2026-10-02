@@ -217,7 +217,7 @@
       "$ref": "#/$defs/portal"
     },
     "temporal": {
-      "description": "Temporal payload codec library settings. Runtime client activation is a separate integration step; declaring this block alone currently does not encrypt history.",
+      "description": "Instance-wide Temporal payload encryption. A keyRef enables the shared codec on every client and memo reader; absent keyRef preserves the SDK default and plaintext payload bytes.",
       "type": "object", "additionalProperties": false,
       "properties": {
         "payloadCodec": {

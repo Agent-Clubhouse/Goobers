@@ -6,6 +6,7 @@ import (
 
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/goobers/goobers/internal/temporaldial"
@@ -35,9 +36,9 @@ func (d dialedTemporalClient) Close() { d.c.Close() }
 // defaultDialTemporal dials through the shared temporaldial constructor
 // (#5289) with the check's TLS options; nil tls is the plaintext dial. The
 // namespace is left empty, as before: DescribeNamespace names it explicitly.
-func defaultDialTemporal(tls *temporaldial.TLS) func(context.Context, string) (temporalNamespaceDescriber, error) {
-	return func(_ context.Context, hostPort string) (temporalNamespaceDescriber, error) {
-		c, err := temporaldial.Dial(context.Background(), hostPort, "", tls)
+func defaultDialTemporal(tls *temporaldial.TLS, dc ...converter.DataConverter) func(context.Context, string) (temporalNamespaceDescriber, error) {
+	return func(ctx context.Context, hostPort string) (temporalNamespaceDescriber, error) {
+		c, err := temporaldial.Dial(ctx, hostPort, "", tls, dc...)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +73,7 @@ func checkTemporalNamespace(ctx context.Context, _ kubernetes.Interface, opts Op
 	}
 	dial := opts.DialTemporal
 	if dial == nil {
-		dial = defaultDialTemporal(opts.TemporalTLS)
+		dial = defaultDialTemporal(opts.TemporalTLS, opts.TemporalDataConverter)
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout())
 	defer cancel()

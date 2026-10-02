@@ -2,9 +2,7 @@ package instance
 
 import "fmt"
 
-// TemporalConfig declares Temporal-specific library configuration. Runtime
-// activation is a separate integration step; this declaration alone does not
-// change the data converter used by existing Temporal clients.
+// TemporalConfig declares the instance-wide Temporal payload configuration.
 type TemporalConfig struct {
 	PayloadCodec *PayloadCodecConfig `json:"payloadCodec,omitempty" yaml:"payloadCodec,omitempty"`
 }
