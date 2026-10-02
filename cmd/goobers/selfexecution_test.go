@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
@@ -57,5 +59,77 @@ func TestSelfExecutionMigrationListsEveryLocalWorkStage(t *testing.T) {
 	}
 	if strings.Contains(reason, "check") {
 		t.Fatal("automated bookkeeping reported as workflow process work")
+	}
+}
+
+func TestWorkerSelfExecutionAdmissionInitializesWithoutWatcher(t *testing.T) {
+	for _, policy := range []string{"", "allow", "deny"} {
+		t.Run("policy="+policy, func(t *testing.T) {
+			root := initDemo(t)
+			if policy != "" {
+				path := filepath.Join(root, "instance.yaml")
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = append(data, []byte("\nplacement:\n  selfExecution: "+policy+"\n")...)
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			seams, err := newWorkerSeams(root, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if seams.snapshot.Load() != nil {
+				t.Fatal("fixture skipped first-use snapshot initialization")
+			}
+			var deps bootstrap.EngineDeps
+			wireWorkerRuntimeSeams(&deps, seams, t.TempDir())
+			// No watcher, daemon API, workspace, or executor has initialized the
+			// snapshot: this is the first local activity's admission callback.
+			err = deps.AdmitSelfExecution("startup:work")
+			var refusal *runner.SelfExecutionRefusal
+			if policy == "deny" {
+				if !errors.As(err, &refusal) {
+					t.Fatalf("deny did not refuse first activity: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("allow refused first activity without watcher: %v", err)
+			}
+			snapshot := seams.snapshot.Load()
+			if snapshot == nil || snapshot.cfg == nil {
+				t.Fatal("first admission did not publish a trusted snapshot")
+			}
+			stats := snapshot.cfg.SelfExecutionStats()
+			if policy == "deny" {
+				if stats.Placements != 0 || stats.Refusals != 1 {
+					t.Fatalf("deny accounting: %+v", stats)
+				}
+			} else if stats.Placements != 1 || stats.Refusals != 0 {
+				t.Fatalf("allow accounting: %+v", stats)
+			}
+		})
+	}
+}
+
+func TestWorkerSelfExecutionFirstLoadErrorDoesNotBecomePolicyRefusal(t *testing.T) {
+	root := initDemo(t)
+	seams, err := newWorkerSeams(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), []byte("kind: [broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var deps bootstrap.EngineDeps
+	wireWorkerRuntimeSeams(&deps, seams, t.TempDir())
+	err = deps.AdmitSelfExecution("startup:work")
+	var refusal *runner.SelfExecutionRefusal
+	if err == nil || errors.As(err, &refusal) || !strings.Contains(err.Error(), "load instance config") {
+		t.Fatalf("first snapshot load error: %v", err)
+	}
+	if seams.snapshot.Load() != nil {
+		t.Fatal("failed snapshot was published")
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -33,4 +35,33 @@ func selfExecutionMigrationReason(def workflow.Definition) string {
 	}
 	sort.Strings(stages)
 	return "; workflow work resolves to self: [" + strings.Join(stages, ", ") + "]; configure non-self runners and agentic gate runsOn before enabling placement.selfExecution: deny"
+}
+
+// admitSelfExecution shares first-use snapshot initialization with the executor
+// seams. Admission runs before those seams and must work without a reload
+// watcher (including --config-reload-interval 0).
+func (w *workerSeams) admitSelfExecution(stage string) error {
+	snapshot := w.snapshot.Load()
+	if snapshot == nil {
+		if w.root == "" {
+			return engine.ErrNotConfigured
+		}
+		w.mu.Lock()
+		var err error
+		snapshot, err = w.currentSnapshotLocked()
+		w.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+	if snapshot.cfg == nil {
+		return engine.ErrNotConfigured
+	}
+	cfg := snapshot.cfg
+	denied := cfg.SelfExecutionDenied()
+	cfg.ObserveSelfExecution(denied)
+	if denied {
+		return &runner.SelfExecutionRefusal{Stage: stage}
+	}
+	return nil
 }

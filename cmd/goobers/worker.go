@@ -13,13 +13,11 @@ import (
 
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
-	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/version"
@@ -436,19 +434,7 @@ func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string,
 }
 
 func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
-	deps.AdmitSelfExecution = func(stage string) error {
-		snapshot := seams.snapshot.Load()
-		if snapshot == nil || snapshot.cfg == nil {
-			return engine.ErrNotConfigured
-		}
-		cfg := snapshot.cfg
-		denied := cfg.SelfExecutionDenied()
-		cfg.ObserveSelfExecution(denied)
-		if denied {
-			return &runner.SelfExecutionRefusal{Stage: stage}
-		}
-		return nil
-	}
+	deps.AdmitSelfExecution = seams.admitSelfExecution
 	deps.Goober = seams.Agentic()
 	deps.Det = seams.Deterministic()
 	deps.Auto = seams.Automated()
