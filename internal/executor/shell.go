@@ -819,8 +819,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	resultFile, implicitResultFile := effectiveResultFile(env, command)
 	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
-	registry, scrubber := journal.DefaultScrubber()
-	registerJournalPlane(ctx, registry)
+	registry, scrubber := publicationScrubber(ctx)
+	defer e.publishNamedResult(ctx, env, scrubber, &outcome, &retErr)
 	// Only a stage whose command IS the goobers CLI receives the run's
 	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
 	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)

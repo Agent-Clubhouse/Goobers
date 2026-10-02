@@ -4571,6 +4571,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 // value rather than as two parallel argument lists that drift apart field by
 // field (#4235) — the same reason walk takes a *walkState.
 type taskFrame struct {
+	artifactVisit   uint64
 	jr              executionJournal
 	in              StartInput
 	ex              *executors
@@ -4700,7 +4701,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
-		if err := jr.Append(taskStartedEvent(t, int(attempt), class)); err != nil {
+		if err := tf.recordTaskStarted(int(attempt), class); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
@@ -5210,15 +5211,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		return apiv1.ResultEnvelope{}, nil, nil, coded
 	}
-	env.MinimumIntegrity = t.MinimumIntegrity
-	env.Attempt = int32(attempt)
-	env.OwnershipBoundary = "task:" + t.Name
-	env.PolicyActions = append([]string(nil), t.PolicyActions...)
-	env.NestedAgentPolicy = t.NestedAgentPolicy
-	if t.NestedAgentPolicy != nil {
-		parent := apiv1.StagePlatformAuthority(env, "result")
-		env.ParentPlatformPolicy = &parent
-	}
+	tf.pinPublicationAuthority(&env, attempt)
 	env.InstructionAddendum = instructionAddendum
 	if t.Type == apiv1.TaskAgentic {
 		errorClass := ""

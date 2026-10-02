@@ -15,7 +15,7 @@
         "type": "object", "additionalProperties": false,
         "required": ["name", "path", "mediaType"],
         "properties": {
-          "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Unique semantic key, sorted by the runner before assigning slots."},
+          "name": {"type": "string", "pattern": "^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$", "description": "Unique semantic key, sorted by the runner before assigning slots."},
           "path": {"$ref": "artifact-pointer.schema.json#/properties/path", "description": "Workspace-relative regular file; runtime checks symlink containment and byte limits."},
           "mediaType": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Payload format; unsupported or unsafe formats fail the media-aware sanitizer."}
         }

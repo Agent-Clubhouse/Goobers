@@ -462,6 +462,10 @@ func (e *Executor) DeliverOperatorMessage(ctx context.Context, req invoke.Operat
 // Invoke/Review should surface as ResultFailure/VerdictFail, vs. anything
 // else, which callers must propagate as a hard executor error instead.
 func declaredArtifactFailure(err error) (code, summary string, ok bool) {
+	var publication *artifactset.PublicationError
+	if errors.As(err, &publication) {
+		return publication.Code, publication.Error(), true
+	}
 	switch {
 	case errors.Is(err, artifactset.ErrInvalid):
 		return "invalid_declared_artifact_set", "declared artifact set is invalid", true

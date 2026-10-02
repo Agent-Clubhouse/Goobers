@@ -333,8 +333,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		taskDispatches[t.Name]++
-		attemptEnv := env
-		attemptEnv.Attempt = int32(attempt)
+		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
