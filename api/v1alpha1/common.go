@@ -52,7 +52,7 @@ type RepoRef struct {
 	Provider Provider `json:"provider" yaml:"provider"`
 	// BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
 	// required when provider=gitea (self-hosted Gitea has no fixed host) and
-	// omitted for ado. It is rejected for github: GitHub Enterprise Server is
+	// omitted for ado. goobers validate rejects it for github: GitHub Enterprise Server is
 	// unsupported, so a github reference always means github.com (#6347).
 	// +optional
 	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
@@ -119,7 +119,7 @@ type BacklogRef struct {
 	Provider Provider `json:"provider" yaml:"provider"`
 	// BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
 	// required when provider=gitea (self-hosted Gitea has no fixed host) and
-	// omitted for ado. It is rejected for github: GitHub Enterprise Server is
+	// omitted for ado. goobers validate rejects it for github: GitHub Enterprise Server is
 	// unsupported, so a github reference always means github.com (#6347).
 	// +optional
 	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
