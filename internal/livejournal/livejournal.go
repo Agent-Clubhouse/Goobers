@@ -1104,6 +1104,15 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			}
 			ev.Ref = &ref
 		}
+		if ev.TerminalCause != nil && ev.TerminalCause.CausalEmitKey != "" {
+			cause := *ev.TerminalCause
+			seq, ok := run.keys[cause.CausalEmitKey]
+			if !ok {
+				return false, fmt.Errorf("terminal cause references unrecorded emit key %q", cause.CausalEmitKey)
+			}
+			cause.CausalEventSeq = seq
+			ev.TerminalCause = &cause
+		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
 		if err := run.jr.Append(ev); err != nil {
 			return false, err

@@ -354,7 +354,9 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// workflow.
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error(), err)
-			rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced)
+			if causeErr := rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced, ""); causeErr != nil {
+				return RunResult{}, errors.Join(err, causeErr)
+			}
 			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
 			return RunResult{}, terminalWorkflowFailure(err)
@@ -384,7 +386,10 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
-		rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced)
+		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runner.RunCanceledErrorCode
+		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
+			return RunResult{}, errors.Join(err, causeErr)
+		}
 		hitl.noteTerminal()
 		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
@@ -409,7 +414,9 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	if res.NoWork {
 		disposition = journal.RunDispositionNoWork
 	}
-	rec.runFinished(ctx, phase, disposition)
+	if err := rec.runFinished(ctx, phase, disposition, res.FinalState); err != nil {
+		return RunResult{}, err
+	}
 	hitl.noteTerminal()
 	rec.emitTerminal(ctx)
 	return res, nil

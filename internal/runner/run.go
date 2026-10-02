@@ -3243,6 +3243,16 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 		Error:  journal.ErrorDetailFor("run_failed", origErr),
 		Runner: terminalRunner,
 	})
+	terminalCause := newTerminalCause(journal.PhaseFailed)
+	terminalCause.Code, terminalCause.Message, terminalCause.CausalEventSeq = failureCode, message, jr.Seq()
+	var dispatch *dispatchTerminalError
+	if errors.As(origErr, &dispatch) {
+		terminalCause.SelectorKind, terminalCause.Selector = "stage", dispatch.stage
+		terminalCause.Retry = &journal.TerminalBudget{Consumed: max(0, dispatch.attempts-1), Allowed: max(0, dispatch.limit-1)}
+		if dispatch.class == journal.AttemptPolicy && dispatch.limit > 1 {
+			terminalCause.Classification = journal.TerminalRetryExhaustion
+		}
+	}
 	// #1054: leave a human-visible trace on the driving item before finish()'s
 	// FinalizeTerminal releases the run's claims — this walk-level path is the
 	// harness-timeout terminal (a dispatch-level runTask error routed here from
@@ -3253,7 +3263,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
-	res, ferr := r.finish(runID, jr, journal.PhaseFailed, finalState, steps)
+	res, ferr := r.finishWithDisposition(runID, jr, journal.PhaseFailed, finalState, steps, journal.RunDispositionProduced, terminalCause)
 	// FailureStage/Code/Message (issue #710) are populated on the RETURNED
 	// Result regardless of the append's own outcome — even a best-effort
 	// diagnostic-append failure must not silently drop the cause the caller
@@ -3311,6 +3321,13 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 		// never doubly.
 		return r.failTerminal(ctx, runID, jr, repoRef, stage, steps, fmt.Errorf("runner: journal failure cause for %q: %w", stage, aerr))
 	}
+	terminalCause := newTerminalCause(journal.PhaseFailed)
+	terminalCause.Classification = journal.TerminalStageFailure
+	terminalCause.SelectorKind, terminalCause.Selector = "stage", stage
+	terminalCause.Code, terminalCause.Message, terminalCause.CausalEventSeq = code, message, jr.Seq()
+	if telemetry.ClassifyError(code).InfraFault() {
+		terminalCause.Classification = journal.TerminalInfrastructureFailure
+	}
 	// #1054: leave a human-visible trace on the driving item for a stage-reported
 	// terminal failure too, before finish()'s FinalizeTerminal releases claims.
 	// The code-prefixed journaledMessage is the run's terminal cause.
@@ -3318,7 +3335,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, stage, steps); stalled {
 		return stalledResult, stalledErr
 	}
-	res, err := r.finish(runID, jr, journal.PhaseFailed, stage, steps)
+	res, err := r.finishWithDisposition(runID, jr, journal.PhaseFailed, stage, steps, journal.RunDispositionProduced, terminalCause)
 	res.FailureStage, res.FailureCode, res.FailureMessage = stage, code, boundFailureMessage(message)
 	if err == nil && nerr != nil {
 		err = nerr
@@ -4214,11 +4231,11 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 	return r.finishWithDisposition(runID, jr, phase, finalState, steps, journal.RunDispositionProduced)
 }
 
-func (r *Runner) finishWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string) (Result, error) {
+func (r *Runner) finishWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string, causes ...*journal.TerminalCause) (Result, error) {
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
-	return r.finishTakeoverWithDisposition(runID, jr, phase, finalState, steps, disposition)
+	return r.finishTakeoverWithDisposition(runID, jr, phase, finalState, steps, disposition, causes...)
 }
 
 func terminalDisposition(noWork bool) string {
@@ -4234,7 +4251,16 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 	return r.finishTakeoverWithDisposition(runID, jr, phase, finalState, steps, journal.RunDispositionProduced)
 }
 
-func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string) (Result, error) {
+func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int, disposition string, causes ...*journal.TerminalCause) (Result, error) {
+	var supplied *journal.TerminalCause
+	if len(causes) > 0 {
+		supplied = causes[0]
+	}
+	cause, err := captureTerminalCause(jr, phase, finalState, supplied)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: capture terminal cause: %w", err)
+	}
+
 	// Pinned-workspace bookkeeping is diagnostic state, not the run's terminal
 	// record. A local I/O failure here must be surfaced, but it must not strand
 	// the run before run.finished and FinalizeTerminal release its claims.
@@ -4252,7 +4278,7 @@ func (r *Runner) finishTakeoverWithDisposition(runID string, jr *journal.Run, ph
 	// returned to the caller AFTER terminalization so nothing is silently
 	// swallowed.
 	prepareErr := r.prepareTerminal(runID, phase, jr)
-	terminal := journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition}
+	terminal := journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition, TerminalCause: cause}
 	if err := jr.Append(terminal); err != nil {
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
@@ -4815,7 +4841,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 				continue
 			}
 			err := fmt.Errorf("runner: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
-			return apiv1.ResultEnvelope{}, nil, err
+			return apiv1.ResultEnvelope{}, nil, &dispatchTerminalError{err: err, stage: t.Name, class: failureClass, attempts: int(retryCount), limit: int(retryLimit)}
 		}
 
 		if prepareErr := r.prepareTaskResult(ctx, jr, t, &result, upstream, &in, tf, int(attempt), class); prepareErr != nil {

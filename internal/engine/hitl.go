@@ -917,7 +917,9 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 		return hitlResumePlan{}, false, false, nil
 	}
 	s.terminal = out
-	s.recordTerminal(ctx, out)
+	if err := s.recordTerminal(ctx, out); err != nil {
+		return hitlResumePlan{}, false, false, err
+	}
 	s.wroteTerminal = true
 	s.phase = hitlPhaseAwaiting
 	s.deadline = workflow.Now(ctx).Add(s.policy.wait())
@@ -960,7 +962,7 @@ func (s *hitlSession) settle(ctx workflow.Context, out RunResult) (plan hitlResu
 // generation. It is the same pair of writes run() makes, lifted here so a
 // terminal that is about to be held open is journaled before the hold rather
 // than after it.
-func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) {
+func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) error {
 	if out.Status == StatusFailed {
 		s.rec.runFailedCause(ctx, out.FinalState, out.FailureCode, out.FailureMessage)
 	}
@@ -970,9 +972,12 @@ func (s *hitlSession) recordTerminal(ctx workflow.Context, out RunResult) {
 		// which map. Defensive only.
 		phase = journal.PhaseFailed
 	}
-	s.rec.runFinished(ctx, phase, journal.RunDispositionProduced)
+	if err := s.rec.runFinished(ctx, phase, journal.RunDispositionProduced, out.FinalState); err != nil {
+		return err
+	}
 	s.generation++
 	s.rec.emitTerminal(ctx)
+	return nil
 }
 
 // noteTerminal records a terminal run() wrote itself, so the generation the
