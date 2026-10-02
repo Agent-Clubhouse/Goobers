@@ -1294,7 +1294,8 @@ func runCopilotCompletionRepair(
 	}
 	remaining := totalTimeout - time.Since(started)
 	if remaining <= 0 {
-		return result, payload, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]), nil
+		runErr, keptErr := repairExit(completionErr, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]))
+		return result, payload, runErr, keptErr
 	}
 
 	recoveryArgv := append([]string(nil), argv...)
@@ -1320,7 +1321,8 @@ func runCopilotCompletionRepair(
 	})
 	result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 	if err != nil {
-		return result, payload, err, nil
+		runErr, keptErr := repairExit(completionErr, err)
+		return result, payload, runErr, keptErr
 	}
 
 	payload, completionErr = readCopilotCompletionWithSessionFallback(
