@@ -75,3 +75,42 @@ func TestIntegrationRecoveryMirrorOfflineRetryAndRefresh(t *testing.T) {
 		t.Fatal("normal refresh did not populate the initialized mirror")
 	}
 }
+
+// Regression for #6306: the publish path fetches a pod delta's missing base
+// into an initialized-but-empty recovery mirror through the credentialed
+// remote path, without pruning recovery pins.
+func TestIntegrationFetchRecoveryBasePopulatesEmptyMirror(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	source := newSourceRepo(t)
+	base := strings.TrimSpace(runTestGit(t, source, "rev-parse", "HEAD"))
+	remoteCalls := 0
+	m, err := NewManager(t.TempDir(), WithRemoteGitGate(func(context.Context, string) error {
+		remoteCalls++
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = m.WithRecoveryMirror(ctx, source, func(dir string) error {
+		if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", base+"^{commit}"); err == nil {
+			t.Fatal("fresh recovery mirror already contained the base")
+		}
+		if err := m.FetchRecoveryBase(ctx, source, dir, base); err != nil {
+			return err
+		}
+		if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", base+"^{commit}"); err != nil {
+			t.Fatalf("base still missing after fetch: %v", err)
+		}
+		if err := m.FetchRecoveryBase(ctx, source, dir, strings.Repeat("f", 40)); err == nil {
+			t.Fatal("unreachable base reported present")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteCalls == 0 {
+		t.Fatal("base fetch bypassed the remote git gate")
+	}
+}

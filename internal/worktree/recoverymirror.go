@@ -52,8 +52,13 @@ func (m *Manager) FetchRecoveryBase(ctx context.Context, repoURL, dir, sha strin
 	if repoURL == "" || dir == "" || sha == "" {
 		return fmt.Errorf("recovery base fetch requires repository, mirror and commit")
 	}
-	if err := m.fetchMirror(ctx, repoURL, dir, true); err != nil {
-		return fmt.Errorf("fetch recovery base: %w", err)
+	// Fetch only the base commit first: a heads/tags refresh of a large
+	// repository can exceed the pod's bounded publication deadline. Forges
+	// that refuse unadvertised SHAs fall back to the narrow mirror refresh.
+	if shaErr := m.runRemoteGit(ctx, repoURL, dir, "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha); shaErr != nil {
+		if err := m.fetchMirror(ctx, repoURL, dir, true); err != nil {
+			return fmt.Errorf("fetch recovery base: %w", errors.Join(shaErr, err))
+		}
 	}
 	if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", sha+"^{commit}"); err != nil {
 		return fmt.Errorf("recovery base commit %s not reachable from origin heads or tags: %w", sha, err)
