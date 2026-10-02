@@ -38,6 +38,73 @@
       "type": "string",
       "pattern": "^[0-9a-f]{32}$"
     },
+    "mutationHistory": {
+      "description": "Frozen semantic intent/completion evidence from the continuation lineage. Metadata only; never authorizes mutation replay or suppression.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "id",
+          "runId",
+          "mutation",
+          "phase"
+        ],
+        "properties": {
+          "schema": {
+            "const": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phase": {
+            "enum": [
+              "intent",
+              "completed"
+            ]
+          },
+          "mutation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "repository",
+              "action",
+              "target",
+              "contentDigest"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "repository": {
+                "type": "string",
+                "minLength": 1
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contentDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
     "sourceTerminalSeq": {
       "description": "The immutable terminal journal sequence selected from the source run.",
       "type": "integer",

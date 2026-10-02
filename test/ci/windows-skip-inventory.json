@@ -535,6 +535,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/mutationreceipt",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral semantic hashing and capture contracts; exercised by Linux unit shards. File durability uses the existing mutationsidecar platform primitives."
+    },
+    {
       "package": "internal/mutationsidecar",
       "coverage": "none",
       "category": "not-selected",
