@@ -100,14 +100,14 @@ func TestCacheEvictsAndExpires(t *testing.T) {
 	now := time.Now()
 	g.now = func() time.Time { return now }
 	ctx := context.Background()
-	g.JudgeNoul(ctx, ClaimQuestion, "a", claimQuestion)
-	g.JudgeNoul(ctx, ClaimQuestion, "b", claimQuestion)
-	g.JudgeNoul(ctx, ClaimQuestion, "a", claimQuestion)
+	_, _ = g.JudgeNoul(ctx, ClaimQuestion, "a", claimQuestion)
+	_, _ = g.JudgeNoul(ctx, ClaimQuestion, "b", claimQuestion)
+	_, _ = g.JudgeNoul(ctx, ClaimQuestion, "a", claimQuestion)
 	if f.calls.Load() != 3 {
 		t.Fatalf("eviction: calls = %d, want 3", f.calls.Load())
 	}
 	now = now.Add(2 * time.Hour)
-	g.JudgeNoul(ctx, ClaimQuestion, "a", claimQuestion)
+	_, _ = g.JudgeNoul(ctx, ClaimQuestion, "a", claimQuestion)
 	if f.calls.Load() != 4 {
 		t.Fatalf("expiry: calls = %d, want 4", f.calls.Load())
 	}

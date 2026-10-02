@@ -52,7 +52,8 @@ func TestSampledStable(t *testing.T) {
 	if !Sampled("a", 0) || !Sampled("a", 1) {
 		t.Fatal("0 and 1 mean all")
 	}
-	if Sampled("run-1", 0.5) != Sampled("run-1", 0.5) {
+	first := Sampled("run-1", 0.5)
+	if second := Sampled("run-1", 0.5); first != second {
 		t.Fatal("unstable")
 	}
 	n := 0
