@@ -518,6 +518,12 @@ jobs:
           else
             shasum -a 256 --check selected-checksum
           fi
+          {
+            echo "### Native smoke: $TARGET"
+            echo "- runner: \`$RUNNER_OS/$RUNNER_ARCH\` (uname -m: \`$(uname -m)\`)"
+            echo "- archive: \`$archive\`"
+            echo "- tested sha256: \`$(awk '{ print $1 }' selected-checksum)\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           mkdir native-smoke
           if [[ "$extension" == zip ]]; then
             unzip -q "$archive" -d native-smoke
