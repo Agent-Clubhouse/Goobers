@@ -1162,6 +1162,7 @@ func TestCompiledMachinesRejectsInvalidGooberRuntimeConfig(t *testing.T) {
 				nil,
 				false,
 				nil,
+				nil,
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("compiledMachinesWithWarnings error = %v, want %q", err, tc.want)
@@ -1185,6 +1186,7 @@ func TestCompiledMachinesWarnsAndAdmitsModelFallback(t *testing.T) {
 		harness.EnvironmentConfig{},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -1234,6 +1236,7 @@ func TestCompiledMachinesThreadsModelCredentialIntoAdmissionDiscovery(t *testing
 			credentialCalls++
 			return "pat-from-file-ref", nil
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("compiledMachinesWithWarnings: %v", err)
@@ -1285,6 +1288,7 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 		harness.EnvironmentConfig{ExtraAllowlist: []string{"COPILOT_HOME"}},
 		nil,
 		false,
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -2533,6 +2537,7 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 	}
 
 	machines, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false,
+		nil,
 		nil,
 	)
 	if err != nil {

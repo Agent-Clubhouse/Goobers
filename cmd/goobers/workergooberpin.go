@@ -295,6 +295,10 @@ func newGooberDigestIndex(
 				// any credential is ever consulted, so resolving one here would
 				// be pure overhead on this hot per-reload path (#4292).
 				nil,
+				// nil: the connector check (#4475) is an authoring-time
+				// rejection the daemon already applied; it never changes a
+				// digest, so re-running it here could only refuse attempts.
+				nil,
 				func(gaggle string, _ map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 					return skillPackages[gaggle], nil
 				},
