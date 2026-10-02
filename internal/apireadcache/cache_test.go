@@ -3,6 +3,7 @@ package apireadcache
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -323,17 +324,37 @@ func TestAPIReadCacheNoETagNotCached(t *testing.T) {
 func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
 	const body = `[{"number":1},{"number":2},{"number":3}]`
 	var requests atomic.Int32
+	firstFetch := make(chan struct{})
+	releaseFetch := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFetch) }) }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		time.Sleep(10 * time.Millisecond) // Intentionally keeps requests overlapping to exercise cache coalescing.
+		if requests.Add(1) == 1 {
+			close(firstFetch)
+			select {
+			case <-releaseFetch:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		_, _ = io.WriteString(w, body)
 	}))
 	defer srv.Close()
+	defer release()
 
 	dir := t.TempDir()
 	url := srv.URL + "/repos/acme/app/issues?state=open"
 	const consumers = 20
 	results := make(chan string, consumers)
+	// This test asserts successful coalescing, independently of the production
+	// fail-open deadline. A separate test below exercises that one-second budget.
+	lockBudget := time.Minute
+	if deadline, ok := t.Deadline(); ok {
+		lockBudget = time.Until(deadline)
+	}
+	start := make(chan struct{})
+	var entered sync.WaitGroup
+	entered.Add(consumers)
 	var wg sync.WaitGroup
 	for range consumers {
 		wg.Add(1)
@@ -345,7 +366,11 @@ func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
 				return
 			}
 			req.Header.Set("Authorization", "Bearer tok")
-			resp, err := newAPIReadCache(dir, "tick-1", &http.Client{}).Do(req)
+			cache := newAPIReadCache(dir, "tick-1", &http.Client{})
+			cache.lockBudget = lockBudget
+			<-start
+			entered.Done()
+			resp, err := cache.Do(req)
 			if err != nil {
 				results <- "request error: " + err.Error()
 				return
@@ -359,6 +384,14 @@ func TestAPIReadCacheSharesListSnapshotAcrossConsumers(t *testing.T) {
 			results <- string(got)
 		}()
 	}
+	close(start)
+	select {
+	case <-firstFetch:
+	case <-t.Context().Done():
+		t.Fatal("first snapshot fetch never started")
+	}
+	entered.Wait()
+	release()
 	wg.Wait()
 	close(results)
 	for got := range results {
@@ -675,5 +708,101 @@ func TestCleanStaleAPIReadCacheLocksSweepsAcrossRepeatedCallsWithoutRestart(t *t
 	}
 	if len(entriesBefore) != len(entriesAfter) {
 		t.Fatalf("directory entry count changed on a no-op sweep: before=%d after=%d", len(entriesBefore), len(entriesAfter))
+	}
+}
+
+// A snapshot waiter may intentionally issue its own live request after the
+// production lock budget expires. That policy is separate from coalescing.
+func TestAPIReadCacheSnapshotDeadlineFallsBackToLiveRequest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var requests atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(entered)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		} else {
+			unblock()
+		}
+		_, _ = io.WriteString(w, `[{"number":1}]`)
+	}))
+	defer server.Close()
+	defer unblock()
+	dir := t.TempDir()
+	url := server.URL + "/repos/acme/app/issues?state=open"
+	client := &http.Client{Timeout: apiReadHTTPTimeout}
+	type fetchResult struct {
+		body string
+		err  error
+	}
+	fetch := func(cache *apiReadCache) <-chan fetchResult {
+		results := make(chan fetchResult, 1)
+		go func() {
+			result := fetchResult{}
+			defer func() { results <- result }()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				result.err = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer tok")
+			response, err := cache.Do(req)
+			if err != nil {
+				result.err = err
+				return
+			}
+			body, err := io.ReadAll(response.Body)
+			result.body = string(body)
+			result.err = errors.Join(err, response.Body.Close())
+		}()
+		return results
+	}
+	first := fetch(newAPIReadCache(dir, "tick-1", client))
+	select {
+	case <-entered:
+	case result := <-first:
+		t.Fatalf("first provider read ended before entering handler: %v", result.err)
+	case <-ctx.Done():
+		t.Fatalf("first provider read never started: %v", ctx.Err())
+	}
+	cache := newAPIReadCache(dir, "tick-1", client)
+	if cache.lockBudget != time.Second {
+		t.Fatalf("production lock budget=%s, want 1s", cache.lockBudget)
+	}
+	started := time.Now()
+	var second fetchResult
+	select {
+	case second = <-fetch(cache):
+		if second.err != nil {
+			t.Fatalf("fallback request: %v", second.err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("fallback request timed out: %v", ctx.Err())
+	}
+	if elapsed := time.Since(started); elapsed < cache.lockBudget {
+		t.Fatalf("fallback after %s, before lock budget %s", elapsed, cache.lockBudget)
+	}
+	var firstResult fetchResult
+	select {
+	case firstResult = <-first:
+		if firstResult.err != nil {
+			t.Fatalf("first request: %v", firstResult.err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("first request did not finish: %v", ctx.Err())
+	}
+	if firstResult.body != `[{"number":1}]` || second.body != firstResult.body {
+		t.Fatalf("snapshot bodies=%q %q", firstResult.body, second.body)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("provider reads=%d, want first plus bounded fallback", got)
 	}
 }
