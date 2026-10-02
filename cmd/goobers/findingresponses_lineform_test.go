@@ -109,7 +109,7 @@ func TestParseFindingResponsesRejectsGarbage(t *testing.T) {
 func TestValidateFindingResponsesLineFormEnforcesRules(t *testing.T) {
 	findings := makeFindings(2)
 
-	ok, err := validateFindingResponses(findings, "1: addressed: did the thing\n2: declined: not in scope")
+	ok, err := validateFindingResponses(findings, nil, "1: addressed: did the thing\n2: declined: not in scope")
 	if err != nil {
 		t.Fatalf("valid line form rejected: %v", err)
 	}
@@ -117,13 +117,13 @@ func TestValidateFindingResponsesLineFormEnforcesRules(t *testing.T) {
 		t.Fatalf("got %d dispositions, want 2", len(ok))
 	}
 
-	if _, err := validateFindingResponses(findings, "1: addressed: did the thing"); err == nil {
+	if _, err := validateFindingResponses(findings, nil, "1: addressed: did the thing"); err == nil {
 		t.Fatal("accepted a response set covering only one of two findings")
 	}
-	if _, err := validateFindingResponses(findings, "1: fixed: did the thing\n2: declined: nope"); err == nil {
+	if _, err := validateFindingResponses(findings, nil, "1: fixed: did the thing\n2: declined: nope"); err == nil {
 		t.Fatal("accepted an invalid disposition word")
 	}
-	if _, err := validateFindingResponses(findings, "1: addressed: \n2: declined: nope"); err == nil {
+	if _, err := validateFindingResponses(findings, nil, "1: addressed: \n2: declined: nope"); err == nil {
 		t.Fatal("accepted an empty detail")
 	}
 }
