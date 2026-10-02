@@ -325,12 +325,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/fleet",
-      "coverage": "none",
-      "category": "windows-source-unrun",
-      "reason": "Has storage_windows.go and storage_windows_test.go, which compile in the gate's go vet but never execute on a Windows runner. Candidate for a whole-package gate step."
-    },
-    {
       "package": "internal/fleetdiagnostics",
       "coverage": "none",
       "category": "not-selected",
