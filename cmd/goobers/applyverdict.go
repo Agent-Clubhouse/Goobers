@@ -544,14 +544,30 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
 		return 1
 	}
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	advisoryMode, err := parseProviderBoolInput(
+		"advisoryMode",
+		"false",
+		false,
+		func(_ string, _ bool) bool { return true },
+		func(_ string, parseErr error) string {
+			return fmt.Sprintf("invalid advisoryMode input: %v", parseErr)
+		},
+	)
 	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	publishAdvisory, err := strconv.ParseBool(providerInput("publishAdvisory", "true"))
+	publishAdvisory, err := parseProviderBoolInput(
+		"publishAdvisory",
+		"true",
+		false,
+		func(_ string, _ bool) bool { return true },
+		func(_ string, parseErr error) string {
+			return fmt.Sprintf("invalid publishAdvisory input: %v", parseErr)
+		},
+	)
 	if err != nil {
-		pf(stderr, "error: invalid publishAdvisory input: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
@@ -1855,7 +1871,15 @@ func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int
 }
 
 func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
-	advisoryMode, _ := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	advisoryMode, _ := parseProviderBoolInput(
+		"advisoryMode",
+		"false",
+		false,
+		func(_ string, _ bool) bool { return true },
+		func(_ string, parseErr error) string {
+			return fmt.Sprintf("invalid advisoryMode input: %v", parseErr)
+		},
+	)
 	out := map[string]string{
 		"selectedNumber":            strconv.Itoa(selectedNumber),
 		"selectedHeadSha":           headSHA,

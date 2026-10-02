@@ -7,7 +7,6 @@ import (
 	"flag"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
@@ -56,8 +55,16 @@ func runCancelPendingCIWithProvider(
 		pf(stderr, "error: pullNumber and headSha are required\n")
 		return 1
 	}
-	maxRuns, err := strconv.Atoi(providerInput("maxRuns", "25"))
-	if err != nil || maxRuns < 1 || maxRuns > 100 {
+	maxRuns, err := parseProviderIntInput(
+		"maxRuns",
+		"25",
+		false,
+		func(value int) bool { return value >= 1 && value <= 100 },
+		func(_ string, _ error) string {
+			return "maxRuns must be an integer between 1 and 100"
+		},
+	)
+	if err != nil {
 		pf(stderr, "error: maxRuns must be an integer between 1 and 100\n")
 		return 1
 	}

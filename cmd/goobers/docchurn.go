@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -142,18 +141,34 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 	// node can tune them without a bespoke command line.
 	floor := *since
 	if v := providerInput("sinceFloor", ""); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d <= 0 {
-			pf(stderr, "error: input sinceFloor must be a positive duration, got %q\n", v)
+		d, err := parseProviderDurationInput(
+			"sinceFloor",
+			"",
+			false,
+			func(value time.Duration) bool { return value > 0 },
+			func(raw string, _ error) string {
+				return fmt.Sprintf("input sinceFloor must be a positive duration, got %q", raw)
+			},
+		)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 2
 		}
 		floor = d
 	}
 	multiplier := *bufferMultiplier
 	if v := providerInput("bufferMultiplier", ""); v != "" {
-		m, err := strconv.ParseFloat(v, 64)
-		if err != nil || m < 1 {
-			pf(stderr, "error: input bufferMultiplier must be a number >= 1, got %q\n", v)
+		m, err := parseProviderFloatInput(
+			"bufferMultiplier",
+			"",
+			false,
+			func(value float64) bool { return !(value < 1) },
+			func(raw string, _ error) string {
+				return fmt.Sprintf("input bufferMultiplier must be a number >= 1, got %q", raw)
+			},
+		)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 2
 		}
 		multiplier = m

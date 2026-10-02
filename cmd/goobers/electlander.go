@@ -204,9 +204,17 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	selectedHeadSha := providerInput("selectedHeadSha", "")
 	selectedBaseSha := providerInput("selectedBaseSha", "")
 	reviewDigest := providerInput("reviewDigest", "")
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
+	advisoryMode, err := parseProviderBoolInput(
+		"advisoryMode",
+		"false",
+		false,
+		func(_ string, _ bool) bool { return true },
+		func(_ string, parseErr error) string {
+			return fmt.Sprintf("invalid advisoryMode input: %v", parseErr)
+		},
+	)
 	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	resultFile := providerInput("resultFile", "election.json")
