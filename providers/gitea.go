@@ -75,14 +75,15 @@ type GiteaProvider struct {
 // (appended only when not already present). An empty baseURL is stored as a
 // deferred error surfaced on first use.
 func NewGiteaProvider(baseURL, token string, opts ...func(*GiteaProvider)) *GiteaProvider {
+	defaults := newProviderConstructorDefaults()
 	p := &GiteaProvider{
 		Token:               token,
-		maxRetries:          defaultRateLimitRetries,
-		maxRateLimitRetries: defaultRateLimitRetries,
-		maxRateLimitWait:    defaultRateLimitMaxWait,
-		now:                 time.Now,
-		sleep:               contextSleep,
-		jitter:              randomJitter,
+		maxRetries:          defaults.maxRetries,
+		maxRateLimitRetries: defaults.maxRetries,
+		maxRateLimitWait:    defaults.maxRateLimitWait,
+		now:                 defaults.now,
+		sleep:               defaults.sleep,
+		jitter:              defaults.jitter,
 	}
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if trimmed == "" {
@@ -100,15 +101,7 @@ func NewGiteaProvider(baseURL, token string, opts ...func(*GiteaProvider)) *Gite
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
-	if p.now == nil {
-		p.now = time.Now
-	}
-	if p.sleep == nil {
-		p.sleep = contextSleep
-	}
-	if p.jitter == nil {
-		p.jitter = randomJitter
-	}
+	p.now, p.sleep, p.jitter = defaults.runtimeOrDefaults(p.now, p.sleep, p.jitter)
 	if p.registrar != nil && p.Token != "" {
 		p.registrar.Register([]byte(p.Token))
 		p.registrar.Register([]byte(base64.StdEncoding.EncodeToString([]byte(p.Token + ":"))))
