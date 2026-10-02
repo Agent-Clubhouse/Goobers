@@ -993,7 +993,7 @@ func TestGiteaProviderRequestReviewRecordsOrderedDigestAndRequiresPullID(t *test
 	if ref.Operation != "request-review" || ref.Fields["reviewers"].After != digestString("zeta,alpha") {
 		t.Fatalf("recorded ref = %+v, want caller-ordered reviewer digest", ref)
 	}
-	if err := provider.RequestReview(context.Background(), ReviewRequest{Repository: repo}); err != errPullIDRequired {
+	if err := provider.RequestReview(context.Background(), ReviewRequest{Repository: repo}); !errors.Is(err, errPullIDRequired) {
 		t.Fatalf("missing PullID error = %v, want %v", err, errPullIDRequired)
 	}
 }
