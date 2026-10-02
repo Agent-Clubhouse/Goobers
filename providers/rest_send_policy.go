@@ -19,8 +19,10 @@ type restSendPolicy struct {
 	sleep                    func(context.Context, time.Duration) error
 	decorate                 func(context.Context, *http.Request) error
 	beforeSend               func(context.Context) error
+	normalizeResponse        func(*http.Response)
 	observeResponse          func(context.Context, *http.Response)
 	refreshRejectedAuth      func() bool
+	validateResponse         func(*http.Response, bool) error
 	isRateLimited            func(*http.Response) bool
 	planRateLimit            func(*http.Response, string, int) (time.Duration, RateLimitEvent)
 	observeRateLimit         func(context.Context, RateLimitEvent)
@@ -60,6 +62,9 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 			}
 			return nil, fmt.Errorf("send request: %w", err)
 		}
+		if policy.normalizeResponse != nil {
+			policy.normalizeResponse(resp)
+		}
 		if policy.observeResponse != nil {
 			policy.observeResponse(ctx, resp)
 		}
@@ -68,6 +73,11 @@ func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endp
 			_ = resp.Body.Close()
 			authRetried = true
 			continue
+		}
+		if policy.validateResponse != nil {
+			if err := policy.validateResponse(resp, authRetried); err != nil {
+				return nil, err
+			}
 		}
 		if policy.isRateLimited(resp) {
 			wait, ev := policy.planRateLimit(resp, endpoint, rateLimitRetries)
