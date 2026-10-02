@@ -3671,6 +3671,7 @@ func repoConfig() *instance.Config {
 // configured AND some workflow opts into the MaxOpenPRs cap — so an instance
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
+	t.Parallel()
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
 		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
@@ -3734,13 +3735,12 @@ func TestBuildOpenPRRefresherRoutesPerGaggleRepo(t *testing.T) {
 		"token-repo-a": {"goobers/implementation/run-1", "goobers-site/implementation/decoy"},
 		"token-repo-b": {"goobers-site/implementation/run-2", "goobers-site/implementation/run-3"},
 	}
-	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	deps := productionRuntimeDeps()
+	deps.openPRListers.github = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 		return &fakeHeadLister{heads: headsByToken[token]}
 	}
-	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	set, err := buildOpenPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
+	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
 		map[string]string{"site": "goobers-site"}, "", nil)
 	if err != nil {
 		t.Fatalf("buildOpenPRRefresher: %v", err)
@@ -3803,14 +3803,12 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 
 	fake := &fakeHeadLister{heads: []string{"goobers/implementation/run-1"}}
 	var gotToken string
-	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	newProvider := func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 		gotToken = token
 		return fake
 	}
-	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}
+	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg, newProvider: newProvider}
 	prs, err := l.ListOpenPullRequests(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
 	if err != nil {
 		t.Fatalf("ListOpenPullRequests: %v", err)
