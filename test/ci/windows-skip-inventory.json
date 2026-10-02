@@ -817,6 +817,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/workerblob",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Endpoint-backed blob transport tests run on Linux unit shards; no Windows-specific seam identified."
+    },
+    {
       "package": "internal/workerhost",
       "coverage": "none",
       "category": "not-selected",

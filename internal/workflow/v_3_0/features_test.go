@@ -805,8 +805,9 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			FieldPredicate: `fields["number"] > 0`,
 		},
 		Isolation: apiv1.GaggleIsolation{
-			Namespace:   "gaggle-example",
-			IdentityRef: "gaggle-example-identity",
+			Namespace:      "gaggle-example",
+			IdentityRef:    "gaggle-example-identity",
+			ServiceAccount: "custom-stage",
 		},
 		AdditionalRepos: []apiv1.RepoRef{{
 			Provider: apiv1.ProviderGitHub,
@@ -1272,6 +1273,7 @@ func gaggleOnlyFeatureIDs() []FeatureID {
 		featureGaggleBacklogFieldPredicate,
 		featureGaggleIsolationNamespace,
 		featureGaggleIsolationIdentityRef,
+		featureGaggleIsolationServiceAccount,
 		featureGaggleAdditionalRepos,
 		featureGaggleAdditionalReposProviderGitHub,
 		featureGaggleAdditionalReposProviderADO,

@@ -107,6 +107,7 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 		"GaggleSpec.Isolation": {
 			"gaggle.spec.isolation.namespace",
 			"gaggle.spec.isolation.identityRef",
+			"gaggle.spec.isolation.serviceAccount",
 		},
 		"GaggleSpec.AdditionalRepos": {
 			"gaggle.spec.additionalRepos",

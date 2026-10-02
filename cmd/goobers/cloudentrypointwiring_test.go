@@ -172,6 +172,8 @@ func TestRunWorkerServesDerivedDispatchQueuesAndWiresTheDispatcher(t *testing.T)
 	declareDispatchRunner(t, root, "linux-pod")
 	configureDispatchAuthority(t, root)
 	blobRoot := filepath.Join(t.TempDir(), "blobs")
+	server, _ := workerBlobDaemon(t, root, blobRoot)
+	t.Setenv("GOOBERS_BLOB_ENDPOINT", server.URL)
 	got := captureWorkerHost(t)
 
 	previousKube := dispatchKubeClient
@@ -255,7 +257,7 @@ func TestRunWorkerWorkerVersioningFollowsEngineConfig(t *testing.T) {
 			}
 			got := captureWorkerHost(t)
 			var stdout, stderr bytes.Buffer
-			code := runWorker([]string{"--instance", root, "--work-root", filepath.Join(t.TempDir(), "work"), "--config-reload-interval", "0"}, &stdout, &stderr)
+			code := runWorker([]string{"--instance", root, "--work-root", filepath.Join(t.TempDir(), "work"), "--blob-store", t.TempDir(), "--config-reload-interval", "0"}, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("exit = %d, want 0\nstderr: %s", code, stderr.String())
 			}

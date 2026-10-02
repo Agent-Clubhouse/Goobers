@@ -112,10 +112,10 @@ _goobers_completion()
             flags+=(--to --instance-schema --write)
             ;;
         doctor)
-            flags+=(--checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout)
+            flags+=(--psa-namespaces --psa-service-account --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout)
             ;;
         netpol-render)
-            flags+=(--out --check --baseline --write-baseline --timeout --print-blob-endpoint)
+            flags+=(--out --check --baseline --write-baseline --timeout --keep-dns-for-network-none --print-blob-endpoint)
             ;;
         config)
             case "${words[3]:-}" in
@@ -158,7 +158,7 @@ _goobers_completion()
             flags+=(--gaggle --temporal-hostport --temporal-namespace)
             ;;
         worker)
-            flags+=(--instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
+            flags+=(--instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         config-seed)
             flags+=(--mirror --instance)
