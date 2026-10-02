@@ -3,10 +3,11 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"github.com/stretchr/testify/mock"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/mock"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
