@@ -37,6 +37,17 @@ func TestObserverDropsWhenBusyAndSurvivesErrors(t *testing.T) {
 	}
 }
 
+func TestObserverRecordsDeterministicInputValidity(t *testing.T) {
+	g, _ := New(&fake{yes: 0.99}, cfg(), nil)
+	var got ShadowRecord
+	o := NewObserver(g, 1, 1, func(r ShadowRecord) { got = r })
+	o.ObserveValidated("run-1", true, "the JSON is corrupted")
+	o.Wait()
+	if !got.InputKnown || !got.InputValid || got.Verdict != ClaimSpurious || !got.AgentClaimedBad {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestClaimsBadInput(t *testing.T) {
 	for s, want := range map[string]bool{"The JSON appears corrupted": true, "input was truncated": true, "all tests passed": false, "": false} {
 		if ClaimsBadInput(s) != want {

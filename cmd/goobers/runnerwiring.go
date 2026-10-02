@@ -334,10 +334,11 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
 		// entries fall back to providers.DefaultBranchNamespace in the runner.
-		BranchNamespaces: branchNamespaces,
-		ScratchDir:       deterministicScratchDir,
-		RunsDir:          l.RunsDir(),
-		RepoCloneURL:     repoCloneURL,
+		BranchNamespaces:    branchNamespaces,
+		ScratchDir:          deterministicScratchDir,
+		RunsDir:             l.RunsDir(),
+		HandoffSchemaLoader: newHandoffSchemaLoader(cfg, l.ConfigDir()),
+		RepoCloneURL:        repoCloneURL,
 		// The gaggle's read-only reference repos (MGV-11 #1286): the runner
 		// provisions a read-only checkout of each alongside a repo-workspace
 		// stage's primary worktree. Empty for a single-repo gaggle (unchanged).
