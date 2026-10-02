@@ -330,6 +330,22 @@ func TestAssignTimingOutputsNamesOnePartPerPlan(t *testing.T) {
 	}
 }
 
+// The ci.yml JUnit upload globs test-timings/*.junit.xml; each timed part must
+// write a distinct report there, and none may match the timing upload's
+// *.json glob.
+func TestJUnitOutputSitsBesideEachTimingPart(t *testing.T) {
+	t.Parallel()
+	plans := []testPlan{{}, {}}
+	assignTimingOutputs(plans, "test-timings/unit-race.json")
+	first, second := junitOutput(plans[0].timingOutput), junitOutput(plans[1].timingOutput)
+	if first != "test-timings/unit-race.part1.junit.xml" || second != "test-timings/unit-race.part2.junit.xml" {
+		t.Fatalf("junit outputs = %q, %q", first, second)
+	}
+	if got := junitOutput("test-timings/unit-Linux.json"); got != "test-timings/unit-Linux.junit.xml" {
+		t.Fatalf("unsharded junit output = %q", got)
+	}
+}
+
 func TestLineWriterForwardsOnlyWholeLines(t *testing.T) {
 	t.Parallel()
 	var destination bytes.Buffer

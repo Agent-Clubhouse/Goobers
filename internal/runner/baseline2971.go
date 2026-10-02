@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/baseline"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -145,20 +146,27 @@ func applyBaselineDecision(result apiv1.ResultEnvelope, decision baseline.Decisi
 }
 
 // baselineAnnotation builds the journal event recording one classification.
+// A platform-qualified failure also records which platforms it holds on, so a
+// remediation reader can tell an inherited platform-specific failure (#4477)
+// from an ordinary shared one without re-parsing the reason text.
 func baselineAnnotation(stage string, decision baseline.Decision, parked bool) journal.Event {
+	fields := map[string]any{
+		"kind":        baselineClassificationKind,
+		"class":       string(decision.Class),
+		"baseSha":     decision.BaseSHA,
+		"fingerprint": decision.Fingerprint,
+		"blocker":     decision.BlockerKey,
+		"waiting":     decision.Waiting,
+		"parked":      parked,
+		"reason":      decision.Reason,
+	}
+	if len(decision.Platforms) > 0 {
+		fields["platforms"] = strings.Join(decision.Platforms, ",")
+	}
 	return journal.Event{
-		Type:  journal.EventRunnerAnnotation,
-		Stage: stage,
-		Runner: map[string]any{
-			"kind":        baselineClassificationKind,
-			"class":       string(decision.Class),
-			"baseSha":     decision.BaseSHA,
-			"fingerprint": decision.Fingerprint,
-			"blocker":     decision.BlockerKey,
-			"waiting":     decision.Waiting,
-			"parked":      parked,
-			"reason":      decision.Reason,
-		},
+		Type:   journal.EventRunnerAnnotation,
+		Stage:  stage,
+		Runner: fields,
 	}
 }
 
@@ -192,6 +200,17 @@ func (r *Runner) classifyBaselineFailure(ctx context.Context, ws *walkState, tas
 		Command:     command,
 		FailureText: baselineFailureText(result),
 		RunID:       ws.in.RunID,
+	}
+	if digest, ok := result.Outputs[executor.FailureDigestOutput].(string); ok {
+		req.FailureDigest = digest
+	}
+	if count, ok := result.Outputs[executor.FailureCountOutput].(float64); ok {
+		req.FailureCount = int(count)
+	}
+	for _, key := range []string{executor.StdoutTruncatedOutput, executor.StderrTruncatedOutput} {
+		if truncated, _ := result.Outputs[key].(bool); truncated {
+			req.OutputTruncated = true
+		}
 	}
 	if ws.in.Item != nil {
 		req.Waiter = ws.in.Item.ID

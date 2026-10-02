@@ -1369,6 +1369,17 @@ type UpdateWorkItemRequest struct {
 	// State, when set, opens or closes the item ("open" or "closed").
 	State   string `json:"state,omitempty"`
 	Comment string `json:"comment,omitempty"`
+	// IdempotencyKey, when set alongside Comment, names this logical update
+	// so a retry is safe (#2657). The comment is applied last and carries a
+	// hidden operation marker; a retry that finds the marker posts no
+	// duplicate and replays nothing, ExpectedRevision included. A retry after
+	// a failure before the comment re-applies the idempotent effects, but
+	// ExpectedRevision still guards it: the provider cannot tell its earlier
+	// partial writes from a foreign edit, so the caller re-reads and retries
+	// with the fresh revision and the same key. Derive the key from the run
+	// and stage, never from wall-clock or attempt state. GitHub and Gitea
+	// honor it.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
 // ClaimWorkItemRequest requests a best-effort claiming marker on an item so
@@ -1456,6 +1467,9 @@ type UpdateWorkItemStatusRequest struct {
 	ID         string         `json:"id"`
 	Status     WorkItemStatus `json:"status"`
 	Comment    string         `json:"comment,omitempty"`
+	// IdempotencyKey makes a retried status update safe, exactly as
+	// UpdateWorkItemRequest.IdempotencyKey does.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
 
 // TriggerKind identifies how backlog availability events are delivered.
