@@ -182,7 +182,9 @@ func TestWorkerGooberPreparationReleasesOnPanic(t *testing.T) {
 
 				func() {
 					defer func() {
-						if recovered := recover(); recovered != panicValue {
+						recovered := recover()
+						recoveredErr, ok := recovered.(error)
+						if !ok || !errors.Is(recoveredErr, panicValue) {
 							t.Fatalf("recovered %v, want %v", recovered, panicValue)
 						}
 					}()
