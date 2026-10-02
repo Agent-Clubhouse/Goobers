@@ -82,8 +82,9 @@ func ResolveWithSymlinks(root, full, origRel string) (string, error) {
 	return resolved, nil
 }
 
-// ResolveRootedPath is the complex version used by mcpio: it handles non-existent
-// intermediate directories, walking up to an existing ancestor before using EvalSymlinks.
+// ResolveRootedPath is the authoritative rooted-path resolver used by mcpio and
+// safepath. It handles non-existent intermediate directories, walking up to an
+// existing ancestor before using EvalSymlinks.
 // This avoids the problem where a non-existent path segment fails EvalSymlinks silently,
 // allowing intermediate symlinks to be followed by later os.MkdirAll calls.
 //
@@ -105,6 +106,9 @@ func ResolveRootedPath(root, rel string, createMissingDirs bool) (string, error)
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve root: %w", err)
+	}
+	if IsRootedOrVolumeBound(rel) {
+		return "", fmt.Errorf("path escapes root: %q", rel)
 	}
 	full := filepath.Join(root, rel)
 	relBack, err := filepath.Rel(root, full)
