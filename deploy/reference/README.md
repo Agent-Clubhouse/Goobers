@@ -900,8 +900,10 @@ exits 2 and makes the Job fail. Required detector failures retain exit 1.
 
 `goobers status` reads the latest outcome **per check**, so a successful drift
 check cannot hide a failing overlay check. Failure appears as `degraded` until
-that same check succeeds; an expired failure remains degraded and also says
-`stale`. Expired passing/warning results appear as `stale`; skipped/warning
+that same check succeeds. A later skipped/warning result cannot clear that
+failure or refresh its original check time and expiration; an expired failure
+remains degraded and also says `stale`. Expired passing/warning results appear
+as `stale`; skipped/warning
 checks are never called healthy. Every line includes the last outcome, check
 time, and expiration. A subsequent fresh success restores `healthy`, including
 after daemon restart. Journal retention preserves the latest result per check.

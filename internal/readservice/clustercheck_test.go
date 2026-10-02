@@ -17,7 +17,11 @@ func TestClusterChecksFreshnessRecoveryAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() {
+		if err := log.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	appendCheck := func(id, outcome string) {
 		t.Helper()
 		if err := log.Append(journal.Event{Type: journal.EventClusterCheckCompleted, Runner: map[string]any{
@@ -100,7 +104,11 @@ func TestClusterChecksConcurrentJournalWriterAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	t.Cleanup(func() {
+		if err := log.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -140,4 +148,78 @@ func TestClusterChecksConcurrentJournalWriterAndStatus(t *testing.T) {
 	if err != nil || len(status.ClusterChecks) != 1 || status.ClusterChecks[0].State != "degraded" {
 		t.Fatalf("status = %+v, %v", status, err)
 	}
+}
+
+func TestClusterCheckWarningCannotRecoverFailureAcrossCompaction(t *testing.T) {
+	service, layout, _ := fixtureService(t)
+	failedAt := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	now := failedAt
+	service.now = func() time.Time { return now }
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir(), journal.WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := log.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	appendCheck := func(outcome string, ttl time.Duration) {
+		t.Helper()
+		if err := log.Append(journal.Event{Type: journal.EventClusterCheckCompleted, Runner: map[string]any{
+			"check": "overlay-pin-agreement", "outcome": outcome,
+			"expiresAt": now.Add(ttl).Format(time.RFC3339Nano),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertResult := func(reader *Local, outcome, state string, checkedAt time.Time, stale bool) {
+		t.Helper()
+		status, err := reader.SchedulerStatus(context.Background())
+		if err != nil || len(status.ClusterChecks) != 1 {
+			t.Fatalf("status = %+v, %v", status, err)
+		}
+		got := status.ClusterChecks[0]
+		if got.Outcome != outcome || got.State != state || got.Stale != stale || !got.CheckedAt.Equal(checkedAt) || !got.ExpiresAt.Equal(checkedAt.Add(time.Hour)) {
+			t.Fatalf("check = %+v; want %s/%s, stale=%t, checkedAt=%s, expiration one hour later", got, outcome, state, stale, checkedAt)
+		}
+	}
+	restart := func() *Local {
+		t.Helper()
+		reader, err := NewLocal(LocalSources{Layout: layout, Definitions: testDefinitions()}, func() bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader.now = func() time.Time { return now }
+		return reader
+	}
+	appendCheck("fail", time.Hour)
+	assertResult(service, "fail", "degraded", failedAt, false)
+	now = now.Add(30 * time.Minute)
+	// doctor without --overlay-dir records warn/unchecked. Even its longer
+	// validity window must not refresh or resolve the previously failed probe.
+	appendCheck("warn", 4*time.Hour)
+	assertResult(service, "fail", "degraded", failedAt, false)
+	now = failedAt.Add(time.Hour)
+	appendCheck("warn", 4*time.Hour)
+	assertResult(service, "fail", "degraded", failedAt, true)
+	now = now.Add(time.Minute)
+	if _, err := log.Compact(now, now); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil || len(events) != 1 || events[0].Runner["outcome"] != "fail" {
+		t.Fatalf("compacted events = %+v, %v", events, err)
+	}
+	restarted := restart()
+	assertResult(restarted, "fail", "degraded", failedAt, true)
+	passedAt := now
+	appendCheck("pass", time.Hour)
+	assertResult(service, "pass", "healthy", passedAt, false)
+	assertResult(restarted, "pass", "healthy", passedAt, false)
+	now = now.Add(time.Minute)
+	if _, err := log.Compact(now, now); err != nil {
+		t.Fatal(err)
+	}
+	assertResult(restart(), "pass", "healthy", passedAt, false)
 }

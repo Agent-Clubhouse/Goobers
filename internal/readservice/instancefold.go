@@ -173,6 +173,11 @@ func (s *instanceState) applyClusterCheck(event journal.Event) {
 	if !ok {
 		return
 	}
+	// A skipped/unverified probe cannot establish recovery or renew the
+	// freshness of an unresolved failure. Only a new pass or fail replaces it.
+	if result.Outcome == "warn" && s.clusterChecks[result.Check].Outcome == "fail" {
+		return
+	}
 	if s.clusterChecks == nil {
 		s.clusterChecks = make(map[string]clustercheck.Result)
 	}

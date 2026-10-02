@@ -216,7 +216,7 @@ func compactInstanceEventsData(
 	var records []record
 	latestTrigger := make(map[string]int)
 	latestWorkerDivergence := make(map[string]int)
-	latestClusterCheck := make(map[string]int)
+	latestClusterCheck := make(clusterCheckCheckpoints)
 	for _, line := range bytes.SplitAfter(complete, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -247,10 +247,7 @@ func compactInstanceEventsData(
 		}
 		rec.workerDivergenceKey = compactWorkerDivergenceKey(meta.Type, meta.Runner)
 		latestWorkerDivergence[rec.workerDivergenceKey] = len(records)
-		if meta.Type == EventClusterCheckCompleted {
-			rec.clusterCheckKey, _ = meta.Runner["check"].(string)
-			latestClusterCheck[rec.clusterCheckKey] = len(records)
-		}
+		rec.clusterCheckKey = latestClusterCheck.record(meta.Type, meta.Runner, len(records))
 		records = append(records, rec)
 	}
 
@@ -258,7 +255,7 @@ func compactInstanceEventsData(
 	for i, rec := range records {
 		keepTriggerCheckpoint := rec.triggerKey != "" && latestTrigger[rec.triggerKey] == i
 		keepWorkerDivergenceCheckpoint := compactKeepsWorkerDivergence(rec.workerDivergenceKey, i, latestWorkerDivergence)
-		keepClusterCheck := rec.clusterCheckKey != "" && latestClusterCheck[rec.clusterCheckKey] == i
+		keepClusterCheck := rec.clusterCheckKey != "" && latestClusterCheck[rec.clusterCheckKey].index == i
 		keepBudgetHistory := rec.runStarted &&
 			(keepRunStartsAfter.IsZero() || !rec.time.Before(keepRunStartsAfter))
 		if compactDropsAgedRecord(rec.time, keepAfter, keepTriggerCheckpoint, keepWorkerDivergenceCheckpoint || keepClusterCheck, keepBudgetHistory, rec.initDone) {
@@ -274,6 +271,33 @@ func compactInstanceEventsData(
 	kept.Write(tail)
 	result.AfterBytes = int64(kept.Len())
 	return result, kept.Bytes(), nil
+}
+
+// clusterCheckCheckpoints mirrors status recovery: an unchecked/warn result
+// cannot supersede a failure. Retain that failure's original timestamp and
+// expiration across compaction, until a definitive result replaces it.
+type clusterCheckCheckpoints map[string]struct {
+	index   int
+	outcome string
+}
+
+func (latest clusterCheckCheckpoints) record(eventType EventType, runner map[string]any, index int) string {
+	if eventType != EventClusterCheckCompleted {
+		return ""
+	}
+	check, _ := runner["check"].(string)
+	outcome, _ := runner["outcome"].(string)
+	if check == "" {
+		return ""
+	}
+	if outcome == "warn" && latest[check].outcome == "fail" {
+		return check
+	}
+	latest[check] = struct {
+		index   int
+		outcome string
+	}{index, outcome}
+	return check
 }
 
 func compactWorkerDivergenceKey(eventType EventType, runner map[string]any) string {
