@@ -495,7 +495,3 @@ func (p *WorkflowLiveness) eachOpenWorkflow(ctx context.Context, visit func(info
 // Legacy Schedule histories used a child workflow to execute each claimed run.
 // Keep this mapping for lookup and cancellation of existing run journals.
 const scheduledRunWorkflowIDSuffix = "-run"
-
-func scheduledRunWorkflowID(claimID string) string {
-	return claimID + scheduledRunWorkflowIDSuffix
-}
