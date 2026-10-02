@@ -67,8 +67,9 @@ const prSelectHelp = "Usage: goobers pr-select [path]\n\n" +
 	"defaults to goobers;\n" +
 	"set it to any to admit PRs outside headPrefixes as advisory-only. PRs\n" +
 	"may be filtered by exact author, assignee, and requestedReviewer inputs.\n" +
-	"PRs labeled goobers:no-merge-review or goobers:run-aborted are always\n" +
-	"excluded. Before selection,\n" +
+	"PRs labeled goobers:no-merge-review are always excluded. A run-aborted\n" +
+	"PR is excluded unless audited recovery proves a later remediation completed.\n" +
+	"Before selection,\n" +
 	"park narrower PRs behind open PRs that clearly dominate a shared-file\n" +
 	"rewrite or deletion. Writes the\n" +
 	"selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared\n" +
@@ -116,8 +117,9 @@ func runPRSelectCore(
 	}
 	// abortedRunLabel and LabelNeedsHuman are always excluded, never
 	// operator-overridable via the excludeLabels input, same as
-	// noMergeReviewLabel: a cancelled run's PR must stay ineligible for
-	// auto-merge until a human removes the label directly (#2238).
+	// noMergeReviewLabel. A cancelled run's PR stays ineligible until a human
+	// removes the label or pr-select verifies a later successful remediation
+	// from provider-issued provenance (#2238/#6407).
 	// LabelNeedsHuman mirrors the exclusion pr-remediation's
 	// filterRemediationPullRequests and backlog-query's re-sweep filter
 	// already apply: the #2947 failure-streak circuit breaker applies this
@@ -226,7 +228,7 @@ func runPRSelectCore(
 			}
 			pr = refreshed
 			if cleared {
-				pf(stdout, "re-queued PR #%d: removed stale %s after checks passed and no prior comments were present\n",
+				pf(stdout, "re-queued PR #%d: removed stale %s after verified recovery checks\n",
 					pr.Number, abortedRunLabel)
 			}
 		}
@@ -1236,10 +1238,14 @@ func clearStaleRunAbortedPR(
 		return pr, false, nil
 	}
 	if len(poll.CommentsSince) != 0 {
-		return pr, false, nil
-	}
-	if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
-		return pr, false, nil
+		recovered, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+		if err != nil || !recovered {
+			return pr, false, nil
+		}
+	} else {
+		if reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll); err != nil || reviewed {
+			return pr, false, nil
+		}
 	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository:   repo,
@@ -1249,7 +1255,149 @@ func clearStaleRunAbortedPR(
 		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
 	}
 	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
-	return refreshed, true, nil
+	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, len(poll.CommentsSince) != 0)
+	if err == nil && safe {
+		return verified, true, nil
+	}
+	if _, restoreErr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         pullID,
+		AddLabels:  []string{abortedRunLabel},
+	}); restoreErr != nil {
+		if err != nil {
+			return pr, false, fmt.Errorf("revalidate cleared %s: %w; restore label: %w", abortedRunLabel, err, restoreErr)
+		}
+		return pr, false, fmt.Errorf("restore %s after unsafe revalidation: %w", abortedRunLabel, restoreErr)
+	}
+	if !hasAnyLabel(verified.Labels, []string{abortedRunLabel}) {
+		verified.Labels = append(verified.Labels, abortedRunLabel)
+	}
+	return verified, false, nil
+}
+
+type runAbortedLabelHistoryProvider interface {
+	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
+}
+
+func verifyClearedRunAbortedPR(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	pr providers.PullRequestSummary,
+	reviewedRemediation bool,
+) (providers.PullRequestSummary, bool, error) {
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return pr, false, err
+	}
+	refreshed := pullRequestSummaryFromPoll(pr, poll)
+	if poll.State != "open" || poll.Draft || poll.CheckState != providers.CheckStatePassing ||
+		poll.Mergeable == nil || !*poll.Mergeable ||
+		hasAnyLabel(refreshed.Labels, []string{
+			abortedRunLabel,
+			noMergeReviewLabel,
+			providers.LabelNeedsHuman,
+			needsRemediationLabel,
+			remediationEscalatedLabel,
+			scopeGateLabel,
+		}) {
+		return refreshed, false, nil
+	}
+	if reviewedRemediation {
+		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+		return refreshed, safe, err
+	}
+	if len(poll.CommentsSince) != 0 {
+		return refreshed, false, nil
+	}
+	reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll)
+	return refreshed, !reviewed && err == nil, err
+}
+
+func runAbortedPRHasVerifiedRemediation(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	labels []string,
+	poll providers.PullRequestPollResult,
+) (bool, error) {
+	if hasAnyLabel(labels, []string{
+		noMergeReviewLabel,
+		providers.LabelNeedsHuman,
+		needsRemediationLabel,
+		remediationEscalatedLabel,
+		scopeGateLabel,
+	}) {
+		return false, nil
+	}
+	if poll.ReviewDecision == providers.ReviewDecisionChangesRequested || poll.RequestedChanges > 0 {
+		return false, nil
+	}
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return false, err
+	}
+	responseAt := latestTrustedRemediationResponse(poll.CommentsSince, author)
+	if responseAt.IsZero() {
+		return false, nil
+	}
+	historyProvider, ok := provider.(runAbortedLabelHistoryProvider)
+	if !ok {
+		return false, nil
+	}
+	transitions, err := historyProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, pullID, abortedRunLabel)
+	if err != nil {
+		return false, err
+	}
+	var latest, latestAdded providers.WorkItemLabelTransition
+	for _, transition := range transitions {
+		if transition.OccurredAt.After(latest.OccurredAt) {
+			latest = transition
+		}
+		if transition.Added && transition.OccurredAt.After(latestAdded.OccurredAt) {
+			latestAdded = transition
+		}
+	}
+	if latestAdded.OccurredAt.IsZero() || !latestAdded.OccurredAt.Before(responseAt) {
+		return false, nil
+	}
+	if hasAnyLabel(labels, []string{abortedRunLabel}) != latest.Added {
+		return false, nil
+	}
+	threads, err := provider.ListPullRequestReviewThreads(ctx, repo, pullID)
+	if err != nil {
+		return false, err
+	}
+	return countLiveUnresolvedReviewThreads(threads) == 0, nil
+}
+
+func latestTrustedRemediationResponse(comments []providers.PullRequestComment, author string) time.Time {
+	const markerPrefix = "<!-- goobers:remediation-response:"
+	var latest time.Time
+	for _, comment := range comments {
+		if !strings.EqualFold(comment.Author, author) ||
+			!strings.HasPrefix(comment.Body, markerPrefix) ||
+			comment.CreatedAt.IsZero() {
+			continue
+		}
+		end := strings.Index(comment.Body[len(markerPrefix):], " -->")
+		if end <= 0 {
+			continue
+		}
+		runID := comment.Body[len(markerPrefix) : len(markerPrefix)+end]
+		if strings.ContainsAny(runID, "<>\r\n\t ") {
+			continue
+		}
+		if comment.CreatedAt.After(latest) {
+			latest = comment.CreatedAt
+		}
+	}
+	return latest
 }
 
 func runAbortedPRHasReviewAttention(

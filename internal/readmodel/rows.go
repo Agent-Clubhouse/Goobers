@@ -32,6 +32,9 @@ func (s *Store) withReadRows(
 		}
 	}
 	if err := rows.Err(); err != nil {
+		if iterErr == "" {
+			return err
+		}
 		return fmt.Errorf("%s: %w", iterErr, err)
 	}
 	return nil

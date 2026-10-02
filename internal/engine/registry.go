@@ -167,6 +167,8 @@ type StartSpec struct {
 	BacklogQueryRequireLabels  string
 	BacklogQueryBacklogLabels  string
 	BacklogQueryLabelPredicate string
+	IssueOwnershipAssignees    string
+	IssueOwnershipUnassigned   string
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// must execute (localscheduler.WorkflowEntry.GooberDigest — what
 	// gooberDigestStarter stamps onto a runner-driven run's StartRequest).
@@ -279,5 +281,7 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 		BacklogQueryRequireLabels:  s.BacklogQueryRequireLabels,
 		BacklogQueryBacklogLabels:  s.BacklogQueryBacklogLabels,
 		BacklogQueryLabelPredicate: s.BacklogQueryLabelPredicate,
+		IssueOwnershipAssignees:    s.IssueOwnershipAssignees,
+		IssueOwnershipUnassigned:   s.IssueOwnershipUnassigned,
 	}, nil
 }

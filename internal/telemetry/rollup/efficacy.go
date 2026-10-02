@@ -102,6 +102,28 @@ func DefaultEfficacyThresholds() EfficacyThresholds {
 	}
 }
 
+func efficacyVerdict(before, after RunStats, th EfficacyThresholds) (EfficacyVerdict, float64) {
+	if th == (EfficacyThresholds{}) {
+		th = DefaultEfficacyThresholds()
+	}
+
+	beforeTerminal := before.CompletedRuns + before.FailedRuns
+	afterTerminal := after.CompletedRuns + after.FailedRuns
+	if beforeTerminal < th.MinSamples || afterTerminal < th.MinSamples {
+		return EfficacyInsufficientData, 0
+	}
+
+	delta := (1 - after.SuccessRate) - (1 - before.SuccessRate)
+	switch {
+	case delta <= -th.SignificantFailureRateDelta:
+		return EfficacyHelped, delta
+	case delta >= th.SignificantFailureRateDelta:
+		return EfficacyRegressed, delta
+	default:
+		return EfficacyNoChange, delta
+	}
+}
+
 // EfficacyRequest asks whether a workflow_digest transition (a merged Tutor
 // PR, or any definition change) helped or regressed, comparing terminal
 // runs under OldDigest ("before") against runs under NewDigest ("after"),
@@ -137,11 +159,6 @@ type EfficacyResult struct {
 // the metrics half — no agentic diagnosis here, just the aggregate
 // comparison a Tutor's change-efficacy stage or a human reviewer consumes).
 func (db *DB) AssessEfficacy(ctx context.Context, req EfficacyRequest) (EfficacyResult, error) {
-	th := req.Thresholds
-	if th == (EfficacyThresholds{}) {
-		th = DefaultEfficacyThresholds()
-	}
-
 	before, err := db.runStatsByDigest(ctx, req.Workflow, req.OldDigest, req.Since)
 	if err != nil {
 		return EfficacyResult{}, fmt.Errorf("rollup: assess efficacy (before segment): %w", err)
@@ -158,27 +175,7 @@ func (db *DB) AssessEfficacy(ctx context.Context, req EfficacyRequest) (Efficacy
 		Before:    before,
 		After:     after,
 	}
-
-	beforeTerminal := before.CompletedRuns + before.FailedRuns
-	afterTerminal := after.CompletedRuns + after.FailedRuns
-	if beforeTerminal < th.MinSamples || afterTerminal < th.MinSamples {
-		result.Verdict = EfficacyInsufficientData
-		return result, nil
-	}
-
-	beforeFailureRate := 1 - before.SuccessRate
-	afterFailureRate := 1 - after.SuccessRate
-	delta := afterFailureRate - beforeFailureRate
-	result.FailureRateDelta = delta
-
-	switch {
-	case delta <= -th.SignificantFailureRateDelta:
-		result.Verdict = EfficacyHelped
-	case delta >= th.SignificantFailureRateDelta:
-		result.Verdict = EfficacyRegressed
-	default:
-		result.Verdict = EfficacyNoChange
-	}
+	result.Verdict, result.FailureRateDelta = efficacyVerdict(before, after, req.Thresholds)
 	return result, nil
 }
 

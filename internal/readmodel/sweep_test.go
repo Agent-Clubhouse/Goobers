@@ -72,6 +72,35 @@ func TestProjectedRunIDsAfterUsesKeysetCursorAndDefaultLimit(t *testing.T) {
 	}
 }
 
+func TestSweepRootCursorsOrdersRootsAndParsesTimes(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	started := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	completed := started.Add(time.Hour)
+	for _, root := range []string{"root-b", "root-a"} {
+		if err := store.SaveSweepRootCursor(ctx, SweepRootCursor{
+			Root:                 root,
+			AfterName:            root + "-after",
+			CycleStartedAt:       started,
+			LastCycleCompletedAt: completed,
+			EntriesThisCycle:     3,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := store.SweepRootCursors(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Root != "root-a" || got[1].Root != "root-b" {
+		t.Fatalf("sweep root cursors = %+v, want root-a then root-b", got)
+	}
+	if !got[0].CycleStartedAt.Equal(started) || !got[0].LastCycleCompletedAt.Equal(completed) {
+		t.Fatalf("parsed cursor times = %+v, want %s and %s", got[0], started, completed)
+	}
+}
+
 func seedSweepRun(t *testing.T, store *Store, runID string, startedAt time.Time) {
 	t.Helper()
 	err := store.UpsertRun(context.Background(), Projection{Run: RunRow{

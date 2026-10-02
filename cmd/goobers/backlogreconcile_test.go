@@ -158,6 +158,160 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	}
 }
 
+func TestReconcileBacklogMetadataRespectsAssigneeScope(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Own drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(8, "Foreign drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.mu.Lock()
+	server.issues[7].assignee = "alice"
+	server.issues[8].assignee = "bob"
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	result, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now,
+		backlogReconcileAssigneeScope{respectAssignee: true, assignedTo: "alice"},
+	)
+	if err != nil {
+		t.Fatalf("reconcileBacklogMetadataDetailed: %v", err)
+	}
+	if result.Reconciled != 1 {
+		t.Fatalf("reconciliations = %d, want only the owned assigned item corrected", result.Reconciled)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	assertBacklogReconciliationComments(t, server, []int{7})
+	server.mu.Lock()
+	foreignComments := len(server.issues[8].comments)
+	queries := append([]string(nil), server.issueListQueries...)
+	server.mu.Unlock()
+	if foreignComments != 0 {
+		t.Fatalf("foreign assigned issue comments = %d, want untouched", foreignComments)
+	}
+	if len(queries) == 0 {
+		t.Fatal("issue list queries empty, want assignee-scoped reconciliation listing")
+	}
+	for _, raw := range queries {
+		query, err := url.ParseQuery(raw)
+		if err != nil {
+			t.Fatalf("parse query %q: %v", raw, err)
+		}
+		if got := query.Get("assignee"); got != "alice" {
+			t.Fatalf("list query %q assignee = %q, want alice", raw, got)
+		}
+	}
+}
+
+func TestReconcileBacklogMetadataRespectsOwnershipScopeInputs(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Own drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.addIssue(8, "Foreign drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.mu.Lock()
+	server.issues[7].assignee = "alice"
+	server.issues[8].assignee = "bob"
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	result, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now,
+		backlogReconcileAssigneeScope{ownership: issueOwnershipScope{assignees: []string{"alice"}, unassigned: ownershipUnassignedRefuse}},
+	)
+	if err != nil {
+		t.Fatalf("reconcileBacklogMetadataDetailed: %v", err)
+	}
+	if result.Reconciled != 1 {
+		t.Fatalf("reconciliations = %d, want only the ownership-scoped item corrected", result.Reconciled)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
+	assertFakeIssueLabels(t, server, 8, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	assertBacklogReconciliationComments(t, server, []int{7})
+	server.mu.Lock()
+	queries := append([]string(nil), server.issueListQueries...)
+	server.mu.Unlock()
+	if len(queries) == 0 {
+		t.Fatal("issue list queries empty, want ownership-scoped reconciliation listing")
+	}
+	for _, raw := range queries {
+		query, err := url.ParseQuery(raw)
+		if err != nil {
+			t.Fatalf("parse query %q: %v", raw, err)
+		}
+		if got := query.Get("assignee"); got != "alice" {
+			t.Fatalf("list query %q assignee = %q, want alice", raw, got)
+		}
+	}
+}
+
+func TestReconcileBacklogMetadataRechecksAssigneeAfterRefresh(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Reassigned drift", "goobers:approved", providers.LabelReady, providers.LabelNeedsHuman)
+	server.mu.Lock()
+	server.issues[7].assignee = "alice"
+	server.issueGetMutations[7] = append(server.issueGetMutations[7], func(_ *fakeGitHubServer, issue *fakeIssue) {
+		issue.assignee = "bob"
+	})
+	server.mu.Unlock()
+
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "your-org",
+		Name:     "your-repo",
+	}
+	result, err := reconcileBacklogMetadataDetailed(
+		context.Background(),
+		layoutFor(root),
+		server.newGitHubProvider("token"),
+		repo,
+		"goobers:approved",
+		defaultBacklogStalenessPolicy(),
+		time.Now,
+		backlogReconcileAssigneeScope{respectAssignee: true, assignedTo: "alice"},
+	)
+	if err != nil {
+		t.Fatalf("reconcileBacklogMetadataDetailed: %v", err)
+	}
+	if result.Reconciled != 0 {
+		t.Fatalf("reconciliations = %d, want reassigned item left untouched", result.Reconciled)
+	}
+	assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
+	server.mu.Lock()
+	comments := len(server.issues[7].comments)
+	assignee := server.issues[7].assignee
+	server.mu.Unlock()
+	if comments != 0 {
+		t.Fatalf("reassigned issue comments = %d, want untouched", comments)
+	}
+	if assignee != "bob" {
+		t.Fatalf("assignee = %q, want bob", assignee)
+	}
+}
+
 func assertBacklogReconciliationComments(t *testing.T, server *fakeGitHubServer, ids []int) {
 	t.Helper()
 	for _, id := range ids {
@@ -893,6 +1047,7 @@ func TestBacklogReconcileFailsClosedWhenCursorAdvanceFails(t *testing.T) {
 		defaultBacklogStalenessPolicy(),
 		time.Now().UTC(),
 		resultFile,
+		backlogReconcileAssigneeScope{},
 	)
 	if code == 0 {
 		t.Fatalf("performBacklogQueryReconciliation code = 0, result = %#v; want fatal cursor advance failure", result)
@@ -911,7 +1066,7 @@ func TestBacklogReconcileFailsClosedWhenCursorAdvanceFails(t *testing.T) {
 	assertFakeIssueLabels(t, server, 9, []string{providers.LabelReady, providers.LabelNeedsHuman}, nil)
 
 	failAdvance = false
-	key := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy())
+	key := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy(), backlogReconcileAssigneeScope{})
 	store, err := realOpen(layoutFor(root))
 	if err != nil {
 		t.Fatalf("open state store: %v", err)
@@ -995,6 +1150,7 @@ func TestBacklogReconcileFailsClosedWhenClaimCursorAdvanceFails(t *testing.T) {
 		defaultBacklogStalenessPolicy(),
 		now,
 		resultFile,
+		backlogReconcileAssigneeScope{},
 	)
 	if code == 0 {
 		t.Fatalf("performBacklogQueryReconciliation code = 0, result = %#v; want fatal claim cursor advance failure", result)
@@ -1011,7 +1167,7 @@ func TestBacklogReconcileFailsClosedWhenClaimCursorAdvanceFails(t *testing.T) {
 	}
 	assertFakeIssueLabels(t, server, 8, []string{providers.LabelClaimed}, nil)
 
-	failKey := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy())
+	failKey := backlogReconcileCursorKey(repo, providerGaggle(), "goobers:approved", defaultBacklogStalenessPolicy(), backlogReconcileAssigneeScope{})
 	store, err := realOpen(layoutFor(root))
 	if err != nil {
 		t.Fatalf("open state store: %v", err)
@@ -1046,6 +1202,7 @@ func TestBacklogReconcileFailsClosedWhenClaimCursorAdvanceFails(t *testing.T) {
 		defaultBacklogStalenessPolicy(),
 		now,
 		"",
+		backlogReconcileAssigneeScope{},
 	)
 	if retryCode != 0 || retry.Scan.WorkRemaining {
 		t.Fatalf("retry code=%d result=%#v stderr=%q, want safe retry to complete", retryCode, retry, retryStderr.String())
@@ -1090,6 +1247,7 @@ func TestBacklogReconcileTinyScanLimitStillRepairsClaimVisibility(t *testing.T) 
 		defaultBacklogStalenessPolicy(),
 		now,
 		"",
+		backlogReconcileAssigneeScope{},
 	)
 	if code != 0 {
 		t.Fatalf("performBacklogQueryReconciliation: code=%d stderr=%q", code, stderr.String())
@@ -1134,6 +1292,7 @@ func TestRestoreInvisibleClaimsWindowBudgetDoesNotLeavePartialClaimEpoch(t *test
 		&stderr,
 		3,
 		"",
+		backlogReconcileAssigneeScope{},
 	)
 	if err != nil {
 		t.Fatalf("first restoreInvisibleClaimsWindow: %v", err)
@@ -1159,6 +1318,7 @@ func TestRestoreInvisibleClaimsWindowBudgetDoesNotLeavePartialClaimEpoch(t *test
 		&stderr,
 		20,
 		first.NextCursor,
+		backlogReconcileAssigneeScope{},
 	)
 	if err != nil {
 		t.Fatalf("retry restoreInvisibleClaimsWindow: %v", err)
@@ -1213,6 +1373,7 @@ func TestRestoreInvisibleClaimsWindowReportsDelayedMismatchIncomplete(t *testing
 		&stderr,
 		1,
 		"",
+		backlogReconcileAssigneeScope{},
 	)
 	if err != nil {
 		t.Fatalf("restoreInvisibleClaimsWindow: %v", err)
@@ -1265,6 +1426,7 @@ func TestRestoreInvisibleClaimsWindowRevalidatesLeaseBeforeRestore(t *testing.T)
 		&stderr,
 		1,
 		"",
+		backlogReconcileAssigneeScope{},
 	)
 	if err != nil {
 		t.Fatalf("restoreInvisibleClaimsWindow: %v", err)
@@ -1314,6 +1476,7 @@ func TestRestoreInvisibleClaimsWindowRevalidatesLeaseExpiryBeforeRestore(t *test
 		&stderr,
 		1,
 		"",
+		backlogReconcileAssigneeScope{},
 	)
 	if err != nil {
 		t.Fatalf("restoreInvisibleClaimsWindow: %v", err)

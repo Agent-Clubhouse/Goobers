@@ -368,10 +368,6 @@ type EffectiveVersionEfficacyResult struct {
 // than workflow_digest alone — so a model or harness change starts its own
 // cohort instead of being silently pooled with runs before that change.
 func (db *DB) AssessEfficacyByEffectiveVersion(ctx context.Context, req EffectiveVersionEfficacyRequest) (EffectiveVersionEfficacyResult, error) {
-	th := req.Thresholds
-	if th == (EfficacyThresholds{}) {
-		th = DefaultEfficacyThresholds()
-	}
 	oldHash := req.OldVersion.Hash()
 	newHash := req.NewVersion.Hash()
 
@@ -401,27 +397,7 @@ func (db *DB) AssessEfficacyByEffectiveVersion(ctx context.Context, req Effectiv
 		Before:         before,
 		After:          after,
 	}
-
-	beforeTerminal := before.CompletedRuns + before.FailedRuns
-	afterTerminal := after.CompletedRuns + after.FailedRuns
-	if beforeTerminal < th.MinSamples || afterTerminal < th.MinSamples {
-		result.Verdict = EfficacyInsufficientData
-		return result, nil
-	}
-
-	beforeFailureRate := 1 - before.SuccessRate
-	afterFailureRate := 1 - after.SuccessRate
-	delta := afterFailureRate - beforeFailureRate
-	result.FailureRateDelta = delta
-
-	switch {
-	case delta <= -th.SignificantFailureRateDelta:
-		result.Verdict = EfficacyHelped
-	case delta >= th.SignificantFailureRateDelta:
-		result.Verdict = EfficacyRegressed
-	default:
-		result.Verdict = EfficacyNoChange
-	}
+	result.Verdict, result.FailureRateDelta = efficacyVerdict(before, after, req.Thresholds)
 	return result, nil
 }
 

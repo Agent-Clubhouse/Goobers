@@ -439,7 +439,7 @@ func registerCredentialGrantSource(cg instance.CredentialGrant, key string, refs
 
 // newGitHubAppTokenSource builds the installation-token minting source for a
 // github-app repo (#686). A package var so CLI tests substitute an
-// httptest-backed source (mirrors newPRPoller / newOpenPRProvider); the
+// httptest-backed source (mirrors newPRPoller); the
 // production source caches until near expiry and single-flights refreshes.
 var newGitHubAppTokenSource = func(repo instance.RepoRef, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (credentials.ExpiringResolveFunc, error) {
 	source, err := githubapp.Source(repo, registrar, stores)
