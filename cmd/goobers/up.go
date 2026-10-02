@@ -817,12 +817,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel:              setup.ReadModel,
-		RetentionStats:         setup.RetentionStats,
-		InstanceLogStats:       setup.InstanceLog.Stats,
-		StorageHealthStats:     storageGate.Stats,
-		RecoveryInventoryStats: recoveryInventory.Stats,
-		WorkItemLookup:         statusWorkItemLookup(l.Root, setup.Definitions),
+		ReadModel:                    setup.ReadModel,
+		RetentionStats:               setup.RetentionStats,
+		InstanceLogStats:             setup.InstanceLog.Stats,
+		StorageHealthStats:           storageGate.Stats,
+		TelemetryExporterHealthStats: setup.TelemetryExporterHealth.Snapshot,
+		RecoveryInventoryStats:       recoveryInventory.Stats,
+		WorkItemLookup:               statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},

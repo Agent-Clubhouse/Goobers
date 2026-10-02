@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/selfupdate"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -80,6 +81,9 @@ type Health struct {
 	// absent, deliberately, rather than a zero value that would read as
 	// "confirmed up to date".
 	Update *UpdateAvailability `json:"update,omitempty"`
+	// TelemetryExporterHealth reports local, bounded exporter delivery health.
+	// It is present for live daemon reads; disabled telemetry is explicit.
+	TelemetryExporterHealth *TelemetryExporterHealthStatus `json:"telemetryExporterHealth,omitempty"`
 }
 
 // UpdateAvailability is the daemon's last notify-only release check, read from
@@ -160,6 +164,10 @@ type LocalSources struct {
 	// this process's own sampled state, not something an offline reader can
 	// reconstruct from the journal.
 	StorageHealthStats func() localscheduler.StorageHealthStats
+	// TelemetryExporterHealthStats is present only in the live daemon. Exporter
+	// health is process-local because it observes in-memory SDK callbacks and
+	// must not infer health from missing remote telemetry.
+	TelemetryExporterHealthStats func() telemetry.ExporterHealthSnapshot
 	// RecoveryInventoryStats is present only in the live daemon, for the same
 	// reason as StorageHealthStats: it is a sampled reading of the shared
 	// recovery inventory, taken on the daemon's own cadence rather than on
@@ -425,6 +433,7 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 			LastSchedulerTickAt: lastSchedulerTickAt,
 			LastTickAgeMillis:   lastTickAgeMillis,
 		},
+		TelemetryExporterHealth: telemetryExporterHealthStatus(s.sources.TelemetryExporterHealthStats),
 	}, nil
 }
 

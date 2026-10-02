@@ -59,14 +59,15 @@ type SchedulerStatus struct {
 	// force: the set resets at each daemon start and each accepted config
 	// reload, because the scheduler re-journals current refusals at both
 	// boundaries. Empty on zero-declaration instances.
-	RefusedWorkflows       []WorkflowRefusalStatus
-	RefillOccupancy        []RefillOccupancyStatus
-	Retention              *RetentionStatus
-	Maintenance            *MaintenanceStatus
-	WorkerConfigDivergence []WorkerConfigDivergenceStatus
-	TelemetryRetention     *TelemetryRetentionStatus
-	JournalHealth          *JournalHealthStatus
-	StorageHealth          *StorageHealthStatus
+	RefusedWorkflows        []WorkflowRefusalStatus
+	RefillOccupancy         []RefillOccupancyStatus
+	Retention               *RetentionStatus
+	Maintenance             *MaintenanceStatus
+	WorkerConfigDivergence  []WorkerConfigDivergenceStatus
+	TelemetryRetention      *TelemetryRetentionStatus
+	JournalHealth           *JournalHealthStatus
+	StorageHealth           *StorageHealthStatus
+	TelemetryExporterHealth *TelemetryExporterHealthStatus
 	// ConfigReloadRejection is the newest config.reload.rejected since the
 	// last accepted reload or daemon start (#5596). Nil when none.
 	ConfigReloadRejection *ConfigReloadRejectionStatus
@@ -119,6 +120,33 @@ type StorageHealthStatus struct {
 	Error               string    `json:"error,omitempty"`
 }
 
+// TelemetryExporterHealthStatus exposes local, scrubbed telemetry exporter
+// delivery health. The endpoint fields retain only a host and bounded host
+// class, never headers, credentials, paths, query strings, prompts, or source.
+type TelemetryExporterHealthStatus struct {
+	Enabled       bool                         `json:"enabled"`
+	Mode          string                       `json:"mode,omitempty"`
+	EndpointHost  string                       `json:"endpointHost,omitempty"`
+	EndpointClass string                       `json:"endpointClass,omitempty"`
+	Trace         TelemetryExporterSignalState `json:"trace"`
+	Metric        TelemetryExporterSignalState `json:"metric"`
+}
+
+// TelemetryExporterSignalState reports one signal's current local delivery
+// observation using bounded state and reason codes.
+type TelemetryExporterSignalState struct {
+	Configured              bool       `json:"configured"`
+	State                   string     `json:"state"`
+	LastSuccessAt           *time.Time `json:"lastSuccessAt,omitempty"`
+	LastFailureAt           *time.Time `json:"lastFailureAt,omitempty"`
+	LastFailureReason       string     `json:"lastFailureReason,omitempty"`
+	ConsecutiveFailures     uint64     `json:"consecutiveFailures,omitempty"`
+	LastTransitionAt        *time.Time `json:"lastTransitionAt,omitempty"`
+	RecoveryTransitions     uint64     `json:"recoveryTransitions,omitempty"`
+	FailureTransitions      uint64     `json:"failureTransitions,omitempty"`
+	SuppressedFailureEvents uint64     `json:"suppressedFailureEvents,omitempty"`
+}
+
 // storageHealthStatus converts a localscheduler.StorageHealthStats snapshot
 // into the read-service's status shape.
 func storageHealthStatus(stats localscheduler.StorageHealthStats) *StorageHealthStatus {
@@ -135,6 +163,36 @@ func storageHealthStatus(stats localscheduler.StorageHealthStats) *StorageHealth
 		CriticalFloorSource:  stats.CriticalFloorSource,
 		MeasuredAt:           stats.MeasuredAt,
 		Error:                stats.Error,
+	}
+}
+
+func telemetryExporterHealthStatus(snapshot func() telemetry.ExporterHealthSnapshot) *TelemetryExporterHealthStatus {
+	if snapshot == nil {
+		return nil
+	}
+	health := snapshot()
+	return &TelemetryExporterHealthStatus{
+		Enabled:       health.Enabled,
+		Mode:          health.Mode,
+		EndpointHost:  health.EndpointHost,
+		EndpointClass: health.EndpointClass,
+		Trace:         telemetryExporterSignalState(health.Trace),
+		Metric:        telemetryExporterSignalState(health.Metric),
+	}
+}
+
+func telemetryExporterSignalState(signal telemetry.ExporterSignalStatus) TelemetryExporterSignalState {
+	return TelemetryExporterSignalState{
+		Configured:              signal.Configured,
+		State:                   signal.State,
+		LastSuccessAt:           signal.LastSuccessAt,
+		LastFailureAt:           signal.LastFailureAt,
+		LastFailureReason:       signal.LastFailureReason,
+		ConsecutiveFailures:     signal.ConsecutiveFailures,
+		LastTransitionAt:        signal.LastTransitionAt,
+		RecoveryTransitions:     signal.RecoveryTransitions,
+		FailureTransitions:      signal.FailureTransitions,
+		SuppressedFailureEvents: signal.SuppressedFailureEvents,
 	}
 }
 
@@ -604,6 +662,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	if s.sources.StorageHealthStats != nil {
 		status.StorageHealth = storageHealthStatus(s.sources.StorageHealthStats())
 	}
+	status.TelemetryExporterHealth = telemetryExporterHealthStatus(s.sources.TelemetryExporterHealthStats)
 	for _, worker := range projected.workerDivergenceOrder {
 		status.WorkerConfigDivergence = append(status.WorkerConfigDivergence, projected.workerDivergence[worker])
 	}

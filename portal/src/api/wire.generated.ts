@@ -195,6 +195,31 @@ export const goWireFixtures = {
       "currentVersion": "v1.2.3",
       "channel": "stable",
       "checkedAt": "2026-07-18T12:34:56Z"
+    },
+    "telemetryExporterHealth": {
+      "enabled": true,
+      "mode": "otlp",
+      "trace": {
+        "configured": true,
+        "state": "healthy",
+        "lastSuccessAt": "2026-07-18T12:36:56Z",
+        "lastFailureAt": "2026-07-18T12:32:56Z",
+        "lastFailureReason": "collector_unavailable",
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "recoveryTransitions": 1,
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      },
+      "metric": {
+        "configured": true,
+        "state": "unhealthy",
+        "lastFailureAt": "2026-07-18T12:36:56Z",
+        "lastFailureReason": "signal_unimplemented",
+        "consecutiveFailures": 3,
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      }
     }
   },
   "instance": {
@@ -244,6 +269,31 @@ export const goWireFixtures = {
       "warningFloorBytes": 10737418240,
       "criticalFloorBytes": 5368709120,
       "measuredAt": "2026-07-18T12:32:56Z"
+    },
+    "telemetryExporterHealth": {
+      "enabled": true,
+      "mode": "otlp",
+      "trace": {
+        "configured": true,
+        "state": "healthy",
+        "lastSuccessAt": "2026-07-18T12:36:56Z",
+        "lastFailureAt": "2026-07-18T12:32:56Z",
+        "lastFailureReason": "collector_unavailable",
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "recoveryTransitions": 1,
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      },
+      "metric": {
+        "configured": true,
+        "state": "unhealthy",
+        "lastFailureAt": "2026-07-18T12:36:56Z",
+        "lastFailureReason": "signal_unimplemented",
+        "consecutiveFailures": 3,
+        "lastTransitionAt": "2026-07-18T12:36:56Z",
+        "failureTransitions": 1,
+        "suppressedFailureEvents": 2
+      }
     },
     "recoveryInventory": {
       "state": "warning",
