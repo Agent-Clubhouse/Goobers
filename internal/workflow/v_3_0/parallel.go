@@ -46,6 +46,23 @@ func parallelProblems(m *Machine) []string {
 	return problems
 }
 
+// parallelWarnings flags a parallel that leaves maxConcurrentBranches unset.
+// Unset means 1, so a construct named "parallel" runs its branches one at a
+// time, and nothing else at author time says so (#2738). Declaring the field,
+// including an explicit 1, acknowledges the schedule and silences this.
+func parallelWarnings(def Definition) []string {
+	var warnings []string
+	for _, p := range def.Spec.Parallels {
+		if p.MaxConcurrentBranches != 0 || len(p.Branches) < 2 {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"parallel %q: maxConcurrentBranches is unset, so its %d branches run sequentially, one at a time; set maxConcurrentBranches above 1 to run them concurrently, or to 1 to keep sequential execution explicitly",
+			p.Name, len(p.Branches)))
+	}
+	return warnings
+}
+
 type branchInputReference struct {
 	parallel  string
 	branch    string
