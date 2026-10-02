@@ -28,12 +28,19 @@ func TerminalAt(identity journal.RunIdentity, events []journal.Event, now time.T
 		return time.Time{}, nil
 	}
 	phase := journal.PhaseFromEvents(events)
+terminal:
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type != journal.EventRunFinished || event.Branch != 0 {
+		switch event.Type {
+		case journal.EventRunStarted, journal.EventRunResumed, journal.EventStageRerunRequested, journal.EventGateOverridden, journal.EventGateEvaluated:
+			// A later attempt or gate cannot borrow an earlier attempt's age.
+			// Terminal gates may be durable before run.finished is appended.
+			break terminal
+		case journal.EventRunFinished:
+		default:
 			continue
 		}
-		if event.Status != string(phase) || event.Time.IsZero() || event.Time.After(now) || event.Time.Before(identity.StartedAt) {
+		if event.Branch != 0 || event.Status != string(phase) || event.Time.IsZero() || event.Time.After(now) || event.Time.Before(identity.StartedAt) {
 			break
 		}
 		return event.Time, nil
