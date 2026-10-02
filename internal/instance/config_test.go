@@ -4193,6 +4193,16 @@ func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
 // never hand a credential reference to a caller that has no business
 // resolving secrets itself, and must be nil (not an empty map) when nothing
 // is configured, matching GitHubBotLogins' own nil-means-nothing contract.
+func TestExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
+	var nilConfig *Config
+	if names := nilConfig.ExternalTelemetryConnectorNames(); names != nil {
+		t.Fatalf("nil config names = %#v, want nil (check skipped)", names)
+	}
+	if names := (&Config{}).ExternalTelemetryConnectorNames(); names == nil || len(names) != 0 {
+		t.Fatalf("empty config names = %#v, want a non-nil empty slice so the check still runs", names)
+	}
+}
+
 func TestExternalTelemetryConnectorsByName(t *testing.T) {
 	cfg := &Config{ExternalTelemetry: externaltelemetry.Configuration{
 		Connectors: []externaltelemetry.ConnectorConfig{

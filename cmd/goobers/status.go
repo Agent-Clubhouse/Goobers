@@ -1238,7 +1238,7 @@ func statusCompiledHarnessWarnings(
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		false, modelCredential, knownExternalTelemetryConnectorNames(cfg),
+		false, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
 		printValidationWarnings(stderr, cliWarnings)
