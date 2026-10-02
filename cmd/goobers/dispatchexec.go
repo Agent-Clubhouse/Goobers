@@ -448,6 +448,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
 	scrubber := podStageScrubber(resolved.withGrant(checkoutCreds), checkoutScheme)
+	defer publishPodNamedResult(ctx, stderr, scrubber, &outcome)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
 	scrubbedErr := scrubber.Scrub([]byte(capturedStderr.String()))

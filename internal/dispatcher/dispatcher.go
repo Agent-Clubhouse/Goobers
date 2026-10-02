@@ -440,6 +440,10 @@ type Attempt struct {
 	// on a pod spec, where the run's goal and ownership boundary would be
 	// readable by anything with namespace read.
 	Envelope *apiv1.InvocationEnvelope
+	// ArtifactPublication is the runner-owned named-output contract for a
+	// deterministic command. It travels separately because those pods do not
+	// consume an agentic invocation kit.
+	ArtifactPublication *apiv1.ArtifactPublication
 	// KitDigest is the published kit's content address, set by Dispatch for an
 	// agentic attempt and stamped on the pod. Never set by a caller.
 	KitDigest string

@@ -1334,3 +1334,10 @@ available. `missing_artifact_slot` identifies a required slot absent from a
 publication; `invalid_artifact_slot_publication` identifies a refused binding.
 Malformed staging manifests retain `invalid_declared_artifact_set`. These are
 producer publication failures; consumer dispatch enforcement is separate.
+
+Remote deterministic commands receive the pinned publication contract through
+the dispatcher's privileged environment. The pod runtime keeps this authority
+out of the child command's environment and publishes the prepared payloads and
+index through durable blob storage and journal adoption before returning their
+pointers. Publication I/O failures return `artifact_publication_failed`; missing
+or invalid slots retain the typed publication codes above.

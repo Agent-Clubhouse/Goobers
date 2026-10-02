@@ -570,6 +570,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		RunsOnCapabilities: input.Placement.Capabilities,
 	}
 	stampDeterministicRun(&attempt, input.Run)
+	attempt.ArtifactPublication = input.Envelope.ArtifactPublication
 	// Declared credential capabilities travel as NAMES; the pod resolves them
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.
