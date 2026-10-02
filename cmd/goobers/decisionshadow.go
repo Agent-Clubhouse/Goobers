@@ -24,19 +24,25 @@ func newDecisionShadowObserver(cfg *instance.Config, log *slog.Logger) harness.O
 		log.Warn("decisionGate disabled", "error", err.Error())
 		return nil
 	}
-	obs := decisiongate.NewObserver(gate, cfg.DecisionGate.ShadowSample, 2, func(r decisiongate.ShadowRecord) {
-		log.Info("decisiongate.shadow",
-			"verdict", string(r.Verdict), "probability", r.Probability, "confidence", r.Confidence,
-			"cached", r.Cached, "agentClaimedBad", r.AgentClaimedBad, "error", errString(r.Err))
-	})
+	newObs := func(outcome string) *decisiongate.Observer {
+		return decisiongate.NewObserver(gate, cfg.DecisionGate.ShadowSample, 2, func(r decisiongate.ShadowRecord) {
+			log.Info("decisiongate.shadow",
+				"outcome", outcome,
+				"verdict", string(r.Verdict), "probability", r.Probability, "confidence", r.Confidence,
+				"cached", r.Cached, "agentClaimedBad", r.AgentClaimedBad, "error", errString(r.Err))
+		})
+	}
+	// Successes are scored too so the log can show false alarms on healthy
+	// replies, not only detections on failed ones.
+	ok, other := newObs("success"), newObs("non-success")
 	return func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope) {
 		if result.Status == apiv1.ResultSuccess {
+			ok.Observe(env.RunID, result.Summary)
 			return
 		}
-		obs.Observe(env.RunID, result.Summary)
+		other.Observe(env.RunID, result.Summary)
 	}
 }
-
 func errString(err error) string {
 	if err == nil {
 		return ""
