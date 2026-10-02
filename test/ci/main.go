@@ -148,6 +148,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if fast {
 		validationChecks = fastChecks(validationChecks)
 	}
+	if group == "" {
+		// A full (ungrouped) run honours the same environment toggles a group
+		// job does, so a slower host can relax -race or the per-package timeout
+		// for `make ci` too. Before this, the toggles applied only under
+		// --group, and a full run silently ignored them. Only the
+		// environment-driven toggles apply here: the group-only portal-embed
+		// rewrite stays with applyRuntimeToggles, because a full run still
+		// performs portal preparation.
+		validationChecks = applyEnvToggles(validationChecks, os.Getenv)
+	}
 	if group != "" {
 		selected := groupChecksOnly(validationChecks, group)
 		if len(selected) == 0 {
@@ -203,6 +213,20 @@ func groupChecksOnly(all []check, group string) []check {
 //     own, and build flags are what the cache keys on. It is never a gate —
 //     /usr/bin/true "passes" every package.
 func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
+	result := make([]check, 0, len(checks))
+	for _, current := range checks {
+		if current.group == groupPreflight && current.label == "build-goobers" {
+			current.args = removePortalEmbedTag(current.args)
+		}
+		result = append(result, current)
+	}
+	return applyEnvToggles(result, getenv)
+}
+
+// applyEnvToggles applies only the environment-driven toggles documented on
+// applyRuntimeToggles. Every toggle is a no-op when its variable is unset, so
+// an ungrouped `make ci` with a clean environment runs exactly as before.
+func applyEnvToggles(checks []check, getenv func(string) string) []check {
 	raceEnabled := getenv("GOOBERS_CI_RACE") != "0"
 	unit := unitTestToggles{
 		coverage:    getenv("GOOBERS_CI_COVERAGE") != "0",
@@ -217,9 +241,6 @@ func applyRuntimeToggles(checks []check, getenv func(string) string) []check {
 	lintGOOS := strings.TrimSpace(getenv("GOOBERS_LINT_GOOS"))
 	result := make([]check, 0, len(checks))
 	for _, current := range checks {
-		if current.group == groupPreflight && current.label == "build-goobers" {
-			current.args = removePortalEmbedTag(current.args)
-		}
 		if !raceEnabled {
 			current.args = withoutArg(current.args, "-race")
 		}
