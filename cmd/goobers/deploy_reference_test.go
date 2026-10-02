@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,6 +68,9 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 		t.Fatalf("found %d Deployment manifests, want %d", len(paths), len(contracts))
 	}
 
+	// Vacancy guard (#4291): a matching file count is not coverage — two
+	// manifests naming the same Deployment would leave a contract unchecked.
+	examined := map[string]bool{}
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -81,6 +85,7 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 			t.Errorf("%s: no CLI contract for Deployment %q", path, deployment.Name)
 			continue
 		}
+		examined[deployment.Name] = true
 		if len(deployment.Spec.Template.Spec.Containers) != 1 {
 			t.Errorf("%s: got %d containers, want 1", path, len(deployment.Spec.Template.Spec.Containers))
 			continue
@@ -109,6 +114,9 @@ func TestDeployReferenceContainerArgsMatchCLIRegistry(t *testing.T) {
 		if err := contract.validateArgs(args); err != nil {
 			t.Errorf("%s: %v", path, err)
 		}
+	}
+	if len(examined) != len(contracts) {
+		t.Fatalf("examined %d of %d contracted Deployments (%v); every CLI contract must be checked against a shipped manifest", len(examined), len(contracts), slices.Sorted(maps.Keys(examined)))
 	}
 
 	workerFlags := registeredCommandFlagSet(t, "worker")

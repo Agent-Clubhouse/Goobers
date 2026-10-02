@@ -124,6 +124,14 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 		}
 	}
 
+	// Vacancy guard (#4291): the assertions below iterate these slices, so a
+	// glob that still matches files but no longer yields Deployments or
+	// NetworkPolicies would pass by inspecting nothing.
+	if len(podLabelSets) == 0 || len(policies) == 0 {
+		t.Fatalf("composed bases yielded %d Deployment(s) and %d NetworkPolicy(ies) from %d file(s); want at least one of each — the globs no longer reach the reference manifests",
+			len(podLabelSets), len(policies), len(files))
+	}
+
 	// The rendered-together half: a representative inventory covering the
 	// three class shapes, rendered through the real renderer, plus the label
 	// sets the dispatcher stamps for the SAME inventory (runnercap is the
@@ -174,11 +182,13 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 
 	// (1) Every goobers.dev-labeled pod is matched by a policy whose
 	// podSelector names at least one goobers.dev key.
+	keyedPods := 0
 	for i, labels := range podLabelSets {
 		keyed := goobersKeyed(labels)
 		if len(keyed) == 0 {
 			continue
 		}
+		keyedPods++
 		var matched bool
 		for _, namespaced := range policies {
 			selector := goobersKeyed(namespaced.policy.Spec.PodSelector.MatchLabels)
@@ -190,6 +200,9 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 		if !matched {
 			t.Errorf("pod labels %v are matched by no rendered policy's goobers.dev selector (composed bases + netpol-render output)", keyed)
 		}
+	}
+	if keyedPods == 0 {
+		t.Fatalf("assertion (1) checked 0 goobers.dev-labeled pod label sets out of %d; the coverage check inspected nothing", len(podLabelSets))
 	}
 
 	// (2) Every goobers.dev-keyed selector — spec.podSelector or a peer —
@@ -256,6 +269,7 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 	// role=stage must pin a runner-class label. A generic stage-wide egress
 	// grant (the base's former allow-stage-egress) would union over — and so
 	// nullify — every per-class grant.
+	egressPolicies := 0
 	for _, namespaced := range policies {
 		policy := namespaced.policy
 		var hasEgress bool
@@ -267,12 +281,16 @@ func TestDeployReferenceRenderedTogether(t *testing.T) {
 		if !hasEgress || len(policy.Spec.Egress) == 0 {
 			continue
 		}
+		egressPolicies++
 		match := policy.Spec.PodSelector.MatchLabels
 		if match[runnercap.LabelRole] == runnercap.RoleStage && match[runnercap.LabelRunnerClass] == "" {
 			t.Errorf("policy %s grants egress to goobers.dev/role=stage without pinning %s — "+
 				"composition is additive (decision 004): this generic grant makes every per-class policy a no-op",
 				policy.Name, runnercap.LabelRunnerClass)
 		}
+	}
+	if egressPolicies == 0 {
+		t.Fatalf("assertion (3) checked 0 egress-granting policies out of %d; the additive-composition guard inspected nothing", len(policies))
 	}
 }
 
