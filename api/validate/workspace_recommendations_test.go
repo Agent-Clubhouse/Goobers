@@ -59,13 +59,13 @@ func TestWS001SuggestedYAMLShapesValidateAgainstGeneratedSchema(t *testing.T) {
   gates:
     - name: review
       evaluator: agentic
-      agentic: {goober: reviewer, workspace: repo-readonly}
+      agentic: {goober: reviewer, workspace: repo}
       branches: {pass: "", fail: "@abort"}`,
 			def: wf.Definition{Name: "workspace-recommendation", Spec: apiv1.WorkflowSpec{Gates: []apiv1.Gate{{
 				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
 				Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
 			}}}},
-			wantText: "agentic: {goober: reviewer, workspace: repo-readonly}",
+			wantText: "agentic: {goober: reviewer, workspace: repo}",
 		},
 	}
 
