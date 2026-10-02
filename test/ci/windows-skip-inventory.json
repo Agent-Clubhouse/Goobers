@@ -253,16 +253,16 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/diagnostics",
-      "coverage": "partial",
-      "category": "seam-selection",
-      "reason": "Only ^TestOperational runs, in the 'Windows offline diagnostic evidence' step."
-    },
-    {
       "package": "internal/diagnostics/fleetstate",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/diagnostics",
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Only ^TestOperational runs, in the 'Windows offline diagnostic evidence' step."
     },
     {
       "package": "internal/dispatcher",
@@ -295,13 +295,13 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/externaltelemetry",
+      "package": "internal/externaltelemetry/adx",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/externaltelemetry/adx",
+      "package": "internal/externaltelemetry",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -709,12 +709,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/telemetry",
-      "coverage": "partial",
-      "category": "seam-selection",
-      "reason": "Only the journal OTLP and Azure Monitor replay tests run, in the 'Windows journal OTLP export' step."
-    },
-    {
       "package": "internal/telemetry/ingest",
       "coverage": "none",
       "category": "not-selected",
@@ -731,6 +725,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the two runtime-alias dedup tests run ('Windows rollup migration alias dedup'); the rest of the ~15s suite is not Windows-sensitive."
+    },
+    {
+      "package": "internal/telemetry",
+      "coverage": "partial",
+      "category": "seam-selection",
+      "reason": "Only the journal OTLP and Azure Monitor replay tests run, in the 'Windows journal OTLP export' step."
     },
     {
       "package": "internal/telemetryclient",
@@ -805,12 +805,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/workflow",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
-    },
-    {
       "package": "internal/workflow/internal/model",
       "coverage": "none",
       "category": "not-selected",
@@ -830,6 +824,12 @@
     },
     {
       "package": "internal/workflow/v_3_0",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/workflow",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -877,25 +877,25 @@
       "reason": "Only the integration-tagged Azure CLI credential tests run; default-tag tests do not."
     },
     {
-      "package": "release",
-      "coverage": "partial",
-      "category": "cost",
-      "reason": "Whole package ~2.75min on Windows. Toolkit and install-script tests are named in the 'Windows release packaging' step."
-    },
-    {
       "package": "release/notes",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "telemetryconnector/v1alpha1",
+      "package": "release",
+      "coverage": "partial",
+      "category": "cost",
+      "reason": "Whole package ~2.75min on Windows. Toolkit and install-script tests are named in the 'Windows release packaging' step."
+    },
+    {
+      "package": "telemetryconnector/v1alpha1/contracttest",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "telemetryconnector/v1alpha1/contracttest",
+      "package": "telemetryconnector/v1alpha1",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
