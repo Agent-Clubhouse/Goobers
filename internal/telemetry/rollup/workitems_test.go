@@ -129,3 +129,53 @@ func TestWorkItemsKeepSameNumberedRepositoriesSeparate(t *testing.T) {
 		t.Fatalf("actions = %#v", actions)
 	}
 }
+
+func TestWorkItemsCanonicalizeURLVariantsAcrossGaggles(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for index, mutation := range []struct {
+		gaggle string
+		url    string
+	}{
+		{"alpha", "https://github.com/acme/app/issues/99#issuecomment-1"},
+		{"beta", "https://api.github.com/repos/acme/app/issues/99"},
+		{"gamma", ""},
+	} {
+		runID := "run-" + mutation.gaggle
+		at := start.Add(time.Duration(index) * time.Minute)
+		if _, err := db.sql.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+			VALUES (?, 'implementation', 1, ?, 'completed', ?)`,
+			runID, mutation.gaggle, formatTime(at)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.sql.Exec(`
+			INSERT INTO provider_mutations
+				(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+			VALUES (?, 1, 'github', 'pr', '99', NULLIF(?, ''), 'update', ?)`,
+			runID, mutation.url, formatTime(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, hasMore, err := db.WorkItems(context.Background(), WorkItemQuery{Kind: "pr", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore || len(items) != 1 {
+		t.Fatalf("items = %#v, hasMore = %v", items, hasMore)
+	}
+	item := items[0]
+	if item.Repository != "acme/app" || item.URL != "https://github.com/acme/app/pull/99" ||
+		item.ActionCount != 3 || item.LastRunID != "run-gamma" {
+		t.Fatalf("work item = %#v", item)
+	}
+
+	actions, truncated, err := db.WorkItemActions(context.Background(), "github", "acme/app", "pr", "99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(actions) != 3 || actions[0].RunID != "run-gamma" {
+		t.Fatalf("actions = %#v, truncated = %v", actions, truncated)
+	}
+}

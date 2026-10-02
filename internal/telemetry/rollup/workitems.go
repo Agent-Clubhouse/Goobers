@@ -3,14 +3,31 @@ package rollup
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
+
+	sqlite "modernc.org/sqlite"
 )
 
 // MaxWorkItemActions bounds work-item list and action-history queries.
 const MaxWorkItemActions = 200
+
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction(
+		"goobers_work_item_url",
+		4,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			values := make([]string, len(args))
+			for i, arg := range args {
+				values[i], _ = arg.(string)
+			}
+			return canonicalWorkItemURL(values[0], values[1], values[2], values[3]), nil
+		},
+	)
+}
 
 // WorkItemQuery filters and bounds a work-item rollup query.
 type WorkItemQuery struct {
@@ -66,29 +83,35 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 		WITH normalized AS (
 			SELECT
 				pm.*,
-				COALESCE(r.gaggle, '') AS source_gaggle,
-				CASE
-					WHEN instr(COALESCE(pm.url, ''), '#') > 0
-						THEN substr(pm.url, 1, instr(pm.url, '#') - 1)
-					ELSE COALESCE(pm.url, '')
-				END AS canonical_url
+				goobers_work_item_url(
+					pm.provider, pm.kind, pm.external_id, COALESCE(pm.url, '')
+				) AS canonical_url
 			FROM provider_mutations pm
-			LEFT JOIN runs r ON r.run_id = pm.run_id
 			WHERE pm.kind IN ('pr', 'issue')
 				AND (? = '' OR pm.provider = ?)
 				AND (? = '' OR pm.kind = ?)
+		),
+		known_identity AS (
+			SELECT provider, kind, external_id,
+			       CASE
+				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+					       THEN MAX(canonical_url)
+				       ELSE ''
+			       END AS inferred_url
+			FROM normalized
+			WHERE canonical_url <> ''
+			GROUP BY provider, kind, external_id
 		),
 		resolved AS (
 			SELECT
 				normalized.*,
 				COALESCE(
 					NULLIF(canonical_url, ''),
-					MAX(NULLIF(canonical_url, '')) OVER (
-						PARTITION BY provider, kind, external_id, source_gaggle
-					),
+					NULLIF(known_identity.inferred_url, ''),
 					''
 				) AS item_url
 			FROM normalized
+			LEFT JOIN known_identity USING (provider, kind, external_id)
 		),
 		ranked AS (
 			SELECT
@@ -97,7 +120,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				pm.external_id,
 				pm.item_url,
 				COUNT(*) OVER (
-					PARTITION BY pm.provider, pm.kind, pm.external_id, pm.item_url
+					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_url)
 				) AS action_count,
 				pm.operation,
 				pm.occurred_at,
@@ -106,7 +129,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				COALESCE(r.workflow, '') AS workflow,
 				COALESCE(r.status, '') AS status,
 				ROW_NUMBER() OVER (
-					PARTITION BY pm.provider, pm.kind, pm.external_id, pm.item_url
+					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_url)
 					ORDER BY julianday(pm.occurred_at) DESC, pm.occurred_at DESC, pm.run_id DESC, pm.seq DESC
 				) AS item_rank
 			FROM resolved pm
@@ -193,25 +216,33 @@ func (db *DB) WorkItemActions(
 				COALESCE(r.gaggle, '') AS gaggle,
 				COALESCE(r.workflow, '') AS workflow,
 				COALESCE(r.status, '') AS status,
-				CASE
-					WHEN instr(COALESCE(pm.url, ''), '#') > 0
-						THEN substr(pm.url, 1, instr(pm.url, '#') - 1)
-					ELSE COALESCE(pm.url, '')
-				END AS canonical_url
+				goobers_work_item_url(
+					pm.provider, pm.kind, pm.external_id, COALESCE(pm.url, '')
+				) AS canonical_url
 			FROM provider_mutations pm
 			LEFT JOIN runs r ON r.run_id = pm.run_id
+		),
+		known_identity AS (
+			SELECT provider, kind, external_id,
+			       CASE
+				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+					       THEN MAX(canonical_url)
+				       ELSE ''
+			       END AS inferred_url
+			FROM normalized
+			WHERE canonical_url <> ''
+			GROUP BY provider, kind, external_id
 		),
 		resolved AS (
 			SELECT
 				normalized.*,
 				COALESCE(
 					NULLIF(canonical_url, ''),
-					MAX(NULLIF(canonical_url, '')) OVER (
-						PARTITION BY provider, kind, external_id, gaggle
-					),
+					NULLIF(known_identity.inferred_url, ''),
 					''
 				) AS item_url
 			FROM normalized
+			LEFT JOIN known_identity USING (provider, kind, external_id)
 		)
 		SELECT pm.run_id, pm.seq, pm.item_url, COALESCE(pm.operation, ''),
 		       pm.occurred_at, pm.gaggle, pm.workflow, pm.status
@@ -370,6 +401,20 @@ func workItemURL(provider, repository, kind, externalID string) string {
 	}
 	base := "https://github.com/" + strings.Trim(repository, "/") + "/" + segment + "/"
 	return base + externalID
+}
+
+func canonicalWorkItemURL(provider, kind, externalID, rawURL string) string {
+	repository := workItemRepository(provider, rawURL)
+	if repository == "" {
+		repository = workItemRepositoryFromAPI(provider, rawURL)
+	}
+	if canonicalURL := workItemURL(provider, repository, kind, externalID); canonicalURL != "" {
+		return canonicalURL
+	}
+	if fragment := strings.IndexByte(rawURL, '#'); fragment >= 0 {
+		return rawURL[:fragment]
+	}
+	return rawURL
 }
 
 // adoWorkItemURL reconstructs an Azure DevOps entity URL from the identity the
