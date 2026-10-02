@@ -1372,7 +1372,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		if actionsErr != nil {
 			return nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
 		}
-		for _, run := range withoutSupersededCancelledActionsRuns(runs) {
+		for _, run := range p.withoutSupersededCancelledActionsRuns(ctx, repo, runs) {
 			state := normalizeCheckRunState(run.Status, run.Conclusion)
 			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
@@ -1407,6 +1407,11 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 // a superseded failure dropped too, a later pass in one workflow would hide a
 // genuine failure in the other (the #139 direction). Every other run counts
 // as before, and the output keeps the API's order.
+//
+// A skipped run supersedes nothing: it validated nothing, so it cannot stand
+// in for the cancelled run's missing verdict. A workflow that skips every job
+// for a PR title/body edit (ci.yml, #6360) would otherwise turn a red run that
+// cancelled itself into a pass.
 func withoutSupersededCancelledCheckRuns(runs []githubCheckRun) []githubCheckRun {
 	type checkKey struct {
 		name  string
@@ -1414,36 +1419,99 @@ func withoutSupersededCancelledCheckRuns(runs []githubCheckRun) []githubCheckRun
 	}
 	return withoutSupersededCancelled(runs, func(run githubCheckRun) (checkKey, int64, string) {
 		return checkKey{name: run.Name, appID: run.App.ID}, run.ID, run.Conclusion
+	}, func(run githubCheckRun) bool {
+		return !strings.EqualFold(run.Conclusion, "skipped")
 	})
 }
 
 // withoutSupersededCancelledActionsRuns applies the same rule to the
 // actions/runs fallback (#2685), grouping workflow runs by name and
-// workflow id.
-func withoutSupersededCancelledActionsRuns(runs []githubActionsRun) []githubActionsRun {
+// workflow id. A workflow run whose jobs were all skipped can still conclude
+// success, so a passing run supersedes only once its jobs show it executed
+// something (actionsRunSupersedes).
+func (p *GitHubProvider) withoutSupersededCancelledActionsRuns(ctx context.Context, repo RepositoryRef, runs []githubActionsRun) []githubActionsRun {
 	type workflowKey struct {
 		name       string
 		workflowID int64
 	}
 	return withoutSupersededCancelled(runs, func(run githubActionsRun) (workflowKey, int64, string) {
 		return workflowKey{name: run.Name, workflowID: run.WorkflowID}, run.ID, run.Conclusion
+	}, func(run githubActionsRun) bool {
+		return p.actionsRunSupersedes(ctx, repo, run)
 	})
 }
 
-// withoutSupersededCancelled removes each cancelled run whose group, per
-// describe, also holds a run with a higher id. Order is preserved.
-func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) (key K, id int64, conclusion string)) []R {
-	newest := make(map[K]int64, len(runs))
-	for _, run := range runs {
-		key, id, _ := describe(run)
-		if current, ok := newest[key]; !ok || id > current {
-			newest[key] = id
+// actionsRunSupersedes reports whether run may stand in for an older cancelled
+// run of its workflow. A run that is still going or that did not pass keeps
+// the result at least as strict as the cancelled one, so it needs no lookup;
+// a skipped run never supersedes; a passing run supersedes only if it ran a
+// job. A failed job lookup fails closed: the cancelled run keeps counting.
+func (p *GitHubProvider) actionsRunSupersedes(ctx context.Context, repo RepositoryRef, run githubActionsRun) bool {
+	if !strings.EqualFold(run.Status, "completed") {
+		return true
+	}
+	switch strings.ToLower(run.Conclusion) {
+	case "skipped":
+		return false
+	case "success", "neutral":
+		executed, err := p.actionsRunExecutedJobs(ctx, repo, run.ID)
+		return err == nil && executed
+	}
+	return true
+}
+
+// actionsRunExecutedJobs reports whether any job of the workflow run's latest
+// attempt concluded other than skipped.
+func (p *GitHubProvider) actionsRunExecutedJobs(ctx context.Context, repo RepositoryRef, runID int64) (bool, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "runs", strconv.FormatInt(runID, 10), "jobs")
+	if err != nil {
+		return false, err
+	}
+	executed := false
+	err = p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut struct {
+			Jobs []struct {
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
 		}
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode actions run jobs page: %w", err)
+		}
+		for _, job := range pageOut.Jobs {
+			executed = executed || !strings.EqualFold(job.Conclusion, "skipped")
+		}
+		return nil
+	})
+	return executed, err
+}
+
+// withoutSupersededCancelled removes each cancelled run whose group, per
+// describe, also holds a higher-id run that supersedes reports may stand in
+// for it. supersedes is consulted lazily, at most once per run, and only for
+// runs newer than a cancelled run of their group. Order is preserved.
+func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) (key K, id int64, conclusion string), supersedes func(R) bool) []R {
+	verdicts := make(map[int]bool, len(runs))
+	canSupersede := func(i int) bool {
+		v, ok := verdicts[i]
+		if !ok {
+			v = supersedes(runs[i])
+			verdicts[i] = v
+		}
+		return v
+	}
+	superseded := func(i int) bool {
+		key, id, _ := describe(runs[i])
+		for j := range runs {
+			otherKey, otherID, _ := describe(runs[j])
+			if otherKey == key && otherID > id && canSupersede(j) {
+				return true
+			}
+		}
+		return false
 	}
 	out := make([]R, 0, len(runs))
-	for _, run := range runs {
-		key, id, conclusion := describe(run)
-		if strings.EqualFold(conclusion, "cancelled") && id < newest[key] {
+	for i, run := range runs {
+		if _, _, conclusion := describe(run); strings.EqualFold(conclusion, "cancelled") && superseded(i) {
 			continue
 		}
 		out = append(out, run)
