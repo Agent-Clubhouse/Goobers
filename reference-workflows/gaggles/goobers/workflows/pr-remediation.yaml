@@ -7,6 +7,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: pr-remediation
+  annotations:
+    goobers.dev/purpose: "Fixes open pull requests that are behind, conflicting, failing CI or carrying review findings by rebasing and reworking them, then responds to and resolves the findings."
 spec:
   gaggle: goobers
   displayName: PR remediation (rebase + finding-driven rework)

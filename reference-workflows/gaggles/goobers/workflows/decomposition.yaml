@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: decomposition
+  annotations:
+    goobers.dev/purpose: "Breaks a large approved issue into smaller, independently implementable slices and files them as new backlog items, parking the source for a human when it cannot be split safely."
 spec:
   gaggle: goobers
   displayName: Decomposition

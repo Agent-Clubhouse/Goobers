@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: claude-implementation
+  annotations:
+    goobers.dev/purpose: "Turns a ready backlog issue into a reviewed, CI-passing pull request by implementing the change, gating it on reviewer and local checks, and repairing CI failures."
 spec:
   gaggle: acme-web-claude
   displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)

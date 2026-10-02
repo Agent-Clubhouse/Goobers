@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: claude-work-nomination
+  annotations:
+    goobers.dev/purpose: "Scans the repository, code-scanning alerts and dependency alerts for worthwhile work and nominates it as new backlog issues."
 spec:
   gaggle: acme-web-claude
   displayName: Work nomination
