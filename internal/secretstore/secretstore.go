@@ -58,12 +58,17 @@ func NewRegistry(configs []instance.SecretStoreConfig) (*Registry, error) {
 // contract tests exercise the registry and cache against a fake Store.
 func newRegistry(configs []instance.SecretStoreConfig, build func(instance.SecretStoreConfig) (Store, error)) (*Registry, error) {
 	stores := make(map[string]Store, len(configs))
+	seen := make(map[string]bool, len(configs))
 	for _, cfg := range configs {
 		// instance.Config.Validate already rejects duplicates and unknown
 		// kinds; re-check here so a registry built from an unvalidated slice
 		// still fails closed instead of silently shadowing a store.
-		if _, dup := stores[cfg.Name]; dup {
+		if seen[cfg.Name] {
 			return nil, fmt.Errorf("secretstore: store %q is declared more than once", cfg.Name)
+		}
+		seen[cfg.Name] = true
+		if cfg.IsKeyStore() {
+			continue
 		}
 		store, err := build(cfg)
 		if err != nil {

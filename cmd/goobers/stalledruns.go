@@ -39,7 +39,8 @@ type stalledSweepDeps struct {
 	// it already has. The row stays `running` forever while the journal says
 	// otherwise, which is what manufactured four "stuck for weeks" runs on the
 	// cloud instance and hid the genuinely stalled ones among them.
-	JournalAdvanced func(runID string, seq uint64)
+	JournalAdvanced        func(runID string, seq uint64)
+	JournalAdvancedContext func(context.Context, string, uint64)
 	// DrainedDowntime is every interval the daemon was down after a graceful
 	// drain (#5601), read once at startup by cleanDaemonDowntime. A drained
 	// run is parked at a stage boundary on purpose and nothing can progress it
@@ -55,6 +56,13 @@ func (d *stalledSweepDeps) prepareTerminal() stalledTerminalPreparer {
 		return nil
 	}
 	return d.PrepareTerminal
+}
+
+func (d *stalledSweepDeps) journalAdvancedContext() func(context.Context, string, uint64) {
+	if d == nil {
+		return nil
+	}
+	return d.JournalAdvancedContext
 }
 
 func (d *stalledSweepDeps) journalAdvanced() func(string, uint64) {
@@ -320,7 +328,8 @@ func newStalledTerminalizer(
 		NotifyTerminal: notify,
 		// Without this the run.finished this terminalizer appends is invisible
 		// to every derived reader — see stalledSweepDeps.JournalAdvanced.
-		JournalAdvanced: deps.journalAdvanced(),
+		JournalAdvanced:        deps.journalAdvanced(),
+		JournalAdvancedContext: deps.journalAdvancedContext(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct stalled-run terminalizer for %s: %w", runsDir, err)

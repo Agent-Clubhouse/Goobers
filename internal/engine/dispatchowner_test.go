@@ -3,7 +3,6 @@ package engine
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
@@ -54,30 +53,17 @@ func succeedingStageDispatcher() *fakeStageDispatcher {
 	}}
 }
 
-// A SCHEDULED run's stage pod must carry its Run workflow's real id —
-// claimID+"-run" — and not the run id, which RunScheduled has rewritten to a
-// hash of the claim id.
-//
-// This is the whole regression, driven end to end: RunScheduled -> the walk ->
-// ActDispatchStage -> the dispatcher.Attempt a pod is rendered from. Every
-// hop that dropped the driver would show up here.
-func TestScheduledRunStampsItsOwnWorkflowIDOnTheAttempt(t *testing.T) {
+// A run journal ID need not equal its Temporal workflow ID. Dispatch must
+// carry the actual driver identity rather than reconstructing it from RunID.
+func TestDistinctRunIDStampsItsOwnWorkflowIDOnTheAttempt(t *testing.T) {
 	const stage = "open-pr"
-	scheduleID := ScheduleID("prod-west", "web", "nightly", 0)
-	claimID := ScheduleClaimID(scheduleID, time.Date(2026, 8, 29, 3, 0, 0, 0, time.UTC))
-	// The production shape: ClaimScheduled starts the child as
-	// claimID+"-run" and hands it the claim id as RunInput.RunID.
-	workflowID := scheduledRunWorkflowID(claimID)
-
+	const workflowID = "legacy-schedule-claim-run"
 	in := runInput("nightly", remotelyPlacedSpec(stage))
 	in.InstanceID = "0123456789abcdef0123456789abcdef"
-	in.RunID = claimID
-	in.TriggerRef = scheduleID
+	in.RunID = RunID("legacy-schedule-claim")
 	in.Placements = remotePlacement(stage)
 
-	// RunScheduled rewrites RunID to this hash before the walk dispatches
-	// anything, so the surrendered result is keyed by it too.
-	hashedRunID := RunID(claimID)
+	hashedRunID := in.RunID
 	store := surrenderStore(t)
 	putSurrendered(t, store, hashedRunID, stage, 1, dispatcher.SurrenderedResult{
 		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "opened"},
@@ -88,9 +74,9 @@ func TestScheduledRunStampsItsOwnWorkflowIDOnTheAttempt(t *testing.T) {
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: workflowID})
 	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: store})
-	env.ExecuteWorkflow(RunScheduled, in)
+	env.ExecuteWorkflow(Run, in)
 	if err := env.GetWorkflowError(); err != nil {
-		t.Fatalf("RunScheduled: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 
 	attempts, _ := fake.recorded()

@@ -65,6 +65,7 @@ const (
 	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
 	// turn the age rule off explicitly.
 	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
+	DefaultTerminalBranchMaxAge   = 30 * 24 * time.Hour
 	// DefaultJournalGraceAge preserves the pre-#4856 24-hour policy while the
 	// clock now starts when a retained worktree's journal is first observed
 	// missing. Set retention.journalGraceAge to "0s" to disable this rule.
@@ -1161,9 +1162,12 @@ func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[stri
 }
 
 const (
-	// SecretStoreKindAzureKeyVault is the only supported secret store kind
-	// today (SEC-010); the seam is vendor-neutral by name+kind indirection.
+	// SecretStoreKindAzureKeyVault fetches Azure Key Vault secrets.
 	SecretStoreKindAzureKeyVault = "azure-key-vault"
+	// SecretStoreKindKeyVaultKey wraps data keys using Azure Key Vault keys.
+	SecretStoreKindKeyVaultKey = "keyvault-key"
+	// SecretStoreKindFileKey wraps data keys using operator-provisioned RSA keys.
+	SecretStoreKindFileKey = "file-key"
 	// SecretStoreAuthWorkloadIdentity selects federated Azure workload identity.
 	SecretStoreAuthWorkloadIdentity = "workload-identity"
 	// SecretStoreAuthManagedIdentity selects an Azure managed identity.
@@ -1172,21 +1176,23 @@ const (
 	SecretStoreAuthAzureCLI = "azure-cli"
 )
 
-// SecretStoreConfig declares one named external secret store (#683). Token
+// SecretStoreConfig declares a named secret-fetching or key-wrapping store. Token
 // refs opt in per ref via store: "<name>/<secretName>"; declaring a store a
-// ref never uses is harmless. Auth to the store itself always uses an ambient
-// identity chain — never a token ref, which would be circular.
+// ref never uses is harmless. Azure authentication always uses an ambient
+// identity — never a token ref, which would be circular.
 type SecretStoreConfig struct {
 	// Name is the handle store-backed token refs address this store by.
 	// DNS-label shaped so it can never be confused with the "/"-separated
 	// secret name that follows it in a ref.
 	Name string `json:"name" yaml:"name"`
-	// Kind is the store vendor; only "azure-key-vault" is supported.
+	// Kind selects secret fetching or key wrapping.
 	Kind string `json:"kind" yaml:"kind"`
 	// VaultURI is the https vault endpoint, e.g. "https://acme.vault.azure.net".
-	VaultURI string `json:"vaultURI" yaml:"vaultURI"`
+	VaultURI string `json:"vaultURI,omitempty" yaml:"vaultURI,omitempty"`
+	// Directory is an absolute directory of versioned RSA keys for file-key.
+	Directory string `json:"directory,omitempty" yaml:"directory,omitempty"`
 	// Auth selects how this process authenticates to the store.
-	Auth *SecretStoreAuthConfig `json:"auth" yaml:"auth"`
+	Auth *SecretStoreAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 	// CacheTTLSeconds bounds the in-memory cache of resolved secrets so
 	// rotation in the store is picked up without hammering it per resolve.
 	// Zero/omitted leaves the resolver's default in effect.
@@ -1768,6 +1774,9 @@ type RetentionConfig struct {
 	// Omitted means DefaultRetainedWorktreeMaxAge — the opt-out default, not
 	// "no age rule". An explicit "0s" turns the age rule off.
 	RetainedWorktreeMaxAge string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// TerminalBranchMaxAge permits unmerged run branches to expire after terminal completion.
+	// Omitted means 30 days; "0s" disables this branch-age rule.
+	TerminalBranchMaxAge string `json:"terminalBranchMaxAge,omitempty" yaml:"terminalBranchMaxAge,omitempty"`
 	// JournalGraceAge bounds how long a retained worktree remains after its
 	// owning run journal is first observed missing. Omitted uses 24h; "0s"
 	// disables journal-absence pruning without changing the other rules.
@@ -2576,7 +2585,7 @@ func (c *Config) Validate() error {
 // validateSecretStores checks every secretStores entry fail-closed at load
 // (#683): a malformed store is a typo nothing later could resolve, and the
 // scheduler-time alternative is an opaque credential failure mid-run. Returns
-// the set of declared store names for store-ref checks.
+// declared store names, with true for secret stores and false for key stores.
 func (c *Config) validateSecretStores() (map[string]bool, error) {
 	if len(c.SecretStores) == 0 {
 		return nil, nil
@@ -2601,7 +2610,9 @@ func validateStoreRef(scope string, ref TokenRef, stores map[string]bool) error 
 	if !ok || name == "" || secret == "" || strings.Contains(secret, "/") {
 		return fmt.Errorf("%s: store ref %q must have the form \"<storeName>/<secretName>\"", scope, ref.Store)
 	}
-	if !stores[name] {
+	if secretStore, declared := stores[name]; declared && !secretStore {
+		return fmt.Errorf("%s: store ref names key store %q, which cannot fetch secrets", scope, name)
+	} else if !declared {
 		return fmt.Errorf("%s: store ref %q names secret store %q, which is not declared under secretStores", scope, ref.Store, name)
 	}
 	return nil
@@ -3332,4 +3343,16 @@ func (u UpdateCheckConfig) Validate() error {
 		return errors.New("updateCheck.owner and updateCheck.repository must be set together")
 	}
 	return nil
+}
+
+// TerminalBranchMaxAgeDuration resolves the opt-out unmerged-branch age floor.
+func (c RetentionConfig) TerminalBranchMaxAgeDuration() (time.Duration, error) {
+	if c.TerminalBranchMaxAge == "" {
+		return DefaultTerminalBranchMaxAge, nil
+	}
+	age, err := time.ParseDuration(c.TerminalBranchMaxAge)
+	if err != nil || age < 0 {
+		return 0, fmt.Errorf("retention.terminalBranchMaxAge must be a nonnegative duration")
+	}
+	return age, nil
 }

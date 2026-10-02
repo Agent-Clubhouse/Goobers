@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/goobers/goobers/internal/recovery"
 )
 
 type recoveryServiceFunc func(context.Context, string, string, string, io.Writer) error
@@ -85,4 +88,24 @@ func TestRecoveryRouteAbortsPartialDelivery(t *testing.T) {
 		}
 	}()
 	recoveryArchiveHandler(service, discardLogger()).ServeHTTP(response, request)
+}
+
+func TestRecoveryRouteReportsOverflowPending(t *testing.T) {
+	service := recoveryServiceFunc(func(context.Context, string, string, string, io.Writer) error {
+		return recovery.PendingPromotion(true, false, 0)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/?repositoryKey=repo&issue=7", nil)
+	request.SetPathValue("run", "run-1")
+	response := httptest.NewRecorder()
+	recoveryArchiveHandler(service, discardLogger()).ServeHTTP(response, request)
+	var envelope ErrorEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || envelope.Error.Code != recovery.OverflowPendingCode || response.Header().Get(recovery.PromotionStateHeader) != recovery.PromotionCapacity {
+		t.Fatalf("pending response: %d %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("pending headers: %v", response.Header())
+	}
 }

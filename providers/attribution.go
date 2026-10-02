@@ -134,16 +134,19 @@ func withAttribution(body string, attribution Attribution, action string) (strin
 	return body + "\n\n" + marker + "\n" + visible, nil
 }
 
-// StripAttribution removes the attribution marker and its visible "Posted by
-// **Goobers**" footer line from body, then trims surrounding whitespace.
-// Provider writes made under SetAttribution return and store the stamped body,
-// so code that reads back text Goobers itself wrote and compares it with the
-// text it meant to write must compare StripAttribution(stored) against
-// strings.TrimSpace(intended). Other Goobers markers are left untouched, and
+// StripAttribution removes the stamp a provider write adds to the caller's
+// text: the attribution marker with its visible "Posted by **Goobers**"
+// footer line, and the operation marker a keyed work-item update appends to
+// its comment (#2657). It then trims surrounding whitespace. Provider writes
+// return and store the stamped body, so code that reads back text Goobers
+// itself wrote and compares it with the text it meant to write must compare
+// StripAttribution(stored) against strings.TrimSpace(intended). Other Goobers
+// markers — the ones callers put in their own text — are left untouched, and
 // text a person added after the footer stays on its own line rather than
 // being joined to the line before the footer.
 func StripAttribution(body string) string {
-	return strings.TrimSpace(attributionMarkerPattern.ReplaceAllString(body, "\n"))
+	body = attributionMarkerPattern.ReplaceAllString(body, "\n")
+	return strings.TrimSpace(operationMarkerPattern.ReplaceAllString(body, "\n"))
 }
 
 // StampAttribution returns body with the attribution footer a provider write

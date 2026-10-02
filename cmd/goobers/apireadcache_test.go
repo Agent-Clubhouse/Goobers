@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +12,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/apireadstore"
+	"github.com/goobers/goobers/internal/sqliteuri"
 
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/providersnapshot"
@@ -502,75 +505,18 @@ func TestAPIReadCachePersistsSnapshotBodiesOnce(t *testing.T) {
 	dir := t.TempDir()
 	url := srv.URL + "/repos/acme/app/pulls?state=open"
 	_ = apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-1", &http.Client{}), url, "tok"))
-	bodyFiles, err := os.ReadDir(filepath.Join(dir, apiReadCacheBodyDir))
-	if err != nil || len(bodyFiles) != 1 {
-		t.Fatalf("body store after first snapshot: files = %d, err = %v", len(bodyFiles), err)
-	}
-	before, err := bodyFiles[0].Info()
-	if err != nil {
-		t.Fatalf("stat first body file: %v", err)
-	}
 	_ = apiReadBody(t, apiReadGet(t, newAPIReadCache(dir, "tick-2", &http.Client{}), url, "tok"))
-
-	data, err := os.ReadFile(filepath.Join(dir, apiReadCacheFileName))
+	db, err := sql.Open("sqlite", sqliteuri.File(filepath.Join(dir, apireadstore.FileName)))
 	if err != nil {
-		t.Fatalf("read cache metadata: %v", err)
+		t.Fatal(err)
 	}
-	var disk struct {
-		Entries map[string]apiReadCacheEntry `json:"entries"`
+	defer func() { _ = db.Close() }()
+	var count, refs, size int
+	if err := db.QueryRow("SELECT count(*),sum(refs),sum(length(body)) FROM bodies").Scan(&count, &refs, &size); err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &disk); err != nil {
-		t.Fatalf("unmarshal cache metadata: %v", err)
-	}
-	refs := map[string]bool{}
-	for key, entry := range disk.Entries {
-		if entry.Body != nil {
-			t.Fatalf("entry %q persisted an inline body", key)
-		}
-		if entry.BodyRef == "" {
-			t.Fatalf("entry %q has no body reference", key)
-		}
-		refs[entry.BodyRef] = true
-	}
-	if len(refs) != 1 {
-		t.Fatalf("persisted body references = %d, want 1 shared by base and snapshots", len(refs))
-	}
-	files, err := os.ReadDir(filepath.Join(dir, apiReadCacheBodyDir))
-	if err != nil {
-		t.Fatalf("read body store: %v", err)
-	}
-	if len(files) != 1 {
-		t.Fatalf("persisted body files = %d, want 1", len(files))
-	}
-	info, err := files[0].Info()
-	if err != nil {
-		t.Fatalf("stat body file: %v", err)
-	}
-	if !os.SameFile(before, info) {
-		t.Fatal("304 snapshot refresh rewrote the content-addressed response body")
-	}
-	if info.Size() != int64(len(body)) {
-		t.Fatalf("persisted body bytes = %d, want %d", info.Size(), len(body))
-	}
-}
-
-func TestEvictAPIReadCacheBoundsUniqueBodyBytes(t *testing.T) {
-	shared := []byte("12345")
-	entries := map[string]apiReadCacheEntry{
-		"base-a":     {Body: shared, Stored: 2},
-		"snapshot-a": {Body: shared, Stored: 2, Snapshot: "tick-2"},
-		"base-b":     {Body: []byte("6789"), Stored: 1},
-	}
-
-	got := evictAPIReadCacheToLimits(entries, 10, 7)
-	if _, ok := got["base-a"]; !ok {
-		t.Fatal("newest base entry was evicted")
-	}
-	if _, ok := got["snapshot-a"]; !ok {
-		t.Fatal("snapshot sharing the retained body was evicted")
-	}
-	if _, ok := got["base-b"]; ok {
-		t.Fatal("entry exceeding the unique response-byte bound was retained")
+	if count != 1 || refs != 3 || size != len(body) {
+		t.Fatalf("body count=%d references=%d bytes=%d, want 1/3/%d", count, refs, size, len(body))
 	}
 }
 

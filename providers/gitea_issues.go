@@ -408,55 +408,9 @@ func (p *GiteaProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWork
 	if err := p.ready(); err != nil {
 		return WorkItem{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	newLabel := statusLabel(req.Status)
-	var remove []string
-	for _, l := range current.Labels {
-		if strings.HasPrefix(l, statusLabelPrefix) && l != newLabel {
-			remove = append(remove, l)
-		}
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{newLabel}, remove); err != nil {
-		return WorkItem{}, err
-	}
-	if req.Status == WorkItemStatusDone {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"state": "closed"}, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	item, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	operation := "status"
-	if req.Status == WorkItemStatusDone {
-		operation = "close"
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.ID),
-		URL:       item.URL,
-		Operation: operation,
-		Fields: map[string]FieldDigest{
-			"status": {Before: digestString(string(statusFromLabels(current.Labels, current.State))), After: digestString(string(req.Status))},
-		},
+	return updateRESTWorkItemStatus(ctx, p, ProviderGitea, p.BaseURL, req, func(body string) error {
+		return p.postComment(ctx, req.Repository, req.ID, body)
 	})
-	return item, nil
 }
 
 // ClaimWorkItem writes a best-effort claiming marker (a label plus a run-id

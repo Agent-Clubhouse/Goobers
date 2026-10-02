@@ -68,7 +68,7 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for gate override: %w", in.RunID, err)
 	}

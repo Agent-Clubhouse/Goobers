@@ -324,9 +324,17 @@ func goCommandArgs(invocation invocation) []string {
 		"run", "./test/testtiming", "capture",
 		"-job", invocation.timingJob,
 		"-out", invocation.timingOutput,
+		"-junit", junitOutput(invocation.timingOutput),
 		"--",
 	}
 	return append(args, invocation.testArgs...)
+}
+
+// junitOutput names the JUnit report a timed run writes beside its timing
+// artifact (<stem>.junit.xml), so every timed plan, including each part of a
+// sharded run, also leaves a per-test pass/fail record for CI consumers (#681).
+func junitOutput(timingOutput string) string {
+	return strings.TrimSuffix(timingOutput, filepath.Ext(timingOutput)) + ".junit.xml"
 }
 
 func findModuleRoot() (string, error) {

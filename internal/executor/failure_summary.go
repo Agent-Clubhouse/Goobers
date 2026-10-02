@@ -32,8 +32,8 @@ const (
 	outputWarningEndByte   = "warningEndByte"
 	// The full roster (#5101). Separate from failureArtifact, which stays a
 	// pointer to one byte range in one stream.
-	outputFailureDigest = "failureDigest"
-	outputFailureCount  = "failureCount"
+	outputFailureDigest = FailureDigestOutput
+	outputFailureCount  = FailureCountOutput
 )
 
 var (
@@ -145,6 +145,65 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 // empty string when the output carries no recognizable failure section.
 func FailureDiagnostic(stdout, stderr []byte) string {
 	return summarizeCommandFailure(stdout, stderr).failure.text
+}
+
+// IsFailureLine reports whether one output line is itself a specific failure
+// finding (a failing test, a compiler error, a source-located finding, a
+// package verdict) rather than context around one or a wrapper trailer such as
+// `make: *** [ci] Error 1`. A baseline comparison (#4477) uses it to discard
+// the leading context a failure window happens to carry — a recipe echo in a
+// combined transcript that a stage's separated stderr window never had.
+func IsFailureLine(line string) bool {
+	return failureLineSpecificity(line) > specificityBuildTrailer
+}
+
+// FailureDigestOutput and FailureCountOutput are the result outputs a failing
+// shell stage records its FailureDigest and its count under.
+const (
+	FailureDigestOutput = "failureDigest"
+	FailureCountOutput  = "failureCount"
+)
+
+// StdoutTruncatedOutput and StderrTruncatedOutput are the result outputs a
+// shell stage sets when it kept only the head of that stream. Everything a
+// stage derives from the stream — its diagnostic, digest and count — then
+// describes that head only.
+const (
+	StdoutTruncatedOutput = "stdoutTruncated"
+	StderrTruncatedOutput = "stderrTruncated"
+)
+
+// FailureEvidenceTruncatedMarker is the line that follows failure evidence
+// (a context window, or the digest itself) cut at its size bound. The line
+// before it may be a partial one.
+const FailureEvidenceTruncatedMarker = "... (failure evidence truncated; see output artifacts)"
+
+// FailureDigest is the full failure roster a failing stage records as its
+// failureDigest output, and the count of distinct failure lines it records as
+// failureCount, derived exactly as the shell executor derives them. The
+// recorded diagnostic is one window and can omit findings; a baseline
+// comparison (#4477) compares this roster so a finding outside the window
+// cannot pass as identical.
+func FailureDigest(stdout, stderr []byte) (string, int) {
+	diagnostic := summarizeCommandFailure(stdout, stderr)
+	return strings.Join(diagnostic.digest, "\n"), diagnostic.count
+}
+
+// diagnosticTruncationMarker ends a diagnostic boundDiagnostic cut.
+const diagnosticTruncationMarker = "..."
+
+// DiagnosticTruncated reports whether a FailureDiagnostic result (or the
+// diagnostic a stage message carries) was cut at its size bound, so whatever
+// followed the cut is unseen. A caller deciding two failures are IDENTICAL
+// (internal/baseline, #4477) cannot do so from a truncated window: the
+// findings that differ may all lie past the cut. The test is conservative —
+// a full-length diagnostic that happens to end in "..." also reads as
+// truncated — which only ever withholds an identity claim.
+func DiagnosticTruncated(diagnostic string) bool {
+	// boundDiagnostic keeps maxFailureSummaryBytes-3 bytes, then may shed up
+	// to 3 for a split rune and some whitespace before appending the marker.
+	const slack = 16
+	return strings.HasSuffix(diagnostic, diagnosticTruncationMarker) && len(diagnostic) >= maxFailureSummaryBytes-slack
 }
 
 // Specificity tiers are spaced so a tier can be inserted between two existing
@@ -320,7 +379,7 @@ func boundDiagnostic(value string) string {
 	for !utf8.ValidString(value) {
 		value = value[:len(value)-1]
 	}
-	return strings.TrimSpace(value) + "..."
+	return strings.TrimSpace(value) + diagnosticTruncationMarker
 }
 
 func applyCommandFailureDiagnostic(result *apiv1.ResultEnvelope, exitCode int, diagnostic commandFailureDiagnostic, stdoutPath, stderrPath string) bool {

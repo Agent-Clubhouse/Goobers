@@ -195,6 +195,8 @@ type Executor struct {
 	transcriptLimit int64
 	sandboxEnforced bool
 	newSandbox      func() (sandbox.Sandbox, error)
+
+	guardedCredentialFiles bool
 }
 
 // Option configures an Executor at construction.
@@ -311,6 +313,9 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 	}
 	for _, opt := range opts {
 		opt(e)
+	}
+	if e.guardedCredentialFiles {
+		return nil, ErrGuardedCredentialFiles
 	}
 	if e.timeout <= 0 {
 		// A caller that never sets WithTimeout must still get a bounded

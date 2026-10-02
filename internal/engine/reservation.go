@@ -148,6 +148,7 @@ func AbandonReservation(in RunInput, startedAt, finishedAt time.Time, cause stri
 	})
 	rec.appendAt(finishedAt, journal.Event{
 		Type: journal.EventRunFinished, Status: string(journal.PhaseFailed), Disposition: journal.RunDispositionProduced,
+		TerminalCause: &journal.TerminalCause{Schema: journal.TerminalCauseSchema, Phase: journal.PhaseFailed, Classification: journal.TerminalInfrastructureFailure, SelectorKind: "condition", Code: "run_failed", Message: cause, CausalEventSeq: 2},
 	})
 	rec.assignEmitKeys()
 	ops := make([]livejournal.Op, 0, len(rec.proj.Ops))

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"maps"
+	"strings"
 	"sync"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -17,6 +19,7 @@ type instanceAnnotationFold struct {
 	journalState   journal.InstanceLogState
 	initialized    bool
 	itemRepos      map[string]recordedItemRepo
+	itemReposByRun map[string]map[string]recordedItemRepo
 	worktreeStates map[string]string
 }
 
@@ -68,6 +71,7 @@ func (f *instanceAnnotationFold) reset(state journal.InstanceLogState) {
 	f.journalState = state
 	f.initialized = true
 	f.itemRepos = nil
+	f.itemReposByRun = nil
 	f.worktreeStates = nil
 }
 
@@ -97,6 +101,22 @@ func (f *instanceAnnotationFold) apply(events []journal.Event) {
 			f.itemRepos[key] = recordedItemRepo{
 				repo: providers.RepositoryRef{Provider: providers.ProviderKind(provider), Owner: owner, Project: project, Name: name},
 				kind: kind,
+			}
+			run, keyedItem, ok := strings.Cut(key, "#")
+			if ok && run != "" {
+				if f.itemReposByRun == nil {
+					f.itemReposByRun = make(map[string]map[string]recordedItemRepo)
+				}
+				if f.itemReposByRun[run] == nil {
+					f.itemReposByRun[run] = make(map[string]recordedItemRepo)
+				}
+				entry := f.itemRepos[key]
+				repositoryKey, _ := event.Runner["repositoryKey"].(string)
+				previous, seen := f.itemReposByRun[run][itemID]
+				if repositoryKey == "" || repositoryKey != entry.repo.CanonicalKey() || seen && previous != entry || keyedItem != itemID || event.RunID != "" && event.RunID != run {
+					entry = recordedItemRepo{}
+				}
+				f.itemReposByRun[run][itemID] = entry
 			}
 		}
 		f.applyWorktreeState(event)
@@ -141,4 +161,13 @@ func (f *instanceAnnotationFold) itemRepositories(schedulerDir, runID string, it
 		}
 	}
 	return found, nil
+}
+
+func (f *instanceAnnotationFold) allItemRepositories(schedulerDir, runID string) (map[string]recordedItemRepo, error) {
+	if err := f.refresh(schedulerDir); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.itemReposByRun[runID]), nil
 }
