@@ -1319,14 +1319,14 @@
       }
     },
     "retention": {
-      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h retained-worktree age bound and a safe first-enable grace window, unless enabled is explicitly false. Local run-branch cleanup currently requires Git ancestry; squash, merge-queue, and legacy landings may leave local branches behind.",
+      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h retained-worktree age bound and a safe first-enable grace window, unless enabled is explicitly false. Local run branches qualify through Git ancestry or a trustworthy terminal timestamp older than terminalBranchMaxAge (default 720h). Parked runs/items and unknown ownership remain protected.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Lets the daemon prune retained terminal-failure worktrees and local run branches whose tip is an ancestor of another local branch. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates. Squash, merge-queue, and legacy landings may not satisfy the ancestry check and can remain."
+          "description": "Lets the daemon prune retained terminal-failure worktrees and eligible local run branches. Defaults to true; set explicitly to false to disable automatic pruning. Active or parked runs/items are never branch candidates. Branches qualify by Git ancestry or terminalBranchMaxAge."
         },
         "dryRun": { "type": "boolean", "default": false, "description": "Reports the deterministic candidate set without deleting anything." },
         "maxRetainedWorktreeBytes": { "type": "integer", "minimum": 0, "description": "Byte ceiling for retained failure worktrees; the oldest are removed first once exceeded. Zero or omitted disables the size rule." },
@@ -1335,6 +1335,12 @@
           "$ref": "#/$defs/duration",
           "default": "168h",
           "examples": ["168h", "0s"]
+        },
+        "terminalBranchMaxAge": {
+          "description": "Minimum age since a trustworthy terminal run-finished event before an unmerged local branch is prunable. Omitted uses 720h (30 days); 0s disables this age rule. Requires known item ownership and fresh non-parked item state. Missing journals, unknown legacy ownership, parked runs/items, and provider read failures preserve branches.",
+          "$ref": "#/$defs/duration",
+          "default": "720h",
+          "examples": ["720h", "1440h", "0s"]
         },
         "journalGraceAge": {
           "description": "Grace period measured from the first persisted observation that a retained worktree's owning run journal is missing. Omitted uses 24h; an explicit \"0s\" disables the journal-absence rule without changing age or byte-limit retention.",

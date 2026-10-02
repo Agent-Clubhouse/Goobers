@@ -65,6 +65,7 @@ const (
 	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
 	// turn the age rule off explicitly.
 	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
+	DefaultTerminalBranchMaxAge   = 30 * 24 * time.Hour
 	// DefaultJournalGraceAge preserves the pre-#4856 24-hour policy while the
 	// clock now starts when a retained worktree's journal is first observed
 	// missing. Set retention.journalGraceAge to "0s" to disable this rule.
@@ -1766,6 +1767,9 @@ type RetentionConfig struct {
 	// Omitted means DefaultRetainedWorktreeMaxAge — the opt-out default, not
 	// "no age rule". An explicit "0s" turns the age rule off.
 	RetainedWorktreeMaxAge string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// TerminalBranchMaxAge permits unmerged run branches to expire after terminal completion.
+	// Omitted means 30 days; "0s" disables this branch-age rule.
+	TerminalBranchMaxAge string `json:"terminalBranchMaxAge,omitempty" yaml:"terminalBranchMaxAge,omitempty"`
 	// JournalGraceAge bounds how long a retained worktree remains after its
 	// owning run journal is first observed missing. Omitted uses 24h; "0s"
 	// disables journal-absence pruning without changing the other rules.
@@ -3330,4 +3334,16 @@ func (u UpdateCheckConfig) Validate() error {
 		return errors.New("updateCheck.owner and updateCheck.repository must be set together")
 	}
 	return nil
+}
+
+// TerminalBranchMaxAgeDuration resolves the opt-out unmerged-branch age floor.
+func (c RetentionConfig) TerminalBranchMaxAgeDuration() (time.Duration, error) {
+	if c.TerminalBranchMaxAge == "" {
+		return DefaultTerminalBranchMaxAge, nil
+	}
+	age, err := time.ParseDuration(c.TerminalBranchMaxAge)
+	if err != nil || age < 0 {
+		return 0, fmt.Errorf("retention.terminalBranchMaxAge must be a nonnegative duration")
+	}
+	return age, nil
 }

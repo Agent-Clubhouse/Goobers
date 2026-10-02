@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -586,4 +587,99 @@ func errorsJoin(first, second error) error {
 		return first
 	}
 	return second
+}
+
+func TestTerminalBranchAgeAndDeletionRevalidation(t *testing.T) {
+	for _, name := range []string{"dry-run", "delete", "young", "disabled", "missing-time", "future-time", "run-resumed", "item-parked", "sibling-protected", "timestamp-changed", "tip-changed", "provider-error", "checked-out"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			repo := newSourceRepo(t)
+			manager := newTestManager(t)
+			repoDir, err := manager.WorkingCopy(ctx, repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wt, _ := committedRunBranch(t, manager, repo, "aged", "main")
+			if name != "checked-out" {
+				if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now()
+			ended := now.Add(-31 * 24 * time.Hour)
+			terminal := true
+			allowed := true
+			protected := false
+			opts := RetentionOptions{Now: now, Delete: name != "dry-run", TerminalBranchMaxAge: 30 * 24 * time.Hour,
+				IsRunTerminal: func(string, string) (bool, error) { return terminal, nil },
+				RunTerminalAt: func(string, string) (time.Time, error) { return ended, nil },
+				CanPruneBranch: func(string, string, string) (bool, error) {
+					if name == "provider-error" {
+						return false, fmt.Errorf("provider unavailable")
+					}
+					return allowed, nil
+				},
+				IsBranchProtected: func(string, string) (bool, error) { return protected, nil },
+			}
+			switch name {
+			case "young":
+				ended = now.Add(-29 * 24 * time.Hour)
+			case "disabled":
+				opts.TerminalBranchMaxAge = 0
+			case "missing-time":
+				ended = time.Time{}
+			case "future-time":
+				ended = now.Add(time.Hour)
+			}
+			oldHook := DeleteBranchHook
+			t.Cleanup(func() { DeleteBranchHook = oldHook })
+			DeleteBranchHook = func() {
+				switch name {
+				case "run-resumed":
+					terminal = false
+				case "item-parked":
+					allowed = false
+				case "sibling-protected":
+					protected = true
+				case "timestamp-changed":
+					ended = now
+				case "tip-changed":
+					runTestGit(t, repoDir, "update-ref", "refs/heads/goobers/workflow/aged", "refs/heads/main")
+				}
+			}
+			results, warnings, err := PruneRetained(ctx, []*Manager{manager}, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "provider-error" {
+				if len(warnings) != 1 {
+					t.Fatalf("missing warning: %+v", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("warnings: %+v", warnings)
+			}
+			switch name {
+			case "delete", "dry-run", "checked-out":
+				if len(results) != 1 || results[0].Rule != RetentionRuleTerminalBranch {
+					t.Fatalf("results: %+v", results)
+				}
+				if name == "delete" && !results[0].Deleted {
+					t.Fatalf("not deleted: %+v", results)
+				}
+				if name == "dry-run" && !results[0].DryRun {
+					t.Fatal("not dry run")
+				}
+				if name == "checked-out" && (results[0].Err == nil || results[0].Deleted) {
+					t.Fatalf("deletion failure hidden: %+v", results)
+				}
+			default:
+				if len(results) != 0 {
+					t.Fatalf("unsafe candidate: %+v", results)
+				}
+			}
+			if exists := branchExists(ctx, repoDir, "goobers/workflow/aged"); exists != (name != "delete") {
+				t.Fatalf("branch exists=%v", exists)
+			}
+		})
+	}
 }

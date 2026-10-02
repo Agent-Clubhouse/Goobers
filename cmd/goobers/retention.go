@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/branchretention"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -150,6 +151,10 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if err != nil {
 		return err
 	}
+	branchAge, err := cfg.TerminalBranchMaxAgeDuration()
+	if err != nil {
+		return err
+	}
 	journalGraceAge, err := cfg.JournalGraceAgeDuration()
 	if err != nil {
 		return err
@@ -197,32 +202,27 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 		// exactly the week after it was captured.
 		promoteRecoveryOverflow(ctx, l, setup, managers, resolvedDryRun.operator, stdout, stderr),
 	)
-	protectedBranches, err := retentionProtectedBranches(runsByRoot, setup)
+	branchReferences, err := retentionBranchReferences(runsByRoot, setup, true)
 	if err != nil {
 		return errors.Join(recoveryErr, err)
 	}
-	results, warnings, err := worktree.PruneRetained(ctx, managers, worktree.RetentionOptions{
-		Now:              now,
-		Delete:           !dryRun,
-		MaxRetainedBytes: cfg.MaxRetainedWorktreeBytes,
-		MaxAge:           maxAge,
+	opts := worktree.RetentionOptions{
+		Now:                  now,
+		Delete:               !dryRun,
+		MaxRetainedBytes:     cfg.MaxRetainedWorktreeBytes,
+		MaxAge:               maxAge,
+		TerminalBranchMaxAge: branchAge,
 		IsTerminalFailure: func(root, worktreeID, ownerRunID string) (bool, error) {
 			phase, found, err := retainedWorktreePhase(runsByRoot[root], worktreeID, ownerRunID)
 			return found && terminalFailurePhase(phase), err
-		},
-		IsRunTerminal: func(root, runID string) (bool, error) {
-			phase, found, err := readRunPhase(runsByRoot[root], runID)
-			return found && terminalRunPhase(phase), err
-		},
-		IsBranchProtected: func(root, branch string) (bool, error) {
-			_, protected := protectedBranches[root][branch]
-			return protected, nil
 		},
 		JournalMissing: func(root, worktreeID, ownerRunID string) (bool, error) {
 			return retainedWorktreeJournalMissing(runsByRoot[root], worktreeID, ownerRunID)
 		},
 		JournalGraceAge: journalGraceAge,
-	})
+	}
+	configureBranchRetention(ctx, l, runsByRoot, branchReferences, &opts)
+	results, warnings, err := worktree.PruneRetained(ctx, managers, opts)
 	if err != nil {
 		return errors.Join(recoveryErr, err)
 	}
@@ -270,12 +270,12 @@ func retentionManagers(l instance.Layout, setup *schedulerSetup) ([]*worktree.Ma
 	return managers, runsByRoot, nil
 }
 
-func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSetup) (map[string]map[string]struct{}, error) {
+func retentionBranchReferences(runsByRoot map[string]string, setup *schedulerSetup, includeSettled bool) (map[string]map[string][]string, error) {
 	namespaces := map[string]string{}
 	if setup.Definitions != nil {
 		namespaces = branchNamespacesByGaggle(setup.Definitions)
 	}
-	protected := make(map[string]map[string]struct{}, len(runsByRoot))
+	protected := make(map[string]map[string][]string, len(runsByRoot))
 	roots := make([]string, 0, len(runsByRoot))
 	for root := range runsByRoot {
 		roots = append(roots, root)
@@ -283,7 +283,7 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 	sort.Strings(roots)
 
 	for _, root := range roots {
-		protected[root] = make(map[string]struct{})
+		protected[root] = make(map[string][]string)
 		runsDir := runsByRoot[root]
 		entries, err := os.ReadDir(runsDir)
 		if err != nil {
@@ -304,13 +304,6 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 				}
 				return nil, fmt.Errorf("open retention run %s: %w", entry.Name(), err)
 			}
-			phase, err := reader.Phase()
-			if err != nil {
-				return nil, fmt.Errorf("read phase for retention run %s: %w", entry.Name(), err)
-			}
-			if terminalRunPhase(phase) {
-				continue
-			}
 			identity, err := reader.Identity()
 			if err != nil {
 				return nil, fmt.Errorf("read identity for retention run %s: %w", entry.Name(), err)
@@ -319,20 +312,27 @@ func retentionProtectedBranches(runsByRoot map[string]string, setup *schedulerSe
 			if err != nil {
 				return nil, fmt.Errorf("read events for retention run %s: %w", entry.Name(), err)
 			}
+			if !includeSettled && branchretention.Settled(events) {
+				continue
+			}
+			refs := make(map[string]struct{})
 			namespace := providers.NormalizeBranchNamespace(namespaces[identity.Gaggle])
-			protected[root][providers.BranchNameIn(namespace, identity.Workflow, identity.RunID)] = struct{}{}
+			refs[providers.BranchNameIn(namespace, identity.Workflow, identity.RunID)] = struct{}{}
 			machine := setup.Machines[localscheduler.WorkflowIdentity{
 				Gaggle: identity.Gaggle, Workflow: identity.Workflow,
 			}]
 			if machine != nil && identity.WorkflowDigest != "" && machine.Digest() == identity.WorkflowDigest {
 				if branch := runner.RestoredWorkspaceBranch(events, machine, namespace); branch != "" {
-					protected[root][branch] = struct{}{}
+					refs[branch] = struct{}{}
 				}
-				continue
+			} else {
+				// Without the pinned machine, protect every plausible binding rather
+				// than deleting the one a restored configuration may need to resume.
+				protectJournaledWorkspaceBranches(refs, events, namespace)
 			}
-			// Without the pinned machine, protect every plausible binding rather
-			// than deleting the one a restored configuration may need to resume.
-			protectJournaledWorkspaceBranches(protected[root], events, namespace)
+			for branch := range refs {
+				protected[root][branch] = append(protected[root][branch], identity.RunID)
+			}
 		}
 	}
 	return protected, nil

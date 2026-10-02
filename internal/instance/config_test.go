@@ -4499,3 +4499,22 @@ engine:
 		t.Fatalf("LoadConfig error = %v, want the cert/key pairing refusal", err)
 	}
 }
+
+func TestTerminalBranchRetentionDuration(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		bad   bool
+	}{
+		{"", 30 * 24 * time.Hour, false}, {"0s", 0, false}, {"1440h", 60 * 24 * time.Hour, false}, {"-1h", 0, true}, {"30d", 0, true},
+	} {
+		cfg := RetentionConfig{TerminalBranchMaxAge: tc.value}
+		got, err := cfg.TerminalBranchMaxAgeDuration()
+		if (err != nil) != tc.bad || !tc.bad && got != tc.want {
+			t.Fatalf("%q: %v, %v", tc.value, got, err)
+		}
+		if err := (&Config{Retention: cfg}).Validate(); (err != nil) != tc.bad {
+			t.Fatalf("validate %q: %v", tc.value, err)
+		}
+	}
+}
