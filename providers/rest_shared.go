@@ -150,16 +150,7 @@ func allIssueComments(ctx context.Context, c restPager, baseURL string, repo Rep
 	if err != nil {
 		return nil, err
 	}
-	var all []restComment
-	err = c.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageItems []restComment
-		if err := json.Unmarshal(page, &pageItems); err != nil {
-			return fmt.Errorf("decode comments page: %w", err)
-		}
-		all = append(all, pageItems...)
-		return nil
-	})
-	return all, err
+	return collectPagedJSON[restComment](ctx, c, endpoint, "decode comments page")
 }
 
 // claimWinner reads trusted issue comments and returns the run id of the recognized
@@ -472,11 +463,7 @@ func findRESTWorkItemsByMarker[T any](ctx context.Context, c restPager, baseURL 
 		return nil, err
 	}
 	var matches []WorkItem
-	if err := c.getAllPages(ctx, endpoint, func(page []byte) error {
-		var issues []T
-		if err := json.Unmarshal(page, &issues); err != nil {
-			return fmt.Errorf("decode issues page: %w", err)
-		}
+	if err := walkPagedJSON(ctx, c, endpoint, "decode issues page", func(issues []T) error {
 		for _, issue := range issues {
 			meta := issueMeta(issue)
 			if !meta.IsPullRequest && containsExactLine(meta.Body, marker) {
@@ -599,15 +586,8 @@ func restPullRequestFiles(ctx context.Context, c restPager, baseURL string, repo
 	if err != nil {
 		return nil, err
 	}
-	var files []githubPullRequestFile
-	if err := c.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageOut []githubPullRequestFile
-		if err := json.Unmarshal(page, &pageOut); err != nil {
-			return fmt.Errorf("decode pull files page: %w", err)
-		}
-		files = append(files, pageOut...)
-		return nil
-	}); err != nil {
+	files, err := collectPagedJSON[githubPullRequestFile](ctx, c, endpoint, "decode pull files page")
+	if err != nil {
 		return nil, err
 	}
 	out := make([]ChangedFile, 0, len(files))
