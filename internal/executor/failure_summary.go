@@ -147,6 +147,16 @@ func FailureDiagnostic(stdout, stderr []byte) string {
 	return summarizeCommandFailure(stdout, stderr).failure.text
 }
 
+// IsFailureLine reports whether one output line is itself a specific failure
+// finding (a failing test, a compiler error, a source-located finding, a
+// package verdict) rather than context around one or a wrapper trailer such as
+// `make: *** [ci] Error 1`. A baseline comparison (#4477) uses it to discard
+// the leading context a failure window happens to carry — a recipe echo in a
+// combined transcript that a stage's separated stderr window never had.
+func IsFailureLine(line string) bool {
+	return failureLineSpecificity(line) > specificityBuildTrailer
+}
+
 // Specificity tiers are spaced so a tier can be inserted between two existing
 // ones without renumbering every caller's expectations. Higher wins.
 const (

@@ -40,6 +40,14 @@ const baselineCIFailureSummary = "command exited 2"
 
 func runLocalCIFailure(t *testing.T, runID string, health BaselineHealth) (Result, string) {
 	t.Helper()
+	return runLocalCIFailureWith(t, runID, health, baselineCIFailureSummary,
+		"command exited 2; stderr: agent-instructions-validation.test.ts:42 expected 3 sections")
+}
+
+// runLocalCIFailureWith runs the local-ci fixture with the given failure
+// evidence as the stage's summary and error message.
+func runLocalCIFailureWith(t *testing.T, runID string, health BaselineHealth, summary, message string) (Result, string) {
+	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -52,10 +60,10 @@ func runLocalCIFailure(t *testing.T, runID string, health BaselineHealth) (Resul
 			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
 				runID + ":" + localCIStageName: {
 					status:  apiv1.ResultFailure,
-					summary: baselineCIFailureSummary,
+					summary: summary,
 					errorInfo: &apiv1.ErrorInfo{
 						Code:      "nonzero_exit",
-						Message:   "command exited 2; stderr: agent-instructions-validation.test.ts:42 expected 3 sections",
+						Message:   message,
 						Retryable: false,
 					},
 				},
@@ -152,6 +160,82 @@ func TestSharedBaselineFailureParksTheRun(t *testing.T) {
 	}
 	if got["blocker"] != "acme/web@0f1e2d3c4b5a" {
 		t.Fatalf("annotation blocker = %v, want the shared blocker key", got["blocker"])
+	}
+}
+
+// evaluatorHealth backs the runner seam with a REAL baseline.Evaluator, so a
+// test exercises the production classification rather than a fixed decision.
+type evaluatorHealth struct {
+	baseSHA   string
+	evaluator *baseline.Evaluator
+}
+
+func (h *evaluatorHealth) BaseSHA(context.Context, apiv1.RepoRef, string) (string, error) {
+	return h.baseSHA, nil
+}
+
+func (h *evaluatorHealth) Classify(ctx context.Context, req baseline.Request) (baseline.Decision, error) {
+	return h.evaluator.Classify(ctx, req)
+}
+
+func (h *evaluatorHealth) ReleaseReady(context.Context, apiv1.RepoRef, string) ([]baseline.Waiter, error) {
+	return nil, nil
+}
+
+// transcriptProber answers every baseline probe with one fixed red transcript.
+type transcriptProber string
+
+func (p transcriptProber) Probe(context.Context, baseline.ProbeTarget, []string) (baseline.ProbeResult, error) {
+	return baseline.ProbeResult{Output: string(p)}, nil
+}
+
+// TestInheritedPlatformDeadcodeFailureParksTheRun is #4477's end-to-end
+// regression through the existing #2971 path: `make ci` fails in its deadcode
+// prerequisite on a Windows-only symbol that the pinned base ALREADY fails on
+// (measured in a different checkout, so every absolute path differs). The run
+// must park as SHARED_BASELINE_FAILURE on attempt one, and the journaled
+// classification must say the inherited failure is platform-specific.
+func TestInheritedPlatformDeadcodeFailureParksTheRun(t *testing.T) {
+	const runID = "run-inherited-deadcode"
+	finding := func(root string) string {
+		return root + "/internal/foo/bar_windows.go:12:6: unreviewed dead code: " +
+			"github.com/goobers/goobers/internal/foo.helper [platforms: windows]"
+	}
+	// The executor's message for the run's own failure (stderr window,
+	// failureDigest trailer), and the base's raw combined transcript.
+	message := "command exited 2; failure: " + finding("/work/runs/run-a/repo") +
+		"\nexit status 1\nmake: *** [deadcode] Error 1; 1 distinct failure line(s) recorded in failureDigest"
+	probe := "go run ./test/deadcode -go go\n" + finding("/tmp/baseline-probe-1234567/checkout") +
+		"\nexit status 1\nmake: *** [deadcode] Error 1\n"
+
+	store, err := baseline.OpenStore(filepath.Join(t.TempDir(), "baseline.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	health := &evaluatorHealth{
+		baseSHA:   "abc123def4567890",
+		evaluator: &baseline.Evaluator{Store: store, Prober: transcriptProber(probe)},
+	}
+
+	res, runsDir := runLocalCIFailureWith(t, runID, health, message, message)
+
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated: an inherited failure parks as %s instead of repassing",
+			res.Phase, SharedBaselineFailureCode)
+	}
+	annotations := baselineAnnotations(t, runsDir, runID)
+	if len(annotations) != 1 {
+		t.Fatalf("baseline annotations = %d, want 1", len(annotations))
+	}
+	got := annotations[0]
+	if got["class"] != string(baseline.ClassSharedBaselineFailure) || got["parked"] != true {
+		t.Fatalf("annotation = %+v, want a parked shared-baseline classification", got)
+	}
+	if got["platforms"] != "windows" {
+		t.Fatalf("annotation platforms = %v, want windows recorded as structured context", got["platforms"])
+	}
+	if blockers := store.Blockers("acme/web"); len(blockers) != 1 || len(blockers[0].Waiting) != 1 {
+		t.Fatalf("blockers = %+v, want the run's item parked on one shared blocker", blockers)
 	}
 }
 
