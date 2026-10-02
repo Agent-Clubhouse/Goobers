@@ -236,12 +236,15 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 // annotation does not authorize it.
 func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s StartSpec) (RunInput, error) {
 	// R9 run-start refusal: a definition declaring parallels, a bandit
-	// experiment, a cumulative usage budget or an outbox has no engine walk
+	// experiment or an outbox has no engine walk
 	// implementation, and the walk would otherwise IGNORE the declaration
 	// silently. Refusing here rather than at RegisterDefinition keeps a
 	// gaggle's other lanes startable — see registryrefusal.go for why that
 	// placement is load-bearing.
 	if err := refuseUnsupportedEngineFeatures(name, def.Spec); err != nil {
+		return RunInput{}, err
+	}
+	if err := refuseRemoteUsage(name, def.Spec, s.Placements); err != nil {
 		return RunInput{}, err
 	}
 	previewEnabled := allowPreviewFeatures

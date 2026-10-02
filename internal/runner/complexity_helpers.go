@@ -203,14 +203,8 @@ func applyTaskUsageBudget(
 	dispatchErr *error,
 ) {
 	attemptUsage, usageReported := usage.snapshot()
-	accumulateStageUsage(totals, attemptUsage)
-	if *dispatchErr == nil || usageReported {
-		var budgetExceeded bool
-		*result, budgetExceeded = enforceStageBudget(limits, attemptUsage, totals, *result)
-		if budgetExceeded {
-			*dispatchErr = nil
-		}
-	}
+	budget := StageUsageBudget{totals: totals}
+	budget.Apply(limits, attemptUsage, usageReported, result, dispatchErr)
 }
 
 func (r *Runner) settledParallelBranchResult(

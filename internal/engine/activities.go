@@ -114,6 +114,8 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// Usage is trusted adapter accounting, independent of result metrics.
+	Usage *AttemptUsage `json:"usage,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope
@@ -504,7 +506,7 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 // recorded with the two-argument shape replays under this code
 // (TestContinuityPreChangeHistoryReplays). A struct in the second position
 // would fail to decode those payloads.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (out stageActivityResult, outErr error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -519,6 +521,16 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
+
+	var usage activityUsageCollector
+	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
+	defer func() {
+		snapshot := usage.snapshot()
+		out.Usage = &snapshot
+		if outErr != nil {
+			outErr = agenticUsageError(outErr, snapshot)
+		}
+	}()
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		// #724 salvage: an agentic session that ran out of wall clock has not
