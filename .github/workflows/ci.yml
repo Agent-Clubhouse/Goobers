@@ -298,9 +298,10 @@ jobs:
         # whole timeout, unlike go mod download and golangci-lint which
         # already retry. Six timeouts in one night on the v0.2.0 wave.
         #
-        # --with-deps stays: the cache carries the BROWSER, not the apt-level
-        # system libraries it links against. On a cache hit Playwright installs
-        # those and skips the download.
+        # The cache carries the BROWSER, not the apt-level system libraries it
+        # links against. Hosted images normally already ship those, so the
+        # apt-backed install-deps runs only when ldd reports a missing library:
+        # runner boot-time apt work can hold the dpkg lock for minutes.
         timeout-minutes: 20
         shell: bash
         run: |
@@ -326,7 +327,20 @@ jobs:
           retry_network_command "portal npm install" \
             npm --prefix portal ci --no-audit --no-fund
           retry_network_command "Playwright Chromium install" \
-            npm --prefix portal exec -- playwright install --with-deps chromium
+            npm --prefix portal exec -- playwright install chromium
+
+          # Fail closed: an unrecognised browser layout also installs deps.
+          browser_bins=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f \( -name chrome -o -name headless_shell \) 2>/dev/null)
+          if [ -z "$browser_bins" ] || ldd $browser_bins 2>&1 | grep -q 'not found'; then
+            # Hosted runners can still be running boot-time apt work, which
+            # holds the apt lists lock that DPkg::Lock::Timeout does not cover.
+            for _ in $(seq 1 180); do
+              pgrep -x 'apt|apt-.*|dpkg|unattended-upgr' >/dev/null || break
+              sleep 2
+            done
+            retry_network_command "Playwright Chromium system libraries" \
+              npm --prefix portal exec -- playwright install-deps chromium
+          fi
 
       - name: fmt · tidy · no-phone-home · vet · build · portal
         env:

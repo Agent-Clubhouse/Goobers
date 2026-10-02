@@ -88,3 +88,24 @@ func TestStageWarnsWhenGaggleConfigIsUnreadable(t *testing.T) {
 		t.Errorf("warning does not name the gaggle:\n%s", out)
 	}
 }
+
+// TestStageBacklogProjectFromEnvWithoutConfig covers a stage pod that has no
+// instance config but whose workflow declares GOOBERS_BACKLOG_PROJECT: backlog
+// work targets that project instead of the routed code project.
+func TestStageBacklogProjectFromEnvWithoutConfig(t *testing.T) {
+	t.Setenv(executor.GaggleEnvVar, "example")
+	t.Setenv(stageBacklogProjectEnvVar, " backlog ")
+	root := t.TempDir()
+
+	routed := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "example-org", Project: "code", Name: "repo"}
+	want := routed
+	want.Project = "backlog"
+	if got := backlogRepoRefForStage(root, routed); got != want {
+		t.Fatalf("backlogRepoRefForStage = %+v, want %+v", got, want)
+	}
+
+	github := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	if got := backlogRepoRefForStage(root, github); got != github {
+		t.Fatalf("backlogRepoRefForStage(github) = %+v, want unchanged", got)
+	}
+}

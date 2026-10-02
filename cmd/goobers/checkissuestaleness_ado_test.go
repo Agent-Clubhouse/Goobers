@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -194,6 +195,35 @@ func TestCheckIssueStalenessADODetectsStaleAndDoesNotWriteRemediationLabel(t *te
 }
 
 func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.T) {
+	description := "Implement the requested behavior."
+	criteria := "- Preserve acceptance criteria."
+	checkADOAcceptanceCriteriaStaleness(t, description, criteria, providers.ComposeWorkItemBody(description, criteria), false)
+}
+
+// A pin recorded before work items carried Boards acceptance criteria (#6093)
+// digests the description alone. The item is unchanged, so it must not read
+// as stale after an upgrade: on ADO the pin cannot advance, and every
+// merge-review of such a PR would otherwise abort forever.
+func TestCheckIssueStalenessADOLegacyPinWithoutAcceptanceCriteriaIsNotStale(t *testing.T) {
+	description := "Implement the requested behavior."
+	criteria := "- Preserve acceptance criteria."
+	checkADOAcceptanceCriteriaStaleness(t, description, criteria, description, false)
+}
+
+// An item whose criteria live only in the acceptance-criteria field has an
+// empty description, so its legacy pin digests an empty body (#6194).
+func TestCheckIssueStalenessADOLegacyPinWithEmptyDescriptionIsNotStale(t *testing.T) {
+	checkADOAcceptanceCriteriaStaleness(t, "", "- Criteria only in the field.", "", false)
+}
+
+// The legacy match must not hide a real change: a description added after an
+// empty-description legacy pin is still stale.
+func TestCheckIssueStalenessADOLegacyEmptyPinWithNewDescriptionIsStale(t *testing.T) {
+	checkADOAcceptanceCriteriaStaleness(t, "A description added later.", "- Criteria only in the field.", "", true)
+}
+
+func checkADOAcceptanceCriteriaStaleness(t *testing.T, description, criteria, pinnedBody string, wantStale bool) {
+	t.Helper()
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
 	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
 	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
@@ -203,13 +233,11 @@ func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.
 	t.Setenv("GOOBERS_INPUT_PULLNUMBER", "361")
 
 	snapshotAt := time.Now().UTC().Truncate(time.Second)
-	description := "Implement the requested behavior."
-	criteria := "- Preserve acceptance criteria."
 	pin := formatIssueSpecPin(
 		"1458",
 		snapshotAt.Format(time.RFC3339),
 		"Unchanged criteria item",
-		providers.ComposeWorkItemBody(description, criteria),
+		pinnedBody,
 	)
 
 	prBase := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests"
@@ -256,7 +284,7 @@ func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.
 		})
 	})
 	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/361", func(_ http.ResponseWriter, r *http.Request) {
-		t.Fatalf("wit/workitems/361 %s — unchanged ADO criteria should not trigger stale mutation", r.Method)
+		t.Fatalf("wit/workitems/361 %s — ADO staleness must not mutate the work item", r.Method)
 	})
 
 	server := httptest.NewServer(mux)
@@ -276,8 +304,8 @@ func TestCheckIssueStalenessADOUnchangedAcceptanceCriteriaIsNotStale(t *testing.
 		t.Fatalf("check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	result := readIssueStalenessResult(t, dir)
-	if result["issueStale"] != "false" {
-		t.Fatalf("result = %+v, want issueStale=false for unchanged ADO acceptance criteria", result)
+	if want := strconv.FormatBool(wantStale); result["issueStale"] != want {
+		t.Fatalf("result = %+v, want issueStale=%s", result, want)
 	}
 	if result["number"] != "361" {
 		t.Fatalf("result = %+v, want number=361", result)

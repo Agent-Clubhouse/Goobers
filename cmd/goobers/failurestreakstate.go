@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -46,16 +45,6 @@ type failureStreakRecord struct {
 
 func (r failureStreakRecord) empty() bool { return r == failureStreakRecord{} }
 
-// failureStreakDocument is one item's record as it lives at its own
-// scheduler-state key, carrying the record key it was written for so a
-// mis-keyed document is caught rather than acted on (the same integrity
-// posture remediationNoopDocument takes).
-type failureStreakDocument struct {
-	Schema string              `json:"schema"`
-	Key    string              `json:"key"`
-	Record failureStreakRecord `json:"record"`
-}
-
 // failureStreakStateKey is the scheduler-state key holding one item's record.
 // A pure function of failureStreakKey (provider/owner/name#itemID), which is
 // already the record's canonical identity, so the same item reaches the same
@@ -66,31 +55,17 @@ func failureStreakStateKey(key string) string {
 	return stateclient.FailureStreakKey(fmt.Sprintf("%x", sum))
 }
 
-func decodeFailureStreakRecord(value stateclient.Value, key string) (failureStreakRecord, error) {
-	if !value.Exists() {
-		return failureStreakRecord{}, nil
-	}
-	var doc failureStreakDocument
-	if err := json.Unmarshal(value.Data, &doc); err != nil {
-		return failureStreakRecord{}, fmt.Errorf("decode failure-streak state: %w", err)
-	}
-	if doc.Schema != failureStreakStateSchema {
-		return failureStreakRecord{}, fmt.Errorf(
-			"decode failure-streak state: unsupported schema %q, want %q", doc.Schema, failureStreakStateSchema)
-	}
-	if doc.Key != key {
-		return failureStreakRecord{}, fmt.Errorf(
-			"decode failure-streak state: record is keyed to %q, not %q", doc.Key, key)
-	}
-	return doc.Record, nil
+var failureStreakRecordSpec = keyedStateRecordSpec[failureStreakRecord]{
+	schema:      failureStreakStateSchema,
+	operation:   failureStreakStateLockOperation,
+	errorPrefix: "decode failure-streak state",
+	field:       keyedStateRecordFieldRecord,
+	stateKey:    failureStreakStateKey,
 }
 
-func encodeFailureStreakRecord(key string, record failureStreakRecord) ([]byte, error) {
-	return json.Marshal(failureStreakDocument{
-		Schema: failureStreakStateSchema,
-		Key:    key,
-		Record: record,
-	})
+func decodeFailureStreakRecord(value stateclient.Value, key string) (failureStreakRecord, error) {
+	record, _, err := decodeKeyedStateRecord(value, key, failureStreakRecordSpec)
+	return record, err
 }
 
 // updateFailureStreakRecord is the record's read-modify-write: one lock
@@ -103,21 +78,9 @@ func updateFailureStreakRecord(
 	key string,
 	fn func(failureStreakRecord) (failureStreakRecord, bool, error),
 ) error {
-	return store.Update(ctx, failureStreakStateKey(key), failureStreakStateLockOperation,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeFailureStreakRecord(value, key)
-			if err != nil {
-				return nil, false, err
-			}
-			next, write, err := fn(current)
-			if err != nil || !write {
-				return nil, false, err
-			}
-			data, err := encodeFailureStreakRecord(key, next)
-			if err != nil {
-				return nil, false, err
-			}
-			return data, true, nil
+	return updateKeyedStateRecord(ctx, store, key, failureStreakRecordSpec,
+		func(current failureStreakRecord, _ bool) (failureStreakRecord, bool, error) {
+			return fn(current)
 		})
 }
 

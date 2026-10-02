@@ -3414,7 +3414,11 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 }
 
-func TestCIPollCredentialSourceReResolvesPerPoll(t *testing.T) {
+// TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized: the local
+// ci-poll source resolves once at stage start, reuses that value per poll,
+// and re-resolves through the injector once after a 401 invalidates it
+// (#6154 on top of Goobers#6120) — including for a value with no expiry.
+func TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) {
 	calls := 0
 	resolver, err := credentials.NewResolverWithSources(nil, map[string]credentials.ResolveFunc{
 		"ci-poll": func(context.Context) (string, error) {
@@ -3433,25 +3437,33 @@ func TestCIPollCredentialSourceReResolvesPerPoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInjector: %v", err)
 	}
-	source := ciPollCapabilityTokenSource{
-		injector:     injector,
-		capabilities: []string{string(capability.ProviderPRWrite)},
-		capability:   string(capability.ProviderPRWrite),
-	}
-
-	first, err := source.Token(context.Background())
+	first, source, err := ciPollTokenSource(context.Background(), injector, string(capability.ProviderPRWrite), reg)
 	if err != nil {
-		t.Fatalf("first Token: %v", err)
+		t.Fatalf("ciPollTokenSource: %v", err)
 	}
+	refreshable, ok := source.(providers.RefreshableTokenSource)
+	if !ok {
+		t.Fatalf("source %T is not refreshable", source)
+	}
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != first {
+			t.Fatalf("Token = %q, %v; want the stage-start value %q", token, err, first)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("resolved %d times before any 401, want only the stage-start resolve", calls)
+	}
+	refreshable.Invalidate()
 	second, err := source.Token(context.Background())
-	if err != nil {
-		t.Fatalf("second Token: %v", err)
+	if err != nil || second != "ci-poll-token-2" {
+		t.Fatalf("Token after 401 = %q, %v; want one re-resolved value", second, err)
 	}
-	if first != "ci-poll-token-1" || second != "ci-poll-token-2" {
-		t.Fatalf("tokens = %q, %q; want two independently resolved values", first, second)
+	if calls != 2 {
+		t.Fatalf("resolved %d times, want exactly one re-resolve", calls)
 	}
-	if len(reg.registered) != 2 || string(reg.registered[0]) != first || string(reg.registered[1]) != second {
-		t.Fatalf("registered secrets = %q, want both resolved ci-poll tokens", reg.registered)
+	if len(reg.registered) == 0 || string(reg.registered[len(reg.registered)-1]) != second {
+		t.Fatalf("registered secrets = %q, want the re-resolved value registered", reg.registered)
 	}
 }
 

@@ -103,6 +103,12 @@ func stageADOCredentialSource(cap capability.Capability, token string) (provider
 	if err != nil {
 		return nil, err
 	}
+	if refreshing := stageRefreshingToken(cap, token); refreshing != nil {
+		// The stage holds a credential-refresh grant (Goobers#6120): the
+		// provider's 401 path re-resolves this value once, and it is
+		// refreshed ahead of its stated expiry.
+		return providers.NewADORefreshingDeliveredCredentialSource(kind, string(cap), refreshing)
+	}
 	expiresAt, _ := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
 	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
 }
@@ -152,11 +158,22 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 	}
 	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err != nil || report == nil || set == nil {
+		if project := strings.TrimSpace(os.Getenv(stageBacklogProjectEnvVar)); project != "" {
+			ref := routed
+			ref.Project = project
+			return ref
+		}
 		warnStageGaggleConfigUnavailable("the backlog project override", gaggle, err)
 		return routed
 	}
 	return applyBacklogProject(set, gaggle, routed)
 }
+
+// stageBacklogProjectEnvVar names the ADO backlog project for a stage that
+// cannot read its gaggle's instance config (a Goobernetes or brokered stage
+// pod). A workflow declares it in the stage's run.env; it is consulted only
+// when the config is unavailable, so a readable config always wins.
+const stageBacklogProjectEnvVar = "GOOBERS_BACKLOG_PROJECT"
 
 // stageGaggleConfigWarnings is where warnStageGaggleConfigUnavailable writes;
 // a var so tests can capture it.

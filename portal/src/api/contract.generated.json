@@ -383,7 +383,7 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "aggregate",
-      "budgetMs": 8000,
+      "budgetMs": 240000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -580,6 +580,17 @@
       "id": "credentialResolve",
       "method": "POST",
       "path": "/api/v1/credentials/resolve",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 45000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "credentialRefresh",
+      "method": "POST",
+      "path": "/api/v1/credentials/refresh",
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",

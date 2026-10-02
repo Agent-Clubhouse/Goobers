@@ -192,6 +192,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(seedEvents), gateDiffDigests
 		ws.infraGateAttempts = gateInfrastructureSeed(seedEvents)
 		ws.infraRepassAttempts = infrastructureTargetRepassSeed(seedEvents)
+		ws.pollAttempts = pollingTargetSeed(seedEvents)
 		ws.rerun = rerun
 
 		ctx, span := r.startRunSpan(ctx, startIn)

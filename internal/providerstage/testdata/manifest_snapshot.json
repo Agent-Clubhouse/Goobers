@@ -348,6 +348,11 @@
       {
         "capability": "github:issues:write",
         "consequence": "the capability-scoped credential is not injected, so PR comment watching fails at runtime"
+      },
+      {
+        "capability": "github:pr:write",
+        "consequence": "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea",
+        "optional": true
       }
     ]
   },

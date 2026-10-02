@@ -829,7 +829,7 @@ var replayExempt = map[string]string{
 	"pr-claim":               "read-only: polls the pull request and keeps the local claim",
 	"gather-review-threads":  "read-only: gathers review threads",
 	"gather-issue-context":   "read-only: gathers issue context",
-	"pr-comment-watch":       "no read-back: labels pull requests; its own comments are recognised by author, not text",
+	"pr-comment-watch":       "no read-back: labels pull requests and writes no text; it reads other stages' Goobers markers only to classify comments, and a retry finds the PR excluded by the label it added (TestPRCommentWatchADOLabelRouting)",
 	"gather-ci-failures":     "read-only: gathers CI failure logs",
 	"mcp-io":                 "read-only: serves the stage MCP bridge",
 }

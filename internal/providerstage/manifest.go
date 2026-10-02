@@ -350,6 +350,10 @@ var commands = map[string]Command{
 		ResultFile: "comment-watch-result.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so PR comment watching fails at runtime"),
+			// On Azure DevOps the routing labels are native pull-request labels
+			// on the project provider, which github:pr:write authorizes there
+			// (docs/design/ado-parity-dsl-2-0.md §3.1).
+			optional(capability.GitHubPRWrite, "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea"),
 		},
 	},
 	"pr-select": {

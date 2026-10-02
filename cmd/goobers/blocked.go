@@ -221,16 +221,9 @@ func runBlockedList(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the records as JSON")
 	fs.Usage = helpUsage(stderr, "blocked list")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	recs, err := snapshotBlockedRecords(layoutFor(root))

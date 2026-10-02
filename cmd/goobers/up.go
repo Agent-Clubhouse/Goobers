@@ -379,6 +379,27 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	return runUpContextWithForce(parentCtx, nil, args, stdout, stderr)
 }
 
+func daemonTriggerSweep(
+	ctx context.Context,
+	l instance.Layout,
+	log *journal.InstanceLog,
+	durableTriggers *durableTriggerService,
+	sched *localscheduler.Scheduler,
+	heartbeat *atomic.Int64,
+	options triggerSweepOptions,
+) func() error {
+	return func() error {
+		var sweepErr error
+		if options == (triggerSweepOptions{}) {
+			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
+		} else {
+			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
+		}
+		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
+		return recordTriggerSweepProgress(heartbeat, err, time.Now())
+	}
+}
+
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
 	stdout = syncStartupStdout(stdout) // #4570
 	// #4252: process-start reference point for logGateFlip's elapsed-time
@@ -909,7 +930,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// authenticator below) every resolve answers a typed 403 rather than
 	// handing raw secret material to any local caller. Local modes never need
 	// the plane; their resolution stays in-process via buildCredentialEnv.
-	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog).withStageGrants(l.Root, apiServer.Address(), setup.Config.API.TLS != nil)
 	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
 	setup.CredentialPlane = credentialPlane
 	// The surrender plane (#3699) rides beside the blob store, under the same
@@ -1035,7 +1056,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(credentialPlane.grantKey())))
 		apiAuthorizer = httpapi.RequireRoles()
 	} else if !instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		// Non-loopback with no human authenticator configured: serve the pod
@@ -1049,7 +1070,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(credentialPlane.grantKey())))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
@@ -1478,11 +1499,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
-	triggerSweep := func() error {
-		err := errors.Join(durableTriggers.Drain(ctx), sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
-		return recordTriggerSweepProgress(&lastTriggerSweepAtNanos, err, time.Now())
-	}
-	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", triggerSweep))
+	triggerSweep := daemonTriggerSweep(ctx, l, setup.InstanceLog, durableTriggers, sched, &lastTriggerSweepAtNanos, triggerSweepOptions{})
+	startupTriggerSweep := daemonTriggerSweep(ctx, l, setup.InstanceLog, durableTriggers, sched, &lastTriggerSweepAtNanos, triggerSweepOptions{
+		staleLegacyMissingDeadline: true,
+		recoverActiveRequests:      true,
+	})
+	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", startupTriggerSweep))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(reconcileStartupClaimAdmin(l, setup, recoverExpiredClaims, tracker, stdout))
 	stopClaimAdminSweep := startClaimAdminSweep(l, setup.InstanceLog, recoverExpiredClaims, claimAdminSweepErrors)

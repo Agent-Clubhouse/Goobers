@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,6 +121,22 @@ type BacklogCounter interface {
 	EligibleCount(ctx context.Context) (int, error)
 }
 
+// BacklogSnapshot is an optional richer demand-counter result. Count preserves
+// BacklogCounter's existing contract; OldestReadyAt carries the original
+// enqueue/readiness time for the oldest counted item when the provider exposes
+// it.
+type BacklogSnapshot struct {
+	Count         int
+	OldestReadyAt time.Time
+}
+
+// BacklogSnapshotCounter lets counters return demand and oldest-age source in
+// one canonical provider read. Existing counters that only implement
+// BacklogCounter remain supported.
+type BacklogSnapshotCounter interface {
+	EligibleSnapshot(ctx context.Context) (BacklogSnapshot, error)
+}
+
 // ProviderQuotaGuardedBacklogCounter can consult a local snapshot before its
 // request gate spends provider quota.
 type ProviderQuotaGuardedBacklogCounter interface {
@@ -205,6 +222,10 @@ type SpanStarter interface {
 	StartSchedulerSpan(ctx context.Context, attrs telemetry.SchedulerAttributes) (context.Context, telemetry.Span, error)
 }
 
+type queueSaturationRecorder interface {
+	RecordSchedulerQueueSaturation(context.Context, []telemetry.QueueSaturationSample, *telemetry.WorkerAvailabilitySample)
+}
+
 type runAdmission struct {
 	identity   WorkflowIdentity
 	generation uint64
@@ -268,7 +289,12 @@ type Scheduler struct {
 	// correctness bug, so it isn't worth the added Reconcile complexity.
 	backlogLastCheck map[WorkflowIdentity]time.Time
 	refillLastCheck  map[WorkflowIdentity]time.Time
-	idleBackoffs     map[WorkflowIdentity][]idleBackoffState
+	// backlogQueueSnapshots and refillQueueSnapshots retain the last observed
+	// provider-backed queue sizes for metric reporting between bounded polls.
+	// They are never used for dispatch decisions.
+	backlogQueueSnapshots map[WorkflowIdentity]queueMetricSnapshot
+	refillQueueSnapshots  map[WorkflowIdentity]queueMetricSnapshot
+	idleBackoffs          map[WorkflowIdentity][]idleBackoffState
 	// webhookBackoffs tracks idle-backoff state for webhook-triggered
 	// dispatch (#4262), one state per workflow identity — unlike
 	// idleBackoffs, which is indexed per-schedule, a workflow's
@@ -301,9 +327,11 @@ type Scheduler struct {
 	// tick after an exhausted quota window resets.
 	quotaResumePacing map[apiv1.Provider]bool
 	// authCircuits suppress provider polls and dispatch for a workflow after a
-	// permanent credential failure. Reload clears the circuit after an
-	// operator repairs configuration.
-	authCircuits map[WorkflowIdentity]struct{}
+	// credential failure (#2687). The circuit is time-bounded (#6166): after a
+	// cooldown it lets an attempt through, backing off further on each repeat
+	// failure and closing on a run that does not fail authentication. Reload
+	// clears it immediately after an operator repairs configuration.
+	authCircuits map[WorkflowIdentity]authCircuit
 	// lastDispatchedGaggle is the cursor for work-conserving round-robin
 	// dispatch across gaggles. hasDispatchedGaggle distinguishes the initial
 	// state from a legacy single-gaggle entry whose gaggle name is empty.
@@ -506,6 +534,8 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		admittedRuns:            make(map[string]runAdmission),
 		backlogLastCheck:        make(map[WorkflowIdentity]time.Time),
 		refillLastCheck:         make(map[WorkflowIdentity]time.Time),
+		backlogQueueSnapshots:   make(map[WorkflowIdentity]queueMetricSnapshot),
+		refillQueueSnapshots:    make(map[WorkflowIdentity]queueMetricSnapshot),
 		idleBackoffs:            make(map[WorkflowIdentity][]idleBackoffState),
 		webhookBackoffs:         make(map[WorkflowIdentity]idleBackoffState),
 		pendingScheduleDemand:   make(map[WorkflowIdentity]scheduledDemand),
@@ -515,7 +545,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		triggerStallNotified:    make(map[WorkflowIdentity]bool),
 		demandPollFailures:      make(map[demandPollFailureKey]int),
 		quotaResumePacing:       make(map[apiv1.Provider]bool),
-		authCircuits:            make(map[WorkflowIdentity]struct{}),
+		authCircuits:            make(map[WorkflowIdentity]authCircuit),
 		refillBlockedUntil:      make(map[WorkflowIdentity]time.Time),
 		refillBackoff:           30 * time.Second,
 		refillBackoffJitter:     5 * time.Second,
@@ -636,11 +666,12 @@ func (s *Scheduler) reconcileDurableState(
 		s.triggers[identity] = ts
 		if outstandingScheduleDemand[identity] {
 			pending := scheduledDemand{
-				schedule:  TickResult{Fire: true, LastEval: ts.LastEval},
-				remaining: 1,
+				schedule:   TickResult{Fire: true, LastEval: ts.LastEval},
+				remaining:  1,
+				enqueuedAt: ts.LastEval,
 			}
 			if s.workflows[identity].ScheduleDemandCounter != nil {
-				pending = scheduledDemand{repoll: true}
+				pending = scheduledDemand{repoll: true, enqueuedAt: ts.LastEval}
 			}
 			s.pendingScheduleDemand[identity] = pending
 		}
@@ -912,11 +943,19 @@ type tickCandidate struct {
 	scheduleRemaining  int
 	scheduleDemand     bool
 	schedulePollDue    bool
+	scheduleEnqueuedAt time.Time
+	scheduleMetricHeld int
 	backlogPollDue     bool
 	backlogRemaining   int
+	backlogEnqueuedAt  time.Time
+	backlogObserved    bool
+	backlogMetricHeld  int
 	refillRemaining    int
 	refillPollDue      bool
 	refillEligible     int
+	refillEnqueuedAt   time.Time
+	refillObserved     bool
+	refillMetricHeld   int
 	poolSkips          int
 	dispatchedThisTick bool
 	stopped            bool
@@ -979,21 +1018,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	defer s.tickMu.Unlock()
 	ctx = providersnapshot.WithTick(ctx, now)
 
-	s.mu.Lock()
-	entries := make([]WorkflowEntry, 0, len(s.workflows))
-	for _, e := range s.workflows {
-		entries = append(entries, e)
-	}
-	s.mu.Unlock()
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].PollPriority != entries[j].PollPriority {
-			return entries[i].PollPriority > entries[j].PollPriority
-		}
-		if entries[i].Workflow != entries[j].Workflow {
-			return entries[i].Workflow < entries[j].Workflow
-		}
-		return entries[i].Gaggle < entries[j].Gaggle
-	})
+	entries := s.entriesByPollPriority()
 	providers := make(map[apiv1.Provider]struct{})
 	for _, entry := range entries {
 		providers[quotaProvider(entry.RepoRef.Provider)] = struct{}{}
@@ -1007,7 +1032,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
 	for _, entry := range entries {
-		if s.authCircuitOpen(entryIdentity(entry)) {
+		if s.authCircuitOpen(entryIdentity(entry), now) {
 			continue
 		}
 		if skipPermanentRefusedEntry(entry) {
@@ -1018,11 +1043,12 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		pending := s.pendingScheduleDemand[identity]
 		s.mu.Unlock()
 		candidate := &tickCandidate{
-			entry:             entry,
-			schedule:          pending.schedule,
-			scheduleRemaining: pending.remaining,
-			scheduleDemand:    pending.remaining > 0,
-			schedulePollDue:   pending.repoll,
+			entry:              entry,
+			schedule:           pending.schedule,
+			scheduleRemaining:  pending.remaining,
+			scheduleDemand:     pending.remaining > 0,
+			schedulePollDue:    pending.repoll,
+			scheduleEnqueuedAt: pending.enqueuedAt,
 		}
 		if pending.remaining == 0 {
 			candidate.schedule = TickResult{LastEval: now}
@@ -1036,6 +1062,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			// and both dispatch the same due firing.
 			s.mu.Lock()
 			ts := s.triggers[identity]
+			lastEval := ts.LastEval
 			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
 			res := Tick(ts, now)
 			var persistErr error
@@ -1056,6 +1083,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			}
 			if res.Fire {
 				candidate.schedule = res
+				candidate.scheduleEnqueuedAt = oldestDueScheduleAt(entry.Schedules, lastEval, now)
 				candidate.scheduleIndexes = dueIndexes
 				if blocked, reason := s.scheduleBackedOff(identity, entry, dueIndexes, now); blocked {
 					s.journalEvent(journal.Event{
@@ -1066,8 +1094,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					})
 					candidate.scheduleIndexes = nil
 				} else if entry.ScheduleDemandCounter == nil {
+					// Coalesces with a retained fire; scheduleDemand stays set
+					// so admission consumes its marker (#6207).
 					candidate.scheduleRemaining = 1
-					candidate.scheduleDemand = false
 				} else {
 					candidate.schedulePollDue = true
 				}
@@ -1095,6 +1124,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.pollDemandCounters(ctx, allCandidates, now)
 	s.evaluateRefillOpportunities(allCandidates, now)
 	s.paceQuotaResumedCandidates(allCandidates)
+	s.recordQueueSaturation(ctx, allCandidates, now)
 	candidates := make([]*tickCandidate, 0, len(allCandidates))
 	for _, candidate := range allCandidates {
 		if candidate.scheduleRemaining > 0 || candidate.backlogRemaining > 0 || candidate.refillRemaining > 0 {
@@ -1167,14 +1197,8 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					candidate.dispatchedThisTick = true
 					break
 				}
-				// Retained demand must survive a refusal the next tick can
-				// clear on its own. Memory pressure is such a refusal (#3960),
-				// so it joins the two max-parallel reasons here; it is
-				// prefix-matched because Admit appends the measurement to it.
-				if kind == journal.TriggerSchedule && candidate.scheduleDemand &&
-					reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel &&
-					!strings.HasPrefix(reason, ReasonMemoryPressure) {
-					s.clearPendingScheduleDemand(candidate.entry)
+				if kind == journal.TriggerSchedule {
+					s.settleRefusedScheduleFire(candidate, reason)
 				}
 				candidate.stopped = true
 				if reason == ReasonInstanceMaxParallel {
@@ -1195,6 +1219,146 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	s.journalCapacityStarvation(entries, now)
 	if s.afterTick != nil {
 		s.afterTick(ctx)
+	}
+}
+
+func (s *Scheduler) entriesByPollPriority() []WorkflowEntry {
+	s.mu.Lock()
+	entries := make([]WorkflowEntry, 0, len(s.workflows))
+	for _, e := range s.workflows {
+		entries = append(entries, e)
+	}
+	s.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].PollPriority != entries[j].PollPriority {
+			return entries[i].PollPriority > entries[j].PollPriority
+		}
+		if entries[i].Workflow != entries[j].Workflow {
+			return entries[i].Workflow < entries[j].Workflow
+		}
+		return entries[i].Gaggle < entries[j].Gaggle
+	})
+	return entries
+}
+
+const (
+	queueKindSchedule = "schedule"
+	queueKindBacklog  = "backlog"
+	queueKindRefill   = "refill"
+)
+
+type queueMetricAggregate struct {
+	depth            int
+	oldest           time.Time
+	missingAgeSource bool
+}
+
+type queueMetricSnapshot struct {
+	depth      int
+	enqueuedAt time.Time
+}
+
+func (s *Scheduler) recordQueueSaturation(ctx context.Context, candidates []*tickCandidate, now time.Time) {
+	recorder, ok := s.telemetry.(queueSaturationRecorder)
+	if !ok {
+		return
+	}
+	byKind := map[string]queueMetricAggregate{
+		queueKindSchedule: {},
+		queueKindBacklog:  {},
+		queueKindRefill:   {},
+	}
+	add := func(kind string, depth int, enqueuedAt time.Time) {
+		if depth < 0 {
+			depth = 0
+		}
+		current := byKind[kind]
+		current.depth += depth
+		if depth > 0 {
+			if enqueuedAt.IsZero() {
+				current.missingAgeSource = true
+			} else if current.oldest.IsZero() || enqueuedAt.Before(current.oldest) {
+				current.oldest = enqueuedAt
+			}
+		}
+		byKind[kind] = current
+	}
+	for _, candidate := range candidates {
+		add(queueKindSchedule, candidate.scheduleRemaining+candidate.scheduleMetricHeld, candidate.scheduleEnqueuedAt)
+		if candidate.backlogObserved {
+			depth := candidate.backlogRemaining + candidate.backlogMetricHeld
+			s.storeQueueSnapshot(queueKindBacklog, entryIdentity(candidate.entry), depth, candidate.backlogEnqueuedAt)
+			add(queueKindBacklog, depth, candidate.backlogEnqueuedAt)
+		} else if candidate.entry.BacklogCounter != nil {
+			snapshot, ok := s.queueSnapshot(queueKindBacklog, entryIdentity(candidate.entry))
+			if ok {
+				add(queueKindBacklog, snapshot.depth, snapshot.enqueuedAt)
+			}
+		}
+		if candidate.refillObserved {
+			depth := candidate.refillRemaining + candidate.refillMetricHeld
+			s.storeQueueSnapshot(queueKindRefill, entryIdentity(candidate.entry), depth, candidate.refillEnqueuedAt)
+			add(queueKindRefill, depth, candidate.refillEnqueuedAt)
+		} else if candidate.entry.RefillDemandCounter != nil {
+			snapshot, ok := s.queueSnapshot(queueKindRefill, entryIdentity(candidate.entry))
+			if ok {
+				add(queueKindRefill, snapshot.depth, snapshot.enqueuedAt)
+			}
+		}
+	}
+	samples := []telemetry.QueueSaturationSample{
+		queueSample(queueKindSchedule, byKind[queueKindSchedule], now),
+		queueSample(queueKindBacklog, byKind[queueKindBacklog], now),
+		queueSample(queueKindRefill, byKind[queueKindRefill], now),
+	}
+	var workers *telemetry.WorkerAvailabilitySample
+	if available, observable := s.conditions.WorkerAvailability(); observable {
+		workers = &telemetry.WorkerAvailabilitySample{OperatingSystem: runtime.GOOS, Available: available}
+	}
+	recorder.RecordSchedulerQueueSaturation(ctx, samples, workers)
+}
+
+func queueSample(kind string, aggregate queueMetricAggregate, observedAt time.Time) telemetry.QueueSaturationSample {
+	oldest := aggregate.oldest
+	if aggregate.depth > 0 && aggregate.missingAgeSource {
+		oldest = time.Time{}
+	}
+	return telemetry.QueueSaturationSample{
+		QueueKind:        kind,
+		OperatingSystem:  runtime.GOOS,
+		Depth:            aggregate.depth,
+		OldestEnqueuedAt: oldest,
+		ObservedAt:       observedAt,
+	}
+}
+
+func (s *Scheduler) storeQueueSnapshot(kind string, identity WorkflowIdentity, depth int, enqueuedAt time.Time) {
+	if depth < 0 {
+		depth = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := queueMetricSnapshot{depth: depth, enqueuedAt: enqueuedAt}
+	switch kind {
+	case queueKindBacklog:
+		s.backlogQueueSnapshots[identity] = snapshot
+	case queueKindRefill:
+		s.refillQueueSnapshots[identity] = snapshot
+	}
+}
+
+func (s *Scheduler) queueSnapshot(kind string, identity WorkflowIdentity) (queueMetricSnapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch kind {
+	case queueKindBacklog:
+		snapshot, ok := s.backlogQueueSnapshots[identity]
+		return snapshot, ok
+	case queueKindRefill:
+		snapshot, ok := s.refillQueueSnapshots[identity]
+		return snapshot, ok
+	default:
+		return queueMetricSnapshot{}, false
 	}
 }
 
@@ -1257,6 +1421,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	workflows := make(map[WorkflowIdentity]WorkflowEntry, len(entries))
 	triggers := make(map[WorkflowIdentity]TriggerState, len(entries))
 	backlogLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	refillLastCheck := make(map[WorkflowIdentity]time.Time, len(entries))
+	backlogQueueSnapshots := make(map[WorkflowIdentity]queueMetricSnapshot, len(entries))
+	refillQueueSnapshots := make(map[WorkflowIdentity]queueMetricSnapshot, len(entries))
 	idleBackoffs := make(map[WorkflowIdentity][]idleBackoffState, len(entries))
 	webhookBackoffs := make(map[WorkflowIdentity]idleBackoffState, len(entries))
 	pendingScheduleDemand := make(map[WorkflowIdentity]scheduledDemand, len(entries))
@@ -1278,8 +1445,21 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		state.Workflow = entry.Workflow
 		state.Schedules = entry.Schedules
 		triggers[identity] = state
-		if checked, ok := s.backlogLastCheck[identity]; ok {
-			backlogLastCheck[identity] = checked
+		if entry.BacklogCounter != nil {
+			if checked, ok := s.backlogLastCheck[identity]; ok {
+				backlogLastCheck[identity] = checked
+			}
+			if snapshot, ok := s.backlogQueueSnapshots[identity]; ok {
+				backlogQueueSnapshots[identity] = snapshot
+			}
+		}
+		if entry.RefillDemandCounter != nil {
+			if checked, ok := s.refillLastCheck[identity]; ok {
+				refillLastCheck[identity] = checked
+			}
+			if snapshot, ok := s.refillQueueSnapshots[identity]; ok {
+				refillQueueSnapshots[identity] = snapshot
+			}
 		}
 		idleBackoffs[identity] = make([]idleBackoffState, len(entry.Schedules))
 		if pending, ok := s.pendingScheduleDemand[identity]; ok {
@@ -1327,12 +1507,15 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.workflows = workflows
 	s.triggers = triggers
 	s.backlogLastCheck = backlogLastCheck
+	s.refillLastCheck = refillLastCheck
+	s.backlogQueueSnapshots = backlogQueueSnapshots
+	s.refillQueueSnapshots = refillQueueSnapshots
 	s.idleBackoffs = idleBackoffs
 	s.webhookBackoffs = webhookBackoffs
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
 	s.triggerStallNotified = triggerStallNotified
-	s.authCircuits = make(map[WorkflowIdentity]struct{})
+	s.authCircuits = make(map[WorkflowIdentity]authCircuit)
 
 	select {
 	case s.wake <- struct{}{}:
@@ -1368,10 +1551,17 @@ type demandPoll struct {
 	refill    bool
 }
 
+type demandSnapshot struct {
+	ready         int
+	oldestReadyAt time.Time
+	observed      bool
+}
+
 type scheduledDemand struct {
-	schedule  TickResult
-	remaining int
-	repoll    bool
+	schedule   TickResult
+	remaining  int
+	repoll     bool
+	enqueuedAt time.Time
 }
 
 type idleBackoffState struct {
@@ -1395,6 +1585,20 @@ func dueScheduleIndexes(schedules []Schedule, lastEval, now time.Time) []int {
 		}
 	}
 	return due
+}
+
+func oldestDueScheduleAt(schedules []Schedule, lastEval, now time.Time) time.Time {
+	var oldest time.Time
+	for _, schedule := range schedules {
+		next := schedule.Next(lastEval)
+		if next.IsZero() || next.After(now) {
+			continue
+		}
+		if oldest.IsZero() || next.Before(oldest) {
+			oldest = next
+		}
+	}
+	return oldest
 }
 
 func scheduleBackoffConfig(entry WorkflowEntry, index int) IdleBackoffConfig {
@@ -1639,8 +1843,8 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 		}
 		for _, poll := range due {
 			entry := poll.candidate.entry
-			if s.authCircuitOpen(entryIdentity(entry)) {
-				s.applyDemandCount(poll, 0)
+			if s.authCircuitOpen(entryIdentity(entry), now) {
+				s.applyDemandSnapshot(poll, demandSnapshot{})
 				continue
 			}
 			if pacing && entryIdentity(entry) != pacedIdentity {
@@ -1667,16 +1871,16 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			}
 			if decision.Allowed > 0 {
 				pollCtx := WithProviderPollBudget(ctx, decision)
-				s.applyDemandCount(poll, s.pollDemand(pollCtx, entry, poll))
+				s.applyDemandSnapshot(poll, s.pollDemand(pollCtx, entry, poll))
 				s.markPollProgress()
 				continue
 			}
 			if guarded, ok := poll.counter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
-				s.applyDemandCount(poll, s.pollDemand(ctx, entry, poll))
+				s.applyDemandSnapshot(poll, s.pollDemand(ctx, entry, poll))
 				s.markPollProgress()
 				continue
 			}
-			s.applyDemandCount(poll, 0)
+			s.applyDemandSnapshot(poll, demandSnapshot{})
 			s.journalPollShed(entry, provider, decision.RemainingBefore, len(due), decision.ResetAt)
 		}
 	}
@@ -1687,8 +1891,9 @@ func (s *Scheduler) deferScheduleDemandPoll(candidate *tickCandidate) {
 	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
 	s.pendingScheduleDemand[identity] = scheduledDemand{
-		schedule: candidate.schedule,
-		repoll:   true,
+		schedule:   candidate.schedule,
+		repoll:     true,
+		enqueuedAt: candidate.scheduleEnqueuedAt,
 	}
 	s.mu.Unlock()
 }
@@ -1730,13 +1935,16 @@ func (s *Scheduler) paceQuotaResumedCandidates(candidates []*tickCandidate) {
 		if candidate.scheduleRemaining > 0 && !candidate.scheduleDemand {
 			s.deferScheduledDispatch(candidate)
 		}
+		candidate.scheduleMetricHeld = candidate.scheduleRemaining
 		candidate.scheduleRemaining = 0
 		if candidate.backlogRemaining > 0 {
 			s.clearBacklogPoll(candidate.entry)
+			candidate.backlogMetricHeld = candidate.backlogRemaining
 			candidate.backlogRemaining = 0
 		}
 		if candidate.refillRemaining > 0 {
 			s.clearRefillPoll(candidate.entry)
+			candidate.refillMetricHeld = candidate.refillRemaining
 			candidate.refillRemaining = 0
 		}
 	}
@@ -1757,8 +1965,53 @@ func (s *Scheduler) deferScheduledDispatch(candidate *tickCandidate) {
 	s.persistScheduleDemand(identity, true)
 	s.mu.Lock()
 	s.pendingScheduleDemand[identity] = scheduledDemand{
+		schedule:   candidate.schedule,
+		remaining:  candidate.scheduleRemaining,
+		enqueuedAt: candidate.scheduleEnqueuedAt,
+	}
+	s.mu.Unlock()
+}
+
+// settleRefusedScheduleFire decides what survives a refused schedule fire.
+// Retained demand must survive a refusal the next tick can clear on its own.
+// Memory pressure is such a refusal (#3960), so it joins the two max-parallel
+// reasons here; it is prefix-matched because Admit appends the measurement to
+// it. An unsized fire refused by the shared instance pool is retained rather
+// than dropped (#6207); one refused for its own workflow cap is still dropped.
+func (s *Scheduler) settleRefusedScheduleFire(candidate *tickCandidate, reason string) {
+	if !candidate.scheduleDemand {
+		if reason == ReasonInstanceMaxParallel {
+			s.retainUnsizedScheduleFire(candidate)
+		}
+		return
+	}
+	if reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel &&
+		!strings.HasPrefix(reason, ReasonMemoryPressure) {
+		s.clearPendingScheduleDemand(candidate.entry)
+	}
+}
+
+// retainUnsizedScheduleFire keeps an ordinary one-run-per-fire schedule
+// tick that the shared instance pool refused, instead of dropping it. A
+// dropped fire waits a whole schedule period for its next chance, and when
+// another gaggle's runs reliably hold the pool at that minute (two gaggles'
+// same-named workflows on offset crons, #6207) it never gets one: the
+// pool-skip ageing in Tick only orders candidates that are due in the same
+// tick, so it cannot help a workflow that is never due when a slot is free.
+// The retained fire is coalesced with later fires (at most one per
+// workflow), re-offered every tick with its pool-skip age, and the Run loop
+// is woken when any slot is released (wakeForDemand), so it takes the next
+// freed slot. It reuses the schedule-demand marker deferScheduledDispatch
+// already persists, which Reconcile restores as one unsized fire.
+func (s *Scheduler) retainUnsizedScheduleFire(candidate *tickCandidate) {
+	identity := entryIdentity(candidate.entry)
+	if !s.persistScheduleDemand(identity, true) {
+		return
+	}
+	s.mu.Lock()
+	s.pendingScheduleDemand[identity] = scheduledDemand{
 		schedule:  candidate.schedule,
-		remaining: candidate.scheduleRemaining,
+		remaining: 1,
 	}
 	s.mu.Unlock()
 }
@@ -1775,7 +2028,8 @@ func (s *Scheduler) clearRefillPoll(entry WorkflowEntry) {
 	s.mu.Unlock()
 }
 
-func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
+func (s *Scheduler) applyDemandSnapshot(poll demandPoll, snapshot demandSnapshot) {
+	ready := snapshot.ready
 	if poll.schedule {
 		identity := entryIdentity(poll.candidate.entry)
 		if !s.persistScheduleDemand(identity, ready > 0) {
@@ -1783,11 +2037,15 @@ func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
 		}
 		poll.candidate.scheduleRemaining = ready
 		poll.candidate.scheduleDemand = ready > 0
+		if !snapshot.oldestReadyAt.IsZero() {
+			poll.candidate.scheduleEnqueuedAt = snapshot.oldestReadyAt
+		}
 		s.mu.Lock()
 		if ready > 0 {
 			s.pendingScheduleDemand[identity] = scheduledDemand{
-				schedule:  poll.candidate.schedule,
-				remaining: ready,
+				schedule:   poll.candidate.schedule,
+				remaining:  ready,
+				enqueuedAt: poll.candidate.scheduleEnqueuedAt,
 			}
 		} else {
 			delete(s.pendingScheduleDemand, identity)
@@ -1797,9 +2055,13 @@ func (s *Scheduler) applyDemandCount(poll demandPoll, ready int) {
 	}
 	if poll.refill {
 		poll.candidate.refillEligible = ready
+		poll.candidate.refillEnqueuedAt = snapshot.oldestReadyAt
+		poll.candidate.refillObserved = snapshot.observed
 		return
 	}
 	poll.candidate.backlogRemaining = ready
+	poll.candidate.backlogEnqueuedAt = snapshot.oldestReadyAt
+	poll.candidate.backlogObserved = snapshot.observed
 }
 
 func (s *Scheduler) consumePendingScheduleDemand(entry WorkflowEntry) {
@@ -1860,18 +2122,26 @@ func (s *Scheduler) markPollProgress() {
 	}
 }
 
-func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) int {
+func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) demandSnapshot {
 	pollCtx, cancel := context.WithTimeout(ctx, s.demandPollTimeout)
 	defer cancel()
-	ready, err := poll.counter.EligibleCount(pollCtx)
+	snapshot, err := eligibleSnapshot(pollCtx, poll.counter)
 	if err != nil {
-		return s.demandPollFailed(ctx, entry, poll, err)
+		return demandSnapshot{ready: s.demandPollFailed(ctx, entry, poll, err)}
 	}
 	s.recordDemandPollSuccess(entry, poll)
-	if ready < 0 {
-		return 0
+	if snapshot.Count < 0 {
+		snapshot.Count = 0
 	}
-	return ready
+	return demandSnapshot{ready: snapshot.Count, oldestReadyAt: snapshot.OldestReadyAt, observed: true}
+}
+
+func eligibleSnapshot(ctx context.Context, counter BacklogCounter) (BacklogSnapshot, error) {
+	if snapshotCounter, ok := counter.(BacklogSnapshotCounter); ok {
+		return snapshotCounter.EligibleSnapshot(ctx)
+	}
+	count, err := counter.EligibleCount(ctx)
+	return BacklogSnapshot{Count: count}, err
 }
 
 func (s *Scheduler) journalPollShed(entry WorkflowEntry, provider apiv1.Provider, remaining, requested int, resetAt time.Time) {
@@ -2031,6 +2301,19 @@ func (s *Scheduler) TriggerSignal(ctx context.Context, workflow, signal, ref str
 // validation by the client request without tying the run's lifetime to that
 // short-lived request.
 func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Context, workflow, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalWithDispatchContextOptions(ctx, dispatchCtx, workflow, signal, ref, now, SignalTriggerOptions{})
+}
+
+// SignalTriggerOptions controls internal dispatch options for signal triggers.
+type SignalTriggerOptions struct {
+	// RunID pins a previously accepted delivery's identity. Empty allocates a
+	// fresh ID. This is an internal dispatch option, never an HTTP body field.
+	RunID string
+}
+
+// TriggerSignalWithDispatchContextOptions is TriggerSignalWithDispatchContext
+// with explicit internal dispatch options.
+func (s *Scheduler) TriggerSignalWithDispatchContextOptions(ctx, dispatchCtx context.Context, workflow, signal, ref string, now time.Time, options SignalTriggerOptions) (runID string, err error) {
 	s.mu.Lock()
 	var gaggles []string
 	for identity := range s.workflows {
@@ -2053,8 +2336,8 @@ func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Co
 			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
 		)
 	}
-	return s.TriggerSignalExactWithDispatchContext(ctx, dispatchCtx,
-		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now)
+	return s.TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx,
+		WorkflowIdentity{Gaggle: gaggles[0], Workflow: workflow}, signal, ref, now, options)
 }
 
 // TriggerExact manually fires one workflow identified by its gaggle and name.
@@ -2101,6 +2384,12 @@ func (s *Scheduler) TriggerSignalExact(ctx context.Context, identity WorkflowIde
 // TriggerSignalExactWithDispatchContext is TriggerSignalExact with separate
 // validation and run-lifetime contexts.
 func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time) (runID string, err error) {
+	return s.TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx, identity, signal, ref, now, SignalTriggerOptions{})
+}
+
+// TriggerSignalExactWithDispatchContextOptions is TriggerSignalExactWithDispatchContext
+// with explicit internal dispatch options.
+func (s *Scheduler) TriggerSignalExactWithDispatchContextOptions(ctx, dispatchCtx context.Context, identity WorkflowIdentity, signal, ref string, now time.Time, options SignalTriggerOptions) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
@@ -2134,7 +2423,7 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 	}
 	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: ref},
-		"signal", false, "")
+		"signal", false, options.RunID)
 }
 
 // TriggerPriority immediately re-evaluates one exact workflow after a prior run
@@ -2433,8 +2722,8 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 	defer span.End()
 
 	identity := entryIdentity(entry)
-	if s.authCircuitOpen(identity) {
-		reason := ReasonProviderAuth + ": operator must repair credentials and reload configuration"
+	if retryAt, open := s.authCircuitRetryAt(identity, now); open {
+		reason := authCircuitReason(retryAt)
 		s.journalEvent(journal.Event{
 			Type:     journal.EventTickSkipped,
 			Workflow: entry.Workflow,
@@ -2542,9 +2831,13 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 				s.recordWebhookPollResult(identity, entry.WebhookBackoff, webhookBackoffToken, result.NoWork, s.now())
 			}
 		}
-		if (startErr == nil && result.FailureCode == providers.ErrorCodeAuthFailed) ||
+		if (startErr == nil && providers.IsAuthFailureCode(result.FailureCode)) ||
 			result.FailureCode == telemetry.ErrCodeCredentialUnavailable {
-			s.openAuthCircuit(identity)
+			s.openAuthCircuit(identity, s.now())
+		} else if startErr == nil {
+			// A run that got past every credential it needed is the
+			// half-open probe succeeding: forget the failure streak.
+			s.closeAuthCircuit(identity)
 		}
 		// #710: this echo used to carry only the bare phase string — a
 		// business failure (result.Phase == "failed", startErr == nil: the
@@ -2607,16 +2900,75 @@ func (s *Scheduler) journalDispatchRefusal(entry WorkflowEntry, identity Workflo
 	})
 }
 
-func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, open := s.authCircuits[identity]
+// authCircuit is one workflow's credential-failure circuit. While now is
+// before retryAt the workflow is neither polled nor dispatched; from retryAt
+// on it is half-open and the next attempt either closes it or re-opens it
+// with a longer cooldown.
+type authCircuit struct {
+	retryAt time.Time
+	strikes int
+}
+
+const (
+	// authCircuitBaseCooldown is the first re-open delay. It keeps a broken
+	// credential to a handful of attempts per hour (#2687) while letting a
+	// transient failure — a delivered token that expired mid-stage, a token
+	// broker that failed twice in a row — recover on its own (#6166).
+	authCircuitBaseCooldown = 15 * time.Minute
+	// authCircuitMaxCooldown caps the exponential backoff on repeated
+	// failures.
+	authCircuitMaxCooldown = 2 * time.Hour
+)
+
+func authCircuitCooldown(strikes int) time.Duration {
+	cooldown := authCircuitBaseCooldown
+	for i := 1; i < strikes && cooldown < authCircuitMaxCooldown; i++ {
+		cooldown *= 2
+	}
+	return min(cooldown, authCircuitMaxCooldown)
+}
+
+func authCircuitReason(retryAt time.Time) string {
+	return fmt.Sprintf("%s: retrying after %s (or repair credentials and reload configuration)",
+		ReasonProviderAuth, retryAt.UTC().Format(time.RFC3339))
+}
+
+func (s *Scheduler) authCircuitOpen(identity WorkflowIdentity, now time.Time) bool {
+	_, open := s.authCircuitRetryAt(identity, now)
 	return open
 }
 
-func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity) {
+func (s *Scheduler) authCircuitRetryAt(identity WorkflowIdentity, now time.Time) (time.Time, bool) {
 	s.mu.Lock()
-	s.authCircuits[identity] = struct{}{}
+	defer s.mu.Unlock()
+	circuit, ok := s.authCircuits[identity]
+	if !ok || !now.Before(circuit.retryAt) {
+		return time.Time{}, false
+	}
+	return circuit.retryAt, true
+}
+
+// openAuthCircuit opens (or re-opens, with a longer cooldown) identity's
+// circuit at now and journals when it will next be tried, so a workflow the
+// circuit is holding is never silent (#6166).
+func (s *Scheduler) openAuthCircuit(identity WorkflowIdentity, now time.Time) {
+	s.mu.Lock()
+	circuit := s.authCircuits[identity]
+	circuit.strikes++
+	circuit.retryAt = now.Add(authCircuitCooldown(circuit.strikes))
+	s.authCircuits[identity] = circuit
+	s.mu.Unlock()
+	s.journalEvent(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Reason:   authCircuitReason(circuit.retryAt),
+	})
+}
+
+func (s *Scheduler) closeAuthCircuit(identity WorkflowIdentity) {
+	s.mu.Lock()
+	delete(s.authCircuits, identity)
 	s.mu.Unlock()
 }
 
@@ -2727,7 +3079,8 @@ func (s *Scheduler) nextWakeup(now time.Time) time.Duration {
 		}
 	}
 	for name, entry := range s.workflows {
-		if _, open := s.authCircuits[name]; open {
+		if circuit, open := s.authCircuits[name]; open && now.Before(circuit.retryAt) {
+			consider(circuit.retryAt)
 			continue
 		}
 		ts := s.triggers[name]

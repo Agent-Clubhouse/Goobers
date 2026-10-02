@@ -2,14 +2,28 @@ package main
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
+
+func restoreInvisibleClaims(
+	ctx context.Context,
+	l instance.Layout,
+	provider *providers.GitHubProvider,
+	repo providers.RepositoryRef,
+	now time.Time,
+	stderr io.Writer,
+) (int, error) {
+	result, err := restoreInvisibleClaimsWindow(ctx, l, provider, repo, now, func() time.Time { return now }, stderr, 1<<30, "")
+	return result.Restored, err
+}
 
 // seedLiveClaim gives the instance at root a live ledger lease on itemID.
 func seedLiveClaim(t *testing.T, root, itemID, runID string, now time.Time) {

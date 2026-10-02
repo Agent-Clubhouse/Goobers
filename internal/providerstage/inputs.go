@@ -91,6 +91,7 @@ var inputSchemas = map[string][]Input{
 		{Name: "maxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "parkLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "reconcileMetadata", Type: InputBoolean, State: InputCurrent},
+		{Name: "reconcileScanLimit", Type: InputInteger, State: InputCurrent},
 		{Name: "requireLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "respectAssignee", Type: InputBoolean, State: InputCurrent},
 		{Name: "resultFile", Type: InputPath, State: InputCurrent},
@@ -168,7 +169,7 @@ var inputSchemas = map[string][]Input{
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),

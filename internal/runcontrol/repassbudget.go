@@ -7,8 +7,10 @@ import (
 // Shared infrastructure retry bound and durable budget-exhaustion reason codes.
 const (
 	DefaultMaxInfrastructureRepasses    = 2
+	DefaultMaxTimeoutPolls              = 12
 	ReasonRepassBudgetExhausted         = "REPASS_BUDGET_EXHAUSTED"
 	ReasonInfrastructureBudgetExhausted = "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
+	ReasonPollingBudgetExhausted        = "POLLING_BUDGET_EXHAUSTED"
 )
 
 // RepassBudget is the repass accounting a single run charges every gate
@@ -22,7 +24,9 @@ const (
 //   - POLICY repasses are the reviewer's/checker's judgement that the WORK is
 //     not done — a needs-changes verdict, a failing check. They are bounded by
 //     the run's inherited MaxRepasses, overridable per gate
-//     (runcontrol.MaxRepassesForGate, default 3).
+//     (runcontrol.MaxRepassesForGate, default 3). A timeout outcome is not a
+//     policy judgement: it is bounded by the polling budget instead of
+//     spending the target stage's repair/repass budget.
 //   - INFRASTRUCTURE repasses (OutcomeInfra) are the producer's own claim that
 //     the MACHINERY failed rather than the work — a lost runner, a worktree
 //     that would not provision. They are bounded by
@@ -33,11 +37,11 @@ const (
 // different questions:
 //
 //   - Attempts / InfrastructureAttempts are PER GATE. They are the gate's
-//     consecutive non-pass evaluation count in that class — what recovers an
-//     interrupted evaluation after a crash and what a gate.started marker
-//     numbers. They CROSS-RESET: an infra outcome zeroes the gate's policy
-//     count and vice versa, because "three consecutive review failures" stops
-//     being true the moment the machinery, not the work, is what failed.
+//     consecutive non-pass, non-timeout evaluation count in that class — what
+//     recovers an interrupted evaluation after a crash and what a gate.started
+//     marker numbers. They CROSS-RESET: an infra outcome zeroes the gate's
+//     policy count and vice versa, because "three consecutive review failures"
+//     stops being true the moment the machinery, not the work, is what failed.
 //   - RepassAttempts / InfrastructureRepassAttempts are PER TARGET STAGE.
 //     They are the bounded budget itself, cumulative over the whole run for
 //     each re-entered stage, because two gates sending the same stage back
@@ -46,6 +50,9 @@ const (
 //     branch: an intervening non-infra outcome means the run made real
 //     progress, and the infrastructure retry budget it consumed earlier is
 //     returned rather than held against it for the rest of the run.
+//   - PollAttempts is PER TARGET STAGE for timeout outcomes. It bounds
+//     consecutive pending-only polling windows separately from repair budgets,
+//     and resets when the gate observes a non-timeout outcome.
 //
 // # Why this is a type and not a method on Evaluator
 //
@@ -88,6 +95,9 @@ type RepassBudget struct {
 	// count per re-entered target stage — the budget
 	// DefaultMaxInfrastructureRepasses bounds.
 	InfrastructureRepassAttempts map[string]int
+	// PollAttempts is the consecutive timeout-poll count per re-entered target
+	// stage — the budget MaxTimeoutPollsForGate bounds.
+	PollAttempts map[string]int
 }
 
 // RepassCharge is what one Charge did: the numbers the caller journals and the
@@ -110,11 +120,22 @@ type RepassCharge struct {
 	// from the outcome string.
 	Infrastructure bool
 	// Bound is the budget Attempt was compared against — the per-gate/
-	// inherited policy budget, or DefaultMaxInfrastructureRepasses.
+	// inherited policy budget, DefaultMaxInfrastructureRepasses, or the
+	// timeout polling budget.
 	Bound int
 	// Exceeded is true when Attempt passed Bound: the caller must override the
 	// gate's configured branch with its escalation target.
 	Exceeded bool
+	// Polling records that the timeout polling budget was charged.
+	Polling bool
+	// PollAttempt is the target stage's consecutive timeout-poll count,
+	// including this evaluation. 0 when the timeout polling budget was not
+	// charged.
+	PollAttempt int
+	// PollTarget is the configured timeout branch target charged by
+	// PollAttempt. It survives an escalation override, so resume can re-seed
+	// the exhausted polling counter.
+	PollTarget string
 }
 
 // Charge applies one gate outcome to the budget and reports what it cost.
@@ -134,6 +155,7 @@ type RepassCharge struct {
 // non-pass outcome is a repass (#5942).
 func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool, maxRepasses int) RepassCharge {
 	infrastructure := outcome == "infra"
+	waiting := outcome == "timeout"
 	if b.Attempts == nil {
 		b.Attempts = make(map[string]int)
 	}
@@ -147,9 +169,14 @@ func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool
 	// infrastructure target is usually a DIFFERENT stage from the one a
 	// content failure sends back to (implementation's local-gate: infra
 	// re-runs local-ci, fail re-implements).
-	if !infrastructure && b.InfrastructureRepassAttempts != nil {
+	if !infrastructure && !waiting && b.InfrastructureRepassAttempts != nil {
 		if infrastructureTarget, ok := g.Branches["infra"]; ok {
 			b.InfrastructureRepassAttempts[infrastructureTarget] = 0
+		}
+	}
+	if !waiting && b.PollAttempts != nil {
+		if pollTarget, ok := g.Branches["timeout"]; ok {
+			b.PollAttempts[pollTarget] = 0
 		}
 	}
 	charge := RepassCharge{
@@ -159,12 +186,14 @@ func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool
 	if infrastructure {
 		charge.Bound = DefaultMaxInfrastructureRepasses
 	}
-	// The per-GATE cross-resets: a pass clears both classes, and each non-pass
-	// class clears the other.
+	// The per-GATE cross-resets: a pass clears both classes, each non-pass
+	// class clears the other, and timeout is a neutral wait that advances
+	// neither class.
 	switch {
 	case outcome == string(apiv1.VerdictPass):
 		b.Attempts[g.Name] = 0
 		b.InfrastructureAttempts[g.Name] = 0
+	case waiting:
 	case infrastructure:
 		b.Attempts[g.Name] = 0
 		b.InfrastructureAttempts[g.Name]++
@@ -181,6 +210,27 @@ func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool
 	// passing validation escalated as REPASS_BUDGET_EXHAUSTED. The repair
 	// that caused the revisit already charged its own target (implement,
 	// remediate-ci), and that is the budget that bounds the loop.
+	//
+	// A timeout is likewise not a policy repass (#5558). ci-status uses it for
+	// pending-only polling windows: the run did not learn that the work needs
+	// repair, it only learned to wait for another poll. Those loops spend a
+	// dedicated polling budget, while genuine failed-CI outcomes still spend
+	// the target stage's repair budget.
+	if waiting {
+		if !reentry {
+			return charge
+		}
+		if b.PollAttempts == nil {
+			b.PollAttempts = make(map[string]int)
+		}
+		b.PollAttempts[target]++
+		charge.Bound = MaxTimeoutPollsForGate(g)
+		charge.Polling = true
+		charge.PollAttempt = b.PollAttempts[target]
+		charge.PollTarget = target
+		charge.Exceeded = charge.PollAttempt > charge.Bound
+		return charge
+	}
 	if !reentry || outcome == string(apiv1.VerdictPass) {
 		return charge
 	}
@@ -208,8 +258,19 @@ func (b *RepassBudget) Charge(g apiv1.Gate, outcome, target string, reentry bool
 // telemetry distinguishes policy repass churn from an exhausted infrastructure
 // retry budget.
 func (c RepassCharge) EscalationReason() string {
+	if c.Polling {
+		return ReasonPollingBudgetExhausted
+	}
 	if c.Infrastructure {
 		return ReasonInfrastructureBudgetExhausted
 	}
 	return ReasonRepassBudgetExhausted
+}
+
+// MaxTimeoutPollsForGate applies the optional per-gate timeout polling bound.
+func MaxTimeoutPollsForGate(gate apiv1.Gate) int {
+	if gate.Automated != nil && gate.Automated.MaxTimeoutPolls > 0 {
+		return int(gate.Automated.MaxTimeoutPolls)
+	}
+	return DefaultMaxTimeoutPolls
 }

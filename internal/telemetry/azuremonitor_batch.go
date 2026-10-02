@@ -13,6 +13,11 @@ import (
 // Production HTTP attempts have a five-second deadline, shorter than this lease.
 const azureReplayLease = 30 * time.Second
 
+// errAzureReplayLeased means every pending batch is claimed by a live upload,
+// usually another process sharing the spool. The worker still treats it as a
+// retry signal, since an abandoned lease must be reclaimed once it expires.
+var errAzureReplayLeased = errors.New("azure monitor replay batches are leased")
+
 func selectReplayFiles(ctx context.Context, tx *sql.Tx, where string, args ...any) ([]indexedReplayFile, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT stream,name,bytes,modified,created,records FROM files WHERE `+where+` ORDER BY created,name LIMIT 128`, args...)
 	if err != nil {
@@ -100,7 +105,7 @@ func (s *azureReplaySpool) claimBatch(ctx context.Context) (azureReplayBatch, er
 				return err
 			}
 			if remaining > 0 {
-				return errors.New("azure monitor replay batches are leased")
+				return errAzureReplayLeased
 			}
 			return nil
 		}

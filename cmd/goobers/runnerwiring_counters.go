@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
@@ -272,11 +273,16 @@ func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr error) {
+	snapshot, err := b.EligibleSnapshot(ctx)
+	return snapshot.Count, err
+}
+
+func (b *backlogCounter) EligibleSnapshot(ctx context.Context) (snapshot localscheduler.BacklogSnapshot, pollErr error) {
 	observation := backlogPollObservation{}
-	defer func() { b.retainBacklogObservation(observation, count, pollErr) }()
+	defer func() { b.retainBacklogObservation(observation, snapshot.Count, pollErr) }()
 	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
+		return localscheduler.BacklogSnapshot{}, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
 	defer cleanup()
 
@@ -300,7 +306,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
 	})
 	if err != nil {
-		return 0, err
+		return localscheduler.BacklogSnapshot{}, err
 	}
 	b.mu.Lock()
 	if pageInfo.HasNext {
@@ -316,19 +322,30 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
 		if err != nil {
-			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
+			return localscheduler.BacklogSnapshot{}, fmt.Errorf("evaluate backlog label predicate: %w", err)
 		}
 		if matched {
 			matched, err = b.fieldPredicate.Matches(item.Fields)
 			if err != nil {
-				return 0, fmt.Errorf("evaluate backlog field predicate: %w", err)
+				return localscheduler.BacklogSnapshot{}, fmt.Errorf("evaluate backlog field predicate: %w", err)
 			}
 			if matched {
-				count++
+				snapshot.Count++
+				if readyAt := backlogItemReadyAt(item); !readyAt.IsZero() &&
+					(snapshot.OldestReadyAt.IsZero() || readyAt.Before(snapshot.OldestReadyAt)) {
+					snapshot.OldestReadyAt = readyAt
+				}
 			}
 		}
 	}
-	return count, nil
+	return snapshot, nil
+}
+
+func backlogItemReadyAt(item providers.WorkItem) time.Time {
+	if item.ReadyAt != nil && !item.ReadyAt.IsZero() {
+		return item.ReadyAt.UTC()
+	}
+	return time.Time{}
 }
 
 func newCounterGitHubProvider(

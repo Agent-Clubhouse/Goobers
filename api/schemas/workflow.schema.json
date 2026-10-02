@@ -549,7 +549,9 @@
             "additionalProperties": false,
             "required": ["from"],
             "properties": {
-              "from": { "type": "string", "pattern": "^[^.]+\\.[A-Za-z0-9_-]{1,128}$", "description": "Source artifact slot as producerTask.slotName." }
+              "from": { "type": "string", "pattern": "^[^.]+\\.[A-Za-z0-9_-]{1,128}$", "description": "Source artifact slot as producerTask.slotName." },
+              "mediaType": { "type": "string", "minLength": 1, "description": "Optional media type the consumer expects from the referenced producer slot." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "Optional repository/config-relative schema path the consumer expects from the referenced producer slot." }
             }
           }
         },
@@ -606,7 +608,8 @@
                 "backoffSeconds": { "type": "integer", "minimum": 0, "description": "Constant delay in seconds between evaluator attempts." }
               }
             },
-            "pollIntervalSeconds": { "type": "integer", "minimum": 1, "description": "Polling cadence for remote checks such as ci-status." }
+            "pollIntervalSeconds": { "type": "integer", "minimum": 1, "description": "Polling cadence for remote checks such as ci-status." },
+            "maxTimeoutPolls": { "type": "integer", "minimum": 1, "description": "Maximum consecutive timeout polling outcomes before the gate routes through its escalation branch." }
           }
         },
         "agentic": {

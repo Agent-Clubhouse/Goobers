@@ -149,6 +149,12 @@ const (
 // differently-cased digest) is admitted.
 var scanCursorKeyPattern = regexp.MustCompile(`^backlog-scan-[0-9a-f]{64}\.json$`)
 
+// reconcileCursorKeyPattern matches the per-reconciliation backlog cursor,
+// backlog-reconcile-<sha256 of the reconcile shape>.json. Reconciliation has
+// its own cursor because it walks both open and recently closed trusted items,
+// not the claim-selection query shape that backlog-scan-* tracks.
+var reconcileCursorKeyPattern = regexp.MustCompile(`^backlog-reconcile-[0-9a-f]{64}\.json$`)
+
 // resweepStateKeyPattern matches the per-scan-shape backlog RE-SWEEP state,
 // backlog-resweep-<sha256 of the re-sweep's shape key>.json, pinned to the
 // same 64-lowercase-hex digest for the same reason.
@@ -339,6 +345,12 @@ func ScanCursorKey(digest string) string {
 	return "backlog-scan-" + digest + ".json"
 }
 
+// ReconcileCursorKey names the backlog metadata reconciliation cursor for a
+// reconcile-shape digest.
+func ReconcileCursorKey(digest string) string {
+	return "backlog-reconcile-" + digest + ".json"
+}
+
 // ResweepStateKey names the backlog re-sweep state for a shape digest.
 func ResweepStateKey(digest string) string {
 	return "backlog-resweep-" + digest + ".json"
@@ -380,6 +392,7 @@ func ValidKey(key string) bool {
 		return true
 	}
 	return scanCursorKeyPattern.MatchString(key) ||
+		reconcileCursorKeyPattern.MatchString(key) ||
 		resweepStateKeyPattern.MatchString(key) ||
 		prRemediationNoopKeyPattern.MatchString(key) ||
 		backlogHealthCursorKeyPattern.MatchString(key) ||

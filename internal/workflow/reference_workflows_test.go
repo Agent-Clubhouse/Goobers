@@ -679,6 +679,39 @@ func TestReferenceWorkflowsCIPollRetriesOnDispatchFailure(t *testing.T) {
 	}
 }
 
+func TestReferenceWorkflowsCIPollDeclaresExplicitPollingBound(t *testing.T) {
+	for _, name := range []string{
+		"implementation.yaml",
+		"implementation-pre-review-experiment.yaml",
+		"implementation-recovery.yaml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", name)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read workflow: %v", err)
+			}
+			var w apiv1.Workflow
+			if err := yaml.Unmarshal(raw, &w); err != nil {
+				t.Fatalf("unmarshal workflow: %v", err)
+			}
+			for _, g := range w.Spec.Gates {
+				if g.Name != "ci-gate" {
+					continue
+				}
+				if g.Automated == nil {
+					t.Fatalf("ci-gate has no automated evaluator")
+				}
+				if got := g.Automated.MaxTimeoutPolls; got != 30 {
+					t.Fatalf("ci-gate automated.maxTimeoutPolls = %d, want 30 so shipped polling policy does not silently fall back to the default", got)
+				}
+				return
+			}
+			t.Fatal("workflow has no ci-gate")
+		})
+	}
+}
+
 // TestShippedImplementationReviewGateRetriesInfrastructureFailure is #5397's
 // regression guard. The implementation `review` gate runs after a successful
 // implement turn; with no `agentic.retry` its single attempt turns a transient

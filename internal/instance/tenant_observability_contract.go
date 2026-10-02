@@ -71,7 +71,7 @@ func TenantTelemetryContract() TenantObservabilityContract {
 			"goobers.stage", "goobers.attempt.n", "goobers.telemetry.record_id",
 		},
 		Incidents: []TelemetryIncidentDescriptor{
-			{ID: "pat_auth_rejection", Signal: "journal", EventNames: []string{"stage.finished"}, StableCodes: []string{"github_auth_failed"}, RequiredFields: []string{"goobers.instance.id", "goobers.gaggle", "goobers.workflow", "goobers.run.id", "goobers.stage"}, MinimumProfile: TelemetryProfileJournal},
+			{ID: "pat_auth_rejection", Signal: "journal", EventNames: []string{"stage.finished"}, StableCodes: []string{"github_auth_failed", "provider_auth_failed"}, RequiredFields: []string{"goobers.instance.id", "goobers.gaggle", "goobers.workflow", "goobers.run.id", "goobers.stage"}, MinimumProfile: TelemetryProfileJournal},
 			{ID: "credential_unavailable", Signal: "journal", EventNames: []string{"stage.finished"}, StableCodes: []string{"credential_unavailable"}, RequiredFields: []string{"goobers.instance.id", "goobers.gaggle", "goobers.workflow", "goobers.run.id", "goobers.stage"}, MinimumProfile: TelemetryProfileJournal},
 			{ID: "startup_not_ready", Signal: "diagnostic", EventNames: []string{"goobers.fleet.heartbeat"}, StableCodes: []string{"startup"}, RequiredFields: []string{"instanceId", "bootId", "state", "reasonCode", "windowCoverage"}, MinimumProfile: TelemetryProfileHealth},
 			{ID: "workflow_refused", Signal: "journal", EventNames: []string{"workflow.refused"}, StableCodes: []string{"conditions: harness-unavailable"}, RequiredFields: []string{"goobers.instance.id", "goobers.gaggle", "goobers.workflow"}, MinimumProfile: TelemetryProfileJournal},

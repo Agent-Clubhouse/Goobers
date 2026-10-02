@@ -308,6 +308,23 @@ credentials at all (credential containment, #5664).
 > `GOOBERS_CREDENTIAL_EXPIRES_<capability>`, and the 401 error says "expired"
 > at or after it and "revoked or without access" before it. Pod re-resolve on
 > a 401 was not needed.
+>
+> **Superseded (#6120 phase 1, PO decision 2026-09-30):** the 20-minute floor
+> above is best-effort and inert on the azure-cli path: `az account
+> get-access-token` returns its cached token until about five minutes before
+> expiry, so re-minting at delivery cannot produce a longer-lived one (40
+> below-floor deliveries in 9 hours of soak). Stages can run for hours, so the
+> delivered value is no longer final for a deterministic stage: it receives a
+> stage credential-refresh grant (`GOOBERS_CREDENTIAL_ENDPOINT` +
+> `GOOBERS_CREDENTIAL_GRANT`) and re-resolves one capability through
+> `POST /api/v1/credentials/refresh`, locally and in a pod, within five minutes
+> of the stated expiry and once after a 401 or the sign-in redirect. The
+> Azure DevOps source is refreshable, so `send()`'s existing single 401 retry
+> resends with a re-resolved value. The floor stays as a first line; the grant
+> is what bounds nothing by token life. A rejected delivered credential now
+> reports `provider_auth_failed`. Agentic stages are phase 2. See
+> `docs/stage-contract.md` ("Mid-stage refresh") and
+> `distributed-state-and-coordination.md` DS10 / §11.
 
 **Harness.** Remove the ADO exception that tolerates a missing grant
 (`internal/harness/environment.go:170-173`). Once every kind backs its grants, ADO

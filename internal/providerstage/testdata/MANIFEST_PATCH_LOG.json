@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "ff5fb1eed6eb4ac15979833bd36f7965f0514a35e76a23c5c8059604247e2984",
+  "snapshotSha256": "a6bd801a8ff974a2fa9a54bd269753873af0891b32e93208169742eb357f4be0",
   "changes": [
     {
       "version": 1,
@@ -59,6 +59,10 @@
     },
     {
       "version": 15,
+      "description": "pr-comment-watch gains native Azure DevOps support (#6130) and an OPTIONAL github:pr:write use: on Azure DevOps the routing labels are native pull-request labels on the project provider, which github:pr:write authorizes there (docs/design/ado-parity-dsl-2-0.md section 3.1), and the stage builds its ADO provider from that credential. GitHub and Gitea keep routing through github:issues:write, which stays the one required use. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling."
+    },
+    {
+      "version": 16,
       "description": "Add advisory-pr-select and advisory-pr-publish as separate workflow commands (#6184). Selection requires the exact github:pr:read credential and acquires a private lease; publication requires github:pr:write and owns the only public comment path. The addition changes no existing command requirement, result file, or claim behavior, so existing workflows retain their admission contract."
     }
   ]

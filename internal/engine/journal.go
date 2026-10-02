@@ -652,6 +652,10 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	if gr.RepassTarget != "" {
 		ev.Runner["repassTarget"] = gr.RepassTarget
 	}
+	if gr.PollTarget != "" {
+		ev.Runner["pollAttempt"] = gr.PollAttempt
+		ev.Runner["pollTarget"] = gr.PollTarget
+	}
 	// The implementation-lane annotations (#3882), keyed exactly as
 	// internal/gate's recordVerdict keys them: this event is the only place a
 	// consumer can learn that a gate resolved WITHOUT invoking a reviewer, and

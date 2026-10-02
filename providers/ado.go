@@ -719,13 +719,13 @@ func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body in
 		normalizeADOSignInResponse(resp)
 		p.observeQuota(ctx, resp)
 		p.observeRateLimitDelay(ctx, resp, endpoint)
-		if err := p.deliveredCredentialRejected(resp, method, endpoint); err != nil {
-			return nil, err
-		}
 		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
 			_ = resp.Body.Close()
 			authRetried = true
 			continue
+		}
+		if err := p.deliveredCredentialRejected(resp, method, endpoint, authRetried); err != nil {
+			return nil, err
 		}
 		if resp.StatusCode >= 500 && adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
 			_ = resp.Body.Close()
@@ -788,18 +788,19 @@ func (p *ADOProvider) authorizationHeader(ctx context.Context) (header string, b
 // response (status and body, so it still classifies as an authentication
 // failure, including after it crosses a process boundary as text) and adds
 // which delivered credential was rejected. Any other response returns nil.
-func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, endpoint string) error {
-	source, ok := p.credentialSource.(*adoDeliveredCredentialSource)
+func (p *ADOProvider) deliveredCredentialRejected(resp *http.Response, method, endpoint string, refreshed bool) error {
+	source, ok := p.credentialSource.(deliveredADOCredential)
 	if !ok || resp.StatusCode != http.StatusUnauthorized {
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return &adoDeliveredCredentialRejectedError{
-		label:     source.label,
+		label:     source.deliveredLabel(),
 		cause:     newProviderResponseError(resp, method, endpoint, body),
-		expiresAt: source.expiresAt,
+		expiresAt: source.deliveredExpiry(),
 		at:        p.now(),
+		refreshed: refreshed,
 	}
 }
 

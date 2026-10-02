@@ -164,6 +164,13 @@ spec:
                             Check names a built-in coded check such as "status-equals",
                             "output-numeric-lte", or "output-matches".
                           type: string
+                        maxTimeoutPolls:
+                          description: |-
+                            MaxTimeoutPolls bounds consecutive timeout outcomes for polling checks
+                            such as ci-status before the gate routes through its escalation branch.
+                          format: int32
+                          minimum: 1
+                          type: integer
                         params:
                           additionalProperties:
                             type: string
@@ -592,6 +599,20 @@ spec:
                           from:
                             description: From names the source as "<producer-task>.<artifact-slot>".
                             pattern: ^[^.]+\.[A-Za-z0-9_-]{1,128}$
+                            type: string
+                          mediaType:
+                            description: |-
+                              MediaType optionally declares the media type this consumer expects from
+                              the referenced producer slot. When both sides declare a media type, the
+                              workflow compiler requires an exact match.
+                            minLength: 1
+                            type: string
+                          schemaPath:
+                            description: |-
+                              SchemaPath optionally declares the schema this consumer expects from the
+                              referenced producer slot. When both sides declare a schema, the workflow
+                              compiler requires an exact match.
+                            minLength: 1
                             type: string
                         required:
                         - from

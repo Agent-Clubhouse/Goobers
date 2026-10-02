@@ -212,6 +212,78 @@ func (c *Client) StorageHealthSampled(tier string, freeBytes uint64, tierChanged
 	}
 }
 
+// QueueSaturationSample is one scheduler-visible queue lane snapshot. QueueKind
+// must be a closed, bounded value such as "schedule", "backlog", or "refill".
+// OldestEnqueuedAt is the canonical enqueue/readiness time for the oldest item
+// represented by Depth; zero means no age source is available. Empty queues
+// still record age 0, but non-empty queues without a source omit age instead
+// of guessing.
+type QueueSaturationSample struct {
+	QueueKind        string
+	OperatingSystem  string
+	Depth            int
+	OldestEnqueuedAt time.Time
+	ObservedAt       time.Time
+}
+
+// WorkerAvailabilitySample is a scheduler capacity snapshot. Emit it only when
+// the scheduler has a reliable configured-capacity source; zero is a valid value.
+type WorkerAvailabilitySample struct {
+	OperatingSystem string
+	Available       int
+}
+
+// RecordSchedulerQueueSaturation publishes queue depth, oldest queue age, and
+// worker availability gauges. Nil clients and telemetry-disabled clients are
+// no-ops, preserving optional, non-blocking export semantics.
+func (c *Client) RecordSchedulerQueueSaturation(ctx context.Context, queues []QueueSaturationSample, workers *WorkerAvailabilitySample) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	for _, queue := range queues {
+		depth := queue.Depth
+		if depth < 0 {
+			depth = 0
+		}
+		attrs := queueSaturationAttrs(queue.QueueKind, queue.OperatingSystem)
+		c.instruments.queueDepth.Record(ctx, int64(depth), c.instruments.attributeSet(attrs...))
+		if depth > 0 && queue.OldestEnqueuedAt.IsZero() {
+			continue
+		}
+		ageSeconds := int64(0)
+		if depth > 0 {
+			observedAt := queue.ObservedAt
+			if observedAt.IsZero() {
+				observedAt = time.Now()
+			}
+			if age := observedAt.Sub(queue.OldestEnqueuedAt); age > 0 {
+				ageSeconds = int64(age.Seconds())
+			}
+		}
+		c.instruments.queueOldestAge.Record(ctx, ageSeconds, c.instruments.attributeSet(attrs...))
+	}
+	if workers == nil {
+		return
+	}
+	available := workers.Available
+	if available < 0 {
+		available = 0
+	}
+	c.instruments.workersAvailable.Record(ctx, int64(available),
+		c.instruments.attributeSet(queueSaturationAttrs("", workers.OperatingSystem)...))
+}
+
+func queueSaturationAttrs(queueKind, operatingSystem string) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 2)
+	if queueKind != "" {
+		attrs = append(attrs, attribute.String(MetricAttrQueueKind, queueKind))
+	}
+	if operatingSystem != "" {
+		attrs = append(attrs, attribute.String(MetricAttrOS, operatingSystem))
+	}
+	return attrs
+}
+
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
 	// The SDK's default error handler logs every asynchronous export failure

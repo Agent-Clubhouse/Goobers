@@ -67,6 +67,10 @@ var defaultPatterns = []pattern{
 	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`), Redacted},
 	// PEM private key blocks.
 	{privateKeyPattern, Redacted},
+	// Stage credential-refresh grants (Goobers#6120): a signed bearer that
+	// mints credentials for the life of a stage. Registered by value where it
+	// is minted and delivered; this is the net for a copy that escaped both.
+	{regexp.MustCompile(`goobers-grant\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}`), Redacted},
 	// Bearer/authorization header values with a long opaque token. The scheme
 	// is captured and restored: only the value is a credential, and a reviewer
 	// judging a diff must still be able to see that the header is well formed.

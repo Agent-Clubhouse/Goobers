@@ -443,6 +443,18 @@ type ArtifactInputRef struct {
 	// +kubebuilder:validation:Pattern=`^[^.]+\.[A-Za-z0-9_-]{1,128}$`
 	// +kubebuilder:validation:Required
 	From string `json:"from" yaml:"from"`
+	// MediaType optionally declares the media type this consumer expects from
+	// the referenced producer slot. When both sides declare a media type, the
+	// workflow compiler requires an exact match.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	MediaType string `json:"mediaType,omitempty" yaml:"mediaType,omitempty"`
+	// SchemaPath optionally declares the schema this consumer expects from the
+	// referenced producer slot. When both sides declare a schema, the workflow
+	// compiler requires an exact match.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	SchemaPath string `json:"schemaPath,omitempty" yaml:"schemaPath,omitempty"`
 }
 
 // BanditArm declares one variant and the gate strength required to evaluate it.
@@ -813,6 +825,11 @@ type AutomatedGate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	PollIntervalSeconds int32 `json:"pollIntervalSeconds,omitempty" yaml:"pollIntervalSeconds,omitempty"`
+	// MaxTimeoutPolls bounds consecutive timeout outcomes for polling checks
+	// such as ci-status before the gate routes through its escalation branch.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxTimeoutPolls int32 `json:"maxTimeoutPolls,omitempty" yaml:"maxTimeoutPolls,omitempty"`
 }
 
 // AgenticGate invokes a scoped reviewer goober.

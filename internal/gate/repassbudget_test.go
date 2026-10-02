@@ -270,6 +270,51 @@ func TestRepassBudgetNeverChargesOrEscalatesAPassingReentry(t *testing.T) {
 	}
 }
 
+// #5558: a ci-status timeout is a pending-only polling window, not evidence
+// that implementation or remediation work is wrong. Re-entering ci-poll keeps
+// the same PR context (#3327) but must not spend the target's policy repass
+// budget; a separate polling budget bounds how long a run may keep polling.
+func TestRepassBudgetChargesTimeoutReentryToPollingBudget(t *testing.T) {
+	ciGate := apiv1.Gate{Name: "ci-gate", Branches: map[string]string{
+		OutcomePass:       "close-out",
+		OutcomeFail:       "remediate-ci",
+		OutcomeTimeout:    "ci-poll",
+		wf.BranchEscalate: "park-escalated",
+	}}
+	ciGate.Automated = &apiv1.AutomatedGate{Check: "ci-status", MaxTimeoutPolls: 5}
+	const maxRepasses = 3
+	var b RepassBudget
+	for poll := 1; poll <= int(ciGate.Automated.MaxTimeoutPolls); poll++ {
+		c := b.Charge(ciGate, OutcomeTimeout, "ci-poll", true, maxRepasses)
+		if c.Exceeded || c.Attempt != 0 || c.GateAttempt != 0 || c.RepassTarget != "" ||
+			!c.Polling || c.PollAttempt != poll || c.PollTarget != "ci-poll" {
+			t.Fatalf("timeout poll %d = %+v, want a polling-budget wait", poll, c)
+		}
+	}
+	if got := b.RepassAttempts["ci-poll"]; got != 0 {
+		t.Fatalf("ci-poll policy repasses = %d, want 0 for pending-only polling", got)
+	}
+	exhausted := b.Charge(ciGate, OutcomeTimeout, "ci-poll", true, maxRepasses)
+	if !exhausted.Exceeded || exhausted.PollAttempt != int(ciGate.Automated.MaxTimeoutPolls)+1 ||
+		exhausted.EscalationReason() != ReasonPollingBudgetExhausted {
+		t.Fatalf("exhausted timeout polling = %+v, want polling-budget exhaustion", exhausted)
+	}
+	b.Charge(ciGate, OutcomePass, "close-out", false, maxRepasses)
+	if got := b.PollAttempts["ci-poll"]; got != 0 {
+		t.Fatalf("ci-poll attempts after non-timeout progress = %d, want reset to 0", got)
+	}
+	for repair := 1; repair <= maxRepasses; repair++ {
+		if c := b.Charge(ciGate, OutcomeFail, "remediate-ci", true, maxRepasses); c.Attempt != repair || c.Exceeded {
+			t.Fatalf("CI repair %d after pending polling = %+v, want remediate-ci repass %d within budget",
+				repair, c, repair)
+		}
+	}
+	if c := b.Charge(ciGate, OutcomeFail, "remediate-ci", true, maxRepasses); !c.Exceeded ||
+		c.Attempt != maxRepasses+1 || c.EscalationReason() != ReasonRepassBudgetExhausted {
+		t.Fatalf("fourth genuine CI repair = %+v, want exhaustion of the remediate-ci budget", c)
+	}
+}
+
 // The per-gate leaf override is resolved inside Charge, so both drivers apply
 // it identically — and it applies to the POLICY budget only. The
 // infrastructure bound is a constant no definition can widen: a gate that

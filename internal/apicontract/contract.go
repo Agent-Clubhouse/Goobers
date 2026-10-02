@@ -168,6 +168,13 @@ const (
 	// (#2931), and resolution happens at stage start — never inherited from
 	// dispatch time.
 	CredentialResolvePath = V1Prefix + "/credentials/resolve"
+	// CredentialRefreshPath is the credential plane's mid-stage re-resolve
+	// endpoint (Goobers#6120, DS10/§11 acceptance item 8): a deterministic
+	// stage presenting its stage credential-refresh grant receives a fresh
+	// value for ONE capability the grant names. It accepts only a grant —
+	// never a pod token, a worker token or a human principal — and is served
+	// on the loopback API of a local daemon as well as to stage pods.
+	CredentialRefreshPath = V1Prefix + "/credentials/refresh"
 
 	// RunStageSurrenderPath is the surrender plane's write route (#3699): a
 	// mode-3 stage pod's dispatch-exec entrypoint PUTs its SurrenderedResult
@@ -328,6 +335,7 @@ const (
 	RouteCancelRun         RouteID = "cancelRun"
 	RouteJournalEmit       RouteID = "journalEmit"
 	RouteCredentialResolve RouteID = "credentialResolve"
+	RouteCredentialRefresh RouteID = "credentialRefresh"
 	RouteStageSurrender    RouteID = "stageSurrender"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
@@ -412,14 +420,19 @@ const (
 
 // Route budgets.
 //
-// These come from Wave 0's measured p99.9 against §14.12's absolute targets, not
-// from taste, and every one is strictly below the portal's 10s client abort.
+// Portal-facing budgets come from Wave 0's measured p99.9 against §14.12's
+// targets and stay below the portal's 10s client abort. Stage-only routes with
+// slower work have explicit, separately tested exceptions.
 const (
 	// BoundedBudget covers indexed list and aggregate reads. Measured p50 for a
 	// read-model list page is single-digit milliseconds; 8s is three orders of
 	// magnitude of headroom, and is a backstop against pathology rather than a
 	// target.
 	BoundedBudget = 8 * time.Second
+	// DefectAggregateBudget covers the seven-day nomination derivation. It
+	// traverses the rollup and causal-credit stores, rather than one indexed
+	// list page, and therefore needs its own bounded route budget.
+	DefectAggregateBudget = 4 * time.Minute
 	// BlobBudget covers artifact and transcript streaming, where the time is
 	// transfer rather than query. A large artifact over a slow link legitimately
 	// takes longer than any query should.
@@ -489,12 +502,9 @@ var v1Routes = []Route{
 	{ID: RouteWorkItems, Method: http.MethodGet, Path: WorkItemsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkItemDetail, Method: http.MethodGet, Path: WorkItemDetailPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
-	// The defect-aggregate route is classified with its telemetry siblings:
-	// answered from the same pre-aggregated rollup buckets, bounded by the
-	// same read budget. It costs more than one of them because it runs
-	// several detection families, which is why its window, its response and
-	// its cardinality are all bounded server-side rather than by the caller.
-	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	// This route derives four families from rollups and causal-credit data.
+	// Its window, response and cardinality remain bounded server-side.
+	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: DefectAggregateBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
@@ -545,6 +555,9 @@ var v1Routes = []Route{
 	// workflow-execution action class, but its budget is mint-bound rather
 	// than ledger-bound (see CredentialResolveBudget).
 	{ID: RouteCredentialResolve, Method: http.MethodPost, Path: CredentialResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
+	// The refresh route mints exactly like resolve (one capability instead
+	// of the stage's set), so it shares resolve's class and mint-bound budget.
+	{ID: RouteCredentialRefresh, Method: http.MethodPost, Path: CredentialRefreshPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
 
 	// The surrender plane (#3699) is a machine seam like journal/credential —
 	// a stage pod delivering its own terminal result — so it shares the

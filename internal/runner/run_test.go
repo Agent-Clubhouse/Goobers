@@ -5824,6 +5824,170 @@ func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
 	}
 }
 
+func TestTimeoutSeedsPreserveGateRecoveryCounters(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeFail, Target: "remediate-ci",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "remediate-ci"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0, "pollAttempt": 1.0, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateStarted, Gate: "ci-gate", Runner: map[string]any{"repassAttempt": 2.0}},
+	}
+	if got := gateRepassSeed(events)["ci-gate"]; got != 2 {
+		t.Fatalf("policy gate seed after fail -> timeout -> dangling start = %d, want 2", got)
+	}
+
+	infraEvents := []journal.Event{
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeInfra, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 1.0, "gateAttempt": 1.0, "repassTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"repassAttempt": 0.0, "gateAttempt": 0.0, "pollAttempt": 1.0, "pollTarget": "ci-poll"}},
+	}
+	if got := gateInfrastructureSeed(infraEvents)["ci-gate"]; got != 1 {
+		t.Fatalf("infrastructure gate seed after infra -> timeout = %d, want 1", got)
+	}
+}
+
+func timeoutPollingLoopMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "ci-poll",
+		Tasks: []apiv1.Task{
+			{Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "ci-gate"},
+			{Name: "remediate-ci", Type: apiv1.TaskDeterministic, Goal: "fix CI", Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "ci-poll"},
+		},
+		Gates: []apiv1.Gate{
+			{
+				Name:      "ci-gate",
+				Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "ci-status", MaxTimeoutPolls: 2},
+				Branches: map[string]string{
+					gate.OutcomePass:        workflow.TerminalComplete,
+					gate.OutcomeFail:        "remediate-ci",
+					gate.OutcomeTimeout:     "ci-poll",
+					workflow.BranchEscalate: workflow.TargetEscalate,
+				},
+			},
+		},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "timeout-polling-loop", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile timeout polling loop: %v", err)
+	}
+	return m
+}
+
+func TestRunnerResumeRestoresTimeoutPollingBudgetAndReset(t *testing.T) {
+	machine := timeoutPollingLoopMachine(t)
+	byTask := map[string]stubTaskResult{
+		"run-poll-exhausted:ci-poll": {status: apiv1.ResultSuccess},
+		"run-poll-reset:ci-poll":     {status: apiv1.ResultSuccess},
+	}
+	r, runsDir := newTestRunner(t, byTask, fixedOutcomeAutomated(gate.OutcomeTimeout))
+
+	createPollJournal := func(t *testing.T, runID string, events []journal.Event) {
+		t.Helper()
+		jr, err := journal.Create(runsDir, journal.RunIdentity{
+			RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+			WorkflowDigest: machine.Digest(), Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		}, nil)
+		if err != nil {
+			t.Fatalf("journal.Create: %v", err)
+		}
+		jr.SetMachineState("ci-poll")
+		for i, event := range events {
+			if err := jr.Append(event); err != nil {
+				t.Fatalf("append event %d (%s): %v", i, event.Type, err)
+			}
+		}
+		if err := jr.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}
+	readEvents := func(t *testing.T, runID string) []journal.Event {
+		t.Helper()
+		rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+		if err != nil {
+			t.Fatalf("OpenRead: %v", err)
+		}
+		events, err := rd.Events()
+		if err != nil {
+			t.Fatalf("Events: %v", err)
+		}
+		return events
+	}
+	timeoutAttempts := func(events []journal.Event) []int {
+		var attempts []int
+		for _, event := range events {
+			if event.Type != journal.EventGateEvaluated || event.Verdict != gate.OutcomeTimeout {
+				continue
+			}
+			n, _ := event.Runner["pollAttempt"].(float64)
+			attempts = append(attempts, int(n))
+		}
+		return attempts
+	}
+
+	createPollJournal(t, "run-poll-exhausted", []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "ci-poll", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 1, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 2, "pollTarget": "ci-poll"}},
+	})
+	res, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-poll-exhausted",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume exhausted: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("exhausted phase = %q, want escalated from restored poll count", res.Phase)
+	}
+	exhaustedEvents := readEvents(t, "run-poll-exhausted")
+	if got, want := timeoutAttempts(exhaustedEvents), []int{1, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exhausted poll attempts = %v, want %v (resume should continue from the journaled pollingTargetSeed)", got, want)
+	}
+	last := exhaustedEvents[len(exhaustedEvents)-1]
+	for i := len(exhaustedEvents) - 1; i >= 0; i-- {
+		if exhaustedEvents[i].Type == journal.EventGateEvaluated {
+			last = exhaustedEvents[i]
+			break
+		}
+	}
+	if last.Target != workflow.TargetEscalate || last.Runner["reason"] != gate.ReasonPollingBudgetExhausted {
+		t.Fatalf("final timeout verdict target=%q reason=%v, want %s/%s", last.Target, last.Runner["reason"], workflow.TargetEscalate, gate.ReasonPollingBudgetExhausted)
+	}
+
+	createPollJournal(t, "run-poll-reset", []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "ci-poll", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 1, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeTimeout, Target: "ci-poll",
+			Runner: map[string]any{"pollAttempt": 2, "pollTarget": "ci-poll"}},
+		{Type: journal.EventGateEvaluated, Gate: "ci-gate", Verdict: gate.OutcomeFail, Target: "remediate-ci",
+			Runner: map[string]any{"repassAttempt": 1, "gateAttempt": 1, "repassTarget": "remediate-ci"}},
+	})
+	res, err = r.Resume(context.Background(), ResumeInput{
+		RunID:   "run-poll-reset",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Resume reset: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("reset phase = %q, want eventual escalation after a fresh post-reset polling budget", res.Phase)
+	}
+	resetAttempts := timeoutAttempts(readEvents(t, "run-poll-reset"))
+	if got, want := resetAttempts, []int{1, 2, 1, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reset poll attempts = %v, want %v (non-timeout outcome should reset the restored polling budget)", got, want)
+	}
+}
+
 // TestInfrastructureSeedsAreZeroForPreInfrastructureHistories is the
 // backwards-compatibility half of #3930: a run resumed from a journal written
 // BEFORE the infrastructure counters existed must start with those counters at

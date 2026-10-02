@@ -439,6 +439,122 @@ func TestEvaluatorSeparatesInfrastructureAndPolicyRepassBudgets(t *testing.T) {
 	}
 }
 
+func TestEvaluatorDoesNotSpendRepassBudgetOnTimeoutPolling(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "ci-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals", MaxTimeoutPolls: 5},
+		Branches: map[string]string{
+			OutcomePass:       "close-out",
+			OutcomeFail:       "remediate-ci",
+			OutcomeTimeout:    "ci-poll",
+			wf.BranchEscalate: "park-escalated",
+		},
+	}
+	run := newTestJournal(t)
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeTimeout, OutcomeTimeout, OutcomeTimeout, OutcomeTimeout, OutcomePass}},
+		MaxRepasses: 3,
+		Journal:     run,
+		IsReentry:   func(target string) bool { return target == "ci-poll" || target == "remediate-ci" },
+	}
+
+	for poll := 1; poll <= 4; poll++ {
+		result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "ci-poll", apiv1.ResultEnvelope{}, "", false)
+		if err != nil {
+			t.Fatalf("timeout evaluation %d: %v", poll, err)
+		}
+		if result.Target != "ci-poll" || result.Escalated || result.Attempt != 0 || result.RepassTarget != "" ||
+			result.PollAttempt != poll || result.PollTarget != "ci-poll" {
+			t.Fatalf("timeout evaluation %d = %+v, want polling-budget wait at ci-poll", poll, result)
+		}
+	}
+	passed, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "ci-poll", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("passing evaluation after polling: %v", err)
+	}
+	if passed.Target != "close-out" || passed.Escalated {
+		t.Fatalf("passing evaluation after polling = %+v, want close-out without escalation", passed)
+	}
+	if got := ev.RepassAttempts["ci-poll"]; got != 0 {
+		t.Fatalf("ci-poll repass attempts = %d, want 0", got)
+	}
+
+	events := readGateEvents(t, run)
+	if len(events) != 5 {
+		t.Fatalf("journaled gate events = %d, want 5", len(events))
+	}
+	for i, event := range events[:4] {
+		if event.Target != "ci-poll" || !zeroRunnerNumber(event.Runner["repassAttempt"]) || event.Runner["repassTarget"] != nil ||
+			!runnerNumberEquals(event.Runner["pollAttempt"], i+1) || event.Runner["pollTarget"] != "ci-poll" {
+			t.Fatalf("timeout event %d = %+v, want no repass charge", i+1, event)
+		}
+	}
+}
+
+func TestEvaluatorExhaustsTimeoutPollingWithoutRemediation(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "ci-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals", MaxTimeoutPolls: 3},
+		Branches: map[string]string{
+			OutcomePass:       "close-out",
+			OutcomeFail:       "remediate-ci",
+			OutcomeTimeout:    "ci-poll",
+			wf.BranchEscalate: "park-escalated",
+		},
+	}
+	run := newTestJournal(t)
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeTimeout, OutcomeTimeout, OutcomeTimeout, OutcomeTimeout}},
+		MaxRepasses: 3,
+		Journal:     run,
+		IsReentry:   func(target string) bool { return target == "ci-poll" || target == "remediate-ci" },
+	}
+	for poll := 1; poll <= 3; poll++ {
+		result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "ci-poll", apiv1.ResultEnvelope{}, "", false)
+		if err != nil {
+			t.Fatalf("timeout evaluation %d: %v", poll, err)
+		}
+		if result.Target != "ci-poll" || result.Escalated {
+			t.Fatalf("timeout evaluation %d = %+v, want continued polling", poll, result)
+		}
+	}
+	exhausted, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "ci-poll", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("exhausting timeout evaluation: %v", err)
+	}
+	if !exhausted.Escalated || exhausted.Target != "park-escalated" || exhausted.Target == "remediate-ci" ||
+		exhausted.PollAttempt != 4 || exhausted.Reason != ReasonPollingBudgetExhausted {
+		t.Fatalf("exhausted timeout evaluation = %+v, want polling escalation without remediation", exhausted)
+	}
+	if got := ev.RepassAttempts["remediate-ci"]; got != 0 {
+		t.Fatalf("remediate-ci repass attempts = %d, want 0 after polling exhaustion", got)
+	}
+}
+
+func zeroRunnerNumber(value interface{}) bool {
+	switch v := value.(type) {
+	case int:
+		return v == 0
+	case float64:
+		return v == 0
+	default:
+		return false
+	}
+}
+
+func runnerNumberEquals(value interface{}, want int) bool {
+	switch v := value.(type) {
+	case int:
+		return v == want
+	case float64:
+		return int(v) == want
+	default:
+		return false
+	}
+}
+
 func TestEvaluatorJournalsPolicyEscalationReason(t *testing.T) {
 	g := apiv1.Gate{
 		Name:      "local-gate",

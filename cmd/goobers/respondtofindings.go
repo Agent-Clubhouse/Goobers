@@ -611,41 +611,24 @@ func reconcileRemediationResponseComment(
 		return fmt.Errorf("resolve remediation response author: %w", err)
 	}
 	id := strconv.Itoa(prNumber)
-	comments, err := channel.list(ctx, id)
-	if err != nil {
-		return fmt.Errorf("list remediation response comments: %w", err)
-	}
-	matches := remediationResponseComments(comments, authoredBySelf, runID)
-	if len(matches) == 0 {
-		if err := channel.create(ctx, id, body); err != nil {
-			return fmt.Errorf("create remediation response comment: %w", err)
-		}
-	} else if err := channel.update(ctx, matches[0].ID, body); err != nil {
-		return fmt.Errorf("update remediation response comment: %w", err)
-	}
-
-	comments, err = channel.list(ctx, id)
-	if err != nil {
-		return fmt.Errorf("relist remediation response comments: %w", err)
-	}
-	matches = remediationResponseComments(comments, authoredBySelf, runID)
-	if len(matches) == 0 {
-		return fmt.Errorf("remediation response comment disappeared during reconciliation")
-	}
-	// The stored body carries the provider's attribution footer whenever the
-	// stage runs with attribution, so only the text this stage wrote decides
-	// whether the canonical comment still needs an update.
-	if providers.StripAttribution(matches[0].Body) != strings.TrimSpace(body) {
-		if err := channel.update(ctx, matches[0].ID, body); err != nil {
-			return fmt.Errorf("update canonical remediation response comment: %w", err)
-		}
-	}
-	for _, duplicate := range matches[1:] {
-		if err := channel.remove(ctx, duplicate.ID); err != nil {
-			return fmt.Errorf("delete duplicate remediation response comment %s: %w", duplicate.ID, err)
-		}
-	}
-	return nil
+	return reconcileCanonicalProviderComment(body, canonicalProviderCommentSpec{
+		noun: "remediation response",
+		list: func() ([]providers.Comment, error) {
+			return channel.list(ctx, id)
+		},
+		create: func(body string) error {
+			return channel.create(ctx, id, body)
+		},
+		update: func(commentID, body string) error {
+			return channel.update(ctx, commentID, body)
+		},
+		remove: func(commentID string) error {
+			return channel.remove(ctx, commentID)
+		},
+		match: func(comments []providers.Comment) []providers.Comment {
+			return remediationResponseComments(comments, authoredBySelf, runID)
+		},
+	})
 }
 
 func remediationResponseComments(comments []providers.Comment, authoredBySelf func(providers.Comment) bool, runID string) []providers.Comment {

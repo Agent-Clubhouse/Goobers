@@ -554,6 +554,9 @@ spec:
         # input builder injects this default where DSL 1.4 left it unset, so
         # the pin keeps compiled behavior identical across the version bump.
         pollIntervalSeconds: 10
+        # Bound pending-only polling independently from implementation and
+        # remediation repasses; exhaustion routes through the escalate branch.
+        maxTimeoutPolls: 30
       branches:
         pass: close-out
         # Provider-authored failure evidence remains unapproved and is routed
@@ -563,5 +566,6 @@ spec:
         # A poll timeout (#239) is not evidence CI failed — just that it
         # didn't finish in this polling window. Re-enter ci-poll at the
         # journaled stage boundary so the same PR remains claimed and keeps
-        # waiting without consuming implementation or repass budget (#3325).
+        # waiting without consuming implementation or repass budget (#3325);
+        # automated.maxTimeoutPolls bounds the wait (#5558).
         timeout: ci-poll

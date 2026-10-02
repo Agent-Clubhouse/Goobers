@@ -22,7 +22,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "1"}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(context.Background(), provider, repo, item, nil, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -45,7 +45,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "2", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(context.Background(), provider, repo, item, nil, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -62,7 +62,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "3", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(context.Background(), provider, repo, item, nil, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -84,7 +84,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "4", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(context.Background(), provider, repo, item, nil, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -104,7 +104,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "5", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
+		stale, err := staleBlockedOnSiblingMarkerBudgeted(context.Background(), provider, repo, item, nil, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -150,9 +150,9 @@ func TestClearingBlockedOnSiblingNeverRereadiesAnItem(t *testing.T) {
 		t.Fatalf("GetWorkItem: %v", err)
 	}
 
-	correction, _, err := inspectBacklogMetadata(
+	correction, _, err := inspectBacklogMetadataWithChildCursor(
 		context.Background(), provider, repo, item, "goobers-bot",
-		time.Now().UTC(), defaultBacklogStalenessPolicy(), nil,
+		time.Now().UTC(), defaultBacklogStalenessPolicy(), nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("inspectBacklogMetadata: %v", err)
@@ -199,7 +199,7 @@ func TestReconcileLeavesNativelyBlockedItemsToTheDependencyRecheckLane(t *testin
 				t.Fatal("fixture records no native dependency, so this test proves nothing")
 			}
 
-			stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
+			stale, err := staleBlockedOnSiblingMarkerBudgeted(context.Background(), provider, repo, item, nil, nil)
 			if err != nil {
 				t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 			}

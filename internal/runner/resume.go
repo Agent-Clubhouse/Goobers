@@ -946,6 +946,7 @@ func (f *resumeFrame) seedGateBudgets(machine *workflow.Machine) {
 	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(f.segment), gateDiffDigests
 	ws.infraGateAttempts = gateInfrastructureSeed(f.segment)
 	ws.infraRepassAttempts = infrastructureTargetRepassSeed(f.segment)
+	ws.pollAttempts = pollingTargetSeed(f.segment)
 	ws.evidenceRejections = remediationEvidenceRejectionSeed(f.segment)
 }
 
@@ -1864,6 +1865,9 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
+		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeTimeout {
+			continue
+		}
 		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeInfra {
 			if seed == nil {
 				seed = make(map[string]int)
@@ -1892,6 +1896,9 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateEvaluated {
 			continue
 		}
+		if e.Verdict == gate.OutcomeTimeout {
+			continue
+		}
 		if seed == nil {
 			seed = make(map[string]int)
 		}
@@ -1916,7 +1923,7 @@ func gateInfrastructureSeed(events []journal.Event) map[string]int {
 func targetRepassSeed(events []journal.Event) map[string]int {
 	var seed map[string]int
 	for _, e := range events {
-		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra {
+		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra || e.Verdict == gate.OutcomeTimeout {
 			continue
 		}
 		target, _ := e.Runner["repassTarget"].(string)
@@ -1955,6 +1962,38 @@ func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
 			target = e.Target
 		}
 		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		gateTargets[e.Gate] = target
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func pollingTargetSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	gateTargets := make(map[string]string)
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if e.Verdict != gate.OutcomeTimeout {
+			if target := gateTargets[e.Gate]; target != "" && seed != nil {
+				seed[target] = 0
+			}
+			continue
+		}
+		target, _ := e.Runner["pollTarget"].(string)
+		if target == "" && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["pollAttempt"].(float64)
 		if target == "" || !ok {
 			continue
 		}

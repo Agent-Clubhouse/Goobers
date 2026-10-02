@@ -429,6 +429,53 @@
         "sinceVersion": "dev",
         "deprecated": false
       }
+    },
+    {
+      "name": "goobers.queue.depth",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "{item}",
+      "description": "Scheduler-visible queued work by queue kind and operating system.",
+      "allowedDimensions": [
+        "goobers.queue.kind",
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.queue.oldest_age",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "s",
+      "description": "Age in seconds of the oldest scheduler-visible queue item by queue kind and operating system.",
+      "allowedDimensions": [
+        "goobers.queue.kind",
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
+    },
+    {
+      "name": "goobers.workers.available",
+      "kind": "gauge",
+      "numberType": "int64",
+      "unit": "{worker}",
+      "description": "Configured scheduler capacity not currently reserved, by operating system.",
+      "allowedDimensions": [
+        "goobers.os"
+      ],
+      "lifecycle": {
+        "stability": "ga",
+        "sinceVersion": "dev",
+        "deprecated": false
+      }
     }
   ],
   "deploymentSpecificInputs": {

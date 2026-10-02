@@ -19,6 +19,10 @@ import (
 // daemon's independent write-plane assembly must not use this environment-
 // aware factory: its credentials belong to the daemon, not to a stage.
 func stageSharedClaimResolver(layout instance.Layout) claimsclient.SharedClaimResolver {
+	return stageSharedClaimResolverWithBudget(layout, nil)
+}
+
+func stageSharedClaimResolverWithBudget(layout instance.Layout, budget *backlogReconcileBudget) claimsclient.SharedClaimResolver {
 	return stageClaimResolver{pinnedSharedClaimResolver{layout: layout, store: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Store, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -28,6 +32,7 @@ func stageSharedClaimResolver(layout instance.Layout) claimsclient.SharedClaimRe
 		if err != nil {
 			return nil, err
 		}
+		installBacklogReconcileBudget(provider, budget)
 		return providers.GitHubSharedClaimStore{Provider: provider, Repository: repo}, nil
 	}, visibility: func(ctx context.Context, repo providers.RepositoryRef) (sharedclaim.Visibility, error) {
 		if err := ctx.Err(); err != nil {
@@ -38,6 +43,7 @@ func stageSharedClaimResolver(layout instance.Layout) claimsclient.SharedClaimRe
 		if err != nil {
 			return nil, err
 		}
+		installBacklogReconcileBudget(provider, budget)
 		registry, _ := journal.DefaultScrubber()
 		return scrubbedSharedClaimVisibility{visibility: providers.GitHubSharedClaimVisibility{Provider: provider, Repository: repo}, registrar: registry}, nil
 	}}}

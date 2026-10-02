@@ -65,6 +65,7 @@ journal records the same classification as the error cause's code:
 | `Azure CLI sign-in expired or requires interaction` (an expired or revoked refresh token, MFA or other interaction required, or the CLI asking for `az login`) | `azure_cli_sign_in_required` | Run `az login` (with `--tenant` if `auth.tenant` is set) as the user Goobers runs as. |
 | `no Azure CLI account is signed in` | `azure_cli_no_account` | Same as above. |
 | `Azure CLI could not reach the network` (name resolution or connection failures, for example after the host slept or a VPN dropped) | `azure_cli_network_unreachable` | Restore network, DNS, VPN or proxy access, then retry. Signing in again does not help. |
+| An unclassified failure when multiple Azure CLI launchers are on `PATH` | `azure_cli_path_ambiguous` | Inspect `PATH`, remove or reorder stale installations, and retry. Goobers uses the first launcher and never probes alternatives with a credential command. |
 | `process exited with code N` (no recognized marker) | `azure_cli_exit` | Run the check below. |
 
 A sign-in error returned by Microsoft Entra ID takes precedence over network
@@ -296,11 +297,24 @@ The stage receives each token's expiry as the non-secret
 `GOOBERS_CREDENTIAL_EXPIRES_<CAPABILITY>` (an RFC 3339 UTC timestamp) beside
 `GOOBERS_CRED_<CAPABILITY>`. A PAT states no expiry and gets no such variable.
 
-A stage cannot refresh what it was delivered: when Azure DevOps rejects the
-value with HTTP 401, the request fails without a retry, with an error that
-names the capability and keeps the 401 response. It is reported as an
-authentication failure (`github_auth_failed`). The delivered expiry decides
-the wording:
+The 20-minute floor cannot help on `azure-cli`, and a stage can run for hours,
+so a deterministic stage refreshes a delivered Entra token itself (#6120). With
+its credentials it receives a stage credential-refresh grant
+(`GOOBERS_CREDENTIAL_ENDPOINT` and `GOOBERS_CREDENTIAL_GRANT`). The built-in
+commands re-resolve a token through the daemon within five minutes of its
+expiry, and once more when Azure DevOps answers 401 or redirects to sign-in,
+then resend the request. Git pushes and fetches read the current token each
+time. After a real 401 the daemon's `az` cache is also at or near expiry, so the
+re-resolve returns a genuinely new token. See "Mid-stage refresh" in
+`docs/stage-contract.md`. A PAT states no expiry and is never refreshed.
+Agentic stages do not receive a grant yet.
+
+When Azure DevOps rejects a value the stage cannot refresh (no grant), or
+rejects the re-resolved value too, the request fails with an error that names
+the capability and keeps the 401 response; an HTML sign-in page is summarized,
+not embedded. It is reported as an authentication failure
+(`provider_auth_failed`; before #6120 it was reported as `github_auth_failed`,
+and consumers match both). The delivered expiry decides the wording:
 
 - at or after the expiry, the credential "expired at" that time;
 - before it, the credential was "revoked or without access to this resource"

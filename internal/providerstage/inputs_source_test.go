@@ -34,6 +34,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"backlogquery.go":                {command: "backlog-query"},
 	"backlogquery_adoscope.go":       {command: "backlog-query"},
 	"backlogquery_policy.go":         {command: "backlog-query"},
+	"backlogreconcile.go":            {command: "backlog-query"},
 	"backlogreport.go":               {command: "backlog-query"},
 	"backlogresweep.go":              {command: "backlog-query"},
 	"backlogstaleness.go":            {command: "backlog-query"},
@@ -81,6 +82,19 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"telemetryquery.go":              {command: "telemetry-query"},
 	"updatebehindpr.go":              {command: "update-behind-pr"},
 	"validateplan.go":                {command: "validate-plan"},
+	"mergereview_envelope.go": {
+		command: "apply-verdict",
+		shared: map[string][]string{
+			"advisoryMode":       {"elect-lander"},
+			"base":               {"elect-lander"},
+			"headPrefix":         {"elect-lander"},
+			"scopeGateParked":    {"elect-lander"},
+			"selectedBaseSha":    {"elect-lander"},
+			"selectedHeadSha":    {"elect-lander"},
+			"selectedNumber":     {"elect-lander"},
+			"unlandableSiblings": {"elect-lander"},
+		},
+	},
 
 	// Generic provider-stage plumbing reads timeout and resultFile for several
 	// commands. Its fields are checked against the registry union below.

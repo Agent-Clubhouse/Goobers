@@ -330,6 +330,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gate.evaluator.automated.maxTimeoutPolls",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gate.evaluator.automated.params",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -611,6 +616,16 @@
     },
     {
       "name": "task.artifactInputs.from",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactInputs.mediaType",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactInputs.schemaPath",
       "stability": "preview",
       "sinceVersion": "v0.5.0"
     },

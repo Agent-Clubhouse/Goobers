@@ -22,6 +22,15 @@ type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 }
 
+// RefreshableTokenSource is a TokenSource whose value can be rejected and
+// re-resolved (Goobers#6120): a stage's delivered credential backed by its
+// credential-refresh grant. A provider that receives HTTP 401 calls
+// Invalidate and retries the request once; the next Token re-resolves.
+type RefreshableTokenSource interface {
+	TokenSource
+	Invalidate()
+}
+
 // MutationRecorder records "external ref touched" facts (ARCHITECTURE.md §4) so a
 // run journal can make every provider-side mutation traceable. The provider does
 // not know the journal's on-disk shape; it reports the logical mutation and the

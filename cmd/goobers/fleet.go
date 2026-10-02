@@ -104,13 +104,9 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 		pf(stderr, "error: --grant-local-admin and --no-grant-local-admin cannot be combined\n")
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := optionalRoot(fs)
+	if !ok {
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 	if err := requireFleetInstanceRoot(root); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -174,16 +170,9 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "fleet status")
 	asJSON := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 	if err := requireFleetInstanceRoot(root); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -269,16 +258,9 @@ func runFleetLeave(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("fleet leave", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "fleet leave")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 	if err := requireFleetInstanceRoot(root); err != nil {
 		pf(stderr, "error: %v\n", err)

@@ -33,9 +33,11 @@ func TestBacklogDedupeProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := backlogDedupeProvider(root, repo)
+			provider, err := providerForEnvAs[providers.BacklogProvider](
+				stageCommandEnv{root: root, repo: repo}, true, withStageProviderCache(),
+			)
 			if err != nil {
-				t.Fatalf("backlogDedupeProvider(%s): %v", kind, err)
+				t.Fatalf("providerForEnvAs(%s): %v", kind, err)
 			}
 			assertDispatchedProviderKind(t, provider, kind)
 		})

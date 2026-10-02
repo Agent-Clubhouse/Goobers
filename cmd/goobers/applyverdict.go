@@ -524,31 +524,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	}
 	resultFile := providerInput("resultFile", "verdict-result.json")
 
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
-		return 1
+	selectedPR, code, ok := readSelectedPREnvelope(stderr, applyVerdictEnvelopeSource)
+	if !ok {
+		return code
 	}
-	selectedNumber, err := strconv.Atoi(selectedNumberStr)
-	if err != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
-		return 1
-	}
-	selectedHeadSHA := providerInput("selectedHeadSha", "")
-	if selectedHeadSHA == "" {
-		pf(stderr, "error: selectedHeadSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
-		return 1
-	}
-	selectedBaseSHA := providerInput("selectedBaseSha", "")
-	if selectedBaseSHA == "" {
-		pf(stderr, "error: selectedBaseSha is required (inputsFrom gather-sibling-context's deterministic output)\n")
-		return 1
-	}
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
-		return 1
-	}
+	selectedNumber := selectedPR.Number
+	selectedNumberStr := selectedPR.NumberString
+	selectedHeadSHA := selectedPR.HeadSHA
+	selectedBaseSHA := selectedPR.BaseSHA
 	publishAdvisory, err := strconv.ParseBool(providerInput("publishAdvisory", "true"))
 	if err != nil {
 		pf(stderr, "error: invalid publishAdvisory input: %v\n", err)
@@ -575,11 +558,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repoRef()
 	provider, err := newApplyVerdictProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -601,7 +584,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	if advisoryMode {
+	if selectedPR.Advisory {
 		if !providerRouted {
 			pf(stderr, "error: apply-verdict advisory mode is not supported for repository provider %q\n", repo.Provider)
 			return 1
@@ -612,13 +595,17 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		)
 	}
 
-	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix,
-	})
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "")
+	var exclusionProvider remediationProvider
+	if providerRouted {
+		exclusionProvider = prProvider
+	}
+	prSource := electionPRSource{
+		lister:            provider,
+		exclusionProvider: exclusionProvider,
+	}
+	prs, code, ok := listElectionPRs(ctx, prSource, repo, stderr)
+	if !ok {
+		return code
 	}
 
 	// #950: which open PRs are currently demoted (repeatedly could not merge at
@@ -629,12 +616,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
 	// #5602 adds the PRs this instance cannot land, identically to elect-lander.
-	var demoted map[int]bool
-	if providerRouted {
-		var ierr error
-		if demoted, ierr = electionExcludedSet(ctx, prProvider, repo, prs, providerInput("unlandableSiblings", ""), stderr); ierr != nil {
-			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
-		}
+	demoted, code, ok := resolveElectionPRExclusions(ctx, prSource, repo, prs, stderr)
+	if !ok {
+		return code
 	}
 
 	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
@@ -1148,45 +1132,29 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 
 func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
 	id := strconv.Itoa(prNumber)
-	comments, err := provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("list merge-review status comments: %w", err)
-	}
-	marked := mergeReviewStatusComments(comments, author)
-	if len(marked) == 0 {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         id,
-			Comment:    body,
-		}); err != nil {
-			return fmt.Errorf("create merge-review status comment: %w", err)
-		}
-	} else if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
-		return fmt.Errorf("update merge-review status comment: %w", err)
-	}
-
-	comments, err = provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("relist merge-review status comments: %w", err)
-	}
-	marked = mergeReviewStatusComments(comments, author)
-	if len(marked) == 0 {
-		return fmt.Errorf("merge-review status comment disappeared during reconciliation")
-	}
-	// The stored body carries the provider's attribution footer whenever the
-	// stage runs with attribution, so only the text this stage wrote decides
-	// whether the canonical comment still needs an update.
-	if providers.StripAttribution(marked[0].Body) != strings.TrimSpace(body) {
-		if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
-			return fmt.Errorf("update canonical merge-review status comment: %w", err)
-		}
-	}
-	for _, duplicate := range marked[1:] {
-		if err := provider.DeleteComment(ctx, repo, duplicate.ID); err != nil {
-			return fmt.Errorf("delete duplicate merge-review status comment %s: %w", duplicate.ID, err)
-		}
-	}
-	return nil
+	return reconcileCanonicalProviderComment(body, canonicalProviderCommentSpec{
+		noun: "merge-review status",
+		list: func() ([]providers.Comment, error) {
+			return provider.ListComments(ctx, repo, id)
+		},
+		create: func(body string) error {
+			_, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: repo,
+				ID:         id,
+				Comment:    body,
+			})
+			return err
+		},
+		update: func(commentID, body string) error {
+			return provider.UpdateComment(ctx, repo, commentID, body)
+		},
+		remove: func(commentID string) error {
+			return provider.DeleteComment(ctx, repo, commentID)
+		},
+		match: func(comments []providers.Comment) []providers.Comment {
+			return mergeReviewStatusComments(comments, author)
+		},
+	})
 }
 
 func mergeReviewStatusComments(comments []providers.Comment, author string) []providers.Comment {
@@ -1625,7 +1593,7 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	default:
 		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
 	}
-	return newMergeReviewProvider(root, repo, false, opts...)
+	return providerForEnvAs[providers.Provider](stageCommandEnv{root: root, repo: repo}, false, opts...)
 }
 
 // adoPassVerdictPublisher is the ADO surface publishADOPassVerdict writes to:
@@ -1856,16 +1824,16 @@ func writeApplyVerdictResultWithPriorityDispatch(path string, selectedNumber int
 
 func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedNumber int, headSHA, baseSHA, decision, verdictAuthor, reason string, priorityDispatchRequested bool, stderr io.Writer) int {
 	advisoryMode, _ := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	out := map[string]string{
-		"selectedNumber":            strconv.Itoa(selectedNumber),
-		"selectedHeadSha":           headSHA,
-		"selectedBaseSha":           baseSHA,
-		"decision":                  decision,
-		"verdictAuthor":             verdictAuthor,
-		"advisoryMode":              strconv.FormatBool(advisoryMode),
-		"priorityDispatchRequested": strconv.FormatBool(priorityDispatchRequested),
-		"scopeGateParked":           providerInput("scopeGateParked", ""),
-	}
+	out := selectedPREnvelope{
+		Number:          selectedNumber,
+		HeadSHA:         headSHA,
+		BaseSHA:         baseSHA,
+		Advisory:        advisoryMode,
+		ScopeGateParked: providerInput("scopeGateParked", ""),
+	}.baseResult()
+	out["decision"] = decision
+	out["verdictAuthor"] = verdictAuthor
+	out["priorityDispatchRequested"] = strconv.FormatBool(priorityDispatchRequested)
 	if reason != "" {
 		out["reason"] = reason
 	}

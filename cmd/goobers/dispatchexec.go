@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -311,7 +312,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// plane and inject them exactly as the local executor does. Resolution
 	// happens HERE, at stage start, not at dispatch — so no secret ever rides
 	// a dispatch payload or a pod spec (DS9/DS10, #2931).
-	creds, repoAuthScheme, credErr := resolveStageCredentialsWithScheme(ctx)
+	resolved, credErr := resolveDeclaredStageCredentials(ctx)
 	if credErr != nil {
 		// Fail closed. A stage that declared capabilities and did not get them
 		// would run uncredentialed and fail far away, against the provider,
@@ -330,7 +331,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// The working directory IS the workspace (podspec stamps WorkingDir), so
 	// checking out into "." is what puts the stage's command inside the tree.
 	// The checkout may use a credential the stage itself never receives.
-	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, creds, repoAuthScheme)
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, resolved.creds, resolved.scheme)
 	if checkoutErr != nil {
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
@@ -366,7 +367,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// absent: it exists to provision the working tree, and exporting it here
 	// would hand repository authority to a stage that never declared it —
 	// the over-grant #3770 exists to avoid.
-	credEnv := stageCredentialEnv(creds, repoAuthScheme)
+	credEnv := resolved.env()
 	// A provider builtin writes its result to an IMPLICIT path when the stage
 	// declared no resultFile — the local executor derives it from the
 	// subcommand (shell.go), and so must the pod, or the builtin writes a file
@@ -444,7 +445,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// executor registers every token with a scrubber before the stage runs;
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
-	scrubber := podStageScrubber(checkoutCreds, checkoutScheme)
+	scrubber := podStageScrubber(resolved.withGrant(checkoutCreds), checkoutScheme)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
 	scrubbedErr := scrubber.Scrub([]byte(capturedStderr.String()))
@@ -819,6 +820,68 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 	}
 	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
 	return resolution.Credentials, resolution.RepoAuthScheme, err
+}
+
+// podStageCredentials is a deterministic pod stage's stage-start resolution:
+// its credentials, the stated Azure DevOps scheme, and — for a goobers-CLI
+// stage whose credentials expire — the credential-refresh grant the plane
+// minted for it (Goobers#6120).
+type podStageCredentials struct {
+	creds  []dispatcher.MintedCredential
+	scheme string
+	grant  *dispatcher.CredentialGrant
+}
+
+// resolveDeclaredStageCredentials is resolveStageCredentialsWithScheme for a
+// deterministic stage's command: a goobers-CLI child also asks for a
+// credential-refresh grant for this attempt. Any other child — the project's
+// own build, which never refreshes — asks for none.
+func resolveDeclaredStageCredentials(ctx context.Context) (podStageCredentials, error) {
+	capabilities, err := stageDeclaredCapabilities()
+	if err != nil || len(capabilities) == 0 {
+		return podStageCredentials{}, err
+	}
+	client, err := credentialPlaneClient(capabilities)
+	if err != nil {
+		return podStageCredentials{}, err
+	}
+	attempt, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv(dispatcher.EnvAttempt)), 10, 32)
+	resolution, err := client.Resolve(ctx, dispatcher.CredentialResolveRequest{
+		RunID: os.Getenv(dispatcher.EnvRunID), Stage: os.Getenv(dispatcher.EnvStage), Capabilities: capabilities,
+		Grant: os.Getenv(dispatcher.EnvStageIsCLI) == "true", Attempt: int32(attempt),
+		TimeoutSeconds: int64(dispatchStageTimeout() / time.Second),
+	})
+	if err != nil {
+		return podStageCredentials{}, err
+	}
+	return podStageCredentials{creds: resolution.Credentials, scheme: resolution.RepoAuthScheme, grant: resolution.Grant}, nil
+}
+
+// env renders the child's credential environment: stageCredentialEnv plus,
+// with a grant, the endpoint and grant its refreshing sources present. The
+// endpoint is this pod's own daemon API; the pod token never leaves this
+// process.
+func (c podStageCredentials) env() []string {
+	env := stageCredentialEnv(c.creds, c.scheme)
+	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	if c.grant == nil || c.grant.Token == "" || daemonAPI == "" {
+		return env
+	}
+	env = append(env, executor.CredentialEndpointEnvVar+"="+daemonAPI, executor.CredentialGrantEnvVar+"="+c.grant.Token)
+	if ca := os.Getenv(daemonclient.CAEnv); strings.TrimSpace(ca) != "" {
+		// The child dials the same daemon, so it trusts the same CA; a
+		// default-deny runner class would otherwise drop the variable.
+		env = append(env, daemonclient.CAEnv+"="+ca)
+	}
+	return env
+}
+
+// withGrant adds the grant to the values the stage's scrubber redacts.
+func (c podStageCredentials) withGrant(creds []dispatcher.MintedCredential) []dispatcher.MintedCredential {
+	if c.grant == nil || c.grant.Token == "" {
+		return creds
+	}
+	return append(append([]dispatcher.MintedCredential{}, creds...), dispatcher.MintedCredential{Capability: executor.CredentialGrantEnvVar, Value: c.grant.Token})
 }
 
 // stageCredentialEnv renders the stage's own resolved credentials as the
