@@ -40,15 +40,63 @@ type NodeCredit struct {
 	RetryWasteAttempts int
 }
 
-// CreditAssignmentRunIDs returns bounded journal references for one attributed
-// node in the same window as CreditAssignment.
-func (s *Store) CreditAssignmentRunIDs(ctx context.Context, options CreditOptions, node NodeCredit, limit int) ([]string, error) {
+// NodeCreditKey is a NodeCredit's identity: the columns CreditAssignment
+// groups by. It keys CreditAssignmentRunIDs' result.
+type NodeCreditKey struct {
+	Gaggle   string
+	Workflow string
+	Kind     string
+	Stage    string
+	Identity string
+}
+
+// Key returns the node's grouping identity.
+func (n NodeCredit) Key() NodeCreditKey {
+	return NodeCreditKey{Gaggle: n.Gaggle, Workflow: n.Workflow, Kind: n.Kind, Stage: n.Stage, Identity: n.Identity}
+}
+
+// creditRunIDBatchNodes bounds how many nodes one evidence query names, so the
+// bound-parameter count stays far below SQLite's limit whatever the caller
+// passes. CreditAssignment returns defaultCreditLimit nodes by default, so a
+// telemetry request normally takes exactly one query.
+const creditRunIDBatchNodes = 100
+
+// CreditAssignmentRunIDs returns bounded journal references for each attributed
+// node, in the same window as CreditAssignment: at most limit run IDs per node,
+// newest first. Every requested node is answered by one grouped query per
+// creditRunIDBatchNodes nodes rather than one query per node (#4572). A node
+// with no matching terminal run is absent from the map.
+func (s *Store) CreditAssignmentRunIDs(ctx context.Context, options CreditOptions, nodes []NodeCredit, limit int) (map[NodeCreditKey][]string, error) {
 	if limit <= 0 {
 		limit = defaultCreditLimit
 	}
-	predicates := []string{"r.terminal = 1", "r.gaggle = ?", "r.workflow = ?",
-		"rn.kind = ?", "rn.name = ?", "rn.identity = ?"}
-	args := []any{node.Gaggle, node.Workflow, node.Kind, node.Stage, node.Identity}
+	unique := make([]NodeCredit, 0, len(nodes))
+	seen := make(map[NodeCreditKey]bool, len(nodes))
+	for _, node := range nodes {
+		if !seen[node.Key()] {
+			seen[node.Key()] = true
+			unique = append(unique, node)
+		}
+	}
+	nodes = unique
+	result := make(map[NodeCreditKey][]string, len(nodes))
+	for start := 0; start < len(nodes); start += creditRunIDBatchNodes {
+		end := min(start+creditRunIDBatchNodes, len(nodes))
+		if err := s.creditAssignmentRunIDBatch(ctx, options, nodes[start:end], limit, result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) creditAssignmentRunIDBatch(ctx context.Context, options CreditOptions, nodes []NodeCredit, limit int, into map[NodeCreditKey][]string) error {
+	values := make([]string, 0, len(nodes))
+	args := make([]any, 0, len(nodes)*5+3)
+	for _, node := range nodes {
+		values = append(values, "(?, ?, ?, ?, ?)")
+		args = append(args, node.Gaggle, node.Workflow, node.Kind, node.Stage, node.Identity)
+	}
+	predicates := []string{"r.terminal = 1"}
 	if !options.Since.IsZero() {
 		predicates = append(predicates, "r.started_at >= ?")
 		args = append(args, formatTime(options.Since))
@@ -58,32 +106,42 @@ func (s *Store) CreditAssignmentRunIDs(ctx context.Context, options CreditOption
 		args = append(args, formatTime(options.Until))
 	}
 	args = append(args, limit)
-	query := `SELECT r.run_id FROM run_node rn
-		JOIN run r ON r.run_id = rn.run_id
-		WHERE ` + strings.Join(predicates, " AND ") + `
-		ORDER BY r.started_at DESC, r.run_id DESC LIMIT ?`
+	query := `WITH wanted(gaggle, workflow, kind, name, identity) AS (VALUES ` + strings.Join(values, ", ") + `),
+ranked AS (
+	SELECT w.gaggle, w.workflow, w.kind, w.name, w.identity, r.run_id, r.started_at,
+	       ROW_NUMBER() OVER (
+	           PARTITION BY w.gaggle, w.workflow, w.kind, w.name, w.identity
+	           ORDER BY r.started_at DESC, r.run_id DESC) AS evidence_rank
+	FROM wanted w
+	JOIN run_node rn ON rn.kind = w.kind AND rn.name = w.name AND rn.identity = w.identity
+	JOIN run r ON r.run_id = rn.run_id AND r.gaggle = w.gaggle AND r.workflow = w.workflow
+	WHERE ` + strings.Join(predicates, " AND ") + `
+)
+SELECT gaggle, workflow, kind, name, identity, run_id FROM ranked
+WHERE evidence_rank <= ?
+ORDER BY gaggle, workflow, kind, name, identity, evidence_rank`
 	db, release, err := s.readHandle()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer release()
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: credit assignment run ids: %w", err)
+		return fmt.Errorf("readmodel: credit assignment run ids: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var result []string
 	for rows.Next() {
+		var key NodeCreditKey
 		var runID string
-		if err := rows.Scan(&runID); err != nil {
-			return nil, fmt.Errorf("readmodel: scan credit assignment run id: %w", err)
+		if err := rows.Scan(&key.Gaggle, &key.Workflow, &key.Kind, &key.Stage, &key.Identity, &runID); err != nil {
+			return fmt.Errorf("readmodel: scan credit assignment run id: %w", err)
 		}
-		result = append(result, runID)
+		into[key] = append(into[key], runID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: credit assignment run ids rows: %w", err)
+		return fmt.Errorf("readmodel: credit assignment run ids rows: %w", err)
 	}
-	return result, nil
+	return nil
 }
 
 // CreditAssignment returns the highest-contributing graph nodes.
