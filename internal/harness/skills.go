@@ -212,7 +212,7 @@ func validateSkillFiles(packages map[string][]workflow.SkillFile) error {
 }
 
 func safeSkillPath(value string) bool {
-	if !fs.ValidPath(value) || value == "." || strings.ContainsAny(value, "\\:\x00\r\n") {
+	if !fs.ValidPath(value) || value == "." || strings.ContainsAny(value, "\\:\x00\r\n") || strings.IndexFunc(value, skillIgnorableRune) >= 0 {
 		return false
 	}
 	for _, part := range strings.Split(value, "/") {

@@ -143,9 +143,39 @@ func TestSkillsRejectMixedCaseTrackedAncestors(t *testing.T) {
 }
 
 func TestSkillsStaleCleanupPreservesMixedCaseTrackedPackage(t *testing.T) {
+	assertStaleSkillAliasPreserved(t, ".GitHub/Skills/Review/SKILL.md", ".github/skills/review")
+}
+
+func TestSkillsStaleCleanupPreservesUnicodeAliasedTrackedPackage(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"caf\u00e9", "cafe\u0301"},
+		{"cafe\u0301", "caf\u00e9"},
+		{"re\u200dview", "review"},
+		{"review", "re\u200dview"},
+		{"re\ufe0fview", "review"},
+	} {
+		t.Run(pair[0]+"/"+pair[1], func(t *testing.T) {
+			assertStaleSkillAliasPreserved(t, ".github/skills/"+pair[0]+"/SKILL.md", ".github/skills/"+pair[1])
+		})
+	}
+}
+
+func TestSkillsRejectIgnorablePackageNames(t *testing.T) {
+	for _, name := range []string{"re\u200dview", "re\ufe0fview", "re\u034fview"} {
+		t.Run(name, func(t *testing.T) {
+			e := skillExecutor(apiv1.HarnessCopilot)
+			e.skills[name] = e.skills["review"]
+			if _, err := e.prepareSkills(context.Background(), t.TempDir()); err == nil {
+				t.Fatal("ignorable package name accepted")
+			}
+		})
+	}
+}
+
+func assertStaleSkillAliasPreserved(t *testing.T, tracked, stale string) {
+	t.Helper()
 	workspace := t.TempDir()
 	skillTestGit(t, workspace, "init")
-	tracked := ".GitHub/Skills/Review/SKILL.md"
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(workspace, tracked)), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -158,13 +188,13 @@ func TestSkillsStaleCleanupPreservesMixedCaseTrackedPackage(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(workspace, skillStateDir), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"ID":"stale","Paths":[".github/skills/review"],"Git":true}`
+	manifest := `{"ID":"stale","Paths":["` + stale + `"],"Git":true}`
 	if err := os.WriteFile(filepath.Join(workspace, skillManifestPath), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	empty := &Executor{skillsHarness: apiv1.HarnessClaudeCode}
 	if _, err := empty.prepareSkills(context.Background(), workspace); err == nil {
-		t.Fatal("stale cleanup accepted mixed-case tracked package")
+		t.Fatal("stale cleanup accepted aliased tracked package")
 	}
 	for file, want := range map[string]string{tracked: "repository skill", skillManifestPath: manifest} {
 		data, err := os.ReadFile(filepath.Join(workspace, file))

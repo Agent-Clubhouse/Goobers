@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Inspect the index once for the entire target batch, without Git pathspec
 // filtering: its case-sensitive matching can hide absent tracked ancestors or
 // descendants on case-insensitive filesystems. Conservatively protect case-fold
-// aliases on every platform, including Unicode aliases, independently of Git's
-// core.ignoreCase setting. Unrelated sibling packages remain permitted.
+// aliases on every platform, including canonical Unicode and ignorable-character
+// aliases, independently of Git's core.ignoreCase setting. Unrelated sibling
+// packages remain permitted.
 func (s *skillSnapshot) refuseTracked(ctx context.Context, targets ...string) error {
 	data, err := skillGit(ctx, s.workspace, "ls-files", "-z")
 	if err != nil {
@@ -35,11 +39,28 @@ func (s *skillSnapshot) refuseTracked(ctx context.Context, targets ...string) er
 func skillPathsOverlap(first, second string) bool {
 	left, right := strings.Split(first, "/"), strings.Split(second, "/")
 	for i := range min(len(left), len(right)) {
-		if !strings.EqualFold(left[i], right[i]) {
+		if !strings.EqualFold(skillFilesystemName(left[i]), skillFilesystemName(right[i])) {
 			return false
 		}
 	}
 	return true
+}
+
+// Use a conservative cross-platform equivalence rule rather than relying on the
+// host filesystem: some filesystems normalize Unicode and ignore these code
+// points. New snapshot names reject them; existing index entries must still be
+// compared without them so they cannot evade collision protection.
+func skillFilesystemName(name string) string {
+	return norm.NFD.String(strings.Map(func(r rune) rune {
+		if skillIgnorableRune(r) {
+			return -1
+		}
+		return r
+	}, name))
+}
+
+func skillIgnorableRune(r rune) bool {
+	return unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || unicode.Is(unicode.Variation_Selector, r)
 }
 
 func (s *skillSnapshot) writeManifest(manifest skillManifest) error {
