@@ -201,12 +201,12 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
-## cmdgoobers-growth: Ratchet non-test source lines and files in cmd/goobers.
+## cmdgoobers-growth: Report cmd/goobers counts (CI enforces each PR delta).
 .PHONY: cmdgoobers-growth
 cmdgoobers-growth:
 	$(GO) run ./test/cmdgoobersgrowth
 
-## cmdgoobers-growth-update: Record decreases or explicitly justified growth.
+## cmdgoobers-growth-update: Refresh the informational snapshot with explicit justification.
 .PHONY: cmdgoobers-growth-update
 cmdgoobers-growth-update:
 	$(GO) run ./test/cmdgoobersgrowth -update
