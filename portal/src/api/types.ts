@@ -397,6 +397,8 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
+  /** Present on daemons that report the local self-execution policy. */
+  selfExecution?: { policy: string; observed: boolean; placements: number; refusals: number };
   definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
