@@ -96,13 +96,16 @@ func TestIntegrationFetchRecoveryBasePopulatesEmptyMirror(t *testing.T) {
 		if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", base+"^{commit}"); err == nil {
 			t.Fatal("fresh recovery mirror already contained the base")
 		}
-		if err := m.FetchRecoveryBase(ctx, source, dir, base); err != nil {
+		if err := m.FetchRecoveryBase(ctx, source, dir, base, "refs/heads/main"); err != nil {
 			return err
 		}
 		if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", base+"^{commit}"); err != nil {
 			t.Fatalf("base still missing after fetch: %v", err)
 		}
-		if err := m.FetchRecoveryBase(ctx, source, dir, strings.Repeat("f", 40)); err == nil {
+		if got := strings.TrimSpace(runTestGit(t, dir, "rev-parse", "refs/heads/main")); got != base {
+			t.Fatalf("base ref not refreshed: %q", got)
+		}
+		if err := m.FetchRecoveryBase(ctx, source, dir, strings.Repeat("f", 40), ""); err == nil {
 			t.Fatal("unreachable base reported present")
 		}
 		return nil

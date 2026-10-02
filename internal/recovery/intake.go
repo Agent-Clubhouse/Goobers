@@ -49,8 +49,8 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 	// creating a host ref. Failed imports leave a bounded retry reservation.
 	retained, path, err := publishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, record, request.MaxSnapshots, request.MaxArchiveBytes, func() error {
 		if request.EnsureBase != nil && record.archiveFormat() == archiveFormatDelta {
-			if recoveryGit(ctx, request.Repository, io.Discard, "cat-file", "-e", record.BaseSHA+"^{commit}") != nil {
-				if err := request.EnsureBase(ctx, request.Repository, record.BaseSHA); err != nil {
+			if !baseUsableForDelta(ctx, request.Repository, record) {
+				if err := request.EnsureBase(ctx, request.Repository, record.BaseSHA, record.BaseRef); err != nil {
 					return fmt.Errorf("ensure recovery base commit %s: %w", record.BaseSHA, err)
 				}
 			}
@@ -72,4 +72,15 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 		return Record{}, "", fmt.Errorf("acknowledge received recovery archive: %w", err)
 	}
 	return retained, path, nil
+}
+
+// baseUsableForDelta reports whether the receiving repository both holds a
+// delta's base and can prove it reachable from the record's base ref. Without
+// the latter the host re-captures a full bundle of the whole history (#6306).
+func baseUsableForDelta(ctx context.Context, repository string, record Record) bool {
+	if recoveryGit(ctx, repository, io.Discard, "cat-file", "-e", record.BaseSHA+"^{commit}") != nil {
+		return false
+	}
+	reachable, _ := baseProvablyReachable(ctx, repository, record)
+	return reachable || record.BaseRef == ""
 }
