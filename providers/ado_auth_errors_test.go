@@ -264,6 +264,73 @@ func TestAzureCLICredentialFailureReadsOutputOnlyForAProcessExit(t *testing.T) {
 	}
 }
 
+func TestAzureCLICredentialFailureReportsAmbiguousPathWithoutProbingAlternatives(t *testing.T) {
+	exit := &exec.ExitError{Stderr: []byte(azureCLIFailureCanary)}
+	err := azureCLICommandError(context.Background(), &azureCLIPathAmbiguityError{
+		cause:          exit,
+		candidateCount: 3,
+	}, []byte(`{"accessToken":"`+azureCLIFailureCanary+`"}`))
+	var failure *azureCLICommandFailure
+	if !errors.As(err, &failure) || failure.ErrorCode() != azureCLIPathAmbiguousCode {
+		t.Fatalf("error = %v, want code %q", err, azureCLIPathAmbiguousCode)
+	}
+	for _, want := range []string{"process exited unsuccessfully", "found 3 Azure CLI launchers", "used the first", "remove or reorder"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	assertAzureCLIDiagnosticWithholdsOutput(t, err)
+}
+
+func TestAzureCLICredentialFailureReportsAmbiguousPathAlongsideTimeoutAndCancel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cause      error
+		wantCode   string
+		wantDetail string
+	}{
+		"timeout":  {context.DeadlineExceeded, azureCLITimeoutCode, "command timed out"},
+		"canceled": {context.Canceled, azureCLICanceledCode, "command was canceled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := azureCLICommandError(context.Background(), &azureCLIPathAmbiguityError{
+				cause:          tc.cause,
+				candidateCount: 2,
+			}, []byte(azureCLIFailureCanary))
+			var failure *azureCLICommandFailure
+			if !errors.As(err, &failure) || failure.ErrorCode() != tc.wantCode {
+				t.Fatalf("error = %v, want code %q", err, tc.wantCode)
+			}
+			for _, want := range []string{tc.wantDetail, "found 2 Azure CLI launchers", "used the first"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+			assertAzureCLIDiagnosticWithholdsOutput(t, err)
+		})
+	}
+}
+
+func TestAzureCLICredentialFailureKeepsKnownCauseAndReportsAmbiguousPath(t *testing.T) {
+	exit := &exec.ExitError{}
+	err := azureCLICommandError(context.Background(), &azureCLIPathAmbiguityError{
+		cause:          exit,
+		candidateCount: 2,
+	}, []byte(azureCLIExpiredLoginOutput))
+	var failure *azureCLICommandFailure
+	if !errors.As(err, &failure) || failure.ErrorCode() != azureCLISignInRequiredCode {
+		t.Fatalf("error = %v, want code %q", err, azureCLISignInRequiredCode)
+	}
+	if !strings.Contains(err.Error(), "sign-in expired or requires interaction") {
+		t.Errorf("error %q does not contain the classified cause", err)
+	}
+	for _, want := range []string{"found 2 Azure CLI launchers", "used the first", "remove or reorder"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not report ambiguity detail %q", err, want)
+		}
+	}
+	assertAzureCLIDiagnosticWithholdsOutput(t, err)
+}
+
 func TestAzureCLICredentialFailureStartFailureMatchesOnlyForkExec(t *testing.T) {
 	// os.StartProcess reports Op "fork/exec" on every platform, Windows
 	// included; any other PathError op is not a start failure.
