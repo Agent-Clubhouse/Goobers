@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
@@ -625,6 +626,10 @@ const (
 )
 
 func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.RepositoryRef) (map[string]worktree.BranchOccupancy, error) {
+	// Stage pods use fresh clones and have neither shared host occupancies nor instance config.
+	if os.Getenv(dispatcher.EnvPodToken) != "" {
+		return map[string]worktree.BranchOccupancy{}, nil
+	}
 	layout := layoutFor(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
