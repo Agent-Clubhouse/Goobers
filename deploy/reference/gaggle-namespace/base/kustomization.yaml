@@ -3,9 +3,8 @@
 # from the OWNING gaggle's isolation.namespace (#4897): apply this template
 # once per gaggle namespace (see examples/gaggle-a, examples/gaggle-b) before
 # a worker dispatches into it — its boot-time preflight refuses to start
-# otherwise. The ServiceAccount here is still not SELECTED per gaggle (every
-# stage pod runs under its namespace's default ServiceAccount); see
-# serviceaccount.yaml and README.md.
+# otherwise. Stage pods select the unprivileged goobers-stage account unless
+# isolation.serviceAccount overrides it; see serviceaccount.yaml and README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

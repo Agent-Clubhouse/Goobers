@@ -18,9 +18,10 @@ type RetentionRule string
 
 // Retention rules distinguish age, storage-cap, and merged-branch candidates.
 const (
-	RetentionRuleWindow       RetentionRule = "retention-window"
-	RetentionRuleStorageCap   RetentionRule = "storage-cap"
-	RetentionRuleMergedBranch RetentionRule = "merged-local-branch"
+	RetentionRuleWindow         RetentionRule = "retention-window"
+	RetentionRuleStorageCap     RetentionRule = "storage-cap"
+	RetentionRuleMergedBranch   RetentionRule = "merged-local-branch"
+	RetentionRuleTerminalBranch RetentionRule = "terminal-branch-age"
 	// RetentionRuleJournalGrace prunes a retained worktree whose owning run
 	// journal no longer exists (#2052): IsTerminalFailure can never authorize
 	// it (found is always false with no journal to read), so without this
@@ -68,7 +69,14 @@ type RetentionOptions struct {
 	// tolerated before RetentionRuleJournalGrace prunes it. Zero disables the
 	// rule.
 	JournalGraceAge time.Duration
-	// IsRunTerminal authorizes a merged local branch for pruning.
+	// TerminalBranchMaxAge enables unmerged-branch cleanup after a verified terminal timestamp.
+	TerminalBranchMaxAge time.Duration
+	// RunTerminalAt returns zero when terminal age cannot be safely established.
+	RunTerminalAt func(managerRoot, runID string) (time.Time, error)
+	// CanPruneBranch checks current run/item protection after candidacy is established,
+	// and again immediately before deletion. Errors preserve the branch.
+	CanPruneBranch func(managerRoot, runID, branch string) (bool, error)
+	// IsRunTerminal authorizes a local run branch for pruning.
 	IsRunTerminal func(managerRoot, runID string) (bool, error)
 	// IsBranchProtected reports whether a branch is still referenced by a
 	// nonterminal run, even when the run encoded in its name is terminal.
@@ -135,6 +143,9 @@ func PruneRetained(ctx context.Context, managers []*Manager, opts RetentionOptio
 	}
 	if opts.MaxAge < 0 {
 		return nil, nil, fmt.Errorf("worktree: retention window must not be negative")
+	}
+	if opts.TerminalBranchMaxAge < 0 {
+		return nil, nil, fmt.Errorf("worktree: terminal branch age must not be negative")
 	}
 	if opts.JournalGraceAge < 0 {
 		return nil, nil, fmt.Errorf("worktree: journal grace age must not be negative")
@@ -467,7 +478,6 @@ func pruneRepoMergedBranches(ctx context.Context, manager *Manager, key, repoDir
 
 	var results []RetentionResult
 	var warnings []RetentionWarning
-branches:
 	for _, branch := range runs {
 		terminal := false
 		if opts.IsRunTerminal != nil {
@@ -491,41 +501,45 @@ branches:
 		if protected {
 			continue
 		}
-		merged := false
-		var selectedBase localBranch
-		for _, base := range bases {
-			merged, err = retentionIsAncestor(ctx, repoDir, branch.tip, base.tip, opts)
-			if err != nil {
-				// A cleanup git subprocess timeout (#4325) skips only this
-				// one branch — reported for retry on the next sweep —
-				// rather than aborting every other branch still queued for
-				// merged-branch pruning in this repository.
-				var timeoutErr *GitCleanupTimeoutError
-				if errors.As(err, &timeoutErr) {
-					warnings = append(warnings, RetentionWarning{
-						Path: "refs/heads/" + branch.name,
-						Err:  fmt.Errorf("worktree: inspect whether branch %s is merged into %s: %w", branch.name, base.name, err),
-					})
-					continue branches
-				}
-				return results, warnings, fmt.Errorf("worktree: inspect whether branch %s is merged into %s: %w", branch.name, base.name, err)
+		selectedBase, merged, err := retentionMergedBase(ctx, repoDir, branch, bases, opts)
+		if err != nil {
+			var timeoutErr *GitCleanupTimeoutError
+			if !errors.As(err, &timeoutErr) {
+				return results, warnings, err
 			}
-			if merged {
-				selectedBase = base
-				break
-			}
-		}
-		if !merged {
+			warnings = append(warnings, RetentionWarning{Path: "refs/heads/" + branch.name, Err: err})
 			continue
 		}
+		rule := RetentionRuleMergedBranch
+		if !merged {
+			eligible, ageErr := terminalBranchOldEnough(manager.Root, branch.runID, opts)
+			if ageErr != nil {
+				warnings = append(warnings, RetentionWarning{Path: "refs/heads/" + branch.name, Err: ageErr})
+				continue
+			}
+			if !eligible {
+				continue
+			}
+			rule = RetentionRuleTerminalBranch
+		}
+		if opts.CanPruneBranch != nil {
+			allowed, checkErr := opts.CanPruneBranch(manager.Root, branch.runID, branch.name)
+			if checkErr != nil {
+				warnings = append(warnings, RetentionWarning{Path: "refs/heads/" + branch.name, Err: checkErr})
+				continue
+			}
+			if !allowed {
+				continue
+			}
+		}
 		result := RetentionResult{
-			Kind: RetentionKindBranch, Rule: RetentionRuleMergedBranch,
+			Kind: RetentionKindBranch, Rule: rule,
 			ManagerRoot: manager.Root, RepositoryPath: repoDir,
 			RunID: branch.runID, Branch: branch.name, DryRun: !opts.Delete,
 		}
 		if opts.Delete {
 			DeleteBranchHook()
-			deleted, err := commitMergedBranch(ctx, manager, key, repoDir, branch, selectedBase, opts)
+			deleted, err := commitMergedBranch(ctx, manager, key, repoDir, branch, selectedBase, rule, opts)
 			if err != nil {
 				result.Err = err
 			} else if !deleted {
@@ -546,11 +560,30 @@ func retentionIsAncestor(ctx context.Context, repoDir, ancestor, descendant stri
 	return commitIsAncestor(ctx, repoDir, ancestor, descendant)
 }
 
-func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir string, branch retentionRunBranch, base localBranch, opts RetentionOptions) (bool, error) {
+func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir string, branch retentionRunBranch, base localBranch, rule RetentionRule, opts RetentionOptions) (bool, error) {
 	lock := manager.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
 
+	if opts.CanPruneBranch != nil {
+		allowed, err := opts.CanPruneBranch(manager.Root, branch.runID, branch.name)
+		if err != nil || !allowed {
+			return false, err
+		}
+	}
+	if rule == RetentionRuleMergedBranch {
+		merged, err := retentionIsAncestor(ctx, repoDir, branch.tip, base.tip, opts)
+		if err != nil || !merged {
+			return false, err
+		}
+	} else {
+		eligible, err := terminalBranchOldEnough(manager.Root, branch.runID, opts)
+		if err != nil || !eligible {
+			return false, err
+		}
+	}
+	// Provider reads above may take time. Inspect refs after those calls so
+	// a tip changed during item revalidation cannot use the earlier authority.
 	current, err := localBranches(ctx, repoDir)
 	if err != nil {
 		return false, err
@@ -559,9 +592,11 @@ func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir stri
 	for _, currentBranch := range current {
 		currentBranches[currentBranch.name] = currentBranch.tip
 	}
-	if currentBranches[branch.name] != branch.tip || currentBranches[base.name] != base.tip {
+	if currentBranches[branch.name] != branch.tip || rule == RetentionRuleMergedBranch && currentBranches[base.name] != base.tip {
 		return false, nil
 	}
+	// Provider calls may outlive a resume or park transition. Re-read local
+	// owner and sibling protections immediately before deleting the ref.
 	if opts.IsRunTerminal != nil {
 		terminal, err := opts.IsRunTerminal(manager.Root, branch.runID)
 		if err != nil {
@@ -579,13 +614,6 @@ func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir stri
 		if protected {
 			return false, nil
 		}
-	}
-	merged, err := retentionIsAncestor(ctx, repoDir, branch.tip, base.tip, opts)
-	if err != nil {
-		return false, err
-	}
-	if !merged {
-		return false, nil
 	}
 	if err := runCleanupGit(ctx, repoDir, "branch delete", "branch", "-D", "--", branch.name); err != nil {
 		return false, err
@@ -647,4 +675,30 @@ func commitIsAncestor(ctx context.Context, repoDir, ancestor, descendant string)
 		return false, nil
 	}
 	return false, err
+}
+
+func terminalBranchOldEnough(root, runID string, opts RetentionOptions) (bool, error) {
+	if opts.TerminalBranchMaxAge <= 0 || opts.RunTerminalAt == nil {
+		return false, nil
+	}
+	ended, err := opts.RunTerminalAt(root, runID)
+	if err != nil {
+		return false, err
+	}
+	return !ended.IsZero() && !ended.After(opts.Now) && opts.Now.Sub(ended) >= opts.TerminalBranchMaxAge, nil
+}
+
+// A failed ancestry query never falls through to age authority. Timeouts are
+// reported by the caller for retry without blocking other branch candidates.
+func retentionMergedBase(ctx context.Context, repoDir string, branch retentionRunBranch, bases []localBranch, opts RetentionOptions) (localBranch, bool, error) {
+	for _, base := range bases {
+		merged, err := retentionIsAncestor(ctx, repoDir, branch.tip, base.tip, opts)
+		if err != nil {
+			return localBranch{}, false, fmt.Errorf("worktree: inspect whether branch %s is merged into %s: %w", branch.name, base.name, err)
+		}
+		if merged {
+			return base, true, nil
+		}
+	}
+	return localBranch{}, false, nil
 }

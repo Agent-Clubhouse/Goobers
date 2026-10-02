@@ -9,8 +9,7 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // active mode-3 worker routes every stage pod for this gaggle into its
 // declared isolation.namespace, and verifies that namespace's existence and
 // this worker's RBAC access to it before polling or dispatching any work
-// (#4897). IdentityRef is not yet consumed — every gaggle's stage pods still
-// run under their namespace's default ServiceAccount.
+// (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
 type GaggleSpec struct {
 	// Cost overrides instance-wide external cost publication. An omitted or
 	// null enabled value inherits the instance default; local accounting remains active.
@@ -228,10 +227,13 @@ type GaggleIsolation struct {
 	// topology is supported.
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace" yaml:"namespace"`
+	// ServiceAccount selects the stage pod account. Empty defaults to goobers-stage;
+	// default is an explicit opt-out. The account must disable token automount.
+	// +optional
+	ServiceAccount string `json:"serviceAccount,omitempty" yaml:"serviceAccount,omitempty"`
 	// IdentityRef names the target per-gaggle Azure workload identity
 	// (managed-identity federation). The active dispatcher does not consume
-	// it yet — every gaggle's stage pods still run under their namespace's
-	// default ServiceAccount (#4897 scoped namespace routing only).
+	// it yet; ServiceAccount selects the Kubernetes account independently.
 	// +optional
 	IdentityRef string `json:"identityRef,omitempty" yaml:"identityRef,omitempty"`
 }
@@ -294,4 +296,15 @@ type GaggleList struct {
 	metav1.TypeMeta `json:",inline" yaml:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 	Items           []Gaggle `json:"items" yaml:"items"`
+}
+
+// DefaultStageServiceAccount is the unprivileged account shipped by the reference.
+const DefaultStageServiceAccount = "goobers-stage"
+
+// EffectiveServiceAccount resolves the stage identity, including explicit default opt-out.
+func (i GaggleIsolation) EffectiveServiceAccount() string {
+	if i.ServiceAccount != "" {
+		return i.ServiceAccount
+	}
+	return DefaultStageServiceAccount
 }

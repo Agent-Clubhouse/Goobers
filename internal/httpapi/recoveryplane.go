@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/recovery"
 )
 
 // RecoveryService delivers retained state to the authenticated receiving run.
@@ -63,12 +64,19 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		stream := &recoveryResponseWriter{destination: w}
 		if err := service.StreamRecovery(request.Context(), run, key, issue, stream); err != nil {
-			errorLog.Printf("recovery delivery failed for run %s", run)
 			if stream.started {
+				errorLog.Printf("recovery delivery failed for run %s", run)
 				// Never append a JSON error to binary archive bytes or report a
 				// normally completed response after partial delivery.
 				panic(http.ErrAbortHandler)
 			}
+			var pending *recovery.OverflowPendingError
+			if errors.As(err, &pending) {
+				w.Header().Set(recovery.PromotionStateHeader, pending.PromotionState)
+				writeError(w, http.StatusConflict, recovery.OverflowPendingCode, pending.Error())
+				return
+			}
+			errorLog.Printf("recovery delivery failed for run %s", run)
 			writeError(w, http.StatusForbidden, "recovery_refused", "recovery delivery was refused or its state is unavailable")
 		}
 	}

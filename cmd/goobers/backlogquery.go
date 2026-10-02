@@ -2848,8 +2848,9 @@ func reconcileClosedUnmergedInReview(
 // issue-close-out "Implementation complete: <url> is open for merge-review."
 // comments on repo. issue-close-out posts that comment through
 // UpdateWorkItemStatus, which stores it with the provider attribution footer
-// whenever the stage runs with run attribution (every daemon run), so the
-// footer is removed before the prefix and suffix are matched.
+// whenever the stage runs with run attribution (every daemon run), and with
+// the close-out's operation marker (#2657); StripAttribution removes both
+// before the prefix and suffix are matched.
 func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, comments []providers.Comment) []string {
 	seen := make(map[string]bool)
 	var out []string

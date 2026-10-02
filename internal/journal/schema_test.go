@@ -104,6 +104,12 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			"posture": "enforced", "mechanism": "seatbelt", "workspace": "/work/run-1/impl",
 		}},
 		{Type: EventRunFinished, Status: string(PhaseCompleted)},
+		{Type: EventRunFinished, Status: string(PhaseEscalated), TerminalCause: &TerminalCause{
+			Schema: TerminalCauseSchema, Phase: PhaseEscalated, Classification: TerminalPolicyExhaustion,
+			SelectorKind: "gate", Selector: "review", Verdict: "fail", Target: TargetEscalate,
+			Code: "REPASS_BUDGET_EXHAUSTED", Message: "review budget exhausted", CausalEventSeq: 1,
+			Retry: &TerminalBudget{Consumed: 1, Allowed: 2}, Repass: &TerminalBudget{Consumed: 3, Allowed: 3},
+		}},
 		{Type: EventAgentLifecycle, Agent: &AgentProvenance{
 			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: testIdentity().RunID,
 			Stage: "impl", Attempt: 1, Lifecycle: AgentCompleted,

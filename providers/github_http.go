@@ -3,13 +3,10 @@ package providers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 func (p *GitHubProvider) do(ctx context.Context, method, endpoint string, body interface{}, out interface{}) error {
@@ -50,103 +47,42 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 // a GraphQL query (read) is exactly as safe to retry as a REST GET, but the
 // literal HTTP method alone can't tell the two apart (#2026).
 func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, endpoint string, body interface{}, accept string, retryable bool) (*http.Response, error) {
-	maxWait := p.maxRateLimitWait
-	if maxWait <= 0 {
-		maxWait = defaultRateLimitMaxWait
-	}
-	var rateLimitWaited time.Duration
-	var rateLimitRetries, transientRetries int
-	authRetried := false
-	for {
-		req, err := newJSONRequest(ctx, method, endpoint, body)
-		if err != nil {
-			return nil, err
-		}
-		token, err := p.resolveToken(ctx)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept", accept)
-		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		if p.quotaGate != nil && !p.quotaGateInClient {
-			if err := p.quotaGate.AcquireQuotaRequest(ctx, ProviderGitHub); err != nil {
-				return nil, err
+	return sendJSONWithPolicy(ctx, restSendPolicy{
+		client:              p.Client,
+		providerHTTPName:    "github",
+		maxTransientRetries: p.maxRetries,
+		maxRateLimitRetries: p.maxRateLimitRetries,
+		maxRateLimitWait:    p.maxRateLimitWait,
+		retryable:           retryable,
+		sleep:               p.sleep,
+		decorate: func(ctx context.Context, req *http.Request) error {
+			token, err := p.resolveToken(ctx)
+			if err != nil {
+				return err
 			}
-		}
-		featureusage.RecordProviderHTTP("github")
-		resp, err := httpClientOrDefault(p.Client).Do(req)
-		if err != nil {
-			// Transport error (connection reset, DNS blip, timeout): retry with
-			// backoff rather than fail the stage on a single network hiccup
-			// (#139) — but only for idempotent methods (#2026). A POST/PATCH
-			// whose response was lost to the transport error may have already
-			// committed server-side (issue creation, a comment post, a label
-			// mutation); GitHub has no transport-level dedup marker to make a
-			// blind retry of those safe, so a lost response on a non-idempotent
-			// method is surfaced as an error rather than silently risking a
-			// duplicate. No response to close on this path.
-			if retryable && transientRetries < p.maxRetries {
-				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
-					return nil, serr
-				}
-				transientRetries++
-				continue
+			req.Header.Set("Accept", accept)
+			req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
 			}
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		p.observeQuota(ctx, resp)
-		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateToken() {
-			// A refreshable delivered credential was rejected (Goobers#6120):
-			// re-resolve it once and resend. Safe for every method — a 401
-			// is refused before the request is acted on.
+			return nil
+		},
+		beforeSend: func(ctx context.Context) error {
+			if p.quotaGate != nil && !p.quotaGateInClient {
+				return p.quotaGate.AcquireQuotaRequest(ctx, ProviderGitHub)
+			}
+			return nil
+		},
+		observeResponse:     p.observeQuota,
+		refreshRejectedAuth: p.invalidateToken,
+		isRateLimited:       isRateLimited,
+		planRateLimit:       p.rateLimitPlan,
+		observeRateLimit:    p.observeRateLimit,
+		handleExhaustedRateLimit: func(resp *http.Response, ev RateLimitEvent) (*http.Response, error) {
 			_ = resp.Body.Close()
-			authRetried = true
-			continue
-		}
-		if isRateLimited(resp) {
-			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
-			_ = resp.Body.Close()
-			if rateLimitRetries >= p.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
-				// Waiting can't help within this request's budget — the
-				// retry allowance is spent, or the reset is further out than
-				// the wait budget allows (#614). Fail FAST with the typed
-				// error so the caller (and the run journal) sees "rate
-				// limited, resets at <t>" instead of a generic 403 string,
-				// and no time is burned sleeping toward a wait that cannot
-				// reach the reset anyway.
-				ev.Outcome = RateLimitOutcomeExhausted
-				p.observeRateLimit(ctx, ev)
-				return nil, rateLimitErrorFrom(ev)
-			}
-			if err := p.sleep(ctx, wait); err != nil {
-				ev.Outcome = RateLimitOutcomeCanceled
-				p.observeRateLimit(ctx, ev)
-				return nil, err
-			}
-			ev.Outcome = RateLimitOutcomeRetry
-			p.observeRateLimit(ctx, ev)
-			rateLimitWaited += wait
-			rateLimitRetries++
-			continue
-		}
-		if resp.StatusCode >= 500 && retryable && transientRetries < p.maxRetries {
-			// Server-side error: retry with backoff. GitHub 5xx is usually
-			// transient; without this a single blip fails the stage attempt.
-			// Restricted to idempotent methods (#2026) for the same reason as
-			// the transport-error retry above — a 5xx can follow a request
-			// that already committed.
-			_ = resp.Body.Close()
-			if err := p.sleep(ctx, backoffDuration(transientRetries)); err != nil {
-				return nil, err
-			}
-			transientRetries++
-			continue
-		}
-		return resp, nil
-	}
+			return nil, rateLimitErrorFrom(ev)
+		},
+	}, method, endpoint, body)
 }
 
 // getAllPages issues GET requests against endpoint with per_page maximized,

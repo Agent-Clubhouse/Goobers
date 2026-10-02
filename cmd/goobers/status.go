@@ -405,6 +405,7 @@ type statusJSONOutput struct {
 	Warnings               []validate.CodedWarning                    `json:"warnings"`
 	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
 	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	StageServiceAccounts   map[string]string                          `json:"stageServiceAccounts,omitempty"`
 	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
 	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
 	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
@@ -1553,6 +1554,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var storageHealth *readservice.StorageHealthStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
+		var stageServiceAccounts map[string]string
 		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var clusterChecks []clustercheck.Result
@@ -1570,6 +1572,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				storageHealth = status.StorageHealth
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
+				stageServiceAccounts = status.StageServiceAccounts
 				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
 				clusterChecks = status.ClusterChecks
@@ -1594,6 +1597,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			StorageHealth:          storageHealth,
 			RefusedWorkflows:       refusedWorkflows,
 			IsolationMandates:      isolationMandates,
+			StageServiceAccounts:   stageServiceAccounts,
 			Summary:                fleetSummary,
 			ParkedBacklog:          parked,
 			BaselineBlockers:       baselineBlockers,

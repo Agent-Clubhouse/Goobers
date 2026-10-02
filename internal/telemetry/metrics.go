@@ -508,6 +508,18 @@ const (
 // configured. An OTLP TLS failure degrades exactly like the trace exporter's:
 // the readers built so far are returned alongside ErrOTLPUnavailable.
 func metricReaders(ctx context.Context, cfg Config) ([]metric.Reader, error) {
+	readers, err := singleMetricReaders(ctx, cfg)
+	for _, destination := range cfg.Destinations {
+		additional, destinationErr := singleMetricReaders(ctx, destination.Config)
+		readers = append(readers, additional...)
+		if destinationErr != nil {
+			err = errors.Join(err, fmt.Errorf("%w: destination %s: %w", ErrOTLPUnavailable, destination.Name, destinationErr))
+		}
+	}
+	return readers, err
+}
+
+func singleMetricReaders(ctx context.Context, cfg Config) ([]metric.Reader, error) {
 	var readers []metric.Reader
 	if cfg.MetricReader != nil {
 		readers = append(readers, cfg.MetricReader)

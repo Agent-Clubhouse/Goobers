@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/apireadstore"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
@@ -43,13 +43,12 @@ import (
 // corruption error falls through to the normal full GET.
 //
 // It mirrors the established cross-process cache discipline (#758 merge-policy,
-// #523 sibling context): a single JSON file under the instance scheduler dir,
-// guarded by a bounded file lock, written atomically. Sharing one store across
+// #523 sibling context): a shared store under the instance scheduler dir,
+// guarded by a bounded file lock. Indexed SQLite updates persist only the changed
+// entry and incrementally maintain body references. Sharing one store across
 // the list consumers also collapses their redundant independent listings —
 // later stages in the scheduler evaluation reuse the first stage's snapshot.
 const (
-	apiReadCacheFileName   = "api-read-cache.json"
-	apiReadCacheBodyDir    = "api-read-cache-bodies"
 	apiReadCacheLockName   = "api-read-cache.lock"
 	apiReadCacheTTL        = 7 * 24 * time.Hour
 	apiReadSnapshotTTL     = time.Hour
@@ -71,7 +70,7 @@ type apiReadCacheEntry struct {
 	LastModified string `json:"lastModified,omitempty"`
 	Link         string `json:"link,omitempty"`        // replayed so pagination survives a 304
 	Type         string `json:"contentType,omitempty"` // replayed Content-Type
-	Body         []byte `json:"body,omitempty"`        // legacy inline body; new writes use BodyRef
+	Body         []byte `json:"body,omitempty"`        // response body; persisted separately from metadata
 	BodyRef      string `json:"bodyRef,omitempty"`
 	Stored       int64  `json:"storedAtUnix"`
 	Snapshot     string `json:"snapshot,omitempty"`
@@ -121,12 +120,11 @@ type apiReadCache struct {
 	snapshotID   string
 	quotaGate    providers.QuotaRequestGate
 
-	mu     sync.Mutex
-	mem    map[string]apiReadCacheEntry // loaded from disk once, then process-local
-	loaded bool
+	mu  sync.Mutex
+	mem map[string]apiReadCacheEntry // bounded process-local responses
 }
 
-// newAPIReadCache wraps inner with a conditional-GET cache backed by a JSON file
+// newAPIReadCache wraps inner with a conditional-GET cache backed by SQLite
 // under schedulerDir. snapshotID coalesces provider list reads started by the
 // same scheduler evaluation. A wrapper with an empty schedulerDir is a
 // pass-through (standalone/manual invocation with no instance scheduler dir to
@@ -227,16 +225,7 @@ func invalidateCurrentProviderSnapshot(root string) error {
 	}
 	schedulerDir := layoutFor(root).SchedulerDir()
 	cache := newAPIReadCache(schedulerDir, snapshotID, nil)
-	return withAPIReadCacheLock(filepath.Join(schedulerDir, apiReadCacheLockName), func() error {
-		entries := cache.readDiskUnlocked()
-		prefix := "snapshot\x00" + snapshotID + "\x00"
-		for key := range entries {
-			if strings.HasPrefix(key, prefix) {
-				delete(entries, key)
-			}
-		}
-		return cache.writeDisk(evictAPIReadCache(entries))
-	})
+	return cache.withDisk(func(store *apireadstore.Store) error { return store.InvalidateSnapshot(snapshotID) })
 }
 
 // Do implements providers.HTTPClient. Only idempotent GETs are cached; every
@@ -257,13 +246,11 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 			requestErr error
 		)
 		lockErr := withAPIReadCacheLock(apiReadListLockPath(c.schedulerDir, key), func() error {
-			entries := c.readDisk()
-			c.replaceMemory(entries)
-			if entry, hit := entries[snapshotKey]; hit {
+			if entry, hit := c.lookupDisk(snapshotKey); hit {
 				resp = entry.response(req)
 				return nil
 			}
-			entry, hit := entries[key]
+			entry, hit := c.lookupDisk(key)
 			resp, requestErr = c.fetch(req, entry, hit, true, func(updated apiReadCacheEntry) {
 				updated.Stored = time.Now().Unix()
 				updated.Snapshot = ""
@@ -271,12 +258,7 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 				snapshot.Snapshot = c.snapshotID
 				c.remember(key, updated)
 				c.remember(snapshotKey, snapshot)
-				_ = withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
-					onDisk := c.readDiskUnlocked()
-					onDisk[key] = updated
-					onDisk[snapshotKey] = snapshot
-					return c.writeDisk(evictAPIReadCache(onDisk))
-				})
+				c.persist(map[string]apiReadCacheEntry{key: updated, snapshotKey: snapshot})
 			})
 			return nil
 		})
@@ -543,20 +525,20 @@ func withAPIReadCacheLock(lockPath string, fn func() error) error {
 	return fn()
 }
 
-// lookup returns a fresh cached entry for key, loading the disk cache into
-// memory on first use. Fail-open: any load error yields an empty cache.
+// lookup loads only the requested response. Memory is bounded independently of
+// the shared cache; a missing/expired body simply falls through to a full GET.
 func (c *apiReadCache) lookup(key string) (apiReadCacheEntry, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.loaded {
-		c.mem = c.readDisk()
-		c.loaded = true
-	}
 	entry, ok := c.mem[key]
-	if !ok || !entry.fresh(time.Now()) {
-		return apiReadCacheEntry{}, false
+	c.mu.Unlock()
+	if ok && entry.fresh(time.Now()) {
+		return entry, true
 	}
-	return entry, true
+	entry, ok = c.lookupDisk(key)
+	if ok {
+		c.remember(key, entry)
+	}
+	return entry, ok
 }
 
 func (c *apiReadCache) remember(key string, entry apiReadCacheEntry) {
@@ -565,222 +547,64 @@ func (c *apiReadCache) remember(key string, entry apiReadCacheEntry) {
 	if c.mem == nil {
 		c.mem = map[string]apiReadCacheEntry{}
 	}
-	c.mem[key] = entry
-	c.loaded = true
-}
-
-func (c *apiReadCache) replaceMemory(entries map[string]apiReadCacheEntry) {
-	c.mu.Lock()
-	c.mem = make(map[string]apiReadCacheEntry, len(entries))
-	for key, entry := range entries {
-		c.mem[key] = entry
-	}
-	c.loaded = true
-	c.mu.Unlock()
-}
-
-// store records entry in memory and persists it. A persist failure is swallowed
-// (fail-open): the in-memory copy still serves the rest of this process.
-func (c *apiReadCache) store(key string, entry apiReadCacheEntry) {
-	c.mu.Lock()
-	if c.mem == nil {
-		c.mem = map[string]apiReadCacheEntry{}
-	}
-	c.mem[key] = entry
-	c.mu.Unlock()
-
-	lockPath := filepath.Join(c.schedulerDir, apiReadCacheLockName)
-	_ = withAPIReadCacheLock(lockPath, func() error {
-		onDisk := c.readDiskUnlocked() // re-read under lock so we merge, not clobber, a peer's writes
-		onDisk[key] = entry
-		return c.writeDisk(evictAPIReadCache(onDisk))
-	})
-}
-
-// readDisk loads the cache file, dropping stale entries. Any error (missing
-// file, unreadable, corrupt JSON) returns an empty map — never fails a caller.
-func (c *apiReadCache) readDisk() map[string]apiReadCacheEntry {
-	out := map[string]apiReadCacheEntry{}
-	if err := withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
-		out = c.readDiskUnlocked()
-		return nil
-	}); err != nil {
-		return map[string]apiReadCacheEntry{}
-	}
-	return out
-}
-
-func (c *apiReadCache) readDiskUnlocked() map[string]apiReadCacheEntry {
-	out := map[string]apiReadCacheEntry{}
-	data, err := os.ReadFile(filepath.Join(c.schedulerDir, apiReadCacheFileName))
-	if err != nil {
-		return out
-	}
-	var file struct {
-		Entries map[string]apiReadCacheEntry `json:"entries"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return out
-	}
-	now := time.Now()
-	for k, e := range file.Entries {
-		if !e.fresh(now) {
-			continue
-		}
-		if e.BodyRef != "" {
-			body, err := os.ReadFile(filepath.Join(c.schedulerDir, apiReadCacheBodyDir, e.BodyRef))
-			if err != nil || apiReadBodyRef(body) != e.BodyRef {
-				continue
-			}
-			e.Body = body
-		} else if e.Body == nil {
-			continue
-		}
-		out[k] = e
-	}
-	return out
-}
-
-// writeDisk persists small metadata atomically and response bodies once under
-// content-addressed names. Snapshot aliases therefore do not duplicate or
-// repeatedly rewrite full provider responses.
-func (c *apiReadCache) writeDisk(entries map[string]apiReadCacheEntry) error {
-	entries = evictAPIReadCache(entries)
-	if err := os.MkdirAll(filepath.Join(c.schedulerDir, apiReadCacheBodyDir), 0o755); err != nil {
-		return err
-	}
-	persisted := make(map[string]apiReadCacheEntry, len(entries))
-	bodyRefs := make(map[string]bool, len(entries))
-	for key, entry := range entries {
-		ref := apiReadBodyRef(entry.Body)
-		if err := c.writeBody(ref, entry.Body); err != nil {
-			return err
-		}
-		entry.Body = nil
-		entry.BodyRef = ref
-		persisted[key] = entry
-		bodyRefs[ref] = true
-	}
-	data, err := json.Marshal(struct {
-		Entries map[string]apiReadCacheEntry `json:"entries"`
-	}{Entries: persisted})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(c.schedulerDir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(c.schedulerDir, "."+apiReadCacheFileName+".*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, filepath.Join(c.schedulerDir, apiReadCacheFileName)); err != nil {
-		return err
-	}
-	c.removeUnreferencedBodies(bodyRefs)
-	return nil
-}
-
-func apiReadBodyRef(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
-func (c *apiReadCache) writeBody(ref string, body []byte) error {
-	path := filepath.Join(c.schedulerDir, apiReadCacheBodyDir, ref)
-	if info, err := os.Stat(path); err == nil && info.Size() == int64(len(body)) {
-		return nil
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+ref+".*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(body); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
-}
-
-func (c *apiReadCache) removeUnreferencedBodies(referenced map[string]bool) {
-	dir := filepath.Join(c.schedulerDir, apiReadCacheBodyDir)
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, file := range files {
-		if !referenced[file.Name()] {
-			_ = os.Remove(filepath.Join(dir, file.Name()))
-		}
-	}
-}
-
-// evictAPIReadCache bounds metadata count and unique persisted response bytes,
-// retaining newest base entries before same-tick snapshot aliases.
-func evictAPIReadCache(entries map[string]apiReadCacheEntry) map[string]apiReadCacheEntry {
-	return evictAPIReadCacheToLimits(entries, apiReadCacheMaxEntries, apiReadCacheMaxBytes)
-}
-
-func evictAPIReadCacheToLimits(entries map[string]apiReadCacheEntry, maxEntries, maxBytes int) map[string]apiReadCacheEntry {
-	type keyed struct {
-		key   string
-		entry apiReadCacheEntry
-	}
-	all := make([]keyed, 0, len(entries))
-	for k, e := range entries {
-		all = append(all, keyed{key: k, entry: e})
-	}
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].entry.Stored != all[j].entry.Stored {
-			return all[i].entry.Stored > all[j].entry.Stored
-		}
-		if (all[i].entry.Snapshot == "") != (all[j].entry.Snapshot == "") {
-			return all[i].entry.Snapshot == ""
-		}
-		return all[i].key < all[j].key
-	})
-	kept := make(map[string]apiReadCacheEntry, min(len(entries), maxEntries))
-	refs := make(map[string]bool)
-	bodyBytes := 0
-	for _, item := range all {
-		if len(kept) == maxEntries {
+	if _, exists := c.mem[key]; !exists && len(c.mem) >= apiReadCacheMaxEntries {
+		for old := range c.mem {
+			delete(c.mem, old)
 			break
 		}
-		ref := apiReadBodyRef(item.entry.Body)
-		addedBytes := 0
-		if !refs[ref] {
-			addedBytes = len(item.entry.Body)
-		}
-		if bodyBytes+addedBytes > maxBytes {
-			continue
-		}
-		kept[item.key] = item.entry
-		refs[ref] = true
-		bodyBytes += addedBytes
 	}
-	return kept
+	c.mem[key] = entry
+}
+
+func (c *apiReadCache) store(key string, entry apiReadCacheEntry) {
+	c.remember(key, entry)
+	c.persist(map[string]apiReadCacheEntry{key: entry})
+}
+
+func (c *apiReadCache) withDisk(fn func(*apireadstore.Store) error) error {
+	return withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
+		store, err := apireadstore.Open(c.schedulerDir, apiReadCacheMaxEntries, apiReadCacheMaxBytes)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = store.Close() }()
+		return fn(store)
+	})
+}
+
+func (c *apiReadCache) lookupDisk(key string) (apiReadCacheEntry, bool) {
+	var entry apiReadCacheEntry
+	hit := false
+	_ = c.withDisk(func(store *apireadstore.Store) error {
+		saved, ok, err := store.Get(key, time.Now())
+		if err != nil || !ok {
+			return err
+		}
+		if err := json.Unmarshal(saved.Metadata, &entry); err != nil {
+			return err
+		}
+		entry.Body = saved.Body
+		hit = true
+		return nil
+	})
+	return entry, hit
+}
+
+func (c *apiReadCache) persist(entries map[string]apiReadCacheEntry) {
+	saved := make([]apireadstore.Entry, 0, len(entries))
+	for key, entry := range entries {
+		body := entry.Body
+		entry.Body, entry.BodyRef = nil, ""
+		metadata, err := json.Marshal(entry)
+		if err != nil {
+			return
+		}
+		ttl := apiReadCacheTTL
+		if entry.Snapshot != "" {
+			ttl = apiReadSnapshotTTL
+		}
+		saved = append(saved, apireadstore.Entry{Key: key, Metadata: metadata, Body: body,
+			Stored: entry.Stored, Expires: entry.Stored + int64(ttl/time.Second), Snapshot: entry.Snapshot})
+	}
+	_ = c.withDisk(func(store *apireadstore.Store) error { return store.Put(saved...) })
 }

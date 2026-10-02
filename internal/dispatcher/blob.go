@@ -39,7 +39,7 @@ const defaultBlobRetryDeadline = 60 * time.Second
 
 // BlobClient is the network blob plane client (decision 010): a
 // blobstore.Store implementation that fetches and puts sha256 digests over
-// HTTP from the blob endpoint, authenticated with a stage-scoped credential.
+// HTTP from the blob endpoint, authenticated with a stage or blob-only worker credential.
 // It is what a stage pod's materialize/surrender path plugs into
 // workerhost.MaterializeContext / StagingArtifacts in place of a local
 // directory — same interface, network transport.
@@ -52,6 +52,9 @@ type BlobClient struct {
 	// Token is the stage-scoped bearer presented as Authorization; empty
 	// sends none (the loopback/no-auth posture).
 	Token string
+	// TokenSource mints a fresh short-lived worker bearer for each request.
+	// When set it takes precedence over Token and errors fail closed.
+	TokenSource func() (string, error)
 	// Client overrides the HTTP client; nil uses a 60s-timeout default.
 	Client *http.Client
 	// RetryDeadline bounds how long Put retries a transport error or 5xx
@@ -91,8 +94,15 @@ func (c *BlobClient) request(ctx context.Context, method, digest string, body io
 	if err != nil {
 		return nil, err
 	}
-	if c.Token != "" {
-		request.Header.Set("Authorization", "Bearer "+c.Token)
+	token := c.Token
+	if c.TokenSource != nil {
+		token, err = c.TokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("dispatcher: blob authentication: %w", err)
+		}
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/octet-stream")
@@ -112,6 +122,14 @@ func (c *BlobClient) do(ctx context.Context, method, digest string, body io.Read
 // blobstore.ErrNotFound, keeping the fail-soft materialize contract
 // (workerhost.MaterializeContext) intact over the network.
 func (c *BlobClient) Get(ctx context.Context, digest string) ([]byte, error) {
+	return c.GetBounded(ctx, digest, 64<<20)
+}
+
+// GetBounded prevents a remote response from bypassing evidence byte budgets.
+func (c *BlobClient) GetBounded(ctx context.Context, digest string, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > 64<<20 {
+		return nil, blobstore.ErrTooLarge
+	}
 	response, err := c.do(ctx, http.MethodGet, digest, nil)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: fetch blob %s: %w", digest, err)
@@ -119,9 +137,12 @@ func (c *BlobClient) Get(ctx context.Context, digest string) ([]byte, error) {
 	defer func() { _ = response.Body.Close() }()
 	switch response.StatusCode {
 	case http.StatusOK:
-		data, err := io.ReadAll(response.Body)
+		data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 		if err != nil {
 			return nil, fmt.Errorf("dispatcher: read blob %s: %w", digest, err)
+		}
+		if int64(len(data)) > limit {
+			return nil, blobstore.ErrTooLarge
 		}
 		return data, nil
 	case http.StatusNotFound:

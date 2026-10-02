@@ -26,6 +26,7 @@ import (
 	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/netpolrender"
@@ -268,7 +269,7 @@ func controlPlaneResources(o options, cfg *instance.Config, bundle preparedBundl
 
 	// Keep the base's selectors/probes/security posture, but omit its disabled
 	// operator, Windows deployment, example ingress, and unrelated CRD RBAC.
-	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml"} {
+	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml", "worker-service-rbac.yaml"} {
 		docs, err := readDocs(filepath.Join(o.Reference, "goobers-system", name))
 		if err != nil {
 			return nil, err
@@ -352,6 +353,7 @@ func stageResources(o options, gaggle string, files []netpolrender.File) ([]any,
 	objects = append(objects, &corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: o.StageNamespace, Labels: map[string]string{"goobers.dev/gaggle": gaggle, "pod-security.kubernetes.io/enforce": "restricted"}}})
 	no := false
 	objects = append(objects, &corev1.ServiceAccount{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"}, ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: o.StageNamespace}, AutomountServiceAccountToken: &no})
+	objects = append(objects, &corev1.ServiceAccount{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"}, ObjectMeta: metav1.ObjectMeta{Name: apiv1.DefaultStageServiceAccount, Namespace: o.StageNamespace}, AutomountServiceAccountToken: &no})
 	for _, name := range []string{"networkpolicies.yaml", "dispatcher-rbac.yaml"} {
 		docs, err := readDocs(filepath.Join(o.Reference, "gaggle-namespace", "base", name))
 		if err != nil {

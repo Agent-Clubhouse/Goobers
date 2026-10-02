@@ -233,6 +233,11 @@ func (e journalLogFanoutExporter) Shutdown(ctx context.Context) error {
 // Commit only copies into a bounded queue. It never exports or logs while the
 // caller holds a journal lock. The journal remains authoritative on overload.
 func (c *Client) Commit(event journal.CommittedEvent) {
+	if c != nil {
+		for _, destination := range c.journalDestinations {
+			destination.Commit(event)
+		}
+	}
 	if c != nil && c.journalLogs != nil {
 		if c.journalCatchup != nil {
 			c.journalCatchup.notify(event)
@@ -245,6 +250,13 @@ func (c *Client) Commit(event journal.CommittedEvent) {
 // JournalLogsEnabled reports whether the client has a live journal Logs queue.
 // Disabled, degraded, nil, and shutting-down clients return false.
 func (c *Client) JournalLogsEnabled() bool {
+	if c != nil {
+		for _, destination := range c.journalDestinations {
+			if destination.JournalLogsEnabled() {
+				return true
+			}
+		}
+	}
 	if c == nil || c.journalLogs == nil {
 		return false
 	}
@@ -256,6 +268,9 @@ func (c *Client) JournalLogsEnabled() bool {
 
 // JournalExportStats returns zero values when live journal export is disabled.
 func (c *Client) JournalExportStats() JournalExportStats {
+	if c != nil && len(c.journalDestinations) > 0 {
+		return c.namedJournalStats()
+	}
 	if c == nil || c.journalLogs == nil {
 		return JournalExportStats{}
 	}

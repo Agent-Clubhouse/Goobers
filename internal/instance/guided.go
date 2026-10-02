@@ -200,6 +200,9 @@ func InitGuidedFromSource(root, sourceRoot string, cfg *Config) (*InitResult, er
 // with the validated local source recorded in instance.yaml.
 func MaterializeWorkflowSource(root string) (string, error) {
 	layout := NewLayout(root)
+	if err := RecoverConfigTransaction(layout); err != nil {
+		return "", err
+	}
 	runtimeConfig, err := LoadConfig(layout.ConfigFile())
 	if err != nil {
 		return "", err
@@ -254,96 +257,11 @@ func MaterializeWorkflowSource(root string) (string, error) {
 }
 
 func installMaterializedConfig(layout Layout, stagingRoot string) error {
-	release, err := gaggletemplate.LockConfig(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName))
+	swap, err := prepareConfigTransaction(layout, filepath.Join(stagingRoot, ConfigDirName), filepath.Join(stagingRoot, ConfigFileName), nil)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = release() }()
-	if err := gaggletemplate.GuardReplacement(layout.ConfigDir(), filepath.Join(stagingRoot, ConfigDirName)); err != nil {
-		return err
-	}
-	backupRoot, err := os.MkdirTemp(layout.Root, ".config-materialize-backup-")
-	if err != nil {
-		return fmt.Errorf("create config materialization backup directory: %w", err)
-	}
-	backupConfigFile := filepath.Join(backupRoot, ConfigFileName)
-	backupConfigDir := filepath.Join(backupRoot, ConfigDirName)
-
-	if err := os.Rename(layout.ConfigFile(), backupConfigFile); err != nil {
-		_ = os.RemoveAll(backupRoot)
-		return fmt.Errorf("back up %s: %w", ConfigFileName, err)
-	}
-	if err := os.Rename(layout.ConfigDir(), backupConfigDir); err != nil {
-		rollbackErr := wrapMaterializeRollbackError(os.Rename(backupConfigFile, layout.ConfigFile()))
-		return errors.Join(
-			fmt.Errorf("back up %s: %w", ConfigDirName, err),
-			rollbackErr,
-			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
-		)
-	}
-
-	stagedConfigFile := filepath.Join(stagingRoot, ConfigFileName)
-	if err := os.Rename(stagedConfigFile, layout.ConfigFile()); err != nil {
-		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
-		return errors.Join(
-			fmt.Errorf("install %s: %w", ConfigFileName, err),
-			rollbackErr,
-			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
-		)
-	}
-	if err := os.Rename(filepath.Join(stagingRoot, ConfigDirName), layout.ConfigDir()); err != nil {
-		rollbackErr := rollbackMaterializedConfig(layout, backupConfigFile, backupConfigDir)
-		return errors.Join(
-			fmt.Errorf("install %s: %w", ConfigDirName, err),
-			rollbackErr,
-			removeMaterializeBackupAfterRollback(backupRoot, rollbackErr),
-		)
-	}
-	if err := os.RemoveAll(backupRoot); err != nil {
-		return fmt.Errorf("remove config materialization backup %s: %w", backupRoot, err)
-	}
-	return nil
-}
-
-func rollbackMaterializedConfig(layout Layout, backupConfigFile, backupConfigDir string) error {
-	var rollbackErrors []error
-	if err := os.Remove(layout.ConfigFile()); err != nil && !os.IsNotExist(err) {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := os.RemoveAll(layout.ConfigDir()); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := os.Rename(backupConfigFile, layout.ConfigFile()); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := os.Rename(backupConfigDir, layout.ConfigDir()); err != nil {
-		rollbackErrors = append(rollbackErrors, err)
-	}
-	if err := errors.Join(rollbackErrors...); err != nil {
-		return fmt.Errorf("roll back config materialization: %w", err)
-	}
-	return nil
-}
-
-func wrapMaterializeRollbackError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("roll back config materialization: %w", err)
-}
-
-func removeMaterializeBackup(path string) error {
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove config materialization backup %s: %w", path, err)
-	}
-	return nil
-}
-
-func removeMaterializeBackupAfterRollback(path string, rollbackErr error) error {
-	if rollbackErr != nil {
-		return nil
-	}
-	return removeMaterializeBackup(path)
+	return swap.Commit()
 }
 
 // CheckGuidedSourceInstancePaths requires the desired-state source and runtime

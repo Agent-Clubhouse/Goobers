@@ -46,11 +46,13 @@ type testTiming struct {
 }
 
 type testEvent struct {
-	Action  string  `json:"Action"`
-	Package string  `json:"Package"`
-	Test    string  `json:"Test"`
-	Output  string  `json:"Output"`
-	Elapsed float64 `json:"Elapsed"`
+	Action      string  `json:"Action"`
+	Package     string  `json:"Package"`
+	Test        string  `json:"Test"`
+	Output      string  `json:"Output"`
+	Elapsed     float64 `json:"Elapsed"`
+	ImportPath  string  `json:"ImportPath"`
+	FailedBuild string  `json:"FailedBuild"`
 }
 
 type budgetFile struct {
@@ -102,7 +104,7 @@ func run(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage:")
-	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming capture -job JOB -out FILE -- [go test flags and packages]")
+	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming capture -job JOB -out FILE [-junit FILE] [-annotations] -- [go test flags and packages]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming report -budget FILE -current FILE [-previous FILE] [-summary FILE]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming weights -timing FILE [-timing FILE...] -splits FILE -run-metadata FILE -out FILE [-minimum-seconds N]")
 	_, _ = fmt.Fprintln(output, "  go run ./test/testtiming splits -timing FILE [-timing FILE...] -run-metadata FILE -split PKG=PIECES [-split ...] -out FILE")
@@ -113,6 +115,8 @@ func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) i
 	flags.SetOutput(stderr)
 	job := flags.String("job", "", "stable job name")
 	output := flags.String("out", "", "timing artifact path")
+	junitOutput := flags.String("junit", "", "optional JUnit XML report path")
+	annotations := flags.Bool("annotations", os.Getenv("GITHUB_ACTIONS") == "true", "print GitHub workflow annotations for failing tests")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -122,7 +126,8 @@ func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) i
 	}
 
 	started := now()
-	result, testErr, parseErr := captureGoTest(envOrDefault("GO", "go"), flags.Args(), stdout, stderr)
+	recorder := newFailureRecorder()
+	result, testErr, parseErr := captureGoTest(envOrDefault("GO", "go"), flags.Args(), stdout, stderr, recorder)
 	result.SchemaVersion = schemaVersion
 	result.Job = *job
 	result.Platform = runtime.GOOS
@@ -133,6 +138,7 @@ func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) i
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "test timing artifact: %s\n", *output)
+	writeResults(*junitOutput, *annotations, result, recorder.failures, stdout, stderr)
 
 	if parseErr != nil {
 		_, _ = fmt.Fprintf(stderr, "testtiming capture: parse go test output: %v\n", parseErr)
@@ -145,7 +151,7 @@ func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) i
 	return 0
 }
 
-func captureGoTest(goCommand string, args []string, stdout, stderr io.Writer) (artifact, error, error) {
+func captureGoTest(goCommand string, args []string, stdout, stderr io.Writer, recorder *failureRecorder) (artifact, error, error) {
 	commandArgs := append([]string{"test", "-json"}, args...)
 	command := exec.Command(goCommand, commandArgs...)
 	pipe, err := command.StdoutPipe()
@@ -156,7 +162,7 @@ func captureGoTest(goCommand string, args []string, stdout, stderr io.Writer) (a
 	if err := command.Start(); err != nil {
 		return artifact{}, err, nil
 	}
-	result, parseErr := parseTestEvents(pipe, stdout)
+	result, parseErr := parseTestEvents(pipe, stdout, recorder)
 	if parseErr != nil {
 		_, _ = io.Copy(io.Discard, pipe)
 	}
@@ -164,7 +170,9 @@ func captureGoTest(goCommand string, args []string, stdout, stderr io.Writer) (a
 	return result, testErr, parseErr
 }
 
-func parseTestEvents(input io.Reader, output io.Writer) (artifact, error) {
+// parseTestEvents streams test output, collects timings, and hands every
+// event to recorder (which may be nil) for the failure report.
+func parseTestEvents(input io.Reader, output io.Writer, recorder *failureRecorder) (artifact, error) {
 	packages := make(map[string]packageTiming)
 	tests := make(map[string]testTiming)
 	decoder := json.NewDecoder(bufio.NewReader(input))
@@ -179,6 +187,7 @@ func parseTestEvents(input io.Reader, output io.Writer) (artifact, error) {
 		if event.Output != "" {
 			_, _ = io.WriteString(output, event.Output)
 		}
+		recorder.observe(event)
 		if event.Package == "" || !isTerminalAction(event.Action) {
 			continue
 		}

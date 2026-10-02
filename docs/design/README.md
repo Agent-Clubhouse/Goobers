@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 15 |
-| `approved` | 19 |
+| `draft` | 14 |
+| `approved` | 21 |
 | `implemented` | 27 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **71** |
+| **Total** | **72** |
 
 ## `docs/adr/`
 
@@ -47,7 +47,7 @@ word — read the page, not this table, before depending on it.
 | [Distributed state and coordination](distributed-state-and-coordination.md) | `approved` | — | — | — | — | — | — |
 | [DSL 3.0](dsl-3.0.md) | `approved` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: DSL Version Lifecycle & Multi-Version Runtime](dsl-version-lifecycle.md) | `implemented` | — | — | #860, #861, #862, #863, #864, #865, #866, #867, #868, #869 | — | — | — |
-| [Design: an e2e soak harness for load-dependent failures](e2e-soak-harness.md) | `draft` | — | — | — | — | — | — |
+| [Design: an e2e soak harness for load-dependent failures](e2e-soak-harness.md) | `approved` | — | — | — | #1480, #1481 | — | — |
 | [Design: EvalSuite CI gating, baseline management & alerting](evals-ci-gating.md) | `historical` | — | — | — | — | — | — |
 | [Design: EvalSuite — end-to-end workflow evaluation](evals-suite.md) | `historical` | — | — | — | — | — | — |
 | [External call-out stages](external-call-out-stages.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
@@ -85,6 +85,7 @@ word — read the page, not this table, before depending on it.
 | [Validation & CI Enrichment — closing the false-green gaps](validation-and-ci-enrichment.md) | `approved` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: Versioning & Releases — DSL compatibility, tagged builds, feature matrix](versioning-and-compatibility.md) | `implemented` | — | — | #427, #428, #429, #430, #431, #432, #433, #434 | — | — | — |
 | [Windows Pod Restrictions](windows-pod-restrictions.md) | `implemented` | — | — | #3619 | — | — | — |
+| [Resident worker blob transport](worker-blob-transport.md) | `approved` | — | — | — | #5293 | — | 1b53150b1 (2026-10-02) |
 | [Design: Workflow CD — GitOps config source for the local daemon](workflow-cd.md) | `implemented` | — | — | #454, #455, #456, #457, #458, #459, #460, #461 | — | — | — |
 
 ## `docs/design/v0/`

@@ -35,6 +35,25 @@ func seedRemediationResponseRunBeforePush(t *testing.T, root, runID string, verd
 // (failing-ci, sibling-overlap).
 func seedRemediationResponseRunState(t *testing.T, root, runID string, verdict *apiv1.Verdict, responses string, published *bool) {
 	t.Helper()
+	seedRemediationResponseRunWithReview(t, root, runID, verdict, nil, responses, published)
+}
+
+// inRunReviewVerdict is the in-run reviewer feedback the in-run-additions
+// tests answer with response numbers past the original verdict (#2748).
+var inRunReviewVerdict = apiv1.Verdict{
+	Decision: apiv1.VerdictNeedsChanges,
+	Findings: []apiv1.Finding{{
+		Severity: apiv1.SeverityWarning,
+		Class:    apiv1.FindingSubstantive,
+		Message:  "install the fake Copilot fixture",
+	}},
+}
+
+// seedRemediationResponseRunWithReview additionally records review as an
+// in-run reviewer gate verdict ahead of the implement result, the way the
+// runner records an agentic gate's verdict artifact.
+func seedRemediationResponseRunWithReview(t *testing.T, root, runID string, verdict, review *apiv1.Verdict, responses string, published *bool) {
+	t.Helper()
 	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
 	}, nil)
@@ -53,6 +72,9 @@ func seedRemediationResponseRunState(t *testing.T, root, runID string, verdict *
 	}
 	if _, err := run.RecordArtifact(runID+":gather-pr-context/result", contextData); err != nil {
 		t.Fatalf("record pr-context.json: %v", err)
+	}
+	if review != nil {
+		appendReviewGateVerdict(t, run, *review)
 	}
 	if err := run.Append(journal.Event{
 		Type:    journal.EventStageFinished,
@@ -79,12 +101,29 @@ func seedRemediationResponseRunState(t *testing.T, root, runID string, verdict *
 	}
 }
 
-func respondToFindingsFixture(t *testing.T, verdict apiv1.Verdict, responses string, published bool) (string, *fakeGitHubServer, string) {
+func appendReviewGateVerdict(t *testing.T, run *journal.Run, review apiv1.Verdict) {
 	t.Helper()
-	return respondToFindingsFixtureForVerdict(t, &verdict, responses, published)
+	data, err := json.Marshal(review)
+	if err != nil {
+		t.Fatalf("marshal review verdict: %v", err)
+	}
+	ref, err := run.RecordArtifact("verdict/review-1.json", data)
+	if err != nil {
+		t.Fatalf("record review verdict: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Name: "verdict/review-1.json", Ref: &ref,
+	}); err != nil {
+		t.Fatalf("record review gate.evaluated: %v", err)
+	}
 }
 
-func respondToFindingsFixtureForVerdict(t *testing.T, verdict *apiv1.Verdict, responses string, published bool) (string, *fakeGitHubServer, string) {
+func respondToFindingsFixture(t *testing.T, verdict apiv1.Verdict, responses string, published bool) (string, *fakeGitHubServer, string) {
+	t.Helper()
+	return respondToFindingsFixtureForVerdict(t, &verdict, nil, responses, published)
+}
+
+func respondToFindingsFixtureForVerdict(t *testing.T, verdict, review *apiv1.Verdict, responses string, published bool) (string, *fakeGitHubServer, string) {
 	t.Helper()
 	t.Chdir(t.TempDir())
 	const (
@@ -109,7 +148,7 @@ func respondToFindingsFixtureForVerdict(t *testing.T, verdict *apiv1.Verdict, re
 	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
-	seedRemediationResponseRunState(t, root, runID, verdict, responses, &published)
+	seedRemediationResponseRunWithReview(t, root, runID, verdict, review, responses, &published)
 	return root, server, resultFile
 }
 
@@ -293,6 +332,7 @@ func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
 	tests := []struct {
 		name      string
 		responses string
+		review    *apiv1.Verdict
 		wantCode  int
 		wantText  string
 	}{
@@ -313,8 +353,18 @@ func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
 			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"},` +
 				`{"finding":2,"disposition":"declined","detail":"second does not apply"},` +
 				`{"finding":3,"disposition":"addressed","detail":"installed the fake Copilot fixture the in-run reviewer asked for"}]`,
+			review:   &inRunReviewVerdict,
 			wantCode: 0,
 			wantText: "validated complete finding response account for 2 verdict finding(s) and 1 additional response(s)",
+		},
+		{
+			// #2748: an addition no in-run reviewer raised is a phantom.
+			name: "addition no reviewer raised",
+			responses: `[{"finding":1,"disposition":"addressed","detail":"fixed first"},` +
+				`{"finding":2,"disposition":"declined","detail":"second does not apply"},` +
+				`{"finding":3,"disposition":"addressed","detail":"fixed something nobody asked about"}]`,
+			wantCode: 1,
+			wantText: "names finding 3, but only 2 verdict finding(s) and 0 in-run reviewer finding(s) were raised",
 		},
 	}
 	for _, tt := range tests {
@@ -323,7 +373,7 @@ func TestRespondToFindingsCheckValidatesBeforePush(t *testing.T) {
 			t.Setenv("GOOBERS_RUN_ID", runID)
 			t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 			t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), "finding-response-validation.json"))
-			seedRemediationResponseRunBeforePush(t, root, runID, verdict, tt.responses)
+			seedRemediationResponseRunWithReview(t, root, runID, &verdict, tt.review, tt.responses, nil)
 
 			code, stdout, stderr := runArgs(t, "respond-to-findings", "--check", root)
 			if code != tt.wantCode {
@@ -502,19 +552,20 @@ func TestValidateFindingResponses(t *testing.T) {
 		{name: "malformed", raw: "{", want: "decode JSON"},
 		{name: "duplicate", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":1,"disposition":"declined","detail":"b"}]`, want: "more than once"},
 		{name: "not 1-based", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":0,"disposition":"declined","detail":"b"}]`, want: "1-based finding number"},
-		{name: "unanswered verdict finding", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":3,"disposition":"declined","detail":"b"}]`, want: "verdict finding 2 (second) has no response"},
+		{name: "unanswered verdict finding", raw: `[{"finding":1,"disposition":"addressed","detail":"a"}]`, want: "verdict finding 2 (second) has no response"},
+		{name: "finding no reviewer raised", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":2,"disposition":"declined","detail":"b"},{"finding":3,"disposition":"addressed","detail":"c"}]`, want: "0 in-run reviewer finding(s) were raised"},
 		{name: "bad disposition", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":2,"disposition":"skipped","detail":"b"}]`, want: "addressed or declined"},
 		{name: "missing detail", raw: `[{"finding":1,"disposition":"addressed","detail":"a"},{"finding":2,"disposition":"declined","detail":" "}]`, want: "no detail"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := validateFindingResponses(findings, tt.raw); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := validateFindingResponses(findings, nil, tt.raw); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("validateFindingResponses error = %v, want containing %q", err, tt.want)
 			}
 		})
 	}
 
-	responses, err := validateFindingResponses(findings,
+	responses, err := validateFindingResponses(findings, nil,
 		`[{"finding":2,"disposition":"DECLINED","detail":" reason "},{"finding":1,"disposition":"addressed","detail":" change "}]`)
 	if err != nil {
 		t.Fatalf("valid responses: %v", err)
@@ -524,16 +575,20 @@ func TestValidateFindingResponses(t *testing.T) {
 		t.Errorf("normalized responses = %+v", responses)
 	}
 
-	empty, err := validateFindingResponses(nil, "")
+	empty, err := validateFindingResponses(nil, nil, "")
 	if err != nil || len(empty) != 0 {
 		t.Errorf("empty verdict responses = %+v, err = %v; want empty success", empty, err)
 	}
 }
 
 // Remediation causes without a merge review (failing-ci, sibling-overlap)
-// carry no verdict, so an implementer that documents its work must not be
-// failed for having more than the zero responses the verdict implies.
+// carry no verdict, so responses are optional there; any that are given must
+// still answer a finding an in-run reviewer raised (#2748).
 func TestValidateFindingResponsesWithoutVerdictAcceptsOptionalAccount(t *testing.T) {
+	inRun := []apiv1.Finding{
+		{Severity: apiv1.SeverityWarning, Message: "install the fixture"},
+		{Severity: apiv1.SeverityInfo, Message: "sibling overlap"},
+	}
 	accepted := []struct {
 		name string
 		raw  string
@@ -548,14 +603,14 @@ func TestValidateFindingResponsesWithoutVerdictAcceptsOptionalAccount(t *testing
 		},
 		{
 			name: "documents several",
-			raw: `[{"finding":1,"disposition":"addressed","detail":"Fixed the failing CI job."},` +
+			raw: `[{"finding":1,"disposition":"addressed","detail":"Installed the fixture."},` +
 				`{"finding":2,"disposition":"declined","detail":"The sibling overlap is intentional."}]`,
 			want: 2,
 		},
 	}
 	for _, tt := range accepted {
 		t.Run(tt.name, func(t *testing.T) {
-			responses, err := validateFindingResponses(nil, tt.raw)
+			responses, err := validateFindingResponses(nil, inRun, tt.raw)
 			if err != nil {
 				t.Fatalf("validateFindingResponses error = %v, want nil for a verdictless remediation", err)
 			}
@@ -574,10 +629,11 @@ func TestValidateFindingResponsesWithoutVerdictAcceptsOptionalAccount(t *testing
 		{name: "no detail", raw: `[{"finding":1,"disposition":"addressed","detail":" "}]`, want: "no detail"},
 		{name: "bad disposition", raw: `[{"finding":1,"disposition":"skipped","detail":"a"}]`, want: "addressed or declined"},
 		{name: "not 1-based", raw: `[{"finding":0,"disposition":"addressed","detail":"a"}]`, want: "1-based finding number"},
+		{name: "past captured in-run findings", raw: `[{"finding":3,"disposition":"addressed","detail":"a"}]`, want: "2 in-run reviewer finding(s) were raised"},
 	}
 	for _, tt := range rejected {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := validateFindingResponses(nil, tt.raw); err == nil || !strings.Contains(err.Error(), tt.want) {
+			if _, err := validateFindingResponses(nil, inRun, tt.raw); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("validateFindingResponses error = %v, want containing %q", err, tt.want)
 			}
 		})
@@ -592,7 +648,11 @@ func TestValidateFindingResponsesAcceptsInRunReviewAdditions(t *testing.T) {
 		{Severity: apiv1.SeverityError, Message: "first"},
 		{Severity: apiv1.SeverityWarning, Message: "second"},
 	}
-	responses, err := validateFindingResponses(findings,
+	inRun := []apiv1.Finding{
+		{Severity: apiv1.SeverityWarning, Message: "third"},
+		{Severity: apiv1.SeverityWarning, Message: "fourth"},
+	}
+	responses, err := validateFindingResponses(findings, inRun,
 		`[{"finding":3,"disposition":"addressed","detail":"answers the in-run reviewer"},`+
 			`{"finding":1,"disposition":"addressed","detail":"fixed first"},`+
 			`{"finding":2,"disposition":"declined","detail":"second does not apply"}]`)
@@ -606,18 +666,29 @@ func TestValidateFindingResponsesAcceptsInRunReviewAdditions(t *testing.T) {
 
 	// Every verdict finding still needs its own response; extras do not
 	// substitute for one.
-	_, err = validateFindingResponses(findings,
+	_, err = validateFindingResponses(findings, inRun,
 		`[{"finding":1,"disposition":"addressed","detail":"fixed first"},`+
 			`{"finding":3,"disposition":"addressed","detail":"answers the in-run reviewer"},`+
 			`{"finding":4,"disposition":"addressed","detail":"and another"}]`)
 	if err == nil || !strings.Contains(err.Error(), "verdict finding 2 (second) has no response") {
 		t.Fatalf("validateFindingResponses error = %v, want the unanswered verdict finding named", err)
 	}
+
+	// #2748: additions are bounded by the captured in-run findings; a
+	// response past them names a finding no reviewer raised.
+	_, err = validateFindingResponses(findings, inRun,
+		`[{"finding":1,"disposition":"addressed","detail":"fixed first"},`+
+			`{"finding":2,"disposition":"declined","detail":"second does not apply"},`+
+			`{"finding":5,"disposition":"addressed","detail":"a finding nobody raised"}]`)
+	if err == nil || !strings.Contains(err.Error(), "names finding 5, but only 2 verdict finding(s) and 2 in-run reviewer finding(s) were raised") {
+		t.Fatalf("validateFindingResponses error = %v, want the phantom finding rejected", err)
+	}
 }
 
 func TestRespondToFindingsPostsAccountWithoutOriginalVerdict(t *testing.T) {
 	responses := `[{"finding":1,"disposition":"addressed","detail":"Installed the fake Copilot fixture the in-run reviewer asked for."}]`
-	root, server, resultFile := respondToFindingsFixtureForVerdict(t, nil, responses, true)
+	review := inRunReviewVerdict
+	root, server, resultFile := respondToFindingsFixtureForVerdict(t, nil, &review, responses, true)
 
 	code, stdout, stderr := runArgs(t, "respond-to-findings", root)
 	if code != 0 {
@@ -648,8 +719,9 @@ func TestRespondToFindingsPostsAccountWithoutOriginalVerdict(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("unmarshal response result: %v", err)
 	}
-	if result.FindingCount != 0 || len(result.Findings) != 1 || result.Findings[0].Original.Message != "" {
-		t.Errorf("result = %+v, want a verdictless account with one unbound response", result)
+	if result.FindingCount != 0 || len(result.Findings) != 1 ||
+		result.Findings[0].Original.Message != inRunReviewVerdict.Findings[0].Message {
+		t.Errorf("result = %+v, want a verdictless account with one response bound to the in-run finding", result)
 	}
 }
 
@@ -665,7 +737,8 @@ func TestRespondToFindingsRecordsInRunAdditionsAlongsideVerdictAccount(t *testin
 	}
 	responses := `[{"finding":1,"disposition":"addressed","detail":"Added an explicit empty-input guard."},` +
 		`{"finding":2,"disposition":"addressed","detail":"Renamed the helper the in-run reviewer flagged."}]`
-	root, server, resultFile := respondToFindingsFixture(t, verdict, responses, true)
+	review := inRunReviewVerdict
+	root, server, resultFile := respondToFindingsFixtureForVerdict(t, &verdict, &review, responses, true)
 
 	code, stdout, stderr := runArgs(t, "respond-to-findings", root)
 	if code != 0 {
@@ -703,7 +776,57 @@ func TestRespondToFindingsRecordsInRunAdditionsAlongsideVerdictAccount(t *testin
 	if result.FindingCount != 1 || len(result.Findings) != 2 {
 		t.Fatalf("result = %+v, want one verdict finding and two recorded responses", result)
 	}
-	if result.Findings[0].Original.Message != "validate empty input" || result.Findings[1].Original.Message != "" {
-		t.Errorf("recorded originals = %+v, want only the verdict response bound to a finding", result.Findings)
+	if result.Findings[0].Original.Message != "validate empty input" ||
+		result.Findings[1].Original.Message != inRunReviewVerdict.Findings[0].Message {
+		t.Errorf("recorded originals = %+v, want each response bound to the finding it answers", result.Findings)
+	}
+}
+
+// TestReadRemediationResponseInputsCapturesOnlyPriorReviews pins #2748's
+// ground truth: in-run findings come from the runner-recorded reviewer
+// verdict the latest implement result was answering — the last one before it
+// — never from a superseded earlier pass or a later review.
+func TestReadRemediationResponseInputsCapturesOnlyPriorReviews(t *testing.T) {
+	const runID = "run-2748"
+	root := initDemo(t)
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	contextData, err := json.Marshal(apiv1.RemediationBrief{Schema: apiv1.RemediationBriefVersion, Integrity: apiv1.IntegrityUnapproved})
+	if err != nil {
+		t.Fatalf("marshal brief: %v", err)
+	}
+	if _, err := run.RecordArtifact(runID+":gather-pr-context/result", contextData); err != nil {
+		t.Fatalf("record brief: %v", err)
+	}
+	earlier := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{
+		{Severity: apiv1.SeverityError, Message: "superseded first pass"},
+		{Severity: apiv1.SeverityError, Message: "superseded second finding"},
+	}}
+	appendReviewGateVerdict(t, run, earlier)
+	appendReviewGateVerdict(t, run, inRunReviewVerdict)
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess),
+		Outputs: map[string]any{findingResponsesOutput: "[]"},
+	}); err != nil {
+		t.Fatalf("record implement: %v", err)
+	}
+	later := apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Findings: []apiv1.Finding{{Severity: apiv1.SeverityError, Message: "after implement"}}}
+	appendReviewGateVerdict(t, run, later)
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	_, inRun, _, _, err := readRemediationResponseInputs(root, runID, false)
+	if err != nil {
+		t.Fatalf("readRemediationResponseInputs: %v", err)
+	}
+	if len(inRun) != 1 || inRun[0].Message != inRunReviewVerdict.Findings[0].Message {
+		t.Fatalf("in-run findings = %+v, want only the review that preceded the implement result", inRun)
 	}
 }
