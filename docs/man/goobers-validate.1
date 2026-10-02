@@ -15,7 +15,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -26,7 +26,10 @@ it also reports the identity the credential authenticates as, fails when
 that identity lacks Contribute, Contribute to pull requests or Create
 branch, and warns on a missing Force push, a held policy bypass, a blocking
 Prefix policy over refs/heads/, and backlog.doneStates state names the
-Boards project does not have; these checks only read. --check-dispatch-namespaces additionally verifies, for each gaggle, that
+Boards project does not have; these checks only read. It also probes
+every credentials: capability override that replaces a repository token
+against each gaggle's target repository, since an override applies to
+every gaggle. --check-dispatch-namespaces additionally verifies, for each gaggle, that
 its declared isolation.namespace exists and this kubeconfig's credentials
 hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check
 the worker runs at startup, run here ahead of a rollout; silently skipped

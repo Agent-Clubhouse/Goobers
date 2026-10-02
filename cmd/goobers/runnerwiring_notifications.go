@@ -265,7 +265,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
-		ctx = withDaemonAttributionTask(ctx, o.Stage)
+		ctx = terminalHandlerAttributionContext(ctx, l, o.RunID, o.Stage)
 		itemIDs := []string{o.ItemID}
 		if o.ItemID == "" {
 			ids, err := claimedItemIDsForRun(l, o.RunID)
@@ -400,7 +400,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
-		ctx = withDaemonAttributionTask(ctx, o.Stage)
+		ctx = terminalHandlerAttributionContext(ctx, l, o.RunID, o.Stage)
 		// #3361/#3364: an infra-fault terminal (credential materialization, git,
 		// network, lock contention) is weather, not evidence about the item —
 		// it must not accumulate failure-streak strikes that eventually park
@@ -660,6 +660,28 @@ func withDaemonAttributionTask(ctx context.Context, task string) context.Context
 	attribution.Task = task
 	attribution.Goober = "runner"
 	return providers.WithAttributionContext(ctx, attribution)
+}
+
+// terminalHandlerAttributionContext attributes a terminal (failed/blocked)
+// handler's provider writes to the run it is handling (#5178). The runner
+// normally hands over a context that already carries the run's attribution;
+// when it does not (a terminal reached before the run attached it, or through
+// a path that never did), the run's own durable journal identity supplies it,
+// so failure handling is never refused by the guard it exists to satisfy. A
+// run with no readable identity keeps the unattributed context and the
+// daemon-write guard stays fail-closed.
+func terminalHandlerAttributionContext(ctx context.Context, l instance.Layout, runID, task string) context.Context {
+	if _, ok := providers.AttributionFromContext(ctx); ok {
+		return withDaemonAttributionTask(ctx, task)
+	}
+	if strings.TrimSpace(runID) == "" {
+		return ctx
+	}
+	attributed, err := attributionContextForRun(ctx, l, runID, task)
+	if err != nil {
+		return ctx
+	}
+	return attributed
 }
 
 func attributionContextForRun(ctx context.Context, l instance.Layout, runID, task string) (context.Context, error) {

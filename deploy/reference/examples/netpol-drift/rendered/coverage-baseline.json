@@ -1,0 +1,17 @@
+{
+  "unit": "addresses",
+  "classes": {
+    "netallow-tmpeph": {
+      "restrictions": "network:allowlist,tmp:ephemeral",
+      "modelEndpointAddresses": "1"
+    },
+    "netnone": {
+      "restrictions": "network:none",
+      "modelEndpointAddresses": "0"
+    },
+    "unrestricted": {
+      "restrictions": "",
+      "modelEndpointAddresses": "1"
+    }
+  }
+}

@@ -373,7 +373,9 @@ func tutorConfigVersions(configDir, gaggle string, names []string, environment h
 	}
 	machines, gooberDigests, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, environment, harnessCommand,
-		false, modelCredential,
+		// nil: this computes version axes for configs the daemon already
+		// admitted; connector authority lives at the daemon/validate gate.
+		false, modelCredential, nil,
 	)
 	if err != nil {
 		return nil, err

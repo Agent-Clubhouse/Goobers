@@ -62,7 +62,7 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 	if captureErr := captureTerminalRunBranch(l, wtMgr, runID); captureErr != nil {
 		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: capture terminal run branch for %s: %w", worktree.ErrCleanupDeferred, runID, captureErr))
 	}
-	if renewErr := renewTerminalRecovery(l, runID); renewErr != nil {
+	if renewErr := renewTerminalRecovery(l, wtMgr, runID); renewErr != nil {
 		worktreeErr = errors.Join(worktreeErr, fmt.Errorf("%w: renew terminal recovery for %s: %w", worktree.ErrCleanupDeferred, runID, renewErr))
 	}
 

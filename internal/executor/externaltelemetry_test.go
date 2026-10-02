@@ -47,6 +47,11 @@ func TestTelemetryQueryExecutorRunsFakePointQuery(t *testing.T) {
 		recorder.integrity[ExternalTelemetryArtifactName] != apiv1.IntegrityUnapproved {
 		t.Fatalf("external telemetry integrity = %q, recorded %q", result.Artifacts[0].Integrity, recorder.integrity[ExternalTelemetryArtifactName])
 	}
+	// The outputs are the same connector data, so the envelope carries the
+	// same grade for the runner to keep (#2979).
+	if result.Integrity != apiv1.IntegrityUnapproved {
+		t.Fatalf("result integrity = %q, want %q", result.Integrity, apiv1.IntegrityUnapproved)
+	}
 	var artifact externaltelemetry.ResultArtifact
 	if err := json.Unmarshal(recorder.recorded[ExternalTelemetryArtifactName], &artifact); err != nil {
 		t.Fatal(err)
@@ -106,7 +111,8 @@ func TestTelemetryQueryExecutorReturnsTypedFailureArtifact(t *testing.T) {
 	}
 	if result.Status != apiv1.ResultFailure || result.Error == nil ||
 		result.Error.Code != "external_telemetry_schema_mismatch" ||
-		result.Outputs[OutputTelemetryDataState] != "failed" {
+		result.Outputs[OutputTelemetryDataState] != "failed" ||
+		result.Integrity != apiv1.IntegrityUnapproved {
 		t.Fatalf("result = %+v", result)
 	}
 	var artifact externaltelemetry.ResultArtifact

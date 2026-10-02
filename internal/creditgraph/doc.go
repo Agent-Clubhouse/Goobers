@@ -11,8 +11,10 @@
 // STATUS: the read service uses Build and Attribute to reconstruct per-run
 // attribution from journals and spans, then aggregates those observations by
 // effective version and workload. The older internal/readmodel credit rollup
-// remains a separate cross-run operational ranking. Their remaining
-// reconciliation is tracked by issue #4523; see docs/design/credit-graph.md.
+// remains a separate cross-run operational ranking. Where the two answer the
+// same question they must agree; readmodel_conformance_test.go pins that, and
+// docs/design/credit-graph.md ("Conformance and compatibility", #6355) states
+// the overlap and the data-compatibility contract.
 //
 // The one rule the projection never breaks is that missing provenance is
 // represented, never invented. A journal that does not record a link is

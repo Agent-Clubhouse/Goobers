@@ -567,7 +567,9 @@ type RepoRef struct {
 	Provider string `json:"provider" yaml:"provider"`
 	// BaseURL is the forge root URL (e.g. https://gitea.example.com). Required
 	// when provider=gitea so stage subprocesses can resolve the self-hosted
-	// host from config; omitted for github/ado.
+	// host from config; omitted for ado. It is rejected for github: GitHub
+	// Enterprise Server is unsupported, so a github repo is always github.com
+	// (#6347).
 	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Owner is the GitHub owner or Azure DevOps organization.
 	Owner string `json:"owner" yaml:"owner"`
@@ -2188,24 +2190,22 @@ type engineEnvResolution struct {
 }
 
 func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (EngineConfig, engineEnvResolution, error) {
-	resolved := EngineConfig{
-		HostPort:  DefaultTemporalHostPort,
-		Namespace: DefaultTemporalNamespace,
-		TaskQueue: DefaultEngineTaskQueue,
-	}
+	// Start from a full copy of the authored block so every YAML-only field
+	// (HITL, TLS, WorkerVersioning, and whatever is added next) survives
+	// resolution without being re-listed here (#6012). Only the three
+	// env-backed scalars below get defaults and overrides.
+	var resolved EngineConfig
 	if c.Engine != nil {
-		if c.Engine.HostPort != "" {
-			resolved.HostPort = c.Engine.HostPort
-		}
-		if c.Engine.Namespace != "" {
-			resolved.Namespace = c.Engine.Namespace
-		}
-		if c.Engine.TaskQueue != "" {
-			resolved.TaskQueue = c.Engine.TaskQueue
-		}
-		resolved.HITL = c.Engine.HITL
-		resolved.TLS = c.Engine.TLS
-		resolved.WorkerVersioning = c.Engine.WorkerVersioning
+		resolved = *c.Engine
+	}
+	if resolved.HostPort == "" {
+		resolved.HostPort = DefaultTemporalHostPort
+	}
+	if resolved.Namespace == "" {
+		resolved.Namespace = DefaultTemporalNamespace
+	}
+	if resolved.TaskQueue == "" {
+		resolved.TaskQueue = DefaultEngineTaskQueue
 	}
 	var envResolution engineEnvResolution
 	overrides := []struct {
@@ -2282,6 +2282,9 @@ func (c EngineConfig) Validate() error {
 	host, port, err := net.SplitHostPort(c.HostPort)
 	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
 		return fmt.Errorf("hostPort %q must be in host:port form", c.HostPort)
+	}
+	if err := validateCollectorPort(port); err != nil {
+		return fmt.Errorf("hostPort %q: %w", c.HostPort, err)
 	}
 	if strings.TrimSpace(c.Namespace) != c.Namespace || c.Namespace == "" {
 		return fmt.Errorf("namespace must be non-empty without leading or trailing whitespace")

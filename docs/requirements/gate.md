@@ -41,8 +41,9 @@ journal events either way.
   conditionally; a failing/negative outcome MUST follow a defined branch (retry, route to
   fix, escalate, abort) — never a silent pass.
 - **GT-003 (MUST):** A Gate MUST support all three evaluator kinds: automated, agentic,
-  human. *(All tiers; the human evaluator's implementation lands V1 — automated and
-  agentic ship at V0.)*
+  human. *(All tiers; all three ship — `EvaluatorAutomated`, `EvaluatorAgentic` and
+  `EvaluatorHuman` in `api/v1alpha1/workflow_types.go`; the human evaluator's pause/decision
+  path is exercised by `internal/runner/human_gate_test.go`.)*
 - **GT-016 (MUST):** A Gate MUST have **exactly one** evaluator. Combined conditions are
   expressed by **chaining** gates in sequence (e.g. automated check → human approval),
   not by bundling evaluators into one gate.

@@ -82,7 +82,7 @@ execution. Two runners implement the same contract:
 > compiled state machine as a Temporal workflow, `internal/workerhost` runs the
 > workers, and `internal/dispatcher` dispatches agentic stages to ephemeral
 > Kubernetes pods. The prescriptive part that remains is the operator/GitOps
-> config-delivery path in §10 and the full mode-3 description owned by #4240.
+> config-delivery path in §10 and the full mode-3 description owned by #6352.
 
 - The same compiled state machine hosted as a Temporal workflow; stages become
   activities dispatched to distributed workers; agentic stages run in ephemeral
@@ -688,7 +688,7 @@ Still prescriptive: reviving the operator + ArgoCD/GitOps config-delivery path
 (`internal/operator`, `cmd/operator`, `cmd/config-sync`, `infra/`, still
 quarantined per §11) and the remaining Azure substrate drop-ins (ADX exporter,
 Entra) per §10. The authoritative current-state description of cloud execution
-is owned by [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240).
+is owned by [#6352](https://github.com/Agent-Clubhouse/Goobers/issues/6352).
 
 ## 13. Relationship to the requirement specs
 

@@ -26,8 +26,10 @@ is delivered to a running instance at each deployment tier.
 - **Config delivery by tier — same schemas everywhere:**
   - *(Tiers 1–2)*: a **local config directory** loaded and validated by the local
     runner daemon at startup; edits (usually landing via git + PRs) take effect on
-    daemon restart today, with no redeploy machinery. Watch/hot-reload is V1
-    prescriptive, delivered by Workflow CD (`../design/workflow-cd.md`; `CFG-020`).
+    daemon restart, with no redeploy machinery. The running daemon also polls the
+    directory and hot-reloads accepted changes (`configReloader` in
+    `cmd/goobers/configreload.go`); a rejected reload keeps the prior generation. Workflow
+    CD (`../design/workflow-cd.md`; `CFG-020`) covers the delivery side.
   - **Tier 3 (V2):** **ArgoCD sync → CRDs → the Goobers operator** — the cloud
     drop-in for the config-delivery seam (`ARCHITECTURE.md §10`). The definition
     schemas are identical; only delivery changes.

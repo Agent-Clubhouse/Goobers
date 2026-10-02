@@ -25,6 +25,7 @@ import (
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const (
@@ -232,7 +233,9 @@ func (s *TokenSource) mintAndCacheLocked(ctx context.Context, now time.Time) (st
 		return "", time.Time{}, err
 	}
 	if s.cfg.Registrar != nil {
-		s.cfg.Registrar.Register([]byte(token))
+		// Carry GitHub's stated expiry so a daemon-lifetime registry can
+		// retire the token once it is dead (#2656).
+		journal.RegisterSecretUntil(s.cfg.Registrar, []byte(token), expiresAt)
 	}
 	s.token, s.expiresAt = token, expiresAt
 	return token, expiresAt, nil

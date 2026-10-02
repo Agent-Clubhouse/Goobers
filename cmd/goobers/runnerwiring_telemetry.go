@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -159,6 +160,15 @@ type teeRegistrar struct {
 func (t teeRegistrar) Register(secret []byte) {
 	t.run.Register(secret)
 	t.shared.Register(secret)
+}
+
+// RegisterUntil forwards an issuer-stated expiry so the instance-lifetime
+// shared registry can retire the value (#2656). The run's own registry is
+// bounded by the run's lifetime already, so it keeps the value permanently: a
+// parked run that resumes long after the token expired still redacts it.
+func (t teeRegistrar) RegisterUntil(secret []byte, expiresAt time.Time) {
+	t.run.Register(secret)
+	t.shared.RegisterUntil(secret, expiresAt)
 }
 
 func configureOTLP(ctx context.Context, cfg *telemetry.Config, otlp instance.OTLPConfig, registry *journal.RegistryScrubber, stores credentials.StoreResolver) error {

@@ -175,8 +175,8 @@ These are seam contracts, satisfied by both runners; the pod wording is the tier
   autoscaler + HPA) under load.
 - **DEP-Q5:** ~~Build-vs-buy reconciliation tooling~~ **Resolved:** ArgoCD + Goobers
   operator (CRDs) as the tier-3 config delivery; at tiers 1–2 delivery is the local
-  `config/` directory (load-at-startup today; watch is V1 via Workflow CD —
-  `ARCHITECTURE.md §10`). See `DEP-012`, `DEP-025`.
+  `config/` directory (loaded at startup and hot-reloaded on accepted change by
+  `configReloader`, `cmd/goobers/configreload.go`; `ARCHITECTURE.md §10`). See `DEP-012`, `DEP-025`.
 - **DEP-Q6:** ~~Daemon supervision at tiers 1–2~~ **Resolved (2026-07-20):** supervision
   units ship per platform — **systemd** user service (Linux,
   `packaging/systemd/goobers.service`), **launchd** LaunchAgent (macOS,

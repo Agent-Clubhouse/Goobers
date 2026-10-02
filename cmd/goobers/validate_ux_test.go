@@ -907,8 +907,19 @@ func TestValidateWorkflowOverrideChangesSiblingOverlapScope(t *testing.T) {
 	// replaces the gaggle default ("area:frontend") for this workflow, so it
 	// no longer overlaps the sibling's declared "area:frontend" — proving
 	// the override, not the gaggle default, drove the comparison.
-	if strings.Contains(stdout, "SIB001") {
-		t.Fatalf("validate output unexpectedly warned despite the workflow's own requireLabels override:\n%s", stdout)
+	if strings.Contains(stdout, "overlaps declared sibling") {
+		t.Fatalf("validate output warned on overlap despite the workflow's own requireLabels override:\n%s", stdout)
+	}
+	// Replacing the default drops the gaggle's partition label, and the
+	// disjoint override excludes nothing, so the task still claims items the
+	// sibling owns (#3286).
+	for _, want := range []string{
+		"drops partition label(s) [area:frontend]",
+		`add excludeLabels: "area:frontend"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
 	}
 }
 

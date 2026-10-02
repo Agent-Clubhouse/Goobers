@@ -12,7 +12,11 @@ Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
 or --transcript to select one stage. Use --summary for run metadata and
 review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
-events until it finishes; --json --follow emits JSON Lines (default path
+events until it finishes; --follow --transcripts streams safely redacted
+checkpoints (up to one minute apart) and the canonical final transcript.
+Use --after-seq=<seq> with transcript follow to resume after a journal record.
+Final records replace their partial capture; --json emits JSON Lines.
+Ordinary --json --follow emits event JSON Lines (default path
 "."). Continuation traces include source/continuation links, resume target,
 reused branch, injected input names, and historical repass accounting.
 Remediation escalations include the typed outcome, attempted flag,

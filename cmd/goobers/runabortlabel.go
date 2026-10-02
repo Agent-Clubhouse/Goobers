@@ -85,19 +85,16 @@ var newGiteaRunAbortLabelProvider = func(baseURL string, source providers.TokenS
 // kind must fail loudly rather than fall through to a GitHub call against a
 // non-GitHub forge.
 func newTerminalRunAbortLabelProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource) (workItemUpdater, error) {
-	repo := terminalRepositoryRefForProject(cfg, project)
-	switch repo.Provider {
-	case providers.ProviderGitea:
-		baseURL, err := terminalGiteaBaseURLForProject(cfg, project)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaRunAbortLabelProvider(baseURL, source), nil
-	case providers.ProviderGitHub:
-		return newRunAbortLabelProvider(source), nil
-	default:
-		return nil, fmt.Errorf("run-abort labeling does not support repository provider %q", repo.Provider)
-	}
+	return terminalProviderForProject(
+		cfg,
+		project,
+		source,
+		newRunAbortLabelProvider,
+		newGiteaRunAbortLabelProvider,
+		func(kind providers.ProviderKind) error {
+			return fmt.Errorf("run-abort labeling does not support repository provider %q", kind)
+		},
+	)
 }
 
 // buildTerminalRunAbortLabeler mirrors buildTerminalBranchDelete's shape: the

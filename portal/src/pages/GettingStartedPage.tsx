@@ -26,6 +26,8 @@ const providerAuthGuideURLs = {
  *  stops answering cannot stall the poll loop indefinitely. */
 const stateRequestTimeoutMs = 15_000;
 type RepositorySource = "local" | "remote";
+/** Shell dialect the walkthrough renders commands for. */
+type ShellKind = "powershell" | "posix";
 type QueryState =
   | { status: "loading" }
   | { status: "unavailable" }
@@ -111,6 +113,19 @@ function workflowOffered(workflow: GuidedWorkflow, provider: GuidedProvider): bo
   }
 }
 
+/** The shell the host platform most likely uses; the user can override it. */
+function detectedShell(platform: string): ShellKind {
+  return platform === "windows" ? "powershell" : "posix";
+}
+
+/** Renders `command` with one environment variable set for that invocation, in
+ *  the syntax of the selected shell. */
+function withEnvironment(shell: ShellKind, name: string, value: string, command: string): string {
+  return shell === "powershell"
+    ? `$env:${name} = "${value}"; ${command}`
+    : `${name}=${value} ${command}`;
+}
+
 // The wizard's default selection per provider. Azure DevOps mirrors
 // `goobers init --template=standard --provider=ado`, which adds merge-review.
 function defaultGuidedWorkflows(provider: GuidedProvider): GuidedWorkflow[] {
@@ -164,6 +179,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const [pullRequestCI, setPullRequestCI] = useSessionState(
     "goobers-wizard-pull-request-ci",
     false,
+  );
+  const [shellOverride, setShellOverride] = useSessionState<ShellKind | null>(
+    "goobers-wizard-shell",
+    null,
   );
   const [harness, setHarness] = useSessionState<"copilot" | "claude-code">(
     "goobers-wizard-harness",
@@ -410,6 +429,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   }
 
   const currentPage = pages[Math.min(pageIndex, pages.length - 1)];
+  const shell =
+    shellOverride === "powershell" || shellOverride === "posix"
+      ? shellOverride
+      : detectedShell(state.platform);
   const instanceReady = state.instanceExists || initResult?.exitCode === 0;
   const validationPassed = validateResult?.exitCode === 0;
   const repositoryReady =
@@ -802,8 +825,16 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                           <li>
                             Grant the least-privilege permissions in{" "}
                             <code>docs/guides/github-token-scopes.md</code>, generate the
-                            token, then restart this wizard with{" "}
-                            <code>GH_TOKEN=&lt;your token&gt; goobers init --guided</code>.
+                            token, then restart this wizard:
+                            <ShellSelector onChange={setShellOverride} value={shell} />
+                            <RecoveryCommand
+                              command={withEnvironment(
+                                shell,
+                                "GH_TOKEN",
+                                "<your token>",
+                                "goobers init --guided",
+                              )}
+                            />
                           </li>
                         </ol>
                       </>
@@ -1489,6 +1520,35 @@ function WizardPage({
       <h2>{title}</h2>
       {children}
     </section>
+  );
+}
+
+function ShellSelector({
+  onChange,
+  value,
+}: {
+  onChange: (shell: ShellKind) => void;
+  value: ShellKind;
+}) {
+  const choices: { id: ShellKind; label: string }[] = [
+    { id: "powershell", label: "PowerShell" },
+    { id: "posix", label: "Bash / zsh" },
+  ];
+  return (
+    <fieldset className="guided-radio-group guided-shell-selector">
+      <legend>Shell</legend>
+      {choices.map((choice) => (
+        <label data-selected={value === choice.id} key={choice.id}>
+          <input
+            checked={value === choice.id}
+            name="guided-shell"
+            onChange={() => onChange(choice.id)}
+            type="radio"
+          />
+          <span>{choice.label}</span>
+        </label>
+      ))}
+    </fieldset>
   );
 }
 

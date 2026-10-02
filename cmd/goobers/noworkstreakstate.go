@@ -51,9 +51,17 @@ const (
 // no explanation attached — the second half of #5379, which observed that the
 // agentic stage journaled `status: no-work` with no outputs at all, leaving an
 // operator unable to tell an unactionable item from a misread one.
+//
+// Verdict and Evidence (#5643) carry the stage's own classification of its
+// no-work answer (for example "already-fixed") and the evidence it cited (for
+// example an existing commit). The record is the durable per-item verdict
+// artifact: query-backlog hands it to the next run on the item, and a later
+// verdict that disagrees with it is flagged on the issue.
 type noWorkStreakRecord struct {
 	Count     int       `json:"count"`
 	Reason    string    `json:"reason,omitempty"`
+	Verdict   string    `json:"verdict,omitempty"`
+	Evidence  string    `json:"evidence,omitempty"`
 	Stage     string    `json:"stage,omitempty"`
 	RunID     string    `json:"runId,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -99,42 +107,42 @@ func updateNoWorkStreakRecord(
 }
 
 // incrementNoWorkStreak advances an item's repeated-no-work count by one
-// inside a single compare-and-swap and returns the resulting count, so a
-// concurrent terminal for the same item cannot lose an increment the way a
-// read-then-write pair would.
+// inside a single compare-and-swap and records terminal's verdict, returning
+// the record it wrote and the record it replaced, so a concurrent terminal for
+// the same item cannot lose an increment the way a read-then-write pair would.
 //
 // This is the load/modify/store split's counterpart to the failure streak's
 // separate loadFailureStreakCount/writeFailureStreakCount: that pair is safe
 // there because the daemon serializes failure terminals per item, but the
 // no-work path is reached from completed terminals that carry no such
 // guarantee, so the increment stays inside the CAS.
-// The resulting reason is returned alongside the count, from the SAME winning
-// CAS invocation. Re-reading the record afterwards to recover it would open a
-// read-after-write race: a concurrent terminal for the same item landing
-// between the two calls would make the rendered count and the quoted reason
-// come from different versions of the record — or, after a concurrent reset,
-// quote nothing while claiming a full streak.
+// Both records come from the SAME winning CAS invocation. Re-reading the
+// record afterwards would open a read-after-write race: a concurrent terminal
+// for the same item landing between the two calls would make the rendered
+// count and the quoted reason come from different versions of the record — or,
+// after a concurrent reset, quote nothing while claiming a full streak.
 func incrementNoWorkStreak(
 	ctx context.Context,
 	l instance.Layout,
 	repo providers.RepositoryRef,
 	itemID string,
-	runID, stage, reason string,
-) (int, string, error) {
+	runID string,
+	terminal noWorkTerminal,
+) (next, previous noWorkStreakRecord, err error) {
 	store, err := openStageStateStore(l)
 	if err != nil {
-		return 0, "", fmt.Errorf("open no-work-streak state: %w", err)
+		return noWorkStreakRecord{}, noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
 	}
 	key := noWorkStreakKey(repo, itemID)
-	var count int
-	var recorded string
 	if err := updateNoWorkStreakRecord(ctx, store, key,
 		func(current noWorkStreakRecord) (noWorkStreakRecord, bool, error) {
-			count = current.Count + 1
-			next := noWorkStreakRecord{
-				Count:     count,
-				Reason:    reason,
-				Stage:     stage,
+			previous = current
+			next = noWorkStreakRecord{
+				Count:     current.Count + 1,
+				Reason:    terminal.reason,
+				Verdict:   terminal.verdict,
+				Evidence:  terminal.evidence,
+				Stage:     terminal.stage,
 				RunID:     runID,
 				UpdatedAt: time.Now().UTC(),
 			}
@@ -144,35 +152,64 @@ func incrementNoWorkStreak(
 			if next.Reason == "" {
 				next.Reason = current.Reason
 			}
-			recorded = next.Reason
 			return next, true, nil
 		}); err != nil {
-		return 0, "", err
+		return noWorkStreakRecord{}, noWorkStreakRecord{}, err
 	}
-	return count, recorded, nil
+	return next, previous, nil
+}
+
+// loadNoWorkStreakRecord reads an item's recorded no-work verdict, the zero
+// record when it has none. query-backlog uses it to hand the verdict to the
+// next run on the item (#5643); the park path never re-reads (see
+// incrementNoWorkStreak).
+func loadNoWorkStreakRecord(
+	ctx context.Context,
+	l instance.Layout,
+	repo providers.RepositoryRef,
+	itemID string,
+) (noWorkStreakRecord, error) {
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
+	}
+	key := noWorkStreakKey(repo, itemID)
+	value, err := store.Get(ctx, noWorkStreakStateKey(key))
+	if err != nil {
+		return noWorkStreakRecord{}, fmt.Errorf("read no-work-streak state for %s#%s: %w", repo.Name, itemID, err)
+	}
+	record, _, err := decodeKeyedStateRecord(value, key, noWorkStreakRecordSpec)
+	return record, err
 }
 
 // resetNoWorkStreakState clears an item's repeated-no-work count after a
-// productive completion. Idempotent by construction: an already-zero record
+// productive completion and returns the record it cleared (the zero record
+// when there was none), so the caller can flag the verdict this run
+// contradicted (#5643). Idempotent by construction: an already-zero record
 // (including an absent key) writes nothing, so the reset can be replayed by a
-// retried terminal notification without churning the plane.
+// retried terminal notification without churning the plane — and a replay
+// returns the zero record, so the contradiction is flagged once.
 func resetNoWorkStreakState(
 	ctx context.Context,
 	l instance.Layout,
 	repo providers.RepositoryRef,
 	itemID string,
 	runID string,
-) error {
+) (noWorkStreakRecord, error) {
 	store, err := openStageStateStore(l)
 	if err != nil {
-		return fmt.Errorf("open no-work-streak state: %w", err)
+		return noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
 	}
 	key := noWorkStreakKey(repo, itemID)
-	return updateNoWorkStreakRecord(ctx, store, key,
+	var cleared noWorkStreakRecord
+	err = updateNoWorkStreakRecord(ctx, store, key,
 		func(current noWorkStreakRecord) (noWorkStreakRecord, bool, error) {
+			cleared = noWorkStreakRecord{}
 			if current.Count == 0 {
 				return noWorkStreakRecord{}, false, nil
 			}
+			cleared = current
 			return noWorkStreakRecord{RunID: runID, UpdatedAt: time.Now().UTC()}, true, nil
 		})
+	return cleared, err
 }

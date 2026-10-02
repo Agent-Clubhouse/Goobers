@@ -13,6 +13,7 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -41,8 +42,9 @@ type Edge struct {
 }
 
 // edges is the registry of one-step migrations this binary knows how to
-// perform: the DVL-5 1.4→2.0 edge and the Goobernetes 2.0→3.0 edge
-// (dsl-3.0.md §6). 1.4 is dropped as a loadable version (D13), but the edge
+// perform: the DVL-5 1.4→2.0 edge, the Goobernetes 2.0→3.0 edge
+// (dsl-3.0.md §6), and the opt-in artifact-contract 3.0→3.1 edge.
+// 1.4 is dropped as a loadable version (D13), but the edge
 // survives as the recovery path DVL030 names — `goobers fix --to 2.0` on a
 // 1.4 document, then `--to 3.0` — so a stranded 1.4 config can still be
 // mechanically carried forward one step at a time. A future version bump
@@ -50,6 +52,7 @@ type Edge struct {
 var edges = []Edge{
 	{From: supportmatrix.V1DSLVersion, To: supportmatrix.V2DSLVersion, Apply: applyV14ToV20, ApplySource: applyV14ToV20SourcePreserving},
 	{From: supportmatrix.V2DSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyV20ToV30},
+	{From: supportmatrix.V3DSLVersion, To: supportmatrix.V31DSLVersion, Apply: applyV30ToV31},
 }
 
 // FindEdge returns the registered migration from from to to, if any.
@@ -285,8 +288,17 @@ func sourceOffset(source []byte, line, column int) (int, error) {
 		}
 		offset += next + 1
 	}
-	offset += column - 1
-	if offset < 0 || offset >= len(source) {
+	// yaml.Node columns count Unicode code points, while source edits use
+	// byte offsets. A multibyte scalar earlier on a flow-mapping line must
+	// not move the version edit into the preceding key or value.
+	for current := 1; current < column; current++ {
+		if offset >= len(source) || source[offset] == '\n' {
+			return 0, fmt.Errorf("source has no column %d on line %d", column, line)
+		}
+		_, width := utf8.DecodeRune(source[offset:])
+		offset += width
+	}
+	if line < 1 || column < 1 || offset >= len(source) || source[offset] == '\n' {
 		return 0, fmt.Errorf("source has no column %d on line %d", column, line)
 	}
 	return offset, nil

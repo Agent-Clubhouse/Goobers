@@ -37,7 +37,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r evals/requirements.txt
+        run: pip install --require-hashes -r evals/requirements.txt
 
       - name: Run tests
         run: pytest

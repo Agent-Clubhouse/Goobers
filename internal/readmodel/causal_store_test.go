@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,5 +332,79 @@ func seedCausalRun(
 		NodeParents: parents,
 	}); err != nil {
 		t.Fatalf("seed %s: %v", runID, err)
+	}
+}
+
+// TestCausalCreditCapsTheScanAndReportsTruncation pins #4568: a window holding
+// more terminal runs than MaxRuns is read as its newest MaxRuns only, the
+// answer is exactly the one a Since-narrowed request gives (no cohort skew
+// beyond the narrower window; run start times here are distinct, so the
+// boundary has no ties), and every estimate says it was truncated and is
+// withheld from promotion.
+func TestCausalCreditCapsTheScanAndReportsTruncation(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	start := time.Date(2026, 8, 22, 3, 0, 0, 0, time.UTC)
+	// Older runs on a third identity: inside the requested window, outside
+	// the cap. Read, they would move the changepoint.
+	for i := 0; i < 15; i++ {
+		seedCausalRunWithTriggerRef(t, store, fmt.Sprintf("ancient-%02d", i),
+			start.Add(-time.Hour+time.Duration(i)*time.Minute), "implement", "sha256:ancient", false, "")
+	}
+	for i := 0; i < 10; i++ {
+		at := start.Add(time.Duration(i) * time.Minute)
+		seedCausalRunWithTriggerRef(t, store, fmt.Sprintf("treated-before-%02d", i), at, "implement", "sha256:old", true, "")
+		seedCausalControlRunWithTriggerRef(t, store, fmt.Sprintf("control-before-%02d", i), at.Add(30*time.Second), true, "")
+	}
+	for i := 0; i < 10; i++ {
+		at := start.Add(time.Hour + time.Duration(i)*time.Minute)
+		seedCausalRunWithTriggerRef(t, store, fmt.Sprintf("treated-after-%02d", i), at, "implement", "sha256:new", false, "")
+		seedCausalControlRunWithTriggerRef(t, store, fmt.Sprintf("control-after-%02d", i), at.Add(30*time.Second), true, "")
+	}
+	base := CausalOptions{Gaggle: "core", Workflow: "implementation", MinCohortSize: 10}
+
+	capped := base
+	capped.MaxRuns = 40
+	got, err := store.CausalCredit(ctx, capped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowed := base
+	narrowed.Since = start
+	want, err := store.CausalCredit(ctx, narrowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(want) != 1 {
+		t.Fatalf("capped = %+v, narrowed = %+v; want one estimate each", got, want)
+	}
+	if !got[0].WindowTruncated || want[0].WindowTruncated {
+		t.Fatalf("WindowTruncated capped=%v narrowed=%v, want true/false", got[0].WindowTruncated, want[0].WindowTruncated)
+	}
+	if !strings.Contains(got[0].Caveat, "window truncated to the newest 40 runs (from 2026-08-22T03:00:00Z)") {
+		t.Fatalf("capped caveat = %q, want an explicit truncation note", got[0].Caveat)
+	}
+	if got[0].PromotionEligible {
+		t.Fatalf("capped estimate = %+v, want it reported but never promotion-eligible", got[0])
+	}
+	stripped := got[0]
+	stripped.WindowTruncated = false
+	stripped.PromotionEligible = want[0].PromotionEligible
+	stripped.Caveat = want[0].Caveat
+	if stripped != want[0] {
+		t.Fatalf("capped estimate = %+v, want the Since-narrowed estimate %+v", got[0], want[0])
+	}
+
+	// A cap the window fits inside reads everything and reports nothing.
+	roomy := base
+	roomy.MaxRuns = 55
+	full, err := store.CausalCredit(ctx, roomy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, estimate := range full {
+		if estimate.WindowTruncated || strings.Contains(estimate.Caveat, "truncated") {
+			t.Fatalf("untruncated window reported truncation: %+v", estimate)
+		}
 	}
 }

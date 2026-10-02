@@ -54,10 +54,21 @@ import (
 // per `run`), only for harnesses an agentic stage actually references.
 var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
 
+// copilotAuthCheckSuccessLine is the reply copilotAuthCheckArgs asks for. The
+// probe passes as soon as the CLI prints it, without waiting out the CLI's own
+// shutdown, which on slow hosts took long enough after a valid reply to push
+// the probe past harnessPreflightTimeout (#5165).
+const copilotAuthCheckSuccessLine = "ok"
+
 // harnessPreflightTimeout bounds a single harness preflight (its version check
 // plus the auth probe's real API round-trip) so a hung CLI or network can't
-// hang `goobers validate` or `goobers up`/`run` startup.
-const harnessPreflightTimeout = 90 * time.Second
+// hang `goobers validate` or `goobers up`/`run` startup. One value serves all
+// three so they cannot disagree about whether the same harness is healthy.
+// It is deliberately generous: a valid Copilot probe was measured at 92-100s
+// end to end on Windows (#5165), so the former 90s cap failed healthy hosts.
+// The probe returns as soon as its reply arrives, so the cap only costs time
+// when a CLI or network is genuinely hung.
+const harnessPreflightTimeout = 180 * time.Second
 
 const placeholderFindingCode = "PLACEHOLDER001"
 const sourceTreeAdvisoryCode = "SOURCE001"
@@ -90,7 +101,10 @@ var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--c
 	"that identity lacks Contribute, Contribute to pull requests or Create\n" +
 	"branch, and warns on a missing Force push, a held policy bypass, a blocking\n" +
 	"Prefix policy over refs/heads/, and backlog.doneStates state names the\n" +
-	"Boards project does not have; these checks only read. " +
+	"Boards project does not have; these checks only read. It also probes\n" +
+	"every credentials: capability override that replaces a repository token\n" +
+	"against each gaggle's target repository, since an override applies to\n" +
+	"every gaggle. " +
 	"--check-dispatch-namespaces additionally verifies, for each gaggle, that\n" +
 	"its declared isolation.namespace exists and this kubeconfig's credentials\n" +
 	"hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check\n" +
@@ -344,7 +358,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		options.deferModelDiscovery, modelCredential,
+		options.deferModelDiscovery, modelCredential, knownExternalTelemetryConnectorNames(cfg),
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
@@ -548,6 +562,7 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.WarningGaggleMixedProvider,
 		validate.WarningCrossProviderCredentialOverride,
 		validate.WarningInertADOCapability,
+		validate.WarningProviderInputDefaulted,
 	}
 	for _, code := range workflowsafety.Codes() {
 		codes = append(codes, validate.WarningCode(code))

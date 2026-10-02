@@ -38,7 +38,6 @@ themselves, so no cell can drift from the YAML.
 | `evals-gate.yml` | workflow_dispatch | dormant | #2681 (direction superseded; #2667/#2668 closed as redirected — retire or re-scope after ratification) |
 | `evals-tests.yml` | pull_request, push, workflow_dispatch | active | — |
 | `flake-watch.yml` | schedule, workflow_dispatch | active | — |
-| `ghcp-echo.yml` | schedule, workflow_dispatch | active | — |
 | `large-repo-scale.yml` | schedule, workflow_dispatch | active | — |
 | `macos-nightly.yml` | schedule, workflow_dispatch | active | — |
 | `portal-package.yml` | pull_request, workflow_dispatch | active | — |

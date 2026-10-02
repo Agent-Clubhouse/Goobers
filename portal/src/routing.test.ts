@@ -38,6 +38,47 @@ describe("definition routing", () => {
       expect(parseRoute(routeHash(detail))).toEqual(detail);
       expect(activeArea(detail)).toBe("work-items");
     });
+
+    it("round-trips provider identities of any depth (#5266)", () => {
+      const workItem = {
+        page: "work-items" as const,
+        provider: "ado",
+        repository: "contoso/alpha",
+        kind: "issue" as const,
+        id: "7",
+      };
+      const pullRequest = {
+        page: "work-items" as const,
+        provider: "ado",
+        repository: "contoso/alpha project/web",
+        kind: "pr" as const,
+        id: "7",
+      };
+
+      expect(routeHash(workItem)).toBe("#/work-items/ado/contoso/alpha/issue/7");
+      expect(parseRoute(routeHash(workItem))).toEqual(workItem);
+      expect(routeHash(pullRequest)).toBe("#/work-items/ado/contoso/alpha%20project/web/pr/7");
+      expect(parseRoute(routeHash(pullRequest))).toEqual(pullRequest);
+
+      const keywordRepository = { ...pullRequest, repository: "acme/issue/pr" };
+      expect(parseRoute(routeHash(keywordRepository))).toEqual(keywordRepository);
+    });
+
+    it("falls back to the list for a detail path without a qualified repository", () => {
+      expect(parseRoute("#/work-items/ado/contoso/issue/7")).toEqual({
+        page: "work-items",
+        kind: undefined,
+        gaggle: undefined,
+        query: undefined,
+      });
+      expect(routeHash({
+        page: "work-items",
+        provider: "ado",
+        repository: "contoso",
+        kind: "issue",
+        id: "7",
+      })).toBe("#/work-items?kind=issue");
+    });
   });
 
   it("round-trips a gaggle-filtered Goobers inventory", () => {

@@ -2519,6 +2519,15 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "gitea auth requires token",
 		},
 		{
+			// GitHub Enterprise Server is unsupported (#6347): a baseUrl on a
+			// github repo would be silently ignored, so it is refused.
+			name: "github rejects baseUrl",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", BaseURL: "https://ghe.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "GitHub Enterprise Server is unsupported",
+		},
+		{
 			name: "missing owner",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Name: "web", Token: TokenRef{Env: "T"}},
@@ -4371,6 +4380,117 @@ func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
 	}
 	if got := cfg.EffectiveEngineConfig().HITL; got == nil || got.Window != "4h" {
 		t.Fatalf("EffectiveEngineConfig().HITL = %+v, want window 4h", got)
+	}
+}
+
+// TestResolveEngineConfigPreservesEveryField pins #6012: resolution starts
+// from a full copy of the authored engine block, so a field that is not
+// env-backed reaches the resolved config without being re-listed in the
+// resolver. The fixture must set every field; the reflection guard fails
+// when a new EngineConfig field is added without extending it.
+func TestResolveEngineConfigPreservesEveryField(t *testing.T) {
+	authored := EngineConfig{
+		HostPort:         "temporal.internal:7233",
+		Namespace:        "authored-namespace",
+		TaskQueue:        "authored-queue",
+		HITL:             &EngineHITLConfig{Enabled: true, Window: "4h", Actors: []string{"operator"}},
+		TLS:              &temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", ServerName: "temporal-frontend"},
+		WorkerVersioning: true,
+	}
+	value := reflect.ValueOf(authored)
+	for i := 0; i < value.NumField(); i++ {
+		if value.Field(i).IsZero() {
+			t.Fatalf("fixture leaves EngineConfig.%s zero; set it so its preservation is covered", value.Type().Field(i).Name)
+		}
+	}
+	noEnv := func(string) (string, bool) { return "", false }
+
+	t.Run("without environment overrides", func(t *testing.T) {
+		input := authored
+		resolved, _, err := (&Config{Engine: &input}).ResolveEngineConfig(noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(resolved, authored) {
+			t.Fatalf("resolved = %+v, want authored %+v", resolved, authored)
+		}
+	})
+
+	t.Run("environment overrides only the env-backed scalars", func(t *testing.T) {
+		input := authored
+		env := map[string]string{
+			TemporalHostPortEnv:  "temporal.env:7233",
+			TemporalNamespaceEnv: "env-namespace",
+			TaskQueueEnv:         "env-queue",
+		}
+		resolved, _, err := (&Config{Engine: &input}).ResolveEngineConfig(func(key string) (string, bool) {
+			v, ok := env[key]
+			return v, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := authored
+		want.HostPort, want.Namespace, want.TaskQueue = "temporal.env:7233", "env-namespace", "env-queue"
+		if !reflect.DeepEqual(resolved, want) {
+			t.Fatalf("resolved = %+v, want %+v", resolved, want)
+		}
+	})
+
+	t.Run("defaults fill only empty env-backed scalars", func(t *testing.T) {
+		input := authored
+		input.HostPort, input.Namespace, input.TaskQueue = "", "", ""
+		resolved, _, err := (&Config{Engine: &input}).ResolveEngineConfig(noEnv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := authored
+		want.HostPort, want.Namespace, want.TaskQueue = DefaultTemporalHostPort, DefaultTemporalNamespace, DefaultEngineTaskQueue
+		if !reflect.DeepEqual(resolved, want) {
+			t.Fatalf("resolved = %+v, want %+v", resolved, want)
+		}
+	})
+}
+
+// TestEngineConfigValidateHostPortPort pins #6013: a hostPort whose port is
+// not a number from 1 through 65535 is refused at load, not at dial.
+func TestEngineConfigValidateHostPortPort(t *testing.T) {
+	for _, tc := range []struct {
+		hostPort string
+		wantErr  string
+	}{
+		{hostPort: "localhost:7233"},
+		{hostPort: "temporal.example:1"},
+		{hostPort: "10.0.0.5:65535"},
+		{hostPort: "[::1]:7233"},
+		{hostPort: "temporal:abc", wantErr: `hostPort "temporal:abc": port "abc" must be a number from 1 through 65535`},
+		{hostPort: "temporal:0", wantErr: `port "0" must be a number from 1 through 65535`},
+		{hostPort: "temporal:-1", wantErr: `port "-1" must be a number from 1 through 65535`},
+		{hostPort: "temporal:65536", wantErr: `port "65536" must be a number from 1 through 65535`},
+		{hostPort: "temporal:70000", wantErr: `port "70000" must be a number from 1 through 65535`},
+		{hostPort: "temporal", wantErr: `must be in host:port form`},
+	} {
+		t.Run(tc.hostPort, func(t *testing.T) {
+			err := EngineConfig{HostPort: tc.hostPort, Namespace: "default", TaskQueue: "goobers"}.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoadConfigRejectsInvalidEngineHostPortPort pins #6013 at the LoadConfig
+// boundary the issue names.
+func TestLoadConfigRejectsInvalidEngineHostPortPort(t *testing.T) {
+	path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: temporal:70000\n")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), `port "70000" must be a number from 1 through 65535`) {
+		t.Fatalf("LoadConfig error = %v, want out-of-range port refusal", err)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/secfile"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -977,20 +978,14 @@ func TestSeedClaudeCredentialsReadsMacOSKeychainWhenFileMissing(t *testing.T) {
 	if want := `{"claudeAiOauth":"keychain-login"}`; string(got) != want {
 		t.Fatalf("seeded credentials = %q, want %q", got, want)
 	}
-	// Unix mode bits do not port to NTFS: os.WriteFile's mode argument and
-	// os.Chmod only toggle the read-only attribute there, so the 0600 this
-	// seeding requests surfaces back as 0666 (see internal/platform/secfile's
-	// doc comment, which is why that package verifies privacy via the DACL
-	// rather than Perm()). Asserting 0600 on Windows therefore just asserts a
-	// fiction, so it is skipped here.
-	//
-	// Unlike the copilot MCP config file — which skips the same assertion
-	// because it holds no credential worth protecting — this file DOES hold
-	// one, and os.Chmod genuinely fails to protect it on Windows: the
-	// credential ends up with whatever DACL it inherits from its parent
-	// directory. Skipping the assertion keeps the gate honest about what the
-	// platform can express; it does not make the file private. That real gap
-	// is tracked in #2795.
+	// The seeded file holds an OAuth credential, so it must be provably
+	// private on every platform. secfile.VerifyPrivate checks the DACL on
+	// Windows (where mode bits are synthesized and meaningless) and the mode
+	// on Unix (#2795).
+	if err := secfile.VerifyPrivate(target); err != nil {
+		t.Fatalf("seeded credentials are not private: %v", err)
+	}
+	// Unix additionally keeps its historical exact 0600 mode.
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(target)
 		if err != nil {

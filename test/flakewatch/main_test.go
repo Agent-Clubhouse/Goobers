@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,10 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 		result.Novel[0].Test != "TestQueue" ||
 		result.Novel[1].Test != "TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees" {
 		t.Fatalf("novel = %+v, want timeout and deterministic-assert failures from default branch", result.Novel)
+	}
+	// Each failure carries the commit its run built, not the watcher's own.
+	if result.Novel[0].SHA != "branch-sha" || result.Novel[1].SHA != "branch-sha" {
+		t.Fatalf("novel SHAs = %q, %q; want the scanned run's head commit", result.Novel[0].SHA, result.Novel[1].SHA)
 	}
 	assertionText := `worktreelifecycle_test.go:105: state = "active", want "finalized"`
 	assertionFingerprint := flake.Fingerprint(
@@ -605,7 +610,7 @@ func TestFailuresDoesNotSuppressUnexpectedLogErrors(t *testing.T) {
 	}))
 	mux.HandleFunc("/repos/acme/app/check-runs/301/annotations", jsonHandler([]annotation{}))
 	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "upstream failure", http.StatusInternalServerError)
+		http.Error(w, "forbidden", http.StatusForbidden)
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -613,8 +618,231 @@ func TestFailuresDoesNotSuppressUnexpectedLogErrors(t *testing.T) {
 	_, err := (&githubClient{
 		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
 	}).failures(context.Background(), source{SHA: "sha", RunID: 99}, time.Now())
-	if err == nil || !strings.Contains(err.Error(), "status 500") {
+	if err == nil || !strings.Contains(err.Error(), "status 403") {
 		t.Fatalf("failures error = %v, want unexpected log error", err)
+	}
+}
+
+// recordingSleep returns a sleep hook that records each requested delay
+// without waiting on wall-clock time.
+func recordingSleep(mu *sync.Mutex, delays *[]time.Duration) func(context.Context, time.Duration) error {
+	return func(_ context.Context, delay time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		*delays = append(*delays, delay)
+		return nil
+	}
+}
+
+func TestScanOmitsRunWhoseJobsStayUnavailableAndScansTheRest(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	var slept []time.Duration
+	jobsCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", jsonHandler([]ledgerIssue{}))
+	mux.HandleFunc("/repos/acme/app/pulls", jsonHandler([]pullRequest{}))
+	mux.HandleFunc("/repos/acme/app/actions/runs", jsonHandler(map[string]any{"workflow_runs": []workflowRun{
+		{ID: 98, HeadSHA: "broken-sha", HTMLURL: "run-98", CreatedAt: now},
+		{ID: 99, HeadSHA: "healthy-sha", HTMLURL: "run-99", CreatedAt: now},
+	}}))
+	mux.HandleFunc("/repos/acme/app/actions/runs/98/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		jobsCalls++
+		mu.Unlock()
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{{
+			ID: 301, Name: "test", Conclusion: "failure",
+			CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/401",
+		}},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/401/annotations", jsonHandler([]annotation{{
+		Path: "internal/queue/queue_test.go", Title: "TestQueue", Message: "deadline exceeded waiting for worker",
+	}}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/301/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintln(w, "ordinary non-test job output")
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	delays := []time.Duration{time.Second, 2 * time.Second}
+	client := &githubClient{
+		base: server.URL, repository: "acme/app", branch: "main", token: "test", http: server.Client(),
+		retryDelays: delays, sleep: recordingSleep(&mu, &slept),
+	}
+
+	result, err := scan(context.Background(), client, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(result.Novel) != 1 || result.Novel[0].Test != "TestQueue" || result.Novel[0].LastSeenRun != "run-99" {
+		t.Fatalf("novel = %+v, want run 99's failure still scanned", result.Novel)
+	}
+	if len(result.SourceOmissions) != 1 {
+		t.Fatalf("source omissions = %+v, want run 98 only", result.SourceOmissions)
+	}
+	omission := result.SourceOmissions[0]
+	if omission.RunID != 98 || omission.SHA != "broken-sha" || omission.URL != "run-98" ||
+		!strings.Contains(omission.Reason, "502") {
+		t.Fatalf("source omission = %+v, want run 98 recorded as unavailable (HTTP 502)", omission)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if jobsCalls != len(delays)+1 {
+		t.Fatalf("run 98 jobs requests = %d, want %d (one try plus bounded retries)", jobsCalls, len(delays)+1)
+	}
+	if fmt.Sprint(slept) != fmt.Sprint(delays) {
+		t.Fatalf("retry delays = %v, want %v", slept, delays)
+	}
+}
+
+func TestFailuresRetriesTransientJobsAndLogErrors(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var slept []time.Duration
+	jobsCalls, logCalls := 0, 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		jobsCalls++
+		call := jobsCalls
+		mu.Unlock()
+		if call == 1 {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jobs": []workflowJob{{
+			ID: 301, Conclusion: "failure", CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/401",
+		}}})
+	})
+	mux.HandleFunc("/repos/acme/app/check-runs/401/annotations", jsonHandler([]annotation{}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/301/logs", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		logCalls++
+		call := logCalls
+		mu.Unlock()
+		if call == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = fmt.Fprint(w, `--- FAIL: TestQueue (0.01s)
+    queue_test.go:12: deadline exceeded
+FAIL	github.com/goobers/goobers/internal/queue	0.1s
+`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	scanned, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+		retryDelays: []time.Duration{time.Second, time.Second}, sleep: recordingSleep(&mu, &slept),
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99, URL: "run-99"}, time.Now())
+	if err != nil {
+		t.Fatalf("failures: %v", err)
+	}
+	if len(scanned.Failures) != 1 || scanned.Failures[0].Test != "TestQueue" || len(scanned.LogOmissions) != 0 {
+		t.Fatalf("scan = %+v, want the retried log parsed", scanned)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if jobsCalls != 2 || logCalls != 2 || len(slept) != 2 {
+		t.Fatalf("jobs=%d logs=%d sleeps=%d, want 2/2/2", jobsCalls, logCalls, len(slept))
+	}
+}
+
+func TestFailuresRecordsJobLogThatStaysUnavailable(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{{
+			ID: 301, Name: "test", Conclusion: "failure", HTMLURL: "job-301",
+			CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/401",
+		}},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/401/annotations", jsonHandler([]annotation{}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/301/logs", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	scanned, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+		retryDelays: []time.Duration{time.Second},
+		sleep:       func(context.Context, time.Duration) error { return nil },
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99}, time.Now())
+	if err != nil {
+		t.Fatalf("failures: %v", err)
+	}
+	if len(scanned.LogOmissions) != 1 || scanned.LogOmissions[0].JobID != 301 ||
+		scanned.LogOmissions[0].Reason != "job log unavailable (HTTP 502)" {
+		t.Fatalf("log omissions = %+v, want job 301 unavailable (HTTP 502)", scanned.LogOmissions)
+	}
+}
+
+func TestFailuresReportsUnavailableAnnotationsAsUnavailableSource(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/sha/check-runs", jsonHandler(checksFixture(401)))
+	mux.HandleFunc("/repos/acme/app/check-runs/401/annotations", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).failures(context.Background(), source{SHA: "sha"}, time.Now())
+	var unavailable *sourceUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.status != http.StatusBadGateway {
+		t.Fatalf("failures error = %v, want unavailable source (HTTP 502)", err)
+	}
+}
+
+func TestRequestDoesNotRetryNonGETServerErrors(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+		retryDelays: []time.Duration{time.Second},
+		sleep:       func(context.Context, time.Duration) error { return nil },
+	}).request(context.Background(), http.MethodPost, "/repos/acme/app/dispatches", nil, map[string]string{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "status 502") {
+		t.Fatalf("request error = %v, want 502", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("POST attempts = %d, want 1 (no replay)", calls)
+	}
+}
+
+func TestRetryInterruptedByContextIsNotAnUnavailableSource(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	_, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+		retryDelays: []time.Duration{time.Second},
+		sleep:       func(context.Context, time.Duration) error { return context.Canceled },
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99}, time.Now())
+	var unavailable *sourceUnavailableError
+	if err == nil || errors.As(err, &unavailable) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("failures error = %v, want an interrupted retry to abort, not omit", err)
 	}
 }
 
@@ -640,6 +868,28 @@ func TestLedgerPaginatesIssues(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[1].Issue != 2 || entries[1].Package != "./internal/runner" {
 		t.Fatalf("entries = %+v, want both pages", entries)
+	}
+}
+
+func TestLedgerRoutesSupersededIssueToGroupedBuildBreak(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", jsonHandler([]ledgerIssue{{
+		Number: 4128,
+		Body: "<!-- goobers-flake-fingerprint:" + strings.Repeat("a", 64) + " -->\n- **Package:** `./release`\n\n" +
+			"<!-- goobers-flake-superseded-by:4300 -->",
+	}}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	entries, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).ledger(context.Background())
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Issue != 4300 || entries[0].Fingerprint != strings.Repeat("a", 64) {
+		t.Fatalf("entries = %+v, want the superseded fingerprint handed to grouped #4300", entries)
 	}
 }
 
