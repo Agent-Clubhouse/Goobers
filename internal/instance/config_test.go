@@ -4188,11 +4188,6 @@ func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
 	}
 }
 
-// TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
-// the index the dispatcher stamps a stage pod from must clear Auth.Token,
-// never hand a credential reference to a caller that has no business
-// resolving secrets itself, and must be nil (not an empty map) when nothing
-// is configured, matching GitHubBotLogins' own nil-means-nothing contract.
 func TestExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
 	var nilConfig *Config
 	if names := nilConfig.ExternalTelemetryConnectorNames(); names != nil {
@@ -4203,6 +4198,11 @@ func TestExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
 	}
 }
 
+// TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
+// the index the dispatcher stamps a stage pod from must clear Auth.Token,
+// never hand a credential reference to a caller that has no business
+// resolving secrets itself, and must be nil (not an empty map) when nothing
+// is configured, matching GitHubBotLogins' own nil-means-nothing contract.
 func TestExternalTelemetryConnectorsByName(t *testing.T) {
 	cfg := &Config{ExternalTelemetry: externaltelemetry.Configuration{
 		Connectors: []externaltelemetry.ConnectorConfig{
