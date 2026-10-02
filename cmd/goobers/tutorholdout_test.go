@@ -1163,3 +1163,67 @@ func addLiveTutorWorkflow(t *testing.T, root, workflow string) tutorVersionAxes 
 	}
 	return testLiveTutorAxes(t, root, workflow)
 }
+
+type tutorHoldoutRepoRecorder struct {
+	repos  []providers.RepositoryRef
+	result providers.PullRequestPollResult
+}
+
+func (r *tutorHoldoutRepoRecorder) PollPullRequest(_ context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error) {
+	r.repos = append(r.repos, req.Repository)
+	return r.result, nil
+}
+
+// TUT-A8: a holdout whose PR lives in the config repository is never polled as
+// the product repository's same-numbered PR, and is polled in its own repo.
+func TestRefreshTutorHoldoutMergeStateKeepsConfigRepoPRsApart(t *testing.T) {
+	root := initDemo(t)
+	for _, rec := range []tutorHoldoutRecord{
+		{ID: "sha256:product", AuthoringRunID: "run-product", PRNumber: 7},
+		{ID: "sha256:config", AuthoringRunID: "run-config", PRNumber: 7, ConfigRepo: "acme/workflows"},
+	} {
+		rec.Schema, rec.FindingDigest, rec.Gaggle = tutorHoldoutSchemaVersion, "sha256:finding", "example"
+		rec.State, rec.CreatedAt = tutorHoldoutStatePending, time.Now().UTC()
+		if err := writeTutorHoldout(root, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mergedAt := time.Now().UTC()
+	merged := providers.PullRequestPollResult{Number: 7, Merged: true, MergedAt: &mergedAt}
+
+	product := &tutorHoldoutRepoRecorder{result: merged}
+	if err := refreshTutorHoldoutMergeState(context.Background(), root, "example", providers.RepositoryRef{Owner: "acme", Name: "app"}, product); err != nil {
+		t.Fatal(err)
+	}
+	if len(product.repos) != 1 || product.repos[0].Name != "app" {
+		t.Fatalf("product refresh polled %+v, want only the product repo once", product.repos)
+	}
+
+	config := &tutorHoldoutRepoRecorder{result: merged}
+	configRepo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "workflows"}
+	if err := refreshTutorHoldoutRecords(context.Background(), root, "example", configRepo, config, func(r tutorHoldoutRecord) bool { return r.ConfigRepo == "acme/workflows" }); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.repos) != 1 || config.repos[0].Name != "workflows" {
+		t.Fatalf("config refresh polled %+v, want only the config repo once", config.repos)
+	}
+}
+
+func TestRefreshConfigRepoHoldoutsStayPendingWithoutCredential(t *testing.T) {
+	root := initDemo(t)
+	rec := tutorHoldoutRecord{
+		Schema: tutorHoldoutSchemaVersion, ID: "sha256:config", FindingDigest: "sha256:finding", Gaggle: "example",
+		AuthoringRunID: "run-config", PRNumber: 7, ConfigRepo: "acme/workflows",
+		State: tutorHoldoutStatePending, CreatedAt: time.Now().UTC(),
+	}
+	if err := writeTutorHoldout(root, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshTutorHoldoutMergeStateFromProvider(root, "example"); err != nil {
+		t.Fatalf("a missing config credential must leave the holdout pending, not fail: %v", err)
+	}
+	records, err := loadTutorHoldouts(root, "example")
+	if err != nil || len(records) != 1 || records[0].MergedAt != nil {
+		t.Fatalf("records = %+v, err = %v, want the unmerged holdout kept", records, err)
+	}
+}

@@ -422,6 +422,9 @@ enforce fail-first evidence for a new workflow gate (a workflow stage)
 \fBgoobers check-issue-staleness\fR
 route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
 .TP
+\fBgoobers config-checkout\fR
+clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+.TP
 \fBgoobers docs-churn\fR
 emit the docs-drift churn digest since the watermark (a connector stage)
 .TP
@@ -574,6 +577,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-config-templates-import\fR(1),
 \fBgoobers-config-templates-status\fR(1),
 \fBgoobers-config-templates-update\fR(1),
+\fBgoobers-config-checkout\fR(1),
 \fBgoobers-config-seed\fR(1),
 \fBgoobers-connect\fR(1),
 \fBgoobers-cost\fR(1),

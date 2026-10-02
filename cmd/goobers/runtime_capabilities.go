@@ -695,6 +695,10 @@ func init() {
 			withSynopsis(synopsisByID["push-branch"]).
 			withHelp("push the worktree's checked-out branch to origin (a workflow stage)", pushBranchHelp).
 			withExamples("goobers push-branch"),
+		stageCommand("config-checkout", apicontract.ActionWorkflowExecution, runConfigCheckout).
+			withSynopsis(synopsisByID["config-checkout"]).
+			withHelp("clone the instance config repository for a config-repo-targeted stage (a workflow stage)", configCheckoutHelp).
+			withExamples("goobers config-checkout"),
 		stageCommand("preflight-repo-write", apicontract.ActionWorkflowExecution, runPreflightRepoWrite).
 			withSynopsis(synopsisByID["preflight-repo-write"]).
 			withHelp("check whether the configured credential can push this run's branch namespace, without mutating anything (a workflow stage)", preflightRepoWriteHelp).

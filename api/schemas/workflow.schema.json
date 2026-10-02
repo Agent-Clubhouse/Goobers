@@ -281,6 +281,7 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "configrepo:write",
               "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
@@ -347,8 +348,10 @@
               "label-issue",
               "merge-pr",
               "modify-repository",
+              "open-or-update-config-pr",
               "open-or-update-pr",
               "publish-review",
+              "push-config-repo-branch",
               "push-pr-branch",
               "push-repository-branch",
               "rebase-pr",

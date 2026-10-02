@@ -157,6 +157,7 @@ Runner-invoked workflow internals; these remain directly invocable but are not t
 | [`goobers cancel-pending-ci`](#goobers-cancel-pending-ci) | cancel pending provider CI for an exact reviewed PR head (a workflow stage) |
 | [`goobers check-fail-first`](#goobers-check-fail-first) | enforce fail-first evidence for a new workflow gate (a workflow stage) |
 | [`goobers check-issue-staleness`](#goobers-check-issue-staleness) | route a PR to remediation if its linked issue changed since implementation began (a workflow stage) |
+| [`goobers config-checkout`](#goobers-config-checkout) | clone the instance config repository for a config-repo-targeted stage (a workflow stage) |
 | [`goobers docs-churn`](#goobers-docs-churn) | emit the docs-drift churn digest since the watermark (a connector stage) |
 | [`goobers elect-lander`](#goobers-elect-lander) | elect the landing PR among a merge-review cohort (a workflow stage) |
 | [`goobers file-issues`](#goobers-file-issues) | file a validated nominations artifact as deduped, budgeted issues (a workflow stage) |
@@ -967,6 +968,35 @@ Fetch the tracked template branch and three-way merge the previous pristine
 template, local customizations, and updated template. Conflicts or validation
 errors leave the accepted files and lock unchanged. No automatic update.
 Stop the daemon first. Review, commit, and deploy the user's source afterwards.
+~~~
+
+## `goobers config-checkout`
+
+clone the instance config repository for a config-repo-targeted stage (a workflow stage)
+
+~~~text
+Usage: goobers config-checkout [dir]
+
+Clone the instance CONFIG repository (the workflowSource repository) at
+its tracked ref into [dir] (default: the configRepoDir input, else
+"config-repo", relative to the stage workspace) and check out the run's
+branch there, so a stage can edit the config tree and push-branch/open-pr
+(--config-repo) can publish it. Requires the stage to declare
+configrepo:write. The credential authenticates the clone through the git
+environment only; it is never written to .git/config.
+
+Inputs: head (branch to create/reuse; default the run's stable branch),
+configRepoDir, and for stage pods without instance config, configRepo
+(owner/name) and configRepoBase.
+A pre-existing branch on the remote (a repass) is checked out and
+continued rather than recreated. A non-empty [dir] is refused.
+Exit codes: 0 = checked out, 1 = business error, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers config-checkout
 ~~~
 
 ## `goobers config-seed`
@@ -2031,7 +2061,11 @@ $ goobers fleet status --json
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
 
 ~~~text
-Usage: goobers gate-removal-guard [path]
+Usage: goobers gate-removal-guard [--config-repo] [path]
+
+With --config-repo (TUT-A8) the guard inspects the instance config
+repository checkout (configRepoDir input, default "config-repo") against
+the workflowSource ref instead of the stage worktree.
 
 Block a tutor run whose drafted change removes or loosens the specific
 gate its own finding flagged as noisy, unless the finding cites
@@ -2679,12 +2713,23 @@ $ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 open or update the run's PR (a workflow stage)
 
 ~~~text
-Usage: goobers open-pr [path]
+Usage: goobers open-pr [--config-repo] [path]
 
 Open the run's PR — or, on a repass through this stage, find and update
 the PR it already opened (idempotent: the run's branch name is stable
 across repasses, providers.BranchName). Writes prNumber/pull-request-url
 to the declared result file for a downstream stage's Task.InputsFrom.
+
+Config-repo target (TUT-A8): flag --config-repo opens the PR in the
+instance CONFIG repository (the workflowSource repository) with the
+stage's declared configrepo:write credential instead of the gaggle's
+repository with provider:pr:write. base defaults to workflowSource's ref,
+and the write-boundary / Tutor-classification diffs are computed in the
+config-repo checkout (configRepoDir input, default "config-repo", as
+created by `goobers config-checkout`), so actionRoots/docsRoots/configRoot
+paths are relative to the config repo root (e.g. gaggles/<gaggle>).
+configRepo/configRepoBase name the repository where no instance config is
+readable (a stage pod).
 
 Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
 stable branch), base (default GOOBERS_BASE_BRANCH, else "main"), itemID,
@@ -3072,7 +3117,7 @@ $ goobers publish-batch
 push the worktree's checked-out branch to origin (a workflow stage)
 
 ~~~text
-Usage: goobers push-branch [path]
+Usage: goobers push-branch [--config-repo] [path]
 
 Push the worktree's checked-out branch to origin, authenticated via the
 configured repository credential — never the host's ambient git
@@ -3082,6 +3127,14 @@ refs") fetches the remote tip, rebases the local branch onto it, and
 retries up to 2 more times before failing, so a fully-validated diff is
 not discarded because a concurrent writer advanced the branch (#3366).
 [path] defaults to the current directory (the stage's worktree).
+
+Flag --config-repo (TUT-A8) pushes the instance CONFIG repository
+checkout instead — [path] defaults to the configRepoDir input (default
+"config-repo", as created by `goobers config-checkout`) — authenticated
+with the stage's declared configrepo:write credential, never repo:push. The
+checkout's origin must be the workflowSource repository. Other inputs:
+configRepo (owner/name) and configRepoBase, used only where no instance
+config is readable (a stage pod).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 ~~~
 

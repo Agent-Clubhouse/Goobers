@@ -330,7 +330,8 @@ var commands = map[string]Command{
 	"open-pr": {
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
-			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
+			requiredUnlessAnyFlag(capability.ProviderPRWrite, []string{"config-repo"}, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
+			requiredWhenAnyFlag(capability.ConfigRepoWrite, []string{"config-repo"}, "the config-repository write credential is not available, so pull-request creation in the instance config repository fails at runtime"),
 			optional(capability.ADOWorkItemsWrite, "optional on Azure DevOps: when declared, the pull request is also linked natively to its claimed work item; without it the pull request opens with a text reference only"),
 			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
 			// claimed-issue staleness re-check reads the backlog provider with
@@ -435,7 +436,13 @@ var commands = map[string]Command{
 	},
 	"push-branch": {
 		Capabilities: []CapabilityUse{
-			required(capability.RepoPush, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
+			requiredUnlessAnyFlag(capability.RepoPush, []string{"config-repo"}, "the capability-scoped credential is not injected, so branch publication fails at runtime"),
+			requiredWhenAnyFlag(capability.ConfigRepoWrite, []string{"config-repo"}, "the config-repository write credential is not injected, so publishing the config-repo branch fails at runtime"),
+		},
+	},
+	"config-checkout": {
+		Capabilities: []CapabilityUse{
+			required(capability.ConfigRepoWrite, "the config-repository write credential is not injected, so the config repository cannot be cloned for a config-repo-targeted stage"),
 		},
 	},
 	"recovery-resume": {
@@ -469,6 +476,7 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.TelemetryRead, "telemetry access is not admitted, so the connector would read telemetry without declared authority at runtime"),
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
+			optional(capability.ConfigRepoWrite, "optional with --format tutor-live-verification: it lets the holdout merge-state refresh read PRs the Tutor opened in the instance config repository; without it those holdouts stay pending"),
 		},
 	},
 }

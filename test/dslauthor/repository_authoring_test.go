@@ -30,7 +30,7 @@ import (
 
 const (
 	secretFixtureValue          = "FIXTURE_SECRET_MUST_NOT_APPEAR"
-	recordedAuthoringPathSHA256 = "7e7346c85120d892ec31bbbae48d06db5302373059231dd97b399e187d87931a"
+	recordedAuthoringPathSHA256 = "b30a0d0e0aabe90e8662fc4f2314e360498c6cec6c437822013de2ab3c09bb72"
 	captureSchema               = "goobers.dev/dsl-author-captures/v1"
 )
 
