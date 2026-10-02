@@ -75,14 +75,15 @@ type GiteaProvider struct {
 // (appended only when not already present). An empty baseURL is stored as a
 // deferred error surfaced on first use.
 func NewGiteaProvider(baseURL, token string, opts ...func(*GiteaProvider)) *GiteaProvider {
+	defaults := newProviderConstructorDefaults()
 	p := &GiteaProvider{
 		Token:               token,
-		maxRetries:          defaultRateLimitRetries,
-		maxRateLimitRetries: defaultRateLimitRetries,
-		maxRateLimitWait:    defaultRateLimitMaxWait,
-		now:                 time.Now,
-		sleep:               contextSleep,
-		jitter:              randomJitter,
+		maxRetries:          defaults.maxRetries,
+		maxRateLimitRetries: defaults.maxRetries,
+		maxRateLimitWait:    defaults.maxRateLimitWait,
+		now:                 defaults.now,
+		sleep:               defaults.sleep,
+		jitter:              defaults.jitter,
 	}
 	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if trimmed == "" {
@@ -100,15 +101,7 @@ func NewGiteaProvider(baseURL, token string, opts ...func(*GiteaProvider)) *Gite
 	}
 	p.Client = httpClientOrDefault(p.Client)
 	p.Runner = commandRunnerOrDefault(p.Runner)
-	if p.now == nil {
-		p.now = time.Now
-	}
-	if p.sleep == nil {
-		p.sleep = contextSleep
-	}
-	if p.jitter == nil {
-		p.jitter = randomJitter
-	}
+	p.now, p.sleep, p.jitter = defaults.runtimeOrDefaults(p.now, p.sleep, p.jitter)
 	if p.registrar != nil && p.Token != "" {
 		p.registrar.Register([]byte(p.Token))
 		p.registrar.Register([]byte(base64.StdEncoding.EncodeToString([]byte(p.Token + ":"))))
@@ -229,33 +222,11 @@ func giteaGitAuthEnv(token string) []string {
 // base64 form with registrar for scrubbing. An empty token returns a hardened
 // env with no auth header. The returned environment must never be persisted.
 func GiteaGitAuthEnvironment(token, remoteURL string, registrar SecretRegistrar) []string {
-	base := make([]string, 0, len(os.Environ())+6)
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		upper := strings.ToUpper(name)
-		if upper == "GIT_CONFIG_COUNT" || upper == "GIT_TERMINAL_PROMPT" ||
-			strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
-			continue
-		}
-		base = append(base, entry)
-	}
 	if strings.TrimSpace(token) == "" {
-		return append(base, "GIT_TERMINAL_PROMPT=0")
+		return scopedGitExtraHeaderEnv(remoteURL, "", registrar)
 	}
 	auth := base64.StdEncoding.EncodeToString([]byte(token + ":"))
-	if registrar != nil {
-		registrar.Register([]byte(token))
-		registrar.Register([]byte(auth))
-	}
-	scopedURL := strings.TrimRight(remoteURL, "/") + "/"
-	return append(base,
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=credential.helper",
-		"GIT_CONFIG_VALUE_0=",
-		"GIT_CONFIG_KEY_1=http."+scopedURL+".extraheader",
-		"GIT_CONFIG_VALUE_1=AUTHORIZATION: basic "+auth,
-		"GIT_TERMINAL_PROMPT=0",
-	)
+	return scopedGitExtraHeaderEnv(remoteURL, "basic "+auth, registrar, token, auth)
 }
 
 // CloneRepository clones a Gitea repository to a local destination.
