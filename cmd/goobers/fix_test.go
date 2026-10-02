@@ -118,6 +118,48 @@ func TestFixWriteAppliesMigration(t *testing.T) {
 	}
 }
 
+func TestFixDSL31PreservesLegacyArtifacts(t *testing.T) {
+	root, path := initFixTestInstance(t)
+	before, err := os.ReadFile("../../internal/dslmigrate/testdata/v3_0/legacy-artifacts.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile("../../internal/dslmigrate/testdata/v3_1/legacy-artifacts.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, write := range []bool{false, true, true} {
+		args := []string{"fix", "--to", "3.1"}
+		if write {
+			args = append(args, "--write")
+		}
+		code, stdout, stderr := runArgs(t, append(args, root)...)
+		if code != 0 {
+			t.Fatalf("fix --to 3.1 (write=%v): code=%d stdout=%s stderr=%s", write, code, stdout, stderr)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := before
+		if write {
+			expected = want
+		} else {
+			for _, line := range []string{`-dslVersion: "3.0"`, `+dslVersion: "3.1"`} {
+				if !strings.Contains(stdout, line) {
+					t.Fatalf("dry run missing %q: %s", line, stdout)
+				}
+			}
+		}
+		if string(after) != string(expected) {
+			t.Fatalf("fix changed source beyond the version pin (write=%v):\n%s", write, after)
+		}
+	}
+}
+
 func TestFixRefusesNonAdjacentVersion(t *testing.T) {
 	root, _ := initFixTestInstance(t)
 

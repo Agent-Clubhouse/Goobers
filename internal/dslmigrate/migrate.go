@@ -41,8 +41,9 @@ type Edge struct {
 }
 
 // edges is the registry of one-step migrations this binary knows how to
-// perform: the DVL-5 1.4→2.0 edge and the Goobernetes 2.0→3.0 edge
-// (dsl-3.0.md §6). 1.4 is dropped as a loadable version (D13), but the edge
+// perform: the DVL-5 1.4→2.0 edge, the Goobernetes 2.0→3.0 edge
+// (dsl-3.0.md §6), and the opt-in artifact-contract 3.0→3.1 edge.
+// 1.4 is dropped as a loadable version (D13), but the edge
 // survives as the recovery path DVL030 names — `goobers fix --to 2.0` on a
 // 1.4 document, then `--to 3.0` — so a stranded 1.4 config can still be
 // mechanically carried forward one step at a time. A future version bump
@@ -50,6 +51,7 @@ type Edge struct {
 var edges = []Edge{
 	{From: supportmatrix.V1DSLVersion, To: supportmatrix.V2DSLVersion, Apply: applyV14ToV20, ApplySource: applyV14ToV20SourcePreserving},
 	{From: supportmatrix.V2DSLVersion, To: supportmatrix.V3DSLVersion, Apply: applyV20ToV30},
+	{From: supportmatrix.V3DSLVersion, To: supportmatrix.V31DSLVersion, Apply: applyV30ToV31},
 }
 
 // FindEdge returns the registered migration from from to to, if any.

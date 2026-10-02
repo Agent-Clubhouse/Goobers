@@ -1,0 +1,30 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.1"
+metadata:
+  name: named-artifacts
+spec:
+  gaggle: example
+  triggers: [{type: manual}]
+  start: produce
+  tasks:
+    - name: produce
+      type: deterministic
+      goal: Produce evidence without advisory expectedOutputs.
+      run: {command: ["true"], workspace: scratch}
+      artifactSlots:
+        - name: report
+          mediaType: application/json
+          schemaPath: schemas/report.schema.json
+          maxSize: 2048
+        - name: trace
+          mediaType: text/plain
+      next: consume
+    - name: consume
+      type: deterministic
+      goal: Consume named evidence.
+      run: {command: ["true"], workspace: scratch}
+      artifactInputs:
+        zulu: {from: produce.missing}
+        alpha: {from: nowhere.report}
+        middle: {from: malformed}
