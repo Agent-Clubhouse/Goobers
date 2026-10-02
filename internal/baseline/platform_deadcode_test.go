@@ -138,11 +138,12 @@ func classifyStreams(t *testing.T, command []string, runStdout, runStderr, probe
 	t.Helper()
 	message := "command exited 2; failure: " + executor.FailureDiagnostic([]byte(runStdout), []byte(runStderr)) +
 		"; 1 distinct failure line(s) recorded in failureDigest"
+	digest, count := executor.FailureDigest([]byte(runStdout), []byte(runStderr))
 	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: probeStdout, Stderr: probeStderr}})
 	decision, err := e.Classify(context.Background(), Request{
 		Repo: "acme/web", BaseSHA: "abc123def456", Command: command,
 		FailureText:   message + "\n" + message,
-		FailureDigest: executor.FailureDigest([]byte(runStdout), []byte(runStderr)),
+		FailureDigest: digest, FailureCount: count,
 	})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
@@ -197,25 +198,62 @@ func TestBranchFindingBeyondTheVisibleSignatureIsPRIntroduced(t *testing.T) {
 	}
 }
 
-// TestTruncatedMultiFindingWindowFailsOpen pins the known limit: the executor
-// bounds a failure window at 512 bytes, and whatever lies past the cut is
-// unseen — the findings that tell two failures apart may all be there. A
-// truncated diagnostic on either side is therefore ClassUnknown (the caller's
-// pre-existing routing), never a parked shared failure.
-func TestTruncatedMultiFindingWindowFailsOpen(t *testing.T) {
+// TestMultipleInheritedFindingsMatchPastTheWindowBound: several realistic
+// deadcode findings overflow the executor's 512-byte window, which alone
+// proves nothing — but the complete rosters on both sides do, and decide.
+func TestMultipleInheritedFindingsMatchPastTheWindowBound(t *testing.T) {
 	decision := classifyDeadcode(t,
 		deadcodeFindings(realisticRunRoot, "alphaHelper", "betaHelper", "gammaHelper"),
 		deadcodeFindings(realisticProbeRoot, "alphaHelper", "betaHelper", "gammaHelper"))
-	if decision.Class != ClassUnknown || decision.Park {
-		t.Fatalf("class = %q park = %v, want %q for a truncated run diagnostic", decision.Class, decision.Park, ClassUnknown)
+	if decision.Class != ClassSharedBaselineFailure || !decision.Park {
+		t.Fatalf("class = %q park = %v (%s), want a parked %q", decision.Class, decision.Park, decision.Reason, ClassSharedBaselineFailure)
 	}
 
-	// Run side fits; the base's transcript is long enough to be cut.
-	baseOnly := classifyDeadcode(t,
-		deadcodeFindings("/w/r", "alphaHelper"),
+	subset := classifyDeadcode(t,
+		deadcodeFindings(realisticRunRoot, "alphaHelper"),
 		deadcodeFindings(realisticProbeRoot, "alphaHelper", "betaHelper", "gammaHelper"))
-	if baseOnly.Class == ClassSharedBaselineFailure || baseOnly.Park {
-		t.Fatalf("class = %q park = %v, want a truncated baseline never matched", baseOnly.Class, baseOnly.Park)
+	if subset.Class != ClassPRIntroduced {
+		t.Fatalf("class = %q, want %q for a run failing a different set than the base", subset.Class, ClassPRIntroduced)
+	}
+}
+
+// TestTruncatedWindowWithoutARosterFailsOpen pins the window-only path (a
+// stage that recorded no failureDigest): whatever lies past a cut window is
+// unseen, so a truncated diagnostic is ClassUnknown, never a park.
+func TestTruncatedWindowWithoutARosterFailsOpen(t *testing.T) {
+	stderr := deadcodeFindings(realisticRunRoot, "alphaHelper", "betaHelper", "gammaHelper") + deadcodeTrailer
+	message := "command exited 2; failure: " + executor.FailureDiagnostic(nil, []byte(stderr))
+	e := newEvaluator(t, &stubProber{result: ProbeResult{
+		Stderr: deadcodeFindings(realisticProbeRoot, "alphaHelper", "betaHelper", "gammaHelper") + deadcodeTrailer,
+	}})
+	decision, err := e.Classify(context.Background(), Request{
+		Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"make", "ci"}, FailureText: message,
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if decision.Class != ClassUnknown || decision.Park {
+		t.Fatalf("class = %q park = %v, want %q", decision.Class, decision.Park, ClassUnknown)
+	}
+}
+
+// TestInheritedFindingAfterLongOutputMatches: under `make ci` stdout is
+// usually far past 8 KB, so the executor's context window around a source
+// finding is cut. That cut is in the context, not the roster: the failure
+// lines come from a full scan, so an inherited finding still matches.
+func TestInheritedFindingAfterLongOutputMatches(t *testing.T) {
+	var passing strings.Builder
+	for i := range 400 {
+		fmt.Fprintf(&passing, "ok  \texample.com/x/pkg%d\t0.%03ds\n", i, i)
+	}
+	finding := func(root string) string {
+		return passing.String() + root + "/internal/a/a.go:12:6: Error return value of `f.Close` is not checked (errcheck)\n"
+	}
+	decision := classifyStreams(t, []string{"make", "ci"},
+		finding("/w/run-1/repo"), "make: *** [ci] Error 1\n",
+		finding("/tmp/probe-1234567/checkout"), "make: *** [ci] Error 1\n")
+	if decision.Class != ClassSharedBaselineFailure {
+		t.Fatalf("class = %q (%s), want %q", decision.Class, decision.Reason, ClassSharedBaselineFailure)
 	}
 }
 

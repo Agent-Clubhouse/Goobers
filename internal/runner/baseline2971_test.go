@@ -210,7 +210,8 @@ func TestInheritedPlatformDeadcodeFailureParksTheRun(t *testing.T) {
 	runStderr := stderr("/work/runs/run-a/repo")
 	message := "command exited 2; failure: " + executor.FailureDiagnostic([]byte(stdout), []byte(runStderr)) +
 		"; 1 distinct failure line(s) recorded in failureDigest"
-	outputs := map[string]any{executor.FailureDigestOutput: executor.FailureDigest([]byte(stdout), []byte(runStderr))}
+	digest, count := executor.FailureDigest([]byte(stdout), []byte(runStderr))
+	outputs := map[string]any{executor.FailureDigestOutput: digest, executor.FailureCountOutput: float64(count)}
 
 	store, err := baseline.OpenStore(filepath.Join(t.TempDir(), "baseline.json"))
 	if err != nil {

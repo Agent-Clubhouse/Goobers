@@ -81,17 +81,26 @@ func reducedSignature(reduced string, truncated bool) string {
 // (flake.NormalizeVolatile: run-specific values replaced, file:line kept). The
 // digest also carries context windows; their non-finding lines (module
 // downloads, tool chatter) vary between a warm and a cold checkout and are not
-// part of the failure. complete is false when the digest was cut at its size
-// bound, because then part of the roster is unseen.
-func failureRoster(digest string) (string, bool) {
-	if executor.DigestTruncated(digest) {
+// part of the failure.
+//
+// complete is false when the roster cannot be trusted whole: the digest holds
+// fewer distinct failure lines than the executor counted (count, its
+// failureCount — the digest was cut at its size bound), or it holds none at
+// all. A context window cut short inside the digest does not make it
+// incomplete: the failure lines come from a full scan of the output.
+func failureRoster(digest string, count int) (string, bool) {
+	raw := make(map[string]bool)
+	for _, line := range strings.Split(digest, "\n") {
+		if line = strings.TrimSpace(line); executor.IsFailureLine(line) {
+			raw[line] = true
+		}
+	}
+	if len(raw) == 0 || len(raw) < count {
 		return "", false
 	}
-	var lines []string
-	for _, line := range strings.Split(digest, "\n") {
-		if executor.IsFailureLine(line) {
-			lines = append(lines, flake.NormalizeVolatile(line))
-		}
+	lines := make([]string, 0, len(raw))
+	for line := range raw {
+		lines = append(lines, flake.NormalizeVolatile(line))
 	}
 	slices.Sort(lines)
 	lines = slices.Compact(lines)
