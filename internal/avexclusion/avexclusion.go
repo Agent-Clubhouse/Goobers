@@ -188,7 +188,11 @@ func Verify(dirs []Directory, exclusions []string, queried bool, queryErr error)
 	report := Report{Queried: queried, Findings: make([]Finding, 0, len(dirs))}
 	if !queried {
 		if queryErr != nil {
-			report.QueryError = queryErr.Error()
+			if defenderNotApplicable(queryErr.Error()) {
+				report.QueryError = DefenderNotApplicableMessage
+			} else {
+				report.QueryError = queryErr.Error()
+			}
 		} else {
 			report.QueryError = "exclusion list not queried"
 		}
@@ -342,8 +346,13 @@ func Summary(label string, report Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "av-exclusions (advisory, %s): ", label)
 	if !report.Queried {
-		fmt.Fprintf(&b, "could not read Microsoft Defender exclusions (%s); directories Goobers writes then reads: %s",
-			report.QueryError, joinPaths(report.Findings, func(Finding) bool { return true }))
+		if strings.HasPrefix(report.QueryError, "not applicable:") {
+			fmt.Fprintf(&b, "%s; directories Goobers writes then reads: %s",
+				report.QueryError, joinPaths(report.Findings, func(Finding) bool { return true }))
+		} else {
+			fmt.Fprintf(&b, "could not read Microsoft Defender exclusions (%s); directories Goobers writes then reads: %s",
+				report.QueryError, joinPaths(report.Findings, func(Finding) bool { return true }))
+		}
 		return b.String()
 	}
 	excluded := 0
