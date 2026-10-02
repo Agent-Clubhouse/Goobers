@@ -1246,7 +1246,7 @@ func clearStaleRunAbortedPR(
 		AddLabels:  []string{abortedRunLabel},
 	}); restoreErr != nil {
 		if err != nil {
-			return pr, false, fmt.Errorf("revalidate cleared %s: %v; restore label: %w", abortedRunLabel, err, restoreErr)
+			return pr, false, fmt.Errorf("revalidate cleared %s: %w; restore label: %w", abortedRunLabel, err, restoreErr)
 		}
 		return pr, false, fmt.Errorf("restore %s after unsafe revalidation: %w", abortedRunLabel, restoreErr)
 	}
