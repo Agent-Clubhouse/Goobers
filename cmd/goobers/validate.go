@@ -358,7 +358,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		options.deferModelDiscovery, modelCredential, knownExternalTelemetryConnectorNames(cfg),
+		options.deferModelDiscovery, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)

@@ -4188,6 +4188,16 @@ func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
 	}
 }
 
+func TestExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
+	var nilConfig *Config
+	if names := nilConfig.ExternalTelemetryConnectorNames(); names != nil {
+		t.Fatalf("nil config names = %#v, want nil (check skipped)", names)
+	}
+	if names := (&Config{}).ExternalTelemetryConnectorNames(); names == nil || len(names) != 0 {
+		t.Fatalf("empty config names = %#v, want a non-nil empty slice so the check still runs", names)
+	}
+}
+
 // TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
 // the index the dispatcher stamps a stage pod from must clear Auth.Token,
 // never hand a credential reference to a caller that has no business

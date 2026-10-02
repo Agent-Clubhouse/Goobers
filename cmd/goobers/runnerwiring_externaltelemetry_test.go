@@ -193,7 +193,7 @@ func TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := compiledMachinesWithWarnings(set, map[string]apiv1.GooberSpec{}, harness.EnvironmentConfig{}, nil, false, nil,
-				knownExternalTelemetryConnectorNames(tc.cfg))
+				tc.cfg.ExternalTelemetryConnectorNames())
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatalf("compile with configured connector: %v", err)
@@ -208,15 +208,6 @@ func TestCompiledMachinesRejectsUnconfiguredExternalTelemetryConnector(t *testin
 				t.Fatalf("compile error = %q, want it to name the task and the unknown connector", msg)
 			}
 		})
-	}
-}
-
-func TestKnownExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
-	if names := knownExternalTelemetryConnectorNames(nil); names != nil {
-		t.Fatalf("nil config names = %#v, want nil (check skipped)", names)
-	}
-	if names := knownExternalTelemetryConnectorNames(&instance.Config{}); names == nil || len(names) != 0 {
-		t.Fatalf("empty config names = %#v, want a non-nil empty slice so the check still runs", names)
 	}
 }
 
