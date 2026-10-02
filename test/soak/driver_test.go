@@ -313,3 +313,70 @@ func TestRollingThroughputIncludesInteriorAndEdgeWindows(t *testing.T) {
 		})
 	}
 }
+
+// Slow I/O must not turn an incomplete observation into a permanent refusal.
+func TestRampWaitsForObservationCoveringDeadline(t *testing.T) {
+	for _, operation := range []string{"list", "submit"} {
+		t.Run(operation, func(t *testing.T) {
+			p, c, b := fakeSetup()
+			start := c.Now()
+			cutoff := start.Add(p.RampWindow)
+			c.now = cutoff.Add(-500 * time.Millisecond)
+			b.duration = time.Minute
+			b.submissions = []fakeSubmission{{at: start, started: start}}
+			costly := &clockAdvancingBackend{fakeBackend: b, operation: operation}
+			d := driver{backend: costly, clock: c, result: result{Profile: p, Started: start, SustainStarted: cutoff, SustainEnded: cutoff.Add(p.Duration)}, slots: []slot{{acceptance: "1", runID: "1", submitted: start}, {}}, seen: map[string]readservice.RunSummary{}, observedUntil: c.Now()}
+			if operation == "list" {
+				b.submissions = append(b.submissions, fakeSubmission{at: c.Now(), started: cutoff.Add(-200 * time.Millisecond)})
+				d.slots[1] = slot{acceptance: "2", submitted: c.Now()}
+				if err := d.observe(context.Background(), c.Now()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				b.latency = 100 * time.Millisecond
+				if err := d.admit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.Now().Before(cutoff) {
+				t.Fatal("test did not cross the deadline during I/O")
+			}
+			d.checkRamp(c.Now())
+			if err := d.admit(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if d.rampChecked || d.result.RampRefused {
+				t.Fatal("ramp decided from observation ending before deadline")
+			}
+			if err := d.observe(context.Background(), c.Now()); err != nil {
+				t.Fatal(err)
+			}
+			d.checkRamp(c.Now())
+			if !d.rampChecked || d.result.RampRefused {
+				t.Fatal("actual overlap before deadline was not accepted")
+			}
+		})
+	}
+}
+
+type clockAdvancingBackend struct {
+	*fakeBackend
+	operation string
+}
+
+func (b *clockAdvancingBackend) List(ctx context.Context, opts readservice.RunListOptions) ([]readservice.RunSummary, error) {
+	if b.operation == "list" {
+		b.clock.now = b.clock.now.Add(600 * time.Millisecond)
+		b.operation = ""
+	}
+	return b.fakeBackend.List(ctx, opts)
+}
+
+func (b *clockAdvancingBackend) Submit(ctx context.Context, failure bool) (string, error) {
+	id, err := b.fakeBackend.Submit(ctx, failure)
+	if b.operation == "submit" {
+		b.clock.now = b.clock.now.Add(600 * time.Millisecond)
+		b.operation = ""
+	}
+	return id, err
+}

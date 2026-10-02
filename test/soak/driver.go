@@ -45,14 +45,15 @@ type slot struct {
 }
 
 type driver struct {
-	backend     backend
-	clock       clock
-	result      result
-	slots       []slot
-	seen        map[string]readservice.RunSummary
-	sequence    int
-	logError    error
-	rampChecked bool
+	backend       backend
+	clock         clock
+	result        result
+	slots         []slot
+	seen          map[string]readservice.RunSummary
+	sequence      int
+	logError      error
+	rampChecked   bool
+	observedUntil time.Time
 }
 
 func run(ctx context.Context, p Profile, b backend, c clock) result {
@@ -139,6 +140,7 @@ func (d *driver) observe(ctx context.Context, now time.Time) error {
 	if err := d.refresh(ctx, now); err != nil {
 		return err
 	}
+	d.observedUntil = now
 	for i := range d.slots {
 		s := &d.slots[i]
 		if r, ok := d.seen[s.runID]; ok {
@@ -158,6 +160,9 @@ func (d *driver) admit(ctx context.Context) error {
 		}
 		if !now.Before(d.result.SustainStarted) {
 			d.checkRamp(now)
+			if !d.rampChecked {
+				return nil // Refresh through the deadline before further admission.
+			}
 		}
 		if d.result.RampRefused {
 			return nil
@@ -210,7 +215,9 @@ func (d *driver) refresh(ctx context.Context, now time.Time) error {
 }
 
 func (d *driver) checkRamp(now time.Time) {
-	if d.rampChecked {
+	// Observation and submission can cross the deadline. A query bounded
+	// before it cannot prove that the final ramp interval was underfilled.
+	if d.rampChecked || d.observedUntil.Before(d.result.SustainStarted) {
 		return
 	}
 	d.rampChecked = true
