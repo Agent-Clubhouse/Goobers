@@ -109,8 +109,9 @@ They differ in what *executes* it:
   Maven repository, the fixture's NuGet packages restored into the global
   packages folder, and a wheelhouse for the pytest set pinned in
   `test/e2e/testdata/pythonservice-ci-requirements.txt`, installed with
-  `--no-index` (#4615). None of the three tests opens its own unbounded
-  package fetch.
+  `--no-index` (#4615). The .NET and Python tests therefore resolve their
+  packages from local disk; Java's `mvn verify` still falls back to Maven
+  Central on a cold Maven cache.
 - **Shipped, validated locally** — an end-to-end test exists and passes on a
   host with the toolchain, but it is opt-in and **nothing in CI enables it**.
   No row is at this level today; it is the honest label for a stack whose leg
