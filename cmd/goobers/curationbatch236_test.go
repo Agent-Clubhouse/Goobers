@@ -130,6 +130,60 @@ func TestForwardCurationEmptyPrimaryClaimUsesClaimedParkedFallback(t *testing.T)
 	}
 }
 
+func TestForwardCurationFallbackAdvancesCursorWhenWindowAlreadyClaimed(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	for issue := 1; issue <= backlogScanCeiling+1; issue++ {
+		server.addIssue(issue, fmt.Sprintf("Parked fallback %d", issue), "goobers:approved", providers.LabelNeedsHuman)
+	}
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "fallback-window-1")
+	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
+	t.Setenv("GOOBERS_INPUT_CURATION", "true")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady)
+	t.Setenv("GOOBERS_INPUT_PARKLABELS", providers.LabelNeedsHuman)
+	t.Setenv("GOOBERS_INPUT_FILTERPARKLABELS", "true")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", strconv.Itoa(backlogScanCeiling))
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("first backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, fmt.Sprintf("claimed %d items", backlogScanCeiling)) {
+		t.Fatalf("first stdout = %q, want first fallback window claimed", stdout)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "fallback-window-2")
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("second backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "no work: every eligible item is already claimed by another run") {
+		t.Fatalf("second stdout = %q, want no-work against held fallback window", stdout)
+	}
+
+	t.Setenv("GOOBERS_RUN_ID", "fallback-window-3")
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("third backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, fmt.Sprintf("claimed %d: Parked fallback %d", backlogScanCeiling+1, backlogScanCeiling+1)) {
+		t.Fatalf("third stdout = %q, want resumed fallback cursor to claim issue %d", stdout, backlogScanCeiling+1)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	entry, held := ledger.Lookup(strconv.Itoa(backlogScanCeiling + 1))
+	if !held || entry.RunID != "fallback-window-3" {
+		t.Fatalf("fallback resume claim = %+v, held=%v; want fallback-window-3 custody for issue %d", entry, held, backlogScanCeiling+1)
+	}
+}
+
 // TestBacklogQueryRejectsInvalidMaxItems: a non-numeric / non-positive maxItems
 // fails closed rather than silently defaulting — a dead input made real must
 // validate.

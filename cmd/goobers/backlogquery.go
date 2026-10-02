@@ -682,6 +682,10 @@ func backlogPRExtras(ctx context.Context, env backlogQueryEnv, repo providers.Re
 
 type forwardCurationFallback struct {
 	eligible         []providers.WorkItem
+	state            stateclient.Store
+	cursorKey        string
+	cursor           backlogScanCursor
+	nextCursor       backlogScanCursor
 	observedRecords  map[string]blockedRecord
 	remainingRecords map[string]blockedRecord
 	verifiedSkips    map[string]blockedEligibilitySkip
@@ -725,6 +729,10 @@ func scanForwardCurationFallback(ctx context.Context, env backlogQueryEnv, enabl
 	}
 	return &forwardCurationFallback{
 		eligible:         eligible,
+		state:            scan.state,
+		cursorKey:        scan.cursorKey,
+		cursor:           scan.cursor,
+		nextCursor:       scan.nextCursor,
 		observedRecords:  scan.observedRecords,
 		remainingRecords: scan.remainingRecords,
 		verifiedSkips:    scan.verifiedSkips,
@@ -758,6 +766,13 @@ func filterForwardFallbackForClaim(
 		return nil
 	}
 	return fallback
+}
+
+func advanceForwardFallbackCursor(ctx context.Context, fallback *forwardCurationFallback) error {
+	if fallback == nil {
+		return nil
+	}
+	return advanceBacklogScanCursor(ctx, fallback.state, fallback.cursorKey, fallback.cursor, fallback.nextCursor)
 }
 
 func excludeAlreadySelectedWorkItems(candidates, selected []providers.WorkItem) []providers.WorkItem {
@@ -1024,6 +1039,10 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
+		if err := advanceForwardFallbackCursor(ctx, opts.forwardFallback); err != nil {
+			pf(stderr, "error: advance fallback backlog scan cursor: %v\n", err)
+			return 1
+		}
 		if err := persistResweepState(ctx); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
@@ -1060,6 +1079,10 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	if len(claimed) == 0 && len(readOnlyResweep) == 0 {
 		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
+			return 1
+		}
+		if err := advanceForwardFallbackCursor(ctx, opts.forwardFallback); err != nil {
+			pf(stderr, "error: advance fallback backlog scan cursor: %v\n", err)
 			return 1
 		}
 		if malformedReadyItems > 0 {
