@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -224,11 +225,22 @@ type releaseTargetResult struct {
 	err     error
 }
 
-// releaseBuildParallelism bounds concurrent target builds by the CPUs
-// available: each `go build` already parallelizes across packages, so running
-// more builds than CPUs only adds memory pressure.
+// releaseBuildParallelismEnv overrides the default concurrent target-build
+// bound with a positive integer.
+const releaseBuildParallelismEnv = "GOOBERS_RELEASE_BUILD_PARALLELISM"
+
+// releaseBuildParallelism bounds concurrent target builds. Each `go build`
+// already parallelizes across packages, so the default is half the CPUs
+// (minimum 1, maximum 4). Release runners and CI shards share the machine with
+// other work; a build per CPU saturated a CI shard and pushed an unrelated
+// deadline-bound test past its limit (#6493). GOOBERS_RELEASE_BUILD_PARALLELISM
+// overrides the default with a positive integer.
 func releaseBuildParallelism(targets int) int {
-	return max(1, min(targets, runtime.NumCPU()))
+	limit := max(1, min(4, runtime.NumCPU()/2))
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(releaseBuildParallelismEnv))); err == nil && v > 0 {
+		limit = v
+	}
+	return max(1, min(targets, limit))
 }
 
 func buildReleaseTarget(t Target, opts options, ldflags, releaseDocsDir string, images *imageContexts) releaseTargetResult {

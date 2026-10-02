@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,29 @@ func TestBuildReleaseTargetsReportsFirstFailureInTargetOrder(t *testing.T) {
 	_, _, err = buildReleaseTargets(opts, "-s -w", t.TempDir(), nil, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "build windows/ppc64 failed") {
 		t.Fatalf("err = %v, want the first failing target in order (windows/ppc64)", err)
+	}
+}
+
+func TestReleaseBuildParallelismDefaultsToHalfTheCPUsAndHonoursOverride(t *testing.T) {
+	t.Setenv(releaseBuildParallelismEnv, "")
+	want := max(1, min(4, runtime.NumCPU()/2))
+	if got := releaseBuildParallelism(16); got != want {
+		t.Fatalf("default parallelism = %d, want %d", got, want)
+	}
+	if got := releaseBuildParallelism(1); got != 1 {
+		t.Fatalf("parallelism for one target = %d, want 1", got)
+	}
+	t.Setenv(releaseBuildParallelismEnv, "3")
+	if got := releaseBuildParallelism(16); got != 3 {
+		t.Fatalf("override parallelism = %d, want 3", got)
+	}
+	if got := releaseBuildParallelism(2); got != 2 {
+		t.Fatalf("override capped by targets = %d, want 2", got)
+	}
+	for _, bad := range []string{"0", "-2", "many"} {
+		t.Setenv(releaseBuildParallelismEnv, bad)
+		if got := releaseBuildParallelism(16); got != want {
+			t.Fatalf("invalid override %q: parallelism = %d, want default %d", bad, got, want)
+		}
 	}
 }

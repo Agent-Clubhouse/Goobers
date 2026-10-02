@@ -543,7 +543,10 @@ build. Because signing never touches anything else, `validate-release` and the
 Linux `native-linux-images` legs run on the build's exact upload in parallel
 with signing (#5413), so a content failure surfaces without waiting for either
 signer. Gates that need signed bytes (`native-smoke` and `native-windows-image`)
-and publication use the assembled set. The separate `verify-and-publish` job independently downloads the
+and publication use the assembled set. Within the build job, `go run ./release`
+builds targets concurrently, by default half the runner's CPUs (at least 1, at
+most 4); set `GOOBERS_RELEASE_BUILD_PARALLELISM` to a positive integer to
+override it. The separate `verify-and-publish` job independently downloads the
 final signer artifact by immutable artifact ID, checks the exact release asset
 set and every checksum, and uploads an explicit file list. It treats the
 validation job’s generated release notes as data and never executes release
