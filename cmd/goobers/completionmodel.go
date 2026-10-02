@@ -245,6 +245,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "record-instance", takesArg: true, desc: "Instance root receiving Kubernetes check results"},
+		{name: "result-max-age", takesArg: true, desc: "Recorded Kubernetes result freshness window"},
 		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
 		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},

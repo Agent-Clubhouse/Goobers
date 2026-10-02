@@ -216,3 +216,22 @@ func TestRuntimeReadinessIncludesTaskAndGateBYOCredentials(t *testing.T) {
 		}
 	}
 }
+
+// The diagnostic fallback must keep instance-owned connector admission even
+// when a harness configuration error is converted into a report finding.
+func TestRuntimeReadinessPreservesTelemetryConnectorAdmission(t *testing.T) {
+	set, report, err := instance.LoadConfigDir("testdata/external-telemetry-workflow")
+	if err != nil {
+		t.Fatalf("load fixture: %v (%+v)", err, report)
+	}
+	for _, model := range []string{"auto", " invalid model "} {
+		t.Run(model, func(t *testing.T) {
+			goobers := map[string]apiv1.GooberSpec{"fixture": {Harness: apiv1.HarnessClaudeCode, Model: model}}
+			_, _, _, err := compileRuntimePreflight("testdata/external-telemetry-workflow", set, goobers, nil, &instance.Config{})
+			var compileErr *workflowCompileError
+			if !errors.As(err, &compileErr) || !strings.Contains(err.Error(), `unknown external telemetry connector "fixture"`) {
+				t.Fatalf("preflight bypassed connector admission: %v", err)
+			}
+		})
+	}
+}
