@@ -253,6 +253,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/daemonheartbeat",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Daemon heartbeat tests extracted from cmd/goobers; the Windows CLI test selection did not run these tests. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/daemonlog",
       "coverage": "none",
       "category": "not-selected",
