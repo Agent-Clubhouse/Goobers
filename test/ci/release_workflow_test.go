@@ -165,7 +165,7 @@ var signingOrderCases = []signingOrderCase{
 			"sha256sum --check --strict --quiet SHA256SUMS",
 			`cp "$signed_file" "dist/$name"`,
 			"xargs sha256sum --",
-			"signing did not change it",
+			"its signer did not re-pack it",
 			"changed between build and publish but is never signed",
 			"- name: Upload final signed artifacts",
 		},

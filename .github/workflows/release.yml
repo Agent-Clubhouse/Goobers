@@ -516,10 +516,15 @@ jobs:
       # Fail closed on every way the merge could ship something other than
       # "the build's bytes, with exactly the three signed archives replaced":
       # a damaged download, a signer delivering a missing/extra/non-regular
-      # file, a signed archive identical to its unsigned input (signing never
-      # happened), or any unsigned asset changing between build and publish.
-      # The last check is what lets the early, signing-independent gates
-      # (validate-release, native-linux-images) vouch for the final release.
+      # file, or a "signed" archive identical to its unsigned input (the
+      # signer never re-packed it). The signature itself is proven inside each
+      # signer job, before it uploads.
+      #
+      # The early, signing-independent gates (validate-release,
+      # native-linux-images) vouch for the final release because they pin the
+      # same immutable build upload this job starts from, and only the three
+      # signer archives are replaced here. The closing comparison restates
+      # that invariant as a guard against a future edit to this script.
       - name: Merge signed archives and recompute SHA256SUMS
         env:
           TAG: ${{ github.ref_name }}
@@ -575,7 +580,7 @@ jobs:
               fail "$name dropped out of SHA256SUMS while assembling"
             elif [[ -n "${signer[$name]:-}" ]]; then
               if [[ "${after[$name]}" == "${before[$name]}" ]]; then
-                fail "$name is byte-identical to its unsigned build; signing did not change it"
+                fail "$name is byte-identical to its unsigned build; its signer did not re-pack it"
               fi
             elif [[ "${after[$name]}" != "${before[$name]}" ]]; then
               fail "$name changed between build and publish but is never signed"
@@ -583,7 +588,7 @@ jobs:
           done
           {
             echo "### Assembled release set"
-            echo "- signed (replaced): ${!signer[*]}"
+            echo "- signed (replaced): $(printf '%s\n' "${!signer[@]}" | sort | tr '\n' ' ')"
             echo "- unsigned assets byte-identical to build: $(( ${#before[@]} - ${#signer[@]} ))"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -739,7 +744,7 @@ jobs:
         with:
           name: original-image-inputs
           path: original-image-inputs
-      - name: Verify native images from final release artifacts
+      - name: Verify native images from release artifacts
         id: image-verification
         shell: bash
         run: |
@@ -747,7 +752,9 @@ jobs:
           mkdir -p native-image-evidence
           prefix="goobers-release-verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${IMAGE_PLATFORM}"
           echo "IMAGE_VERIFY_PREFIX=$prefix" >> "$GITHUB_ENV"
-          cp dist/SHA256SUMS native-image-evidence/final-archive-SHA256SUMS
+          # The build's manifest: its Linux lines are carried unchanged into
+          # the published SHA256SUMS; its darwin/windows lines predate signing.
+          cp dist/SHA256SUMS native-image-evidence/release-archive-SHA256SUMS
           jq -n --arg source "$RELEASE_SOURCE_COMMIT" --arg version "$RELEASE_VERSION" \
             --arg commit "$RELEASE_COMMIT" --arg date "$RELEASE_DATE" --arg target "$IMAGE_TARGET" \
             '{sourceCommit:$source,version:$version,embeddedCommit:$commit,date:$date,target:$target,operatorOrigin:"original same-build context"}' \
@@ -794,7 +801,7 @@ jobs:
             fi
           fi
           if [[ "$IMAGE_VERIFICATION_OUTCOME" == success ]]; then
-            required=(release-source.json final-archive-SHA256SUMS release-image-verification.txt image-inspect.json
+            required=(release-source.json release-archive-SHA256SUMS release-image-verification.txt image-inspect.json
               verified-image-contexts/image-evidence.json
               "original-image-inputs/$IMAGE_PLATFORM/SHA256SUMS" "original-image-inputs/$IMAGE_PLATFORM/release.json"
               "verified-image-contexts/$IMAGE_PLATFORM/SHA256SUMS" "verified-image-contexts/$IMAGE_PLATFORM/release.json"

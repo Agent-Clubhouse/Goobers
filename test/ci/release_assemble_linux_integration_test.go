@@ -176,7 +176,7 @@ func TestIntegrationReleaseAssembleFailsClosed(t *testing.T) {
 		"signer delivered another signer's archive": {"must hold exactly", func(t *testing.T, root string) {
 			writeAssembleFile(t, root, "signed-windows/"+darwinArm, []byte("signed elsewhere"))
 		}},
-		"signed archive identical to unsigned build": {"signing did not change it", func(t *testing.T, root string) {
+		"signed archive identical to unsigned build": {"its signer did not re-pack it", func(t *testing.T, root string) {
 			writeAssembleFile(t, root, "signed-windows/"+windows, []byte("unsigned "+windows))
 		}},
 		"signed archive is a symlink": {"not a non-empty regular file", func(t *testing.T, root string) {
