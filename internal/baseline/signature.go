@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/executor"
@@ -25,6 +26,24 @@ var executorFailureMessage = regexp.MustCompile(`command exited -?\d+; failure: 
 // branch-introduced (#4477).
 var failureMessageTrailer = regexp.MustCompile(`; (?:hint|warnings): |; \d+ distinct failure line\(s\) recorded in `)
 
+// recordedFailureCount captures N from the failureDigest trailer.
+var recordedFailureCount = regexp.MustCompile(`; (\d+) distinct failure line\(s\) recorded in `)
+
+// recordedFailureLines returns the distinct-failure-line count a stage
+// message recorded (executor.FailureLineCount at run time), and false when the
+// text is not a stage message or carries no count.
+func recordedFailureLines(text string) (int, bool) {
+	if !executorFailureMessage.MatchString(text) {
+		return 0, false
+	}
+	match := recordedFailureCount.FindStringSubmatch(text)
+	if match == nil {
+		return 0, false
+	}
+	count, err := strconv.Atoi(match[1])
+	return count, err == nil
+}
+
 // platformQualifier matches a finding's `[platforms: a,b]` suffix: the form a
 // gate that evaluates several target platforms from one host (test/deadcode,
 // #4434) uses to say a finding holds on only some of them.
@@ -38,7 +57,10 @@ var platformQualifier = regexp.MustCompile(`\[platforms: ([^\]]+)\]`)
 // branch adding a fourth finding, or repeating an inherited lint message in a
 // new file, would share the base's signature and be parked behind a failure
 // that is partly its own (#4477). The roster errs toward difference — a moved
-// line number is a different failure — which only ever fails open.
+// line number is a different failure — which only ever fails open. Paths are
+// reduced to their basename, so the same message at the same line of two
+// same-named files in different directories still reads alike; findings that
+// name their subject in full (a deadcode symbol) are unaffected.
 //
 // Evidence whose diagnostic the executor cut at its size bound is marked with
 // truncatedSignatureSuffix: whatever followed the cut is unseen, so two such

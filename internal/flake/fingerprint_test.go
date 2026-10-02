@@ -1,6 +1,17 @@
 package flake
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+func TestRosterLinesKeepsLocationsAndRepeats(t *testing.T) {
+	got := RosterLines("FAIL\n/w/a/x.go:12:6: same msg 0xc000123\n/w/b/y.go:40:6: same msg 0xc000999\n/w/a/x.go:12:6: same msg 0xc000123\n")
+	want := []string{"x.go:12:6: same msg <addr>", "y.go:40:6: same msg <addr>", "x.go:12:6: same msg <addr>"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RosterLines = %q, want %q", got, want)
+	}
+}
 
 func TestNormalizeSignatureDropsPackageAndCoverageSummaries(t *testing.T) {
 	for _, failure := range []string{

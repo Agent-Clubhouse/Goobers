@@ -157,6 +157,16 @@ func IsFailureLine(line string) bool {
 	return failureLineSpecificity(line) > specificityBuildTrailer
 }
 
+// FailureLineCount is the number of distinct failure lines across a command's
+// output — the count a failing stage records in its message as "; N distinct
+// failure line(s) recorded in failureDigest". The recorded diagnostic is one
+// window and can omit findings; a baseline comparison (#4477) checks this
+// count so a finding outside the window cannot pass as identical.
+func FailureLineCount(stdout, stderr []byte) int {
+	_, count := collectFailureDigest(stdout, stderr)
+	return count
+}
+
 // diagnosticTruncationMarker ends a diagnostic boundDiagnostic cut.
 const diagnosticTruncationMarker = "..."
 

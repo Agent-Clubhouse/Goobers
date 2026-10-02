@@ -2,6 +2,7 @@ package baseline
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -126,8 +127,9 @@ const (
 // transcript carries probeFindings.
 func classifyDeadcode(t *testing.T, runFindings, probeFindings string) Decision {
 	t.Helper()
-	diagnostic := executor.FailureDiagnostic(nil, []byte(runFindings+deadcodeTrailer))
-	message := "command exited 2; failure: " + diagnostic + "; 3 distinct failure line(s) recorded in failureDigest"
+	stderr := []byte(runFindings + deadcodeTrailer)
+	message := fmt.Sprintf("command exited 2; failure: %s; %d distinct failure line(s) recorded in failureDigest",
+		executor.FailureDiagnostic(nil, stderr), executor.FailureLineCount(nil, stderr))
 	probe := "go run ./test/deadcode -go go\n" + probeFindings + deadcodeTrailer
 	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: probe}})
 	decision, err := e.Classify(context.Background(), Request{
@@ -259,6 +261,23 @@ func TestRepeatedLintMessageInANewFileIsPRIntroduced(t *testing.T) {
 	}
 	if decision.Class != ClassPRIntroduced {
 		t.Fatalf("class = %q (%s), want %q", decision.Class, decision.Reason, ClassPRIntroduced)
+	}
+}
+
+// TestFindingOutsideTheRecordedWindowIsNotHidden: past 8 KB of output the
+// executor anchors its window on the LAST finding, so a branch-added finding
+// printed earlier is absent from the diagnostic. The recorded failure-line
+// count still sees it, and the run must not park behind the base.
+func TestFindingOutsideTheRecordedWindowIsNotHidden(t *testing.T) {
+	var noise strings.Builder
+	for i := 0; noise.Len() < 9000; i++ {
+		fmt.Fprintf(&noise, "go: downloading example.com/module%03d v1.2.3\n", i)
+	}
+	decision := classifyDeadcode(t,
+		noise.String()+deadcodeFindings("/w/r", "aaNew", "zzOld"),
+		deadcodeFindings("/tmp/p/checkout", "zzOld"))
+	if decision.Class == ClassSharedBaselineFailure || decision.Park {
+		t.Fatalf("class = %q park = %v, want the branch-added finding not hidden behind the base", decision.Class, decision.Park)
 	}
 }
 
