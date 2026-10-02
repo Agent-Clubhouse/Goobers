@@ -155,14 +155,23 @@ func (r *daemonRunnerRegistry) Replace(current map[string]*runner.Runner) {
 }
 
 func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runner) func() {
+	release, _ := r.trackRunLease(runID, workflow, owner, false)
+	return release
+}
+
+func (r *daemonRunnerRegistry) trackRunLease(runID, workflow string, owner *runner.Runner, requireCompatible bool) (func(), bool) {
 	if r == nil || owner == nil {
-		return func() {}
+		return func() {}, false
 	}
 	r.mu.Lock()
 	if r.owners == nil {
 		r.owners = make(map[string]trackedRun)
 	}
 	lease := r.owners[runID]
+	if requireCompatible && lease.owner != nil && lease.owner != owner {
+		r.mu.Unlock()
+		return func() {}, false
+	}
 	if lease.owner == owner {
 		lease.leases++
 	} else {
@@ -190,7 +199,7 @@ func (r *daemonRunnerRegistry) Track(runID, workflow string, owner *runner.Runne
 			}
 			r.mu.Unlock()
 		})
-	}
+	}, true
 }
 
 // RunIDs lists every run this process is currently tracking — the in-process
@@ -219,47 +228,7 @@ func (r *daemonRunnerRegistry) RunIDs() []string {
 // lease. Track's own hardStopping propagation applies here too, since a run
 // that becomes reachable mid-shutdown must still be stopped.
 func (r *daemonRunnerRegistry) TrackCompatible(runID string, owner *runner.Runner) (func(), bool) {
-	if r == nil || owner == nil {
-		return func() {}, false
-	}
-	r.mu.Lock()
-	if r.owners == nil {
-		r.owners = make(map[string]trackedRun)
-	}
-	lease := r.owners[runID]
-	if lease.owner != nil && lease.owner != owner {
-		r.mu.Unlock()
-		return func() {}, false
-	}
-	if lease.owner == owner {
-		lease.leases++
-	} else {
-		r.nextGeneration++
-		lease = trackedRun{RunID: runID, owner: owner, generation: r.nextGeneration, leases: 1}
-	}
-	r.owners[runID] = lease
-	hardStopping := r.hardStopping
-	r.mu.Unlock()
-	if hardStopping {
-		owner.HardStopRunWhenStarted(runID)
-	}
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			r.mu.Lock()
-			current := r.owners[runID]
-			if current.generation == lease.generation {
-				current.leases--
-				if current.leases == 0 {
-					delete(r.owners, runID)
-				} else {
-					r.owners[runID] = current
-				}
-			}
-			r.mu.Unlock()
-		})
-	}, true
+	return r.trackRunLease(runID, "", owner, true)
 }
 
 func (r *daemonRunnerRegistry) ActiveRuns() []trackedRun {
