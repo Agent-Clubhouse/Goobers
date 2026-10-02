@@ -506,8 +506,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 			}
 			remaining := totalTimeout - time.Since(started)
 			if remaining <= 0 {
-				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
-				completionErr = nil
+				runErr, completionErr = repairExit(completionErr, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]))
 			} else {
 				recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 				prompts = append(prompts, recoveryPrompt)
@@ -522,8 +521,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if recoveryErr != nil {
-					runErr = recoveryErr
-					completionErr = nil
+					runErr, completionErr = repairExit(completionErr, recoveryErr)
 				} else {
 					payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
 					completionErr = validateCompletion(req, payload, completionErr)

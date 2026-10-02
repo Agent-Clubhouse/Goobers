@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -395,30 +394,4 @@ func TestUnreadableJournalLeavesStreakIntact(t *testing.T) {
 	if record.Count != 1 {
 		t.Fatalf("unreadable journal changed the streak to %d, want it left at 1", record.Count)
 	}
-}
-
-// loadNoWorkStreakRecord reads an item's authoritative repeated-no-work record.
-//
-// This lives in the test file because production no longer needs it: the park
-// path takes its count AND its reason from the single compare-and-swap in
-// incrementNoWorkStreak, precisely so the two cannot come from different
-// versions of the record. Keeping a reader in the binary that nothing calls
-// would be dead code; the assertions below still need one.
-func loadNoWorkStreakRecord(
-	ctx context.Context,
-	l instance.Layout,
-	repo providers.RepositoryRef,
-	itemID string,
-) (noWorkStreakRecord, error) {
-	store, err := openStageStateStore(l)
-	if err != nil {
-		return noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
-	}
-	key := noWorkStreakKey(repo, itemID)
-	value, err := store.Get(ctx, noWorkStreakStateKey(key))
-	if err != nil {
-		return noWorkStreakRecord{}, fmt.Errorf("read no-work-streak state for %s#%s: %w", repo.Name, itemID, err)
-	}
-	record, _, err := decodeKeyedStateRecord(value, key, noWorkStreakRecordSpec)
-	return record, err
 }
