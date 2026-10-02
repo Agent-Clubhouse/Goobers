@@ -620,6 +620,16 @@
       "sinceVersion": "v0.5.0"
     },
     {
+      "name": "task.artifactInputs.mediaType",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
+      "name": "task.artifactInputs.schemaPath",
+      "stability": "preview",
+      "sinceVersion": "v0.5.0"
+    },
+    {
       "name": "task.artifactSlots",
       "stability": "preview",
       "sinceVersion": "v0.5.0"

@@ -515,6 +515,8 @@ stage.workspace.repo-readonly                            3.1          ga        
 task.agentic                                             3.1          ga               preview          dev
 task.artifactInputs                                      3.1          preview          preview          v0.5.0
 task.artifactInputs.from                                 3.1          preview          preview          v0.5.0
+task.artifactInputs.mediaType                            3.1          preview          preview          v0.5.0
+task.artifactInputs.schemaPath                           3.1          preview          preview          v0.5.0
 task.artifactSlots                                       3.1          preview          preview          v0.5.0
 task.artifactSlots.maxSize                               3.1          preview          preview          v0.5.0
 task.artifactSlots.mediaType                             3.1          preview          preview          v0.5.0
@@ -611,4 +613,4 @@ workflow.terminal.abort                                  3.1          ga        
 workflow.terminal.complete                               3.1          ga               preview          dev
 workflow.terminal.escalate                               3.1          ga               preview          dev
 
-611 feature/version row(s)
+613 feature/version row(s)

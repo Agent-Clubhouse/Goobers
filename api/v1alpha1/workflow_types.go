@@ -443,6 +443,18 @@ type ArtifactInputRef struct {
 	// +kubebuilder:validation:Pattern=`^[^.]+\.[A-Za-z0-9_-]{1,128}$`
 	// +kubebuilder:validation:Required
 	From string `json:"from" yaml:"from"`
+	// MediaType optionally declares the media type this consumer expects from
+	// the referenced producer slot. When both sides declare a media type, the
+	// workflow compiler requires an exact match.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	MediaType string `json:"mediaType,omitempty" yaml:"mediaType,omitempty"`
+	// SchemaPath optionally declares the schema this consumer expects from the
+	// referenced producer slot. When both sides declare a schema, the workflow
+	// compiler requires an exact match.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	SchemaPath string `json:"schemaPath,omitempty" yaml:"schemaPath,omitempty"`
 }
 
 // BanditArm declares one variant and the gate strength required to evaluate it.

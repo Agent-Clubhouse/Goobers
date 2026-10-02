@@ -2425,9 +2425,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// reading an upstream output the stage actually preceding it on some
 	// branch does not produce. Reported as errors: both are unconditionally
 	// broken at runtime, on some path, every time.
-	for _, msg := range wf.CheckStageContracts(def) {
-		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
-	}
+	ix.addStageContractFindings(r, def, file, w)
 	// Path simulation (#913, Tier 2 of the assurance ladder #903). Walks the
 	// compiled machine over every combination of gate outcomes, tracking what
 	// the immediately preceding task actually emits on each concrete path —
@@ -2437,6 +2435,7 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckPathSimulation(def) {
 		r.add(errorPathSimulation, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+
 	// Required-input contracts (#1061). The input-side analog of the above:
 	// a deterministic stage that invokes a `goobers` subcommand without
 	// wiring an input that subcommand hard-requires. This is what a
@@ -2737,6 +2736,44 @@ func (ix *index) addImplicitWritableWorkspaceWarnings(r *Report, def wf.Definiti
 	}
 }
 
+func (ix *index) addStageContractFindings(r *Report, def wf.Definition, file string, w apiv1.Workflow) {
+	artifactDiagnostics := artifactDiagnosticsByMessage(def)
+	indexed := ix.indexedWorkflow(w)
+	for _, msg := range wf.CheckStageContracts(def) {
+		if diagnostic, ok := artifactDiagnostics[msg]; ok {
+			line, col := compilerDiagnosticPosition(indexed, diagnostic)
+			if line > 0 {
+				r.addLocated(errorStageContract, Error, file, line, col, "Workflow", w.Name, "%s", msg)
+				continue
+			}
+		}
+		r.add(errorStageContract, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+}
+
+func (ix *index) indexedWorkflow(w apiv1.Workflow) indexedWorkflow {
+	if ix == nil {
+		return indexedWorkflow{definition: w}
+	}
+	indexed, ok := ix.workflows[workflowIdentity{gaggle: w.Spec.Gaggle, name: w.Name}]
+	if !ok {
+		return indexedWorkflow{definition: w}
+	}
+	return indexed
+}
+
+func artifactDiagnosticsByMessage(def wf.Definition) map[string]wf.CompileDiagnostic {
+	diagnostics := wf.ArtifactContractDiagnostics(def)
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	byMessage := make(map[string]wf.CompileDiagnostic, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		byMessage[diagnostic.Message] = diagnostic
+	}
+	return byMessage
+}
+
 // checkWorkflowsCompile closes the admission gap between canonical config
 // loading and the runtime (#3664). Every workflow check above mirrors part of
 // the versioned compiler, but the mirror was never complete: compiler-only
@@ -2787,6 +2824,10 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec, Annotations: w.Annotations}
 		machine, err := wf.Compile(def, opts...)
 		if err != nil {
+			var compileErr *wf.CompileError
+			if errors.As(err, &compileErr) && ix.addWorkflowCompileDiagnostics(r, indexed, compileErr) {
+				continue
+			}
 			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
 			continue
 		}
@@ -2806,6 +2847,91 @@ func (ix *index) checkWorkflowsCompile(r *Report) {
 			})
 		}
 	}
+}
+
+func (ix *index) addWorkflowCompileDiagnostics(r *Report, indexed indexedWorkflow, err *wf.CompileError) bool {
+	if err == nil || len(err.Diagnostics) == 0 {
+		return false
+	}
+	w := indexed.definition
+	for _, diagnostic := range err.Diagnostics {
+		line, col := compilerDiagnosticPosition(indexed, diagnostic)
+		if line > 0 {
+			r.addLocated(errorWorkflowCompile, Error, indexed.file, line, col, "Workflow", w.Name, "%s", diagnostic.Message)
+			continue
+		}
+		r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%s", diagnostic.Message)
+	}
+	return true
+}
+
+func compilerDiagnosticPosition(indexed indexedWorkflow, diagnostic wf.CompileDiagnostic) (int, int) {
+	switch {
+	case diagnostic.TaskName != "" && diagnostic.ArtifactInput != "":
+		return artifactInputPosition(indexed, diagnostic.TaskName, diagnostic.ArtifactInput)
+	case diagnostic.SlotTaskName != "" && diagnostic.SlotName != "":
+		return artifactSlotPosition(indexed, diagnostic.SlotTaskName, diagnostic.SlotName)
+	default:
+		return 0, 0
+	}
+}
+
+func artifactInputPosition(indexed indexedWorkflow, taskName, localName string) (int, int) {
+	taskNode := workflowTaskNode(indexed, taskName)
+	if taskNode == nil {
+		return 0, 0
+	}
+	inputs := yamlNodeAt(taskNode, []string{"artifactInputs"})
+	if inputs == nil {
+		return nodePosition(indexed, taskNode)
+	}
+	if key := yamlMappingKey(inputs, localName); key != nil {
+		return key.Line + indexed.lineOffset, key.Column
+	}
+	return nodePosition(indexed, inputs)
+}
+
+func artifactSlotPosition(indexed indexedWorkflow, taskName, slotName string) (int, int) {
+	taskNode := workflowTaskNode(indexed, taskName)
+	if taskNode == nil {
+		return 0, 0
+	}
+	slots := yamlNodeAt(taskNode, []string{"artifactSlots"})
+	if slots == nil || slots.Kind != yamlv3.SequenceNode {
+		return nodePosition(indexed, taskNode)
+	}
+	var found *yamlv3.Node
+	for _, slot := range slots.Content {
+		name := yamlChild(slot, "name")
+		if name != nil && name.Value == slotName {
+			found = name
+		}
+	}
+	if found != nil {
+		return found.Line + indexed.lineOffset, found.Column
+	}
+	return nodePosition(indexed, slots)
+}
+
+func workflowTaskNode(indexed indexedWorkflow, taskName string) *yamlv3.Node {
+	tasks := yamlNodeAt(indexed.node, []string{"spec", "tasks"})
+	if tasks == nil || tasks.Kind != yamlv3.SequenceNode {
+		return nil
+	}
+	for _, task := range tasks.Content {
+		name := yamlChild(task, "name")
+		if name != nil && name.Value == taskName {
+			return task
+		}
+	}
+	return nil
+}
+
+func nodePosition(indexed indexedWorkflow, node *yamlv3.Node) (int, int) {
+	if node == nil {
+		return 0, 0
+	}
+	return node.Line + indexed.lineOffset, node.Column
 }
 
 func safetyPosition(indexed indexedWorkflow, stage string) (int, int) {
