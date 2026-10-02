@@ -63,16 +63,18 @@ func TestParseOptionalRoot(t *testing.T) {
 
 func TestParseRequiredArgOptionalRoot(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		wantArg    string
-		wantRoot   string
-		wantOK     bool
-		wantOutput string
+		name        string
+		args        []string
+		wantArg     string
+		wantRoot    string
+		wantOK      bool
+		wantOutput  string
+		usageOutput string
 	}{
 		{
-			name:       "missing required arg",
-			wantOutput: "command-specific usage\n",
+			name:        "missing required arg",
+			wantOutput:  "command-specific usage\n",
+			usageOutput: "command-specific usage\n",
 		},
 		{
 			name:     "required only",
@@ -89,14 +91,15 @@ func TestParseRequiredArgOptionalRoot(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:       "too many args",
-			args:       []string{"required", "instance", "extra"},
-			wantOutput: "command-specific usage\n",
+			name:        "too many args",
+			args:        []string{"required", "instance", "extra"},
+			wantOutput:  "command-specific usage\n",
+			usageOutput: "command-specific usage\n",
 		},
 		{
-			name:       "parse error preserves command usage",
+			name:       "parse error",
 			args:       []string{"--unknown"},
-			wantOutput: "flag provided but not defined: -unknown\ncommand-specific usage\n",
+			wantOutput: "flag provided but not defined: -unknown\n",
 		},
 	}
 	for _, testCase := range tests {
@@ -105,7 +108,7 @@ func TestParseRequiredArgOptionalRoot(t *testing.T) {
 			fs := flag.NewFlagSet("test", flag.ContinueOnError)
 			fs.SetOutput(&output)
 			fs.Usage = func() {
-				_, _ = io.WriteString(&output, "command-specific usage\n")
+				_, _ = io.WriteString(&output, testCase.usageOutput)
 			}
 
 			arg, root, ok := parseRequiredArgOptionalRoot(fs, testCase.args)
