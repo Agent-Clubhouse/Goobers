@@ -56,9 +56,13 @@ func prepareClaudeMCP(ctx context.Context, req RunRequest) (mcpConfigArg string,
 	if len(req.MCPServers) == 0 {
 		return "", nil, nil
 	}
-	servers, assignments, err := materializeDeclaredMCP(ctx, "claude-code", req, mcpMaterializeOptions{
+	opts := mcpMaterializeOptions{
 		harness: apiv1.HarnessClaudeCode,
-	})
+	}
+	if err := validateDeclaredMCP("claude-code", req, opts); err != nil {
+		return "", nil, err
+	}
+	servers, assignments, err := materializeDeclaredMCP(ctx, "claude-code", req, opts)
 	if err != nil {
 		return "", nil, err
 	}

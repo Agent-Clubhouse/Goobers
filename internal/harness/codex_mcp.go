@@ -42,15 +42,15 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 	if req.GoobersIORegistered {
 		reservedServerName = goobersIOServerName
 	}
-	servers, assignments, err := materializeDeclaredMCP(ctx, "codex", req, mcpMaterializeOptions{
+	opts := mcpMaterializeOptions{
 		harness:              apiv1.HarnessCodex,
 		localEnvRefs:         true,
 		headerValuesInEnv:    true,
 		reservedEnv:          reservedEnv,
 		defaultReservedLocal: codexMCPDefaultEnvironment,
 		reservedServerName:   reservedServerName,
-	})
-	if err != nil {
+	}
+	if err := validateDeclaredMCP("codex", req, opts); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -83,6 +83,10 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 		overrides = appendCodexStdioOverrides(overrides, goobersIOServerName, selfBin, []string{"mcp-io", "--config", configPath}, nil, nil)
 	}
 
+	servers, assignments, err := materializeDeclaredMCP(ctx, "codex", req, opts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	var secretEnvNames []string
 	for _, assignment := range assignments {
 		env = overrideEnv(env, assignment.Name, assignment.Value)

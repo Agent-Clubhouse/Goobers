@@ -175,3 +175,47 @@ func TestCodexMCPMaterializationPreservesLocalEnvOrder(t *testing.T) {
 		t.Fatalf("local env declaration order changed:\n%s", raw)
 	}
 }
+
+func TestMCPMaterializationPreservesPreflightErrorPrecedence(t *testing.T) {
+	newRequest := func(t *testing.T) RunRequest {
+		t.Helper()
+		workspace := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workspace, ".goobers"), []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return RunRequest{
+			Envelope:  testEnvelope(workspace),
+			Workspace: workspace,
+			MCPServers: []apiv1.MCPServer{{
+				Name: "remote",
+				URL:  "https://mcp.example.test",
+				CredentialRefs: []apiv1.MCPCredentialRef{{
+					Kind: apiv1.MCPCredentialKindBYO, Ref: "missing", Header: "Authorization",
+				}},
+			}},
+		}
+	}
+
+	t.Run("copilot scoped runtime before credentials", func(t *testing.T) {
+		req := newRequest(t)
+		_, err := prepareCopilotMCP(context.Background(), req, nil)
+		if err == nil || !strings.HasPrefix(err.Error(), "harness: copilot-cli: create scoped MCP runtime root:") {
+			t.Fatalf("error = %q, want scoped runtime root error", err)
+		}
+		if strings.Contains(err.Error(), "requires credentials") {
+			t.Fatalf("credential resolution took precedence over scoped runtime setup: %v", err)
+		}
+	})
+
+	t.Run("codex automatic goobers-io before credentials", func(t *testing.T) {
+		req := newRequest(t)
+		req.GoobersIORegistered = true
+		_, _, _, err := prepareCodexMCP(context.Background(), req, t.TempDir(), "goobers", nil, nil, false)
+		if err == nil || !strings.HasPrefix(err.Error(), "harness: codex: write goobers-io config:") {
+			t.Fatalf("error = %q, want automatic goobers-io config error", err)
+		}
+		if strings.Contains(err.Error(), "requires credentials") {
+			t.Fatalf("credential resolution took precedence over automatic goobers-io setup: %v", err)
+		}
+	})
+}

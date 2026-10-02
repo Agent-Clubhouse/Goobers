@@ -33,18 +33,21 @@ type envAssignment struct {
 	Value string
 }
 
-func materializeDeclaredMCP(ctx context.Context, adapter string, req RunRequest, opts mcpMaterializeOptions) ([]materializedMCPServer, []envAssignment, error) {
+func validateDeclaredMCP(adapter string, req RunRequest, opts mcpMaterializeOptions) error {
 	if err := mcpconfig.ValidateForHarness(opts.harness, req.MCPServers, req.Envelope.Capabilities, req.Tools); err != nil {
-		return nil, nil, fmt.Errorf("harness: %s: invalid MCP configuration: %w", adapter, err)
+		return fmt.Errorf("harness: %s: invalid MCP configuration: %w", adapter, err)
 	}
 	if opts.reservedServerName != "" {
 		for _, server := range req.MCPServers {
 			if server.Name == opts.reservedServerName {
-				return nil, nil, fmt.Errorf("harness: %s: MCP server name %q is reserved for automatic goobers-io registration", adapter, server.Name)
+				return fmt.Errorf("harness: %s: MCP server name %q is reserved for automatic goobers-io registration", adapter, server.Name)
 			}
 		}
 	}
+	return nil
+}
 
+func materializeDeclaredMCP(ctx context.Context, adapter string, req RunRequest, opts mcpMaterializeOptions) ([]materializedMCPServer, []envAssignment, error) {
 	reserved := make(map[string]bool, len(opts.reservedEnv))
 	for _, name := range opts.reservedEnv {
 		reserved[strings.ToUpper(name)] = true

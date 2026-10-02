@@ -57,10 +57,10 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	if len(req.MCPServers) == 0 {
 		return env, nil
 	}
-	servers, assignments, err := materializeDeclaredMCP(ctx, "copilot-cli", req, mcpMaterializeOptions{
+	opts := mcpMaterializeOptions{
 		harness: apiv1.HarnessCopilot,
-	})
-	if err != nil {
+	}
+	if err := validateDeclaredMCP("copilot-cli", req, opts); err != nil {
 		return nil, err
 	}
 
@@ -85,6 +85,10 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	}
 	// Ambient config.json may contain OAuth or BYOK credentials that were not
 	// resolver-registered, so the scoped home must start empty.
+	servers, assignments, err := materializeDeclaredMCP(ctx, "copilot-cli", req, opts)
+	if err != nil {
+		return nil, err
+	}
 	config := copilotMCPConfig{MCPServers: make(map[string]copilotMCPServer, len(servers))}
 	for _, server := range servers {
 		rendered := copilotMCPServer{
