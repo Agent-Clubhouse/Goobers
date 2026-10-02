@@ -94,7 +94,7 @@ func TestParseRequiredArgOptionalRoot(t *testing.T) {
 			wantOutput: "command-specific usage\n",
 		},
 		{
-			name:       "parse error",
+			name:       "parse error preserves command usage",
 			args:       []string{"--unknown"},
 			wantOutput: "flag provided but not defined: -unknown\ncommand-specific usage\n",
 		},
