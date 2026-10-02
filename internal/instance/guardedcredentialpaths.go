@@ -26,7 +26,8 @@ const maxGuardedWalkDepth = 24
 // It is the input to the deterministic executor's narrow stage-command
 // refusal (internal/executor.ShellExecutor.GuardedCredentialPaths): a set of
 // paths a stage's command, script, or environment must never reference,
-// derived from config rather than hardcoded.
+// derived from config rather than hardcoded. Local agentic executors also use
+// this set to refuse construction while credential reads cannot be confined.
 //
 // The enumeration is a REFLECTIVE walk of the Config graph collecting every
 // TokenRef.File it reaches, not a hand-written list of the fields that carry

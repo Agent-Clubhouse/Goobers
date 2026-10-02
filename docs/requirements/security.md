@@ -62,7 +62,9 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   (`SEC-044`); tier 3 adds namespace/identity/network policy. **Stated residual risk
   at tiers 1–2:** an agentic harness runs as the local user and can reach ambient
   credentials (shell config, keychain, its own signed-in session); Goobers does not
-  claim to stop that unless sandbox enforcement is enabled (`SEC-044`). The
+  claim to stop those reads: the current sandbox confines writes only
+  (`SEC-044`). Config-referenced credential files have a separate local-agentic
+  refusal (`SEC-049`). The
   compensating controls are local trust (`SEC-040`) + non-injection + the
   untrusted-input gate (`SEC-047`) + the reviewer gate (`ARCHITECTURE.md §5`) +
   **merge-authority separation** (`SEC-053`).
@@ -168,7 +170,20 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   concatenation at runtime, `find`, or a symlink — which requires the full
   sandbox/read-confinement work `SEC-044` already tracks as in progress. The
   refusal is journaled (`credential.read.refused`) so an operator can see it
-  fire.
+  fire. This declaration-matching tripwire covers deterministic stages only.
+
+  **Agentic stages on the local (`self`) runner fail closed at executor
+  construction whenever the loaded instance config contains a file-backed
+  credential ref** (#4889). Model-authored actions cannot be checked in advance,
+  and the current agentic sandbox confines writes only, so this refusal applies
+  with both `sandbox.agentic: disabled` (the default) and `enforced`. It does
+  not inspect file permissions or existence, and reports neither credential
+  paths nor contents. Move the refs to environment, keychain, or secret-store
+  sources, or use an isolated worker pod that does not mount the daemon's
+  credential files. Pod kits carry scoped credentials and do not inherit the
+  daemon-host guarded paths; their deployment must maintain that isolation.
+  This refusal protects config-referenced files; it does not claim that ambient
+  credentials or arbitrary secrets outside the config are inaccessible.
 
 ### Isolation
 

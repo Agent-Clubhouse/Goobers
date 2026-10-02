@@ -500,7 +500,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	l := instance.NewLayout(root)
 	pf(stdout, "startup: validating instance configuration\n")
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := prepareDaemonStartupRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -971,7 +971,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
-	apiHandlerOpts = append(apiHandlerOpts, withDaemonRunJournalServices(l, setup.InstanceLog)...)
+	journalService := newDaemonRunJournalService(l, setup.InstanceLog)
+	withEngineOperatorMessageServices(journalService, liveJournals, engineClient, engineGuards)
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
@@ -2181,8 +2183,8 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		// the read model exactly as one that finishes under a live runner does.
 		// Without it the terminal append records no intake watermark and the
 		// projector never re-reads the run (#5278).
-		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
-		DrainedDowntime: drainedDowntime,
+		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
+		DrainedDowntime:        drainedDowntime,
 	}
 }
 

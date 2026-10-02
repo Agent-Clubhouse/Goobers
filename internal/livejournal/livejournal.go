@@ -222,17 +222,16 @@ func WithSpanSource(src SpanSource) Option {
 	}
 }
 
-// WithObserver reports each durable append (journal.WithAppendObserver's
-// shape) — the daemon wires the read-model intake here so SSE and the portal
-// see a live run's events through the existing machinery.
-func WithObserver(observer func(runID string, seq uint64)) Option {
-	return func(w *Writer) { w.observer = observer }
+// WithContextObserver installs a cancellable, bounded coalescing observer for
+// owned run handles. Closing a handle drains its final watermark.
+func WithContextObserver(observer func(context.Context, string, uint64)) Option {
+	return func(w *Writer) { w.contextObserver = observer }
 }
 
 // WithEventObserver reports each durable APPEND op with the event body the
 // writer just committed, in the same order it committed them.
 //
-// It exists because WithObserver — journal.WithAppendObserver's shape —
+// It exists because a sequence-only watermark observer
 // delivers only (runID, seq). That is everything the read-model intake needs
 // (it re-reads the journal at seq anyway) and nothing a mid-run policy
 // consumer needs: decision 005 D1's RateLimited observer has to see the
@@ -295,14 +294,15 @@ func WithClock(now func() time.Time) Option {
 // the handle on loan instead of opening a second one; see Adopt. One handle,
 // one lock, either way.
 type Writer struct {
-	runsDir       func(gaggle string) (string, bool)
-	spans         SpanSource
-	artifacts     ArtifactSource
-	sink          artifactSink
-	observer      func(runID string, seq uint64)
-	eventObserver func(runID string, ev journal.Event)
-	scrubber      journal.Scrubber
-	now           func() time.Time
+	runsDir         func(gaggle string) (string, bool)
+	spans           SpanSource
+	artifacts       ArtifactSource
+	sink            artifactSink
+	observer        func(runID string, seq uint64)
+	contextObserver func(context.Context, string, uint64)
+	eventObserver   func(runID string, ev journal.Event)
+	scrubber        journal.Scrubber
+	now             func() time.Time
 	// instanceLog is the daemon's instance log, the destination of
 	// OpInstanceAnnotation. Nil in every non-daemon assembly of this writer,
 	// which makes that op kind refuse rather than silently no-op.
@@ -957,7 +957,9 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 	clock := &replayClock{}
 	clock.set(first.Time)
 	opts := []journal.Option{journal.WithClock(clock.nowFunc()), journal.WithInputIntegrity(inputIntegrity)}
-	if w.observer != nil {
+	if w.contextObserver != nil {
+		opts = append(opts, journal.WithAsyncAppendObserver(context.Background(), w.contextObserver))
+	} else if w.observer != nil {
 		opts = append(opts, journal.WithAppendObserver(w.observer))
 	}
 	if w.scrubber != nil {
@@ -1008,7 +1010,9 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	// promises. It is upgraded below once that history is in hand.
 	clock.set(req.Ops[0].Time)
 	opts := []journal.Option{journal.WithClock(clock.nowFunc())}
-	if w.observer != nil {
+	if w.contextObserver != nil {
+		opts = append(opts, journal.WithAsyncAppendObserver(context.Background(), w.contextObserver))
+	} else if w.observer != nil {
 		opts = append(opts, journal.WithAppendObserver(w.observer))
 	}
 	if w.scrubber != nil {

@@ -390,6 +390,9 @@ func newHITLSession(in RunInput, m *wf.Machine, rec *runJournal) *hitlSession {
 // registration emits a history event, so this is invisible to replay of
 // histories recorded before the protocol existed.
 func (s *hitlSession) register(ctx workflow.Context) error {
+	if err := registerOperatorMessages(ctx, s.runID); err != nil {
+		return err
+	}
 	s.mu = workflow.NewMutex(ctx)
 	err := workflow.SetUpdateHandlerWithOptions(
 		ctx, HITLUpdateName, s.handle,
