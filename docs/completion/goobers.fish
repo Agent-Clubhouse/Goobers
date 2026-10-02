@@ -151,6 +151,7 @@ complete -c goobers -n '__fish_seen_subcommand_from doctor' -l image-tools -r -d
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l image-ca -r -d 'Internal root CA PEM for image trust checks'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l k8s -d 'Preflight a Kubernetes cluster'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l repo -d 'Compare repository forge policy with GitHub'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l harness-auth -d 'Report credential-free harness authentication state'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l av-exclusions -d 'List the directories Goobers writes then reads and verify antivirus exclusions (advisory)'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l work-root -r -d 'Worker work root to enumerate (--av-exclusions)'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l kubeconfig -r -d 'Kubeconfig path'
