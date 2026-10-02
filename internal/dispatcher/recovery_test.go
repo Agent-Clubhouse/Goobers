@@ -49,7 +49,7 @@ func TestWritablePodDisposalRequiresRecoveryAcknowledgment(t *testing.T) {
 	}
 }
 
-func TestOrphanSweepPreservesWritablePodUntilDurableRecovery(t *testing.T) {
+func TestOrphanSweepReapsWritablePodOnlyAfterOwningWorkflowTerminal(t *testing.T) {
 	cfg := testConfig()
 	pods := &fakePodAPI{}
 	attempt := testAttempt()
@@ -66,34 +66,13 @@ func TestOrphanSweepPreservesWritablePodUntilDurableRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	states := stateTable{attempt.RunID: RunStateTerminal}
-	deleted, err := restarted.SweepOrphans(t.Context(), states)
-	if !errors.Is(err, ErrRecoveryUnconfirmed) || len(deleted) != 0 || len(pods.deleted) != 0 {
-		t.Fatalf("restart removed unacknowledged source: %v %v", deleted, err)
+	deleted, err := restarted.SweepOrphans(t.Context(), stateTable{attempt.RunID: RunStateLive})
+	if err != nil || len(deleted) != 0 || len(pods.deleted) != 0 {
+		t.Fatalf("restart touched live unacknowledged source: deleted=%v err=%v podDeletes=%v", deleted, err, pods.deleted)
 	}
-	data, err := json.Marshal(SurrenderedResult{
-		Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure,
-			Error: &apiv1.ErrorInfo{Code: "failed", Message: "implementation failed"}},
-		RecoveryAcknowledged: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plane.Put(t.Context(), attempt.RunID, attempt.Stage, attempt.Number, data); err != nil {
-		t.Fatal(err)
-	}
-	// Another process can recover the acknowledgment from the durable plane;
-	// neither its original in-memory gate nor the first sweep is required.
-	reopened, err := NewSurrenderDir(plane.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restarted, err = New(cfg, pods, nil, PlaneSurrenderGate{Plane: reopened}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deleted, err = restarted.SweepOrphans(t.Context(), states)
+
+	deleted, err = restarted.SweepOrphans(t.Context(), stateTable{attempt.RunID: RunStateTerminal})
 	if err != nil || len(deleted) != 1 || deleted[0] != pod.Name {
-		t.Fatalf("acknowledged orphan not removed: %v %v", deleted, err)
+		t.Fatalf("terminal orphan not removed: deleted=%v err=%v", deleted, err)
 	}
 }
