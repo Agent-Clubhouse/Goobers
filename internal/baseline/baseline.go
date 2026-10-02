@@ -166,6 +166,12 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 		decision.Reason = "the run's failure diagnostic was truncated at its size bound, so it cannot be shown identical to the baseline"
 		return decision, nil
 	}
+	// A failure with only runner boilerplate (a bare "FAIL\tpkg" verdict) has
+	// no defect identity, so two of them matching proves nothing.
+	if strings.HasPrefix(signature, flake.NoStableSignature) {
+		decision.Reason = "the run's failure carries no stable signature to compare with the baseline"
+		return decision, nil
+	}
 
 	observation, ok := e.Store.Baseline(req.Repo, req.BaseSHA, req.Command)
 	if !ok {

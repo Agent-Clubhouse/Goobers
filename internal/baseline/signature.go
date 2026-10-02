@@ -30,17 +30,15 @@ var failureMessageTrailer = regexp.MustCompile(`; (?:hint|warnings): |; \d+ dist
 // #4434) uses to say a finding holds on only some of them.
 var platformQualifier = regexp.MustCompile(`\[platforms: ([^\]]+)\]`)
 
-// signatureVisibleLines is how many lines flake.NormalizeSignature keeps.
-const signatureVisibleLines = 3
-
 // failureSignature is the comparable identity of one piece of failure
-// evidence: flake.NormalizeSignature over its reduced diagnostic, extended
-// with a digest of EVERY finding line when there are more than the normalizer
-// keeps. Without that a branch adding a fourth finding to a base already
-// failing three would share the base's signature and be parked behind a
-// failure that is partly its own (#4477). Panic and race signatures, which
-// the normalizer derives structurally rather than from the leading lines,
-// are left as they are.
+// evidence: flake.NormalizeSignature over its reduced diagnostic — the
+// readable part — extended with a digest of its whole roster
+// (flake.RosterLines: every line, in order, file:line kept). The readable part
+// alone keeps three de-duplicated lines with their locations stripped, so a
+// branch adding a fourth finding, or repeating an inherited lint message in a
+// new file, would share the base's signature and be parked behind a failure
+// that is partly its own (#4477). The roster errs toward difference — a moved
+// line number is a different failure — which only ever fails open.
 //
 // Evidence whose diagnostic the executor cut at its size bound is marked with
 // truncatedSignatureSuffix: whatever followed the cut is unseen, so two such
@@ -49,10 +47,9 @@ const signatureVisibleLines = 3
 func failureSignature(text string) string {
 	reduced := FailureSignatureText(text)
 	signature := flake.NormalizeSignature(reduced)
-	lines := flake.NormalizedLines(reduced)
-	if len(lines) > signatureVisibleLines && signature == strings.Join(lines[:signatureVisibleLines], " | ") {
-		signature = fmt.Sprintf("%s | +%d more line(s) [sha256:%x]", signature, len(lines)-signatureVisibleLines,
-			sha256.Sum256([]byte(strings.Join(lines, "\n"))))
+	if roster := flake.RosterLines(reduced); len(roster) > 0 {
+		sum := sha256.Sum256([]byte(strings.Join(roster, "\n")))
+		signature = fmt.Sprintf("%s [roster: %d line(s), sha256:%x]", signature, len(roster), sum[:8])
 	}
 	if diagnostic, extracted := failureDiagnostic(text); extracted && executor.DiagnosticTruncated(diagnostic) {
 		signature += truncatedSignatureSuffix
