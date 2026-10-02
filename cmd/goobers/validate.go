@@ -548,6 +548,7 @@ var strictNeutralWarningCodes = func() []validate.WarningCode {
 		validate.WarningGaggleMixedProvider,
 		validate.WarningCrossProviderCredentialOverride,
 		validate.WarningInertADOCapability,
+		validate.WarningProviderInputDefaulted,
 	}
 	for _, code := range workflowsafety.Codes() {
 		codes = append(codes, validate.WarningCode(code))

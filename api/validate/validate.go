@@ -302,6 +302,16 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WarningProviderInputDefaulted identifies a built-in provider stage that
+	// leaves unset an input whose command falls back to a policy default
+	// (providerstage.Input.UnsetDefault) — e.g. a remediation-checkpoint
+	// per-cause budget, which defaults to 2 (#2737). The stage runs fine on
+	// the default, so this is a warning: it surfaces the implicit policy
+	// choice without failing a config that validated cleanly before.
+	// STRICT-NEUTRAL for the same reason: a workflow that omitted the
+	// already-optional humanCommentBudget validated green under --strict and
+	// must not turn red purely on upgrade.
+	WarningProviderInputDefaulted WarningCode = "WF027"
 	// WarningSecretShapedInput identifies a stage `inputs:` literal (or an
 	// experiment arm's `variant:` overlay of one) that is shaped like a
 	// credential. Stage inputs are HISTORY-RESIDENT: they are merged into the
@@ -2470,6 +2480,9 @@ func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file 
 	// must be rejected here before the stage can claim work and fail a run.
 	for _, msg := range wf.CheckProviderStageInputs(def) {
 		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckProviderStageUnsetDefaults(def) {
+		r.addWarning(WarningProviderInputDefaulted, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	checkLifecycleLabelContracts(r, w, file)
 	// Bounded waits must finish before the executor can terminate their stage;
