@@ -30,10 +30,6 @@ var failureMessageTrailer = regexp.MustCompile(`; (?:hint|warnings): |; \d+ dist
 // #4434) uses to say a finding holds on only some of them.
 var platformQualifier = regexp.MustCompile(`\[platforms: ([^\]]+)\]`)
 
-// truncationMarker ends a failure window the executor cut at its size bound
-// (internal/executor boundDiagnostic).
-const truncationMarker = "..."
-
 // signatureVisibleLines is how many lines flake.NormalizeSignature keeps.
 const signatureVisibleLines = 3
 
@@ -45,15 +41,33 @@ const signatureVisibleLines = 3
 // failure that is partly its own (#4477). Panic and race signatures, which
 // the normalizer derives structurally rather than from the leading lines,
 // are left as they are.
+//
+// Evidence whose diagnostic the executor cut at its size bound is marked with
+// truncatedSignatureSuffix: whatever followed the cut is unseen, so two such
+// signatures being equal proves nothing, and Classify refuses to call them
+// identical.
 func failureSignature(text string) string {
 	reduced := FailureSignatureText(text)
 	signature := flake.NormalizeSignature(reduced)
 	lines := flake.NormalizedLines(reduced)
-	if len(lines) <= signatureVisibleLines || signature != strings.Join(lines[:signatureVisibleLines], " | ") {
-		return signature
+	if len(lines) > signatureVisibleLines && signature == strings.Join(lines[:signatureVisibleLines], " | ") {
+		signature = fmt.Sprintf("%s | +%d more line(s) [sha256:%x]", signature, len(lines)-signatureVisibleLines,
+			sha256.Sum256([]byte(strings.Join(lines, "\n"))))
 	}
-	return fmt.Sprintf("%s | +%d more line(s) [sha256:%x]", signature, len(lines)-signatureVisibleLines,
-		sha256.Sum256([]byte(strings.Join(lines, "\n"))))
+	if diagnostic, extracted := failureDiagnostic(text); extracted && executor.DiagnosticTruncated(diagnostic) {
+		signature += truncatedSignatureSuffix
+	}
+	return signature
+}
+
+// truncatedSignatureSuffix marks a signature derived from a truncated
+// diagnostic (see failureSignature).
+const truncatedSignatureSuffix = " [truncated]"
+
+// signatureTruncated reports whether failureSignature marked signature as
+// derived from truncated evidence.
+func signatureTruncated(signature string) bool {
+	return strings.HasSuffix(signature, truncatedSignatureSuffix)
 }
 
 // FailureSignatureText reduces one piece of failure evidence to the diagnostic
@@ -77,9 +91,19 @@ func failureSignature(text string) string {
 // otherwise unchanged: reducing it further would invent a match, and an
 // unmatched fingerprint fails open to the pre-existing attribution.
 func FailureSignatureText(text string) string {
+	if diagnostic, ok := failureDiagnostic(text); ok {
+		return signatureLines(diagnostic)
+	}
+	return strings.TrimSpace(text)
+}
+
+// failureDiagnostic lifts the executor's failure diagnostic out of text: from
+// a stage message when text carries one, else by extracting it from raw
+// output. ok is false when text carries no recognizable diagnostic.
+func failureDiagnostic(text string) (string, bool) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return ""
+		return "", false
 	}
 	if match := executorFailureMessage.FindStringIndex(trimmed); match != nil {
 		diagnostic := trimmed[match[1]:]
@@ -99,13 +123,13 @@ func FailureSignatureText(text string) string {
 			diagnostic = diagnostic[:lastLine+trailer[0]]
 		}
 		if diagnostic = strings.TrimSpace(diagnostic); diagnostic != "" {
-			return signatureLines(diagnostic)
+			return diagnostic, true
 		}
 	}
 	if diagnostic := executor.FailureDiagnostic([]byte(trimmed), nil); diagnostic != "" {
-		return signatureLines(diagnostic)
+		return diagnostic, true
 	}
-	return trimmed
+	return "", false
 }
 
 // signatureLines splits an extracted failure section back into the lines it was
@@ -130,12 +154,6 @@ func signatureLines(diagnostic string) string {
 	}
 	if first := slices.IndexFunc(lines, executor.IsFailureLine); first > 0 {
 		lines = lines[first:]
-	}
-	// A window the executor cut at its size bound ends in a partial line
-	// whose cut point depends on how long that checkout's paths are, so it
-	// never matches across checkouts. Only the complete lines are evidence.
-	if len(lines) > 1 && strings.HasSuffix(lines[len(lines)-1], truncationMarker) {
-		lines = lines[:len(lines)-1]
 	}
 	for index, part := range lines {
 		if rest := strings.TrimPrefix(part, "--- FAIL:"); rest != part {

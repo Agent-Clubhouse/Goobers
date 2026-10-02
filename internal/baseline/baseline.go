@@ -162,6 +162,10 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 		decision.Reason = "no pinned base SHA or command to compare against"
 		return decision, nil
 	}
+	if signatureTruncated(signature) {
+		decision.Reason = "the run's failure diagnostic was truncated at its size bound, so it cannot be shown identical to the baseline"
+		return decision, nil
+	}
 
 	observation, ok := e.Store.Baseline(req.Repo, req.BaseSHA, req.Command)
 	if !ok {
@@ -179,6 +183,10 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	if observation.Green {
 		decision.Class = ClassPRIntroduced
 		decision.Reason = fmt.Sprintf("baseline %s is green for this command", short(req.BaseSHA))
+		return decision, nil
+	}
+	if signatureTruncated(observation.Signature) {
+		decision.Reason = fmt.Sprintf("baseline %s's failure diagnostic was truncated at its size bound, so it cannot be shown identical", short(req.BaseSHA))
 		return decision, nil
 	}
 	if observation.Fingerprint != fingerprint {
