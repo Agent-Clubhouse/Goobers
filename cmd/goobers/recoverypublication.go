@@ -69,8 +69,8 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 			InventoryRoot: root, CleanupRoots: []string{manager.Root},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
 			EvictFull: recoveryEvictFunc(s.layout, cfg, manager, key),
-			EnsureBase: func(ctx context.Context, repository, sha string) error {
-				return manager.FetchRecoveryBase(ctx, url, repository, sha)
+			EnsureBase: func(ctx context.Context, repository, sha, ref string) error {
+				return manager.FetchRecoveryBase(ctx, url, repository, sha, ref)
 			},
 		}, recoveryPublicationAck{ctx: ctx, service: s, runID: runID, key: key, issue: issue, runDir: runDir, recoveryConfig: recoveryCfg})
 		return err
