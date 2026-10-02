@@ -636,7 +636,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		var remote sdktrace.SpanExporter = azure
 		if cfg.ExporterHealth != nil {
 			cfg.ExporterHealth.ConfigureTrace()
-			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth}
+			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
 		}
 		return append(exporters, remote), nil
 	}
@@ -648,7 +648,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		var remote sdktrace.SpanExporter = azure
 		if cfg.ExporterHealth != nil {
 			cfg.ExporterHealth.ConfigureTrace()
-			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth}
+			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
 		}
 		return append(exporters, remote), nil
 	}
@@ -693,7 +693,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 				// far (cfg.SpanExporter's local journal export, if
 				// configured) are untouched — see ErrOTLPUnavailable's doc.
 				if cfg.ExporterHealth != nil {
-					cfg.ExporterHealth.RecordTraceFailure(tlsErr)
+					cfg.ExporterHealth.recordTraceExporterFailure(exporterHealthExporterOTLP, tlsErr)
 				}
 				return exporters, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
 			}
@@ -715,7 +715,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	exporters = append(exporters, exporter)
 	if cfg.ExporterHealth != nil && cfg.Exporter == ExporterOTLP {
 		cfg.ExporterHealth.ConfigureTrace()
-		exporters[len(exporters)-1] = observedSpanExporter{next: exporters[len(exporters)-1], health: cfg.ExporterHealth}
+		exporters[len(exporters)-1] = observedSpanExporter{next: exporters[len(exporters)-1], health: cfg.ExporterHealth, exporter: exporterHealthExporterOTLP}
 	}
 	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
 		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
@@ -725,7 +725,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		var remote sdktrace.SpanExporter = azure
 		if cfg.ExporterHealth != nil {
 			cfg.ExporterHealth.ConfigureTrace()
-			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth}
+			remote = observedSpanExporter{next: remote, health: cfg.ExporterHealth, exporter: exporterHealthExporterAzureMonitor}
 		}
 		exporters = append(exporters, remote)
 	}

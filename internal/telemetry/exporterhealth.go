@@ -63,6 +63,7 @@ type exporterSignalHealth struct {
 	configured              bool
 	exporterInstalled       bool
 	unhealthy               bool
+	failingExporters        map[string]string
 	lastSuccessAt           time.Time
 	lastFailureAt           time.Time
 	lastFailureReason       string
@@ -79,6 +80,9 @@ const (
 	exporterHealthTransitionAnnotation = "telemetry.exporter.transition"
 	exporterHealthStateUnhealthy       = "unhealthy"
 	exporterHealthStateRecovered       = "recovered"
+	exporterHealthExporterDefault      = "default"
+	exporterHealthExporterOTLP         = "otlp"
+	exporterHealthExporterAzureMonitor = "azure-monitor"
 )
 
 // NewExporterHealth creates the shared exporter-health monitor for a telemetry
@@ -166,18 +170,42 @@ func (h *ExporterHealth) MetricExporterInstalled() bool {
 }
 
 // RecordTraceSuccess records a successful trace exporter observation.
-func (h *ExporterHealth) RecordTraceSuccess() { h.recordSuccess("trace", &h.trace) }
+func (h *ExporterHealth) RecordTraceSuccess() {
+	h.recordSuccess("trace", &h.trace, exporterHealthExporterDefault)
+}
 
 // RecordMetricSuccess records a successful metric exporter observation.
-func (h *ExporterHealth) RecordMetricSuccess() { h.recordSuccess("metric", &h.metric) }
+func (h *ExporterHealth) RecordMetricSuccess() {
+	h.recordSuccess("metric", &h.metric, exporterHealthExporterDefault)
+}
 
 // RecordTraceFailure records a failed trace exporter observation.
-func (h *ExporterHealth) RecordTraceFailure(err error) { h.recordFailure("trace", &h.trace, err) }
+func (h *ExporterHealth) RecordTraceFailure(err error) {
+	h.recordFailure("trace", &h.trace, exporterHealthExporterDefault, err)
+}
 
 // RecordMetricFailure records a failed metric exporter observation.
-func (h *ExporterHealth) RecordMetricFailure(err error) { h.recordFailure("metric", &h.metric, err) }
+func (h *ExporterHealth) RecordMetricFailure(err error) {
+	h.recordFailure("metric", &h.metric, exporterHealthExporterDefault, err)
+}
 
-func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignalHealth) {
+func (h *ExporterHealth) recordTraceExporterSuccess(exporter string) {
+	h.recordSuccess("trace", &h.trace, exporter)
+}
+
+func (h *ExporterHealth) recordMetricExporterSuccess(exporter string) {
+	h.recordSuccess("metric", &h.metric, exporter)
+}
+
+func (h *ExporterHealth) recordTraceExporterFailure(exporter string, err error) {
+	h.recordFailure("trace", &h.trace, exporter, err)
+}
+
+func (h *ExporterHealth) recordMetricExporterFailure(exporter string, err error) {
+	h.recordFailure("metric", &h.metric, exporter, err)
+}
+
+func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignalHealth, exporter string) {
 	if h == nil {
 		return
 	}
@@ -185,11 +213,17 @@ func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignal
 	h.mu.Lock()
 	signal.configured = true
 	signal.lastSuccessAt = now
-	signal.consecutiveFailures = 0
+	delete(signal.failingExporters, boundedExporterHealthExporter(exporter))
 	var event *journal.Event
 	log := h.journal
+	if len(signal.failingExporters) > 0 {
+		signal.unhealthy = true
+		h.mu.Unlock()
+		return
+	}
 	if signal.unhealthy {
 		signal.unhealthy = false
+		signal.consecutiveFailures = 0
 		signal.lastTransitionAt = now
 		signal.recoveryTransitions++
 		event = h.transitionEventLocked(signalName, exporterHealthStateRecovered, signal.lastFailureReason, now)
@@ -201,7 +235,7 @@ func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignal
 	appendExporterHealthTransition(log, event)
 }
 
-func (h *ExporterHealth) recordFailure(signalName string, signal *exporterSignalHealth, err error) {
+func (h *ExporterHealth) recordFailure(signalName string, signal *exporterSignalHealth, exporter string, err error) {
 	if h == nil {
 		return
 	}
@@ -211,6 +245,10 @@ func (h *ExporterHealth) recordFailure(signalName string, signal *exporterSignal
 	signal.lastFailureAt = now
 	signal.lastFailureReason = exporterFailureReason(err)
 	signal.consecutiveFailures++
+	if signal.failingExporters == nil {
+		signal.failingExporters = make(map[string]string)
+	}
+	signal.failingExporters[boundedExporterHealthExporter(exporter)] = signal.lastFailureReason
 	if signal.unhealthy {
 		signal.suppressedFailureEvents++
 		h.mu.Unlock()
@@ -290,6 +328,17 @@ func boundedMode(mode string) string {
 		return string(ExporterStdout)
 	default:
 		return "custom"
+	}
+}
+
+func boundedExporterHealthExporter(exporter string) string {
+	switch strings.TrimSpace(strings.ToLower(exporter)) {
+	case exporterHealthExporterOTLP:
+		return exporterHealthExporterOTLP
+	case exporterHealthExporterAzureMonitor:
+		return exporterHealthExporterAzureMonitor
+	default:
+		return exporterHealthExporterDefault
 	}
 }
 
@@ -422,16 +471,17 @@ func appendExporterHealthTransition(log *journal.InstanceLog, event *journal.Eve
 }
 
 type observedSpanExporter struct {
-	next   sdktrace.SpanExporter
-	health *ExporterHealth
+	next     sdktrace.SpanExporter
+	health   *ExporterHealth
+	exporter string
 }
 
 func (e observedSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	err := e.next.ExportSpans(ctx, spans)
 	if err != nil {
-		e.health.RecordTraceFailure(err)
+		e.health.recordTraceExporterFailure(e.exporter, err)
 	} else {
-		e.health.RecordTraceSuccess()
+		e.health.recordTraceExporterSuccess(e.exporter)
 	}
 	return err
 }
@@ -439,16 +489,17 @@ func (e observedSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.
 func (e observedSpanExporter) Shutdown(ctx context.Context) error {
 	err := e.next.Shutdown(ctx)
 	if err != nil {
-		e.health.RecordTraceFailure(err)
+		e.health.recordTraceExporterFailure(e.exporter, err)
 	} else {
-		e.health.RecordTraceSuccess()
+		e.health.recordTraceExporterSuccess(e.exporter)
 	}
 	return err
 }
 
 type observedMetricExporter struct {
-	next   metric.Exporter
-	health *ExporterHealth
+	next     metric.Exporter
+	health   *ExporterHealth
+	exporter string
 }
 
 func (e observedMetricExporter) Temporality(kind metric.InstrumentKind) metricdata.Temporality {
@@ -462,9 +513,9 @@ func (e observedMetricExporter) Aggregation(kind metric.InstrumentKind) metric.A
 func (e observedMetricExporter) Export(ctx context.Context, data *metricdata.ResourceMetrics) error {
 	err := e.next.Export(ctx, data)
 	if err != nil {
-		e.health.RecordMetricFailure(err)
+		e.health.recordMetricExporterFailure(e.exporter, err)
 	} else {
-		e.health.RecordMetricSuccess()
+		e.health.recordMetricExporterSuccess(e.exporter)
 	}
 	return err
 }
@@ -472,9 +523,9 @@ func (e observedMetricExporter) Export(ctx context.Context, data *metricdata.Res
 func (e observedMetricExporter) ForceFlush(ctx context.Context) error {
 	err := e.next.ForceFlush(ctx)
 	if err != nil {
-		e.health.RecordMetricFailure(err)
+		e.health.recordMetricExporterFailure(e.exporter, err)
 	} else {
-		e.health.RecordMetricSuccess()
+		e.health.recordMetricExporterSuccess(e.exporter)
 	}
 	return err
 }
@@ -482,9 +533,9 @@ func (e observedMetricExporter) ForceFlush(ctx context.Context) error {
 func (e observedMetricExporter) Shutdown(ctx context.Context) error {
 	err := e.next.Shutdown(ctx)
 	if err != nil {
-		e.health.RecordMetricFailure(err)
+		e.health.recordMetricExporterFailure(e.exporter, err)
 	} else {
-		e.health.RecordMetricSuccess()
+		e.health.recordMetricExporterSuccess(e.exporter)
 	}
 	return err
 }

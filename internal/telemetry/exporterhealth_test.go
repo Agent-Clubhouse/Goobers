@@ -85,6 +85,46 @@ func TestExporterHealthJournalsRateLimitedTransitions(t *testing.T) {
 	}
 }
 
+func TestExporterHealthAggregatesDualOTLPAzureTraceExporters(t *testing.T) {
+	health := NewExporterHealth(true, "custom", "collector.example.com:4317")
+	health.ConfigureTrace()
+	otlp := observedSpanExporter{
+		next:     failingSpanExporter{err: context.DeadlineExceeded},
+		health:   health,
+		exporter: exporterHealthExporterOTLP,
+	}
+	azure := observedSpanExporter{
+		next:     failingSpanExporter{},
+		health:   health,
+		exporter: exporterHealthExporterAzureMonitor,
+	}
+
+	if err := otlp.ExportSpans(context.Background(), nil); err == nil {
+		t.Fatal("OTLP export unexpectedly succeeded")
+	}
+	if err := azure.ExportSpans(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	stillDegraded := health.Snapshot().Trace
+	if stillDegraded.State != "unhealthy" || stillDegraded.LastFailureReason != "deadline_exceeded" ||
+		stillDegraded.RecoveryTransitions != 0 || stillDegraded.ConsecutiveFailures != 1 {
+		t.Fatalf("azure success masked otlp failure: %+v", stillDegraded)
+	}
+
+	otlpRecovered := observedSpanExporter{
+		next:     failingSpanExporter{},
+		health:   health,
+		exporter: exporterHealthExporterOTLP,
+	}
+	if err := otlpRecovered.ExportSpans(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	recovered := health.Snapshot().Trace
+	if recovered.State != "healthy" || recovered.RecoveryTransitions != 1 || recovered.ConsecutiveFailures != 0 {
+		t.Fatalf("otlp recovery did not clear aggregate health: %+v", recovered)
+	}
+}
+
 func TestClassifyEndpointDropsSchemeLessPathAndQuery(t *testing.T) {
 	for _, tc := range []struct {
 		endpoint  string

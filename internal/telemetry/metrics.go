@@ -558,7 +558,7 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 		tlsConfig, tlsErr := buildOTLPTLSConfig(cfg)
 		if tlsErr != nil {
 			if cfg.ExporterHealth != nil {
-				cfg.ExporterHealth.RecordMetricFailure(tlsErr)
+				cfg.ExporterHealth.recordMetricExporterFailure(exporterHealthExporterOTLP, tlsErr)
 			}
 			return nil, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
 		}
@@ -576,7 +576,7 @@ func metricExporter(ctx context.Context, cfg Config) (metric.Exporter, error) {
 	var observed metric.Exporter = exporter
 	if cfg.ExporterHealth != nil {
 		cfg.ExporterHealth.ConfigureMetric()
-		observed = observedMetricExporter{next: observed, health: cfg.ExporterHealth}
+		observed = observedMetricExporter{next: observed, health: cfg.ExporterHealth, exporter: exporterHealthExporterOTLP}
 	}
 	return observed, nil
 }
