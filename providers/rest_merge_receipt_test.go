@@ -53,6 +53,28 @@ func TestGitHubMergeReceiptFieldsWithAndWithoutLandingIntent(t *testing.T) {
 	}
 }
 
+func TestGitHubMergeDoesNotRecordReceiptWhenNotMerged(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]any{"merged": false, "message": "not merged"})
+	}))
+	defer server.Close()
+
+	recorder := &recordingRecorder{}
+	provider := NewGitHubProvider("token", WithMutationRecorder(recorder), func(p *GitHubProvider) { p.BaseURL = server.URL })
+	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: RepositoryRef{Owner: "Acme", Name: "App"}, PullID: "9",
+	})
+	if err != nil {
+		t.Fatalf("MergePullRequest returned error: %v", err)
+	}
+	if result.Merged {
+		t.Fatalf("result = %+v, want Merged=false", result)
+	}
+	if ref, recorded := recorder.last(); recorded {
+		t.Fatalf("receipt = %+v, want no recorded receipt", ref)
+	}
+}
+
 type orderedMergeReceiptRecorder struct {
 	intentTestRecorder
 	mergeCompleted bool
