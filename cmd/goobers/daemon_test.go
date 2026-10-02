@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readprobe"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/testgit"
@@ -135,6 +136,46 @@ func initDeterministicDemo(t *testing.T) string {
 	t.Cleanup(func() { repoCloneURL = prev })
 
 	return root
+}
+
+func TestTelemetryExporterHealthDualOTLPAzureModeSurfacesInStatus(t *testing.T) {
+	root := initDeterministicDemo(t)
+	layout := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{
+		OTLP:         &instance.OTLPConfig{Endpoint: "collector.example.com:4317"},
+		AzureMonitor: &instance.AzureMonitorConfig{ConnectionString: instance.TokenRef{Env: "APPLICATIONINSIGHTS_CONNECTION_STRING"}},
+	}}
+	health := newTelemetryExporterHealth(cfg)
+	statusService, err := readservice.NewLocal(readservice.LocalSources{
+		Layout: layout,
+		Definitions: &instance.ConfigSet{
+			Manifest: &apiv1.Manifest{},
+		},
+		TelemetryExporterHealthStats: health.Snapshot,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := statusService.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.TelemetryExporterHealth == nil {
+		t.Fatal("TelemetryExporterHealth == nil")
+	}
+	if got := status.TelemetryExporterHealth.Mode; got != "custom" {
+		t.Fatalf("TelemetryExporterHealth.Mode = %q, want custom for OTLP+Azure fan-out", got)
+	}
+	if got := status.TelemetryExporterHealth.EndpointHost; got != "collector.example.com" {
+		t.Fatalf("TelemetryExporterHealth.EndpointHost = %q, want collector.example.com", got)
+	}
 }
 
 func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {

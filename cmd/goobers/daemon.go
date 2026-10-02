@@ -157,10 +157,15 @@ func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth 
 	}
 	mode := "local"
 	endpoint := ""
-	if cfg.Telemetry.OTLP != nil && strings.TrimSpace(cfg.Telemetry.OTLP.Endpoint) != "" {
+	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.Enabled()
+	azureEnabled := cfg.Telemetry.AzureMonitor.Enabled()
+	if otlpEnabled && azureEnabled {
+		mode = "custom"
+		endpoint = cfg.Telemetry.OTLP.Endpoint
+	} else if otlpEnabled {
 		mode = string(telemetry.ExporterOTLP)
 		endpoint = cfg.Telemetry.OTLP.Endpoint
-	} else if cfg.Telemetry.AzureMonitor != nil {
+	} else if azureEnabled {
 		mode = "azure-monitor"
 	}
 	return telemetry.NewExporterHealth(true, mode, endpoint)
