@@ -329,20 +329,13 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if err != nil {
 		return nil, fmt.Errorf("worktree: resolve starting ref for run %s: %w", opts.RunID, err)
 	}
-
-	// A bot identity local to THIS worktree's own .git/config (`git config`
-	// with no --global, so it never touches the managed working copy or the
-	// host's ambient git config) — an agentic stage's commit must not depend
-	// on the daemon host happening to have user.name/user.email set (#237).
-	if err := retryBotIdentityConfig(ctx, func() error {
-		return runGit(ctx, path, "config", "user.name", BotGitUserName)
-	}); err != nil {
-		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	// The run branch now exists; a later stage that finds it missing reports
+	// it as lost instead of recreating it (#4479).
+	if err := m.recordRunBranchEstablished(key, opts); err != nil {
+		return nil, err
 	}
-	if err := retryBotIdentityConfig(ctx, func() error {
-		return runGit(ctx, path, "config", "user.email", BotGitUserEmail)
-	}); err != nil {
-		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
+	if err := configureBotIdentity(ctx, path, opts.RunID); err != nil {
+		return nil, err
 	}
 	if sparse {
 		// Cone mode only, per the design (path-list "legacy" sparse-checkout
@@ -451,6 +444,22 @@ func resolvedCleanupBaseRef(ctx context.Context, repository, baseRef string) str
 		return strings.TrimSpace(resolved)
 	}
 	return baseRef
+}
+
+// configureBotIdentity sets a bot identity local to THIS worktree's own
+// .git/config (`git config` with no --global, so it never touches the managed
+// working copy or the host's ambient git config) — an agentic stage's commit
+// must not depend on the daemon host happening to have user.name/user.email
+// set (#237).
+func configureBotIdentity(ctx context.Context, path, runID string) error {
+	for _, setting := range [][2]string{{"user.name", BotGitUserName}, {"user.email", BotGitUserEmail}} {
+		if err := retryBotIdentityConfig(ctx, func() error {
+			return runGit(ctx, path, "config", setting[0], setting[1])
+		}); err != nil {
+			return fmt.Errorf("worktree: set bot identity for run %s: %w", runID, err)
+		}
+	}
+	return nil
 }
 
 func retryBotIdentityConfig(ctx context.Context, op func() error) error {
@@ -1082,6 +1091,11 @@ func (m *Manager) prepareWorktreeAdd(ctx context.Context, key, repoDir, path str
 	case opts.RequireExistingBranch:
 		return nil, "", false, fmt.Errorf("worktree: branch %q does not exist in the working copy for run %s (refusing to create it)", opts.Branch, opts.RunID)
 	default:
+		// A branch an earlier stage of this run already had is lost, not
+		// new: recreating it from base would silently discard its work.
+		if err := m.refuseLostRunBranch(key, opts); err != nil {
+			return nil, "", false, err
+		}
 		args = append(args, "--no-track", "-b", opts.Branch, path, opts.BaseRef)
 		checkoutTarget = opts.Branch
 	}
