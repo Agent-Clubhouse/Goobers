@@ -52,9 +52,10 @@ func TestLaunchGrantForgeryExpiryAndDomainSeparation(t *testing.T) {
 	}
 	pod, _ := key.Mint("run-1", time.Minute)
 	worker, _ := key.MintWorkerConfigDigest("worker", time.Minute)
+	workerBlob, _ := key.MintWorkerBlob("worker", time.Minute)
 	credential, _, _ := key.MintCredentialGrant(testCredentialGrant(), time.Minute)
-	for _, bad := range []string{token + "x", strings.Repeat("x", 1025), pod, worker, credential,
-		launchreceipt.TokenPrefix + strings.TrimPrefix(pod, tokenPrefix), launchreceipt.TokenPrefix + strings.TrimPrefix(worker, workerTokenPrefix)} {
+	for _, bad := range []string{token + "x", strings.Repeat("x", 1025), pod, worker, workerBlob, credential,
+		launchreceipt.TokenPrefix + strings.TrimPrefix(pod, tokenPrefix), launchreceipt.TokenPrefix + strings.TrimPrefix(worker, workerTokenPrefix), launchreceipt.TokenPrefix + strings.TrimPrefix(workerBlob, workerBlobTokenPrefix)} {
 		if _, err := key.VerifyLaunchGrant(bad); err == nil {
 			t.Fatal("foreign or forged grant admitted")
 		}
@@ -184,8 +185,9 @@ func TestLaunchReceiptHTTPAuthorityAndClient(t *testing.T) {
 	grant := launchToken(t, key, r)
 	pod, _ := key.Mint("run-1", time.Minute)
 	worker, _ := key.MintWorkerConfigDigest("worker", time.Minute)
+	workerBlob, _ := key.MintWorkerBlob("worker", time.Minute)
 	scoped, _ := key.MintScoped("run-1", time.Minute, ScopeJournal)
-	for _, token := range []string{"", pod, worker, scoped, grant + "forged"} {
+	for _, token := range []string{"", pod, worker, workerBlob, scoped, grant + "forged"} {
 		req := httptest.NewRequest(http.MethodPost, apicontract.LaunchReceiptPath, bytes.NewReader(raw))
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")
