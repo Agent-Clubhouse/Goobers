@@ -10,8 +10,12 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/launchreceipt"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 func localLaunchTestContext(runID, stage string, number int, review bool) context.Context {
@@ -120,4 +124,45 @@ func TestControllerKeyAdmissionPrecedesPinnedConfigAndHarnessPreflight(t *testin
 	if _, _, err := preflightWorkerHarnesses(config, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestLocalLaunchWithoutTelemetryPreservesNilInterface(t *testing.T) {
+	root := t.TempDir()
+	shared, _ := journal.DefaultScrubber()
+	cfg, _, err := buildRunnerConfig(runnerCompositionInput{Layout: instance.NewLayout(root), Config: &instance.Config{}, SharedRegistry: shared})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Telemetry != nil {
+		t.Fatal("disabled telemetry became a typed-nil SpanStarter")
+	}
+	// Exercise Start's nil-interface branch, not just the constructor's value.
+	cfg.NewDeterministic = func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+		return disabledTelemetryExecutor{}, nil
+	}
+	r, err := runner.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "no-telemetry", Version: 1, Spec: apiv1.WorkflowSpec{
+		Gaggle: "fixture", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}, Start: "build",
+		Tasks: []apiv1.Task{{Name: "build", Type: apiv1.TaskDeterministic, Goal: "exercise run startup", Run: &apiv1.DeterministicRun{Command: []string{"fixture"}, Workspace: apiv1.WorkspaceScratch}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Start(t.Context(), runner.StartInput{RunID: "without-telemetry", Gaggle: "fixture", Machine: machine, Trigger: journal.Trigger{Kind: journal.TriggerManual}})
+	if err != nil || result.Phase != journal.PhaseCompleted {
+		t.Fatalf("run phase=%s err=%v", result.Phase, err)
+	}
+	client := &telemetry.Client{}
+	if withRunnerTelemetry(runner.Config{}, client).Telemetry != client {
+		t.Fatal("configured telemetry client lost")
+	}
+}
+
+type disabledTelemetryExecutor struct{}
+
+func (disabledTelemetryExecutor) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
 }

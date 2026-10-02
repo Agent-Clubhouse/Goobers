@@ -376,7 +376,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
 	}, cfg, tel)
-	rc.Telemetry = tel
+	rc = withRunnerTelemetry(rc, tel)
 	wtMgr.SetPathLengthLimits(pathLimits)
 	// Refreshed unconditionally, exactly like the path-length limits above —
 	// on BOTH the newly-constructed and the reused-manager path (#4405). A
@@ -932,4 +932,12 @@ func (input runnerCompositionInput) resolvedSkillFiles() (map[string][]workflow.
 		return input.SkillPackages, nil
 	}
 	return loadGooberSkillPackages(input.Layout.ConfigDir(), input.Layout.Gaggle(), input.Goobers)
+}
+
+func withRunnerTelemetry(config runner.Config, client *telemetry.Client) runner.Config {
+	// Keep a nil client out of SpanStarter: a typed nil would bypass the runner guard.
+	if client != nil {
+		config.Telemetry = client
+	}
+	return config
 }
