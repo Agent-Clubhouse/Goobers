@@ -5,9 +5,11 @@ package proc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +32,23 @@ var orphanReapDebounce = 100 * time.Millisecond
 // zombie, which is the very bug this exists to fix.
 var orphanReapSweepInterval = 30 * time.Second
 
+// sameSessionZombieGrace is how long a zombie child in the daemon's OWN session
+// must stay a zombie before the reaper treats it as abandoned (#5421).
+//
+// Every exec.Cmd in the daemon calls Wait within moments of the child exiting
+// (Run, Output and CombinedOutput wait inline; the Start callers hand Wait to a
+// goroutine immediately), and a Wait already in progress collects the status
+// the instant the child dies. So a same-session child that has sat in state Z
+// across sweeps for this long has no Wait coming, and reaping it cannot steal
+// a status anyone will ask for. What lands here is a git grandchild
+// (fetch-pack, index-pack, ...) whose git parent exited or was killed without
+// waiting for it: the kernel reparents it to pid 1 with the daemon's session
+// and process group intact, so the session test cannot tell it from an owned
+// child, and nothing else ever collects it.
+//
+// A var, not a const, so tests can drive it.
+var sameSessionZombieGrace = 2 * time.Minute
+
 func startOrphanReaper(ctx context.Context) bool {
 	pid := os.Getpid()
 	if pid != containerInitPID {
@@ -46,7 +65,7 @@ func startOrphanReaper(ctx context.Context) bool {
 	trackedChildren.enable()
 	notifications := make(chan os.Signal, 1)
 	signal.Notify(notifications, syscall.SIGCHLD)
-	reaper := &orphanReaper{pid: pid, session: self.session}
+	reaper := &orphanReaper{pid: pid, session: self.session, now: time.Now}
 	go reaper.run(ctx, notifications)
 	return true
 }
@@ -57,6 +76,19 @@ func startOrphanReaper(ctx context.Context) bool {
 type orphanReaper struct {
 	pid     int
 	session int
+	// now is the clock the same-session grace is measured on; nil means
+	// time.Now. Only the reaper goroutine touches lingering, so it needs no
+	// lock.
+	now       func() time.Time
+	lingering map[int]lingeringZombie
+}
+
+// lingeringZombie remembers when a same-session zombie was first seen. It is
+// keyed by pid and pinned to the start time, so a recycled pid starts a fresh
+// clock instead of inheriting a dead process's age.
+type lingeringZombie struct {
+	startTicks uint64
+	firstSeen  time.Time
 }
 
 func (r *orphanReaper) run(ctx context.Context, notifications chan os.Signal) {
@@ -89,6 +121,14 @@ func (r *orphanReaper) sweep() {
 	for _, pid := range r.orphanZombies() {
 		reapPID(pid)
 	}
+	for _, pid := range r.abandonedSameSessionZombies() {
+		// Name what was reaped: these exist only because some child exited
+		// without waiting for its own children, and the command name is the
+		// lead to that root cause.
+		_, _ = fmt.Fprintf(os.Stderr, "warning: reaped abandoned zombie child pid %d (%s) after %s in state Z (#5421)\n",
+			pid, procComm(pid), sameSessionZombieGrace)
+		reapPID(pid)
+	}
 	trackedChildren.prune()
 }
 
@@ -119,7 +159,9 @@ func reapPID(pid int) {
 //     daemon runs) INHERITS the daemon's session, and its exit status belongs
 //     to the cmd.Wait that started it. Those are skipped. The cost is that a
 //     genuine orphan left behind by such a child is skipped too — the safe
-//     direction, and not the leak this fixes, since stages run detached.
+//     direction for an instant check. abandonedSameSessionZombies is the
+//     time-bounded backstop that collects those orphans once no Wait can
+//     still be coming for them (#5421).
 //   - Registry. Start detaches each stage into its OWN session (Setsid), which
 //     makes a live stage look exactly like an escaped orphan to the session
 //     test. trackedChildren remembers those pids so they are skipped as well.
@@ -147,6 +189,56 @@ func (r *orphanReaper) orphanZombies() []int {
 		orphans = append(orphans, pid)
 	}
 	return orphans
+}
+
+// abandonedSameSessionZombies lists the same-session zombie children that have
+// stayed zombies for at least sameSessionZombieGrace: the bounded backstop for
+// the cost orphanZombies documents (see sameSessionZombieGrace). Each sweep
+// records newly seen ones and forgets any that are gone, so the map is bounded
+// by the zombies currently present rather than by uptime.
+func (r *orphanReaper) abandonedSameSessionZombies() []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	current := now()
+	seen := make(map[int]lingeringZombie)
+	var abandoned []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		stat, ok := readProcStat(pid)
+		if !ok || stat.ppid != r.pid || stat.state != 'Z' || stat.session != r.session {
+			continue
+		}
+		record, known := r.lingering[pid]
+		if !known || record.startTicks != stat.startTicks {
+			record = lingeringZombie{startTicks: stat.startTicks, firstSeen: current}
+		}
+		if current.Sub(record.firstSeen) >= sameSessionZombieGrace {
+			abandoned = append(abandoned, pid)
+			continue
+		}
+		seen[pid] = record
+	}
+	r.lingering = seen
+	return abandoned
+}
+
+// procComm returns the kernel's short command name for pid, or "?" when it is
+// unreadable. Diagnostic only.
+func procComm(pid int) string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return "?"
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // trackedChildren records what Start spawned. It is inert until the reaper
