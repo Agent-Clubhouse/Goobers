@@ -23,6 +23,11 @@ type triggerEvaluationsFile struct {
 	Workflows  []triggerEvaluation `json:"workflows"`
 }
 
+func (s *triggerEvaluationsFile) setOwnershipStamp(stamp ownershipStamp) {
+	s.Owner = stamp.Owner
+	s.Generation = stamp.Generation
+}
+
 type triggerEvaluation struct {
 	Gaggle   string    `json:"gaggle"`
 	Workflow string    `json:"workflow"`
@@ -75,14 +80,8 @@ func writeTriggerEvaluationsWithWriter(
 	evaluations map[WorkflowIdentity]time.Time,
 	writeFile func(string, []byte, os.FileMode) error,
 ) error {
-	stamp, err := owner.stamp(schedulerDir, triggerEvaluationsFileName)
-	if err != nil {
-		return err
-	}
-	state := triggerEvaluationsFile{
-		Owner:      stamp.Owner,
-		Generation: stamp.Generation,
-		Workflows:  make([]triggerEvaluation, 0, len(evaluations)),
+	state := &triggerEvaluationsFile{
+		Workflows: make([]triggerEvaluation, 0, len(evaluations)),
 	}
 	for identity, lastEval := range evaluations {
 		state.Workflows = append(state.Workflows, triggerEvaluation{
@@ -97,19 +96,13 @@ func writeTriggerEvaluationsWithWriter(
 		}
 		return state.Workflows[i].Gaggle < state.Workflows[j].Gaggle
 	})
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("localscheduler: marshal trigger evaluations: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
-		return fmt.Errorf("localscheduler: create trigger evaluation directory: %w", err)
-	}
-	if err := writeFile(filepath.Join(schedulerDir, triggerEvaluationsFileName), data, 0o644); err != nil {
-		return fmt.Errorf("localscheduler: persist trigger evaluations: %w", err)
-	}
-	// Only a landed write commits the claimed generation: a failed write must
-	// stay retryable rather than poisoning later writes with ErrStateSeized.
-	owner.commit(triggerEvaluationsFileName, stamp)
-	return nil
+	return writeOwnedJSONState(
+		schedulerDir,
+		owner,
+		triggerEvaluationsFileName,
+		"trigger evaluations",
+		"trigger evaluation",
+		state,
+		writeFile,
+	)
 }
