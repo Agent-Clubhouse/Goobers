@@ -45,6 +45,7 @@ themselves, so no cell can drift from the YAML.
 | `provider-fixture-drift-ado.yml` | workflow_dispatch | dormant | #4602 (ADO fixture work item, PAT, first live-candidate review) |
 | `provider-fixture-drift.yml` | workflow_dispatch | dormant | #1478 (designated repo, issue, PR, credential) |
 | `release.yml` | push, workflow_dispatch | active | — |
+| `scale-suite.yml` | schedule, workflow_dispatch | active | — |
 | `scheduled-failure-alarm.yml` | schedule, workflow_dispatch | active | — |
 | `stress.yml` | schedule, workflow_dispatch | active | — |
 | `tracked-gap-references.yml` | push, schedule, workflow_dispatch | active | — |
