@@ -47,6 +47,12 @@ import (
 const (
 	// AssignedToInput is the backlog-query input carrying the claim identity.
 	AssignedToInput = "assignedTo"
+	// OwnershipAssigneesInput is the provider-stage input carrying the issue
+	// write ownership assignee scope inherited from a gaggle.
+	OwnershipAssigneesInput = "ownershipAssignees"
+	// OwnershipUnassignedInput is the provider-stage input selecting whether
+	// unassigned issues are inside the inherited write ownership scope.
+	OwnershipUnassignedInput = "ownershipUnassigned"
 	// RequireLabelsInput is the backlog-query input carrying the required
 	// label list (the claim partition).
 	RequireLabelsInput = "requireLabels"
@@ -65,6 +71,30 @@ const (
 func Apply(task apiv1.Task, inputs map[string]string, assignedTo, requireLabels string) map[string]string {
 	inputs = AssignedTo(task, inputs, assignedTo)
 	return RequireLabels(task, inputs, requireLabels)
+}
+
+// ApplyIssueOwnershipScope injects a gaggle's issue-write ownership scope into
+// every deterministic provider stage. Each input has independent per-task
+// override semantics: a task that declares ownershipAssignees or
+// ownershipUnassigned keeps that value.
+func ApplyIssueOwnershipScope(inputs map[string]string, assignees, unassigned string) map[string]string {
+	if assignees == "" && unassigned == "" {
+		return inputs
+	}
+	resolved := inputs
+	if assignees != "" {
+		if _, overridden := inputs[OwnershipAssigneesInput]; !overridden {
+			resolved = cloneInputsIfSame(resolved, inputs, 2)
+			resolved[OwnershipAssigneesInput] = assignees
+		}
+	}
+	if unassigned != "" {
+		if _, overridden := inputs[OwnershipUnassignedInput]; !overridden {
+			resolved = cloneInputsIfSame(resolved, inputs, 2)
+			resolved[OwnershipUnassignedInput] = unassigned
+		}
+	}
+	return resolved
 }
 
 // ApplyBacklogScope conjoins the gaggle backlog label selector with a
@@ -200,6 +230,22 @@ func RequireLabels(task apiv1.Task, inputs map[string]string, requireLabels stri
 func cloneInputs(inputs map[string]string) map[string]string {
 	resolved := make(map[string]string, len(inputs)+2)
 	for key, value := range inputs {
+		resolved[key] = value
+	}
+	return resolved
+}
+
+func cloneInputsIfSame(current, original map[string]string, extra int) map[string]string {
+	if len(current) != len(original) {
+		return current
+	}
+	for key, value := range original {
+		if current[key] != value {
+			return current
+		}
+	}
+	resolved := make(map[string]string, len(original)+extra)
+	for key, value := range original {
 		resolved[key] = value
 	}
 	return resolved

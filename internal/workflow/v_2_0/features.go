@@ -621,6 +621,9 @@ const (
 	featureGaggleOutboxMirrorPath               FeatureID = "gaggle.spec.outboxMirrorPath"
 	featureGaggleWorkcopiesRoot                 FeatureID = "gaggle.spec.workcopies.root"
 	featureGaggleRequireLabels                  FeatureID = "gaggle.spec.requireLabels"
+	featureGaggleIssueOwnershipScope            FeatureID = "gaggle.spec.issueOwnershipScope"
+	featureGaggleIssueOwnershipScopeAssignees   FeatureID = "gaggle.spec.issueOwnershipScope.assignees"
+	featureGaggleIssueOwnershipScopeUnassigned  FeatureID = "gaggle.spec.issueOwnershipScope.unassigned"
 	featureGaggleSiblings                       FeatureID = "gaggle.spec.siblings"
 )
 
@@ -823,7 +826,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunControlsMaxRunDuration,
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
-		featureGaggleRequireLabels,
+		featureGaggleRequireLabels, featureGaggleIssueOwnershipScope, featureGaggleIssueOwnershipScopeAssignees, featureGaggleIssueOwnershipScopeUnassigned,
 		featureGaggleSiblings,
 	}
 	ids = append(ids, gaggleIsolationFeatureIDs...)

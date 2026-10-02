@@ -89,25 +89,27 @@ func adoRemoteGitQuotaGate(state *localscheduler.ProviderQuotaState) func(contex
 // typed-nil-in-interface trap. Leaving the field unset keeps the interface
 // itself nil.
 type runnerCompositionInput struct {
-	ExecutionFence       executionFenceStart
-	Layout               instance.Layout
-	Config               *instance.Config
-	Goobers              map[string]apiv1.GooberSpec
-	InstructionsByGoober map[string]string
-	SkillPackages        map[string][]workflow.SkillFile
-	Telemetry            *telemetry.Client
-	SharedRegistry       *journal.RegistryScrubber
-	WorktreeManager      *worktree.Manager
-	BranchNamespaces     map[string]string
-	GaggleProject        apiv1.RepoRef
-	GaggleBacklog        apiv1.BacklogRef
-	AdditionalRepos      []apiv1.RepoRef
-	HarnessInfo          harnessPreflightInfo
-	CredentialStores     credentials.StoreResolver
-	SandboxPosture       instance.SandboxPosture
-	ProviderQuota        *localscheduler.ProviderQuotaState
-	AppliedConfigDigest  string
-	ConfigGeneration     string
+	ExecutionFence           executionFenceStart
+	Layout                   instance.Layout
+	Config                   *instance.Config
+	Goobers                  map[string]apiv1.GooberSpec
+	InstructionsByGoober     map[string]string
+	SkillPackages            map[string][]workflow.SkillFile
+	Telemetry                *telemetry.Client
+	SharedRegistry           *journal.RegistryScrubber
+	WorktreeManager          *worktree.Manager
+	BranchNamespaces         map[string]string
+	GaggleProject            apiv1.RepoRef
+	GaggleBacklog            apiv1.BacklogRef
+	AdditionalRepos          []apiv1.RepoRef
+	HarnessInfo              harnessPreflightInfo
+	CredentialStores         credentials.StoreResolver
+	SandboxPosture           instance.SandboxPosture
+	ProviderQuota            *localscheduler.ProviderQuotaState
+	AppliedConfigDigest      string
+	ConfigGeneration         string
+	IssueOwnershipAssignees  string
+	IssueOwnershipUnassigned string
 }
 
 var runnerLookPath = exec.LookPath
@@ -344,6 +346,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		GateGooberCapabilities:    gateGooberCaps,
 		AgentProvenance:           agentProvenance,
 		BaselineHealth:            baselineHealth,
+		IssueOwnershipAssignees:   input.IssueOwnershipAssignees,
+		IssueOwnershipUnassigned:  input.IssueOwnershipUnassigned,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(l, cfg, resolver, sharedReg),
@@ -890,6 +894,40 @@ func requireLabelsByGaggle(set *instance.ConfigSet) map[string]string {
 		out[g.Name] = strings.Join(g.Spec.RequireLabels, ",")
 	}
 	return out
+}
+
+func issueOwnershipAssigneesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Spec.IssueOwnershipScope != nil {
+			out[g.Name] = strings.Join(g.Spec.IssueOwnershipScope.Assignees, ",")
+		}
+	}
+	return out
+}
+
+func issueOwnershipUnassignedByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Spec.IssueOwnershipScope != nil {
+			out[g.Name] = g.Spec.IssueOwnershipScope.Unassigned
+		}
+	}
+	return out
+}
+
+type issueOwnershipDefaults struct {
+	assignees  map[string]string
+	unassigned map[string]string
+}
+
+func issueOwnershipDefaultsByGaggle(set *instance.ConfigSet) issueOwnershipDefaults {
+	return issueOwnershipDefaults{
+		assignees:  issueOwnershipAssigneesByGaggle(set),
+		unassigned: issueOwnershipUnassignedByGaggle(set),
+	}
 }
 
 func backlogLabelsByGaggle(set *instance.ConfigSet) map[string]string {

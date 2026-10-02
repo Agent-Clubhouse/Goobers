@@ -112,6 +112,12 @@ type GaggleSpec struct {
 	// behaves exactly as before.
 	// +optional
 	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
+	// IssueOwnershipScope is the default ownership policy every workflow task
+	// in this gaggle inherits for provider-visible issue writes. A task may
+	// override the policy with ownershipAssignees / ownershipUnassigned inputs.
+	// Empty leaves writes unrestricted, preserving legacy behavior.
+	// +optional
+	IssueOwnershipScope *IssueOwnershipScope `json:"issueOwnershipScope,omitempty" yaml:"issueOwnershipScope,omitempty"`
 	// RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
 	// toolchain capability tags, and required runner restrictions that merge
 	// into every stage of every workflow in this gaggle — capabilities and
@@ -138,6 +144,21 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// IssueOwnershipScope constrains provider-visible issue writes to owned
+// assignees while keeping unassigned handling independently configurable.
+type IssueOwnershipScope struct {
+	// Assignees are provider identities this gaggle may mutate. Empty means no
+	// assigned-owner restriction, though Unassigned may still refuse unassigned
+	// issues.
+	// +optional
+	Assignees []string `json:"assignees,omitempty" yaml:"assignees,omitempty"`
+	// Unassigned controls whether unassigned issues are in scope. Empty behaves
+	// as "allow" when Assignees is empty and "refuse" when Assignees is set.
+	// +kubebuilder:validation:Enum=allow;refuse
+	// +optional
+	Unassigned string `json:"unassigned,omitempty" yaml:"unassigned,omitempty"`
 }
 
 // CostReporting controls provider-visible cost receipts and summaries, not
