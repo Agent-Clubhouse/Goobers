@@ -525,17 +525,17 @@ func StatusLabelFor(status WorkItemStatus) string {
 }
 
 func replaceStatusLabel(labels []string, status WorkItemStatus) []string {
-	next := make([]string, 0, len(labels)+1)
+	remove := make([]string, 0, len(labels))
 	for _, label := range labels {
 		if strings.HasPrefix(label, "goobers/status:") {
-			continue
+			remove = append(remove, label)
 		}
-		next = append(next, label)
 	}
+	var add []string
 	if status != "" {
-		next = append(next, statusLabel(status))
+		add = []string{statusLabel(status)}
 	}
-	return uniqueStrings(next)
+	return planLabelMutation(labels, add, remove, exactLabelName).Result
 }
 
 func statusFromLabels(labels []string, fallbackState string) WorkItemStatus {

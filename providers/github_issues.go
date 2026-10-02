@@ -797,16 +797,17 @@ func claimLabelConvergenceDelay(attempt int, jitter func(time.Duration) time.Dur
 // applyLabelChanges adds labels (additive; GitHub ignores duplicates) and removes
 // labels, tolerating a 404 when a removed label is not present.
 func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryRef, id string, add, remove []string) error {
-	if add = uniqueStrings(add); len(add) > 0 {
+	plan := planLabelMutation(nil, add, remove, exactLabelName)
+	if len(plan.Add) > 0 {
 		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "labels")
 		if err != nil {
 			return err
 		}
-		if err := p.do(ctx, http.MethodPost, endpoint, map[string][]string{"labels": add}, nil); err != nil {
+		if err := p.do(ctx, http.MethodPost, endpoint, map[string][]string{"labels": plan.Add}, nil); err != nil {
 			return err
 		}
 	}
-	for _, label := range uniqueStrings(remove) {
+	for _, label := range plan.Remove {
 		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "labels", label)
 		if err != nil {
 			return err
@@ -882,19 +883,7 @@ func labelsChanged(req UpdateWorkItemRequest) bool {
 
 // applyLabelSet computes the resulting label set after add/remove, for digesting.
 func applyLabelSet(current, add, remove []string) []string {
-	removeSet := make(map[string]struct{}, len(remove))
-	for _, r := range remove {
-		removeSet[r] = struct{}{}
-	}
-	next := make([]string, 0, len(current)+len(add))
-	for _, l := range current {
-		if _, drop := removeSet[l]; drop {
-			continue
-		}
-		next = append(next, l)
-	}
-	next = append(next, add...)
-	return uniqueStrings(next)
+	return planLabelMutation(current, add, remove, exactLabelName).Result
 }
 
 // digestLabels digests a label set independent of order.

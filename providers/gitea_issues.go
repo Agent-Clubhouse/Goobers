@@ -607,23 +607,21 @@ func (p *GiteaProvider) EnsureWorkItemLabels(ctx context.Context, repo Repositor
 	if err != nil {
 		return EnsureWorkItemLabelsResult{}, err
 	}
-	have := make(map[string]bool, len(existing))
+	existingNames := make([]string, 0, len(existing))
 	for _, l := range existing {
-		have[strings.ToLower(l.Name)] = true
+		existingNames = append(existingNames, l.Name)
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
 	if err != nil {
 		return EnsureWorkItemLabelsResult{}, err
 	}
 	result := EnsureWorkItemLabelsResult{Created: []string{}, Skipped: []string{}}
-	for _, label := range labels {
-		label.Name = strings.TrimSpace(label.Name)
-		label.Color = strings.TrimPrefix(strings.TrimSpace(label.Color), "#")
+	for _, step := range planLabelEnsure(existingNames, labels, lowerLabelName) {
+		label := step.Label
 		if label.Name == "" || label.Color == "" {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("label name and color are required")
 		}
-		key := strings.ToLower(label.Name)
-		if have[key] {
+		if !step.Create {
 			result.Skipped = append(result.Skipped, label.Name)
 			continue
 		}
@@ -635,7 +633,6 @@ func (p *GiteaProvider) EnsureWorkItemLabels(ctx context.Context, repo Repositor
 		}, &created); err != nil {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("create label %q: %w", label.Name, err)
 		}
-		have[key] = true
 		result.Created = append(result.Created, label.Name)
 	}
 	return result, nil
@@ -671,17 +668,17 @@ func (p *GiteaProvider) giteaLabelIDs(ctx context.Context, repo RepositoryRef, n
 	for _, l := range existing {
 		byName[strings.ToLower(l.Name)] = l.ID
 	}
+	existingNames := make([]string, 0, len(existing))
+	for _, label := range existing {
+		existingNames = append(existingNames, label.Name)
+	}
+	plan := planLabelMutation(existingNames, names, nil, lowerLabelName)
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(names))
-	for _, name := range names {
+	for _, name := range plan.Add {
 		key := strings.ToLower(name)
-		if id, ok := byName[key]; ok {
-			ids = append(ids, id)
-			continue
-		}
 		var created giteaLabel
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{
 			"name":  name,
@@ -696,7 +693,6 @@ func (p *GiteaProvider) giteaLabelIDs(ctx context.Context, repo RepositoryRef, n
 			for _, l := range refreshed {
 				if strings.EqualFold(l.Name, name) {
 					byName[key] = l.ID
-					ids = append(ids, l.ID)
 					found = true
 					break
 				}
@@ -707,7 +703,10 @@ func (p *GiteaProvider) giteaLabelIDs(ctx context.Context, repo RepositoryRef, n
 			continue
 		}
 		byName[key] = created.ID
-		ids = append(ids, created.ID)
+	}
+	ids := make([]int64, 0, len(names))
+	for _, name := range names {
+		ids = append(ids, byName[strings.ToLower(name)])
 	}
 	return ids, nil
 }
@@ -735,8 +734,9 @@ func (p *GiteaProvider) listRepoLabels(ctx context.Context, repo RepositoryRef) 
 // IDs. Add posts the ID set; each removal is a DELETE of one label id,
 // tolerating a 404 when the label is not present.
 func (p *GiteaProvider) applyLabelChanges(ctx context.Context, repo RepositoryRef, id string, add, remove []string) error {
-	if add = uniqueStrings(add); len(add) > 0 {
-		addIDs, err := p.giteaLabelIDs(ctx, repo, add)
+	plan := planLabelMutation(nil, add, remove, exactLabelName)
+	if len(plan.Add) > 0 {
+		addIDs, err := p.giteaLabelIDs(ctx, repo, plan.Add)
 		if err != nil {
 			return err
 		}
@@ -748,11 +748,10 @@ func (p *GiteaProvider) applyLabelChanges(ctx context.Context, repo RepositoryRe
 			return err
 		}
 	}
-	remove = uniqueStrings(remove)
-	if len(remove) == 0 {
+	if len(plan.Remove) == 0 {
 		return nil
 	}
-	removeIDs, err := p.resolveExistingLabelIDs(ctx, repo, remove)
+	removeIDs, err := p.resolveExistingLabelIDs(ctx, repo, plan.Remove)
 	if err != nil {
 		return err
 	}
@@ -780,8 +779,13 @@ func (p *GiteaProvider) resolveExistingLabelIDs(ctx context.Context, repo Reposi
 	for _, l := range existing {
 		byName[strings.ToLower(l.Name)] = l.ID
 	}
-	ids := make([]int64, 0, len(names))
-	for _, name := range names {
+	existingNames := make([]string, 0, len(existing))
+	for _, label := range existing {
+		existingNames = append(existingNames, label.Name)
+	}
+	plan := planLabelMutation(existingNames, nil, names, lowerLabelName)
+	ids := make([]int64, 0, len(plan.Remove))
+	for _, name := range plan.Remove {
 		if id, ok := byName[strings.ToLower(name)]; ok {
 			ids = append(ids, id)
 		}

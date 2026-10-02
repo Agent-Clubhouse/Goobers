@@ -99,18 +99,7 @@ func adoHasLabel(labels []string, label string) bool {
 // present in any casing keeps the existing tag rather than appending a
 // duplicate ADO would merge anyway.
 func applyADOTagSet(current, add, remove []string) []string {
-	next := make([]string, 0, len(current)+len(add))
-	for _, tag := range current {
-		if !adoHasLabel(remove, tag) {
-			next = append(next, tag)
-		}
-	}
-	for _, tag := range add {
-		if !adoHasLabel(next, tag) {
-			next = append(next, tag)
-		}
-	}
-	return uniqueStrings(next)
+	return planLabelMutation(current, add, remove, equalFoldLabelName).Result
 }
 
 // adoDropStatusTags removes every Goobers status tag in any casing, so
