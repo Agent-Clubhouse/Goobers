@@ -4345,26 +4345,7 @@ type mutationFact struct {
 // best-effort journal signal, since a lost mutation record must at least be
 // observable even though it can't be allowed to fail the stage.
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	data, err := mutationsidecar.Read(workspace)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("read sidecar: %v", err)}
-	}
-	for i, line := range bytes.Split(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var f mutationFact
-		if err := json.Unmarshal(line, &f); err != nil {
-			issues = append(issues, fmt.Sprintf("line %d: %v", i+1, err))
-			continue
-		}
-		facts = append(facts, f)
-	}
-	return facts, issues
+	return mutationsidecar.ReadFacts[mutationFact](workspace, nil)
 }
 
 // errorDetailFrom converts a stage's business-level error into the journal's
