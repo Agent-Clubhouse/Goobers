@@ -156,12 +156,14 @@ func TestCheckProviderStageUnsetDefaultsQuietWhenOverrideFlagPresent(t *testing.
 	for _, command := range [][]string{
 		{"goobers", "remediation-checkpoint", "--budget", "3"},
 		{"goobers", "remediation-checkpoint", "--budget=3"},
+		{"goobers", "remediation-checkpoint", "--escalate", "reviewer returned fail"},
+		{"goobers", "remediation-checkpoint", "--escalate", "stuck", "--escalation-outcome", "budget-exhausted"},
 	} {
 		task := remediationCheckpointTask(nil, nil, nil)
 		task.Run = &apiv1.DeterministicRun{Command: command}
 		def := Definition{Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{task}}}
 		if problems := CheckProviderStageUnsetDefaults(def); len(problems) != 0 {
-			t.Fatalf("command %q: problems = %q, want none when --budget supersedes every default", command, problems)
+			t.Fatalf("command %q: problems = %q, want none when the invocation never reads the budgets", command, problems)
 		}
 	}
 }

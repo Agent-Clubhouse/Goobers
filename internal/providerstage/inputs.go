@@ -46,9 +46,10 @@ const (
 // value the command falls back to when the workflow leaves the input unset;
 // it marks a policy default the author should choose explicitly, so
 // configuration validation warns about every unset occurrence instead of
-// letting the default apply invisibly. UnsetDefaultOverrideFlag names a
-// command-line flag that, when present on the stage's command, supersedes the
-// default (so an unset input is not using it and validation stays quiet).
+// letting the default apply invisibly. UnsetDefaultBypassFlags name
+// command-line flags whose presence means the invocation never reads the
+// input (an override, or a mode that skips the evaluation), so validation
+// stays quiet for an unset input on such a command.
 type Input struct {
 	Name         string
 	Type         InputType
@@ -59,7 +60,7 @@ type Input struct {
 	Replacement  string
 	UnsetDefault string
 
-	UnsetDefaultOverrideFlag string
+	UnsetDefaultBypassFlags []string
 }
 
 // inputSchemas is the complete contract for workflow-callable built-ins. Map
@@ -209,7 +210,9 @@ var inputSchemas = map[string][]Input{
 		stringsIn("attemptedHeadSha", "base", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
 		// #2737: each per-cause budget defaults to 2 when unset; validate
 		// warns so the remediation allowance stays an explicit choice.
-		defaultedIntegersIn("2", "--budget", "conflictBudget", "failingCIBudget", "humanCommentBudget", "siblingOverlapBudget", "substantiveBudget"),
+		// --budget overrides every budget; --escalate parks the PR before
+		// any budget is evaluated.
+		defaultedIntegersIn("2", []string{"--budget", "--escalate"}, "conflictBudget", "failingCIBudget", "humanCommentBudget", "siblingOverlapBudget", "substantiveBudget"),
 		booleansIn("conflict", "policyExcluded", "rebaseInfrastructureFailure"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -277,13 +280,13 @@ func stringListsIn(names ...string) []Input { return currentInputs(InputStringLi
 func pathsIn(names ...string) []Input       { return currentInputs(InputPath, names...) }
 
 // defaultedIntegersIn declares integer inputs the command defaults to
-// unsetDefault when the workflow omits them, unless overrideFlag is on the
-// command line (see Input.UnsetDefault).
-func defaultedIntegersIn(unsetDefault, overrideFlag string, names ...string) []Input {
+// unsetDefault when the workflow omits them, unless one of bypassFlags is on
+// the command line (see Input.UnsetDefault).
+func defaultedIntegersIn(unsetDefault string, bypassFlags []string, names ...string) []Input {
 	inputs := integersIn(names...)
 	for i := range inputs {
 		inputs[i].UnsetDefault = unsetDefault
-		inputs[i].UnsetDefaultOverrideFlag = overrideFlag
+		inputs[i].UnsetDefaultBypassFlags = bypassFlags
 	}
 	return inputs
 }

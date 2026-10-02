@@ -103,7 +103,8 @@ func sortedProviderInputKeys(inputs map[string]string) []string {
 // An input counts as set when the task supplies it through a non-empty
 // literal or inputsFrom, or when every experiment arm supplies a non-empty
 // variant value; an empty literal still runs on the default. A command-line
-// override flag (Input.UnsetDefaultOverrideFlag) supersedes the default.
+// bypass flag (Input.UnsetDefaultBypassFlags) means the invocation never
+// reads the input, so it is not reported.
 func CheckProviderStageUnsetDefaults(def Definition) []string {
 	var problems []string
 	for _, task := range def.Spec.Tasks {
@@ -117,7 +118,7 @@ func CheckProviderStageUnsetDefaults(def Definition) []string {
 		}
 		for _, input := range inputs {
 			if input.UnsetDefault == "" || input.State == providerstage.InputRetired ||
-				commandHasFlag(task.Run.Command[2:], input.UnsetDefaultOverrideFlag) ||
+				commandHasAnyFlag(task.Run.Command[2:], input.UnsetDefaultBypassFlags) ||
 				taskSetsProviderInput(task, input.Name) {
 				continue
 			}
@@ -130,13 +131,12 @@ func CheckProviderStageUnsetDefaults(def Definition) []string {
 	return problems
 }
 
-func commandHasFlag(args []string, flag string) bool {
-	if flag == "" {
-		return false
-	}
-	for _, arg := range args {
-		if arg == flag || strings.HasPrefix(arg, flag+"=") {
-			return true
+func commandHasAnyFlag(args, flags []string) bool {
+	for _, flag := range flags {
+		for _, arg := range args {
+			if arg == flag || strings.HasPrefix(arg, flag+"=") {
+				return true
+			}
 		}
 	}
 	return false
