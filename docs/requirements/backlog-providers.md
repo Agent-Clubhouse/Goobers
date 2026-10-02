@@ -8,13 +8,13 @@ The **Backlog** is the external system of record for work items, and **Providers
 abstraction over the team's repo + backlog tooling (GitHub and ADO). This is how work
 enters the system and how goobers act on code. The **GitHub provider is the V0 workload**
 (`ARCHITECTURE.md §12`): the V0 workflows — backlog curation, work nomination,
-implementation — run entirely on GitHub issues and PRs. **ADO lands in V1** behind the
+implementation — run entirely on GitHub issues and PRs. **ADO followed in V1 and ships** behind the
 same abstraction, whose shape is unchanged.
 
 ## Model
 
 - **Provider abstraction over GitHub + ADO**, for both the **repo** and the **backlog**,
-  from day one (`VISION §8`). GitHub ships first (V0); ADO follows (V1); definitions
+  from day one (`VISION §8`). GitHub shipped first (V0); ADO followed (V1, shipped); definitions
   never change to switch provider.
 - The **backlog is external** — a system of record the team already owns — not stored
   inside the instance (`ARCHITECTURE.md §2`).
@@ -31,7 +31,7 @@ same abstraction, whose shape is unchanged.
 
 - **BL-001 (MUST):** *(All tiers)* The platform MUST support a backlog via a provider
   abstraction over GitHub and ADO. The GitHub provider is the **V0 workload**; the ADO
-  provider is **V1** (`BL-033`). The abstraction's shape is fixed from day one.
+  provider is **V1 and ships** (`BL-033`; the `ado:*` capabilities in `internal/capability/capability.go`). The abstraction's shape is fixed from day one.
 - **BL-002 (MUST):** A **common work-item model** MUST map across providers (id, title,
   body, labels, state, assignee, links, optional parent-ref). The model is **flat for
   scheduling** — routing/claiming operate on individual items.
@@ -82,7 +82,7 @@ same abstraction, whose shape is unchanged.
   (label and/or assignee) on items so concurrent runs observing the backlog never
   double-process (`WF-031`); the runner's claim ledger remains the claim source of truth
   (`BL-005`).
-- **BL-033 (MUST):** *(V1)* The ADO provider MUST reach parity (work items + PRs +
+- **BL-033 (MUST):** *(V1, shipped)* The ADO provider MUST reach parity (work items + PRs +
   claiming markers) behind the same abstraction, with no change to workflow or goober
   definitions. Work-item creation is **process-agnostic**: with no type named, the
   create type is the project's Requirement-category default work item type

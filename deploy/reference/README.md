@@ -718,3 +718,73 @@ its library probe issues HTTP GET requests, whereas OTLP/HTTP ingestion uses
 POST. Do not count a skipped check or a generic HTTP success as proof that
 traces, metrics, and logs were received; capture actual collector/backend
 observations for the smoke until a protocol-correct check is wired.
+
+### Remote-base overlays: pin by full SHA and give the fetch a budget
+
+An overlay that consumes this tree as a kustomize remote base
+(`github.com/<org>/Goobers//deploy/reference/...?ref=<sha>`) has two traps, and
+both fail late and read like something else.
+
+- **Pin `ref` to the full 40-character SHA.** A short SHA can render from a
+  local clone but fails `git fetch` inside kustomize's remote-base checkout,
+  which cannot resolve an abbreviated object name against the remote.
+- **Add a fetch budget: `?ref=<sha>&timeout=<seconds>`.** Kustomize's default
+  checkout timeout is 27 seconds. Under load it aborts mid-fetch and the failure
+  surfaces as a render error, not a timeout.
+
+### A worker seeded with `instance.yaml` alone fails its first stage
+
+The worker needs the whole config tree (workflows, goobers, gaggles, assets),
+not just `instance.yaml`. A worker seeded with only `instance.yaml` starts,
+passes its probes and reports healthy, then fails the first stage that needs a
+definition it does not have. The symptom is fail-late, not fail-fast; seed the
+complete tree, as the `config-mirror` overlay does (#3314, #3290).
+
+### Grace-period inputs, and the AKS drain floor
+
+- **The input to the pod grace-period formula is the longest single-stage
+  ceiling, not the longest duration in the config.** A branch drains at a stage
+  boundary, so one stage attempt is the most a shutdown has to wait out.
+- **Per-attempt ceilings live in two places:** the goober's `timeoutSeconds`
+  (`GooberSpec.TimeoutSeconds`) and a task-level `timeoutSeconds`. An audit that
+  reads only the workflow files gets the number wrong without any error.
+- **On AKS, a pod grace period over 30 minutes is inert unless the node pool's
+  drain timeout exceeds it.** The node drain gives up first and force-deletes the
+  pod, so the drain timeout has to move with the grace period.
+
+### CSI `SecretProviderClass` is all-or-nothing
+
+One unresolvable entry in a `SecretProviderClass` fails the whole mount: the
+provider returns a 404 for the class and every other secret in it goes with the
+one that is missing. Use one class per blast-radius domain, so a missing
+optional secret cannot take down the daemon's credentials.
+
+### Static PV binding: `storageClassName: ""` is not the same as omitted
+
+To bind a PVC to a pre-provisioned PersistentVolume, set `storageClassName: ""`
+explicitly. An **omitted** field is not equivalent: the default StorageClass
+admission fills it in, and the default class dynamically provisions a fresh,
+empty disk next to the durable one you meant to bind.
+
+### NetworkPolicy engine on AKS with Windows nodes
+
+On an AKS cluster with Windows nodes, Calico is the only NetworkPolicy engine
+left: Cilium is Linux-only, and Azure NPM's Windows support retires on
+2026-09-30. Calico on AKS enforces by CIDR only, so an FQDN-based egress
+allowlist needs a forward proxy that the policy admits instead.
+
+### Default-deny in both namespaces needs both halves of a flow
+
+When the source and destination namespaces both default-deny, a flow needs an
+egress policy in the source namespace **and** an ingress policy in the
+destination. The symptom of the missing half is a connection **timeout**, not a
+401 or an x509 error, which sends the diagnosis toward credentials and TLS
+instead of the policy. The worker-to-daemon and worker-to-blob-plane flows each
+need both halves.
+
+### The config-tree ConfigMap transport has a ~1 MiB ceiling
+
+A config tree delivered through a ConfigMap is bounded by the Kubernetes object
+size limit of roughly 1 MiB. This is a hard limit of the transport, not a tuning
+knob: a tree that outgrows it needs a different delivery (the `config-mirror`
+overlay), so check its size before relying on ConfigMap delivery (#3290).
