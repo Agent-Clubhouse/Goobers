@@ -118,6 +118,7 @@ type apiReadCache struct {
 	inner        providers.HTTPClient
 	schedulerDir string
 	snapshotID   string
+	lockBudget   time.Duration
 	quotaGate    providers.QuotaRequestGate
 
 	mu  sync.Mutex
@@ -131,7 +132,7 @@ type apiReadCache struct {
 // persist into).
 func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient) *apiReadCache {
 	CleanStaleLocks(schedulerDir)
-	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID}
+	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID, lockBudget: apiReadCacheLockAcquireTimeout}
 }
 
 // apiReadCacheStaleLockAge is how old an api-read-cache per-list-key lock
@@ -238,7 +239,7 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 			resp       *http.Response
 			requestErr error
 		)
-		lockErr := withAPIReadCacheLock(apiReadListLockPath(c.schedulerDir, key), func() error {
+		lockErr := withAPIReadCacheLock(apiReadListLockPath(c.schedulerDir, key), c.lockBudget, func() error {
 			if entry, hit := c.lookupDisk(snapshotKey); hit {
 				resp = entry.response(req)
 				return nil
@@ -509,8 +510,8 @@ func tryAcquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire 
 
 // withAPIReadCacheLock fails open on contention or a blocked file open. The
 // cache is optional, so provider reads must not wait behind its filesystem I/O.
-func withAPIReadCacheLock(lockPath string, fn func() error) error {
-	held, err := acquireAPIReadCacheLock(lockPath, apiReadCacheLockAcquireTimeout, lock.TryAcquire)
+func withAPIReadCacheLock(lockPath string, budget time.Duration, fn func() error) error {
+	held, err := acquireAPIReadCacheLock(lockPath, budget, lock.TryAcquire)
 	if err != nil {
 		return err
 	}
@@ -555,7 +556,7 @@ func (c *apiReadCache) store(key string, entry apiReadCacheEntry) {
 }
 
 func (c *apiReadCache) withDisk(fn func(*apireadstore.Store) error) error {
-	return withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), func() error {
+	return withAPIReadCacheLock(filepath.Join(c.schedulerDir, apiReadCacheLockName), c.lockBudget, func() error {
 		store, err := apireadstore.Open(c.schedulerDir, apiReadCacheMaxEntries, apiReadCacheMaxBytes)
 		if err != nil {
 			return err
