@@ -4498,8 +4498,14 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	env.Attempt = int32(g.attempt)
-	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
+	if env.Attempt <= 0 {
+		env.Attempt = int32(g.attempt)
+	}
+	class, scoped := gate.ReviewerAttemptClass(ctx)
+	if !scoped {
+		class = journal.AttemptPolicy
+	}
+	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, int(env.Attempt), class)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
@@ -5837,6 +5843,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	defer span.End()
 
 	gateEval.RecoveryVerdict = recoveryVerdictResolver(jr)
+	gateEval.ReviewerContinuation = reviewerContinuationResolver(jr)
 	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g, ""); recoveryErr != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
 		span.Fail(err)

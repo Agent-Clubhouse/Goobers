@@ -26,16 +26,18 @@ var ErrUnprojectable = errors.New("engine: history is not projectable to a journ
 // emits. An op naming anything else fails the projection closed — the same
 // stance the journal contract takes on producers inventing dialects.
 var projectableEventTypes = map[journal.EventType]bool{
-	journal.EventRunStarted:    true,
-	journal.EventRunFinished:   true,
-	journal.EventStageStarted:  true,
-	journal.EventStageFinished: true,
-	journal.EventGateStarted:   true,
-	journal.EventGatePaused:    true,
-	journal.EventGateEvaluated: true,
-	journal.EventRefTouched:    true,
-	journal.EventError:         true,
-	journal.EventSpanRecorded:  true,
+	journal.EventRunStarted:       true,
+	journal.EventRunFinished:      true,
+	journal.EventStageStarted:     true,
+	journal.EventStageFinished:    true,
+	journal.EventReviewerStarted:  true,
+	journal.EventReviewerFinished: true,
+	journal.EventGateStarted:      true,
+	journal.EventGatePaused:       true,
+	journal.EventGateEvaluated:    true,
+	journal.EventRefTouched:       true,
+	journal.EventError:            true,
+	journal.EventSpanRecorded:     true,
 	// Placement provenance (#3515) is non-normative for CONFORMANCE but is
 	// projectable: projectable and conformance-normative are different
 	// questions, and span.recorded is the standing precedent — also excluded

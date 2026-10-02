@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
@@ -229,6 +230,9 @@ type Evaluator struct {
 	// RecoveryVerdict resolves the latest durable review in this execution
 	// scope. Called only for an opted-in interrupted-budget recovery.
 	RecoveryVerdict func(gateName string) (*apiv1.Verdict, error)
+	// ReviewerContinuation reads the last dispatch of an interrupted gate.
+	// It affects lifecycle numbering only, never the existing retry budget.
+	ReviewerContinuation func(gateName string) (int, error)
 	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
@@ -740,15 +744,32 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 	_, env.ReviewerDeferralAllowed = g.Branches[string(apiv1.VerdictDefer)]
 	env.ReviewerMechanicalEscalationAllowed = StructuredMechanicalEscalation(g)
 	maxAttempts, backoff := retryBounds(policy)
+	previous, err := e.reviewerContinuation(gateName)
+	if err != nil {
+		return false, err
+	}
+	class := journal.AttemptClass("")
+	if previous > 0 {
+		class = journal.AttemptInfra
+	}
 	for attempt := 1; ; attempt++ {
-		attemptCtx := ctx
+		number := previous + attempt
+		env.Attempt = int32(number)
+		if err := recordReviewerStart(e.Journal, g, number, class); err != nil {
+			return false, err
+		}
+		attemptCtx := context.WithValue(ctx, reviewerAttemptClassKey{}, class)
 		var cancel context.CancelFunc
 		if timeoutSeconds > 0 {
-			attemptCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+			attemptCtx, cancel = context.WithTimeout(attemptCtx, time.Duration(timeoutSeconds)*time.Second)
 		}
 		current, err := e.Reviewer.Review(attemptCtx, *env, subjectStage, subject)
 		if cancel != nil {
 			cancel()
+		}
+		invalid := err == nil && e.invalidNeedsHumanVerdict(g, current)
+		if jerr := recordReviewerFinish(e.Journal, gateName, number, class, current, err, invalid); jerr != nil {
+			return false, jerr
 		}
 		if err != nil {
 			if !invoke.IsInfrastructureFailure(err) {
@@ -760,9 +781,10 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 			if attempt >= maxAttempts {
 				return false, err
 			}
+			class = journal.AttemptInfra
 		} else {
 			*verdict = current
-			if !e.invalidNeedsHumanVerdict(g, current) {
+			if !invalid {
 				return false, nil
 			}
 			invalidErr := fmt.Errorf("%s", needsHumanRationaleFeedback)
@@ -772,6 +794,7 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 			if attempt >= maxAttempts {
 				return true, nil
 			}
+			class = journal.AttemptPolicy
 			env.InstructionAddendum = strings.TrimSpace(env.InstructionAddendum + "\n\n" + needsHumanRationaleFeedback)
 		}
 		if backoff > 0 {

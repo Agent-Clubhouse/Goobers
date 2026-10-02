@@ -3,7 +3,6 @@ package readservice
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -2890,7 +2889,10 @@ func collectStageAttempts(
 			visit := visits[event.Stage]
 			visit.humanRequested = true
 			visits[event.Stage] = visit
-		case journal.EventStageStarted:
+		case journal.EventStageStarted, journal.EventReviewerStarted:
+			if event.Type == journal.EventReviewerStarted {
+				closeInterruptedReviewerAttempts(attempts, event)
+			}
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventRunnerPlacement:
 			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
@@ -2917,7 +2919,7 @@ func collectStageAttempts(
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
-		case journal.EventStageFinished:
+		case journal.EventStageFinished, journal.EventReviewerFinished:
 			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
 				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
@@ -2994,8 +2996,7 @@ func newStageAttempt(
 }
 
 func stageAttemptID(runID string, branch int, stage string, anchorSeq uint64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, branch, stage, anchorSeq)))
-	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
+	return journal.StageAttemptID(runID, branch, stage, anchorSeq)
 }
 
 func finishAttempt(
