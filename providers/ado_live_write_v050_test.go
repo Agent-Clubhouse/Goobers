@@ -73,9 +73,12 @@ func TestLiveADOWriteNativePullRequest(t *testing.T) {
 		Title:      "[goobers-live] native features " + env.ns.runID + " (safe to abandon)",
 		Body: strings.Repeat("goobers live write leg oversized description line.\n", 120) +
 			"\n" + strings.Join(closing, "\n") + "\n",
-		Head:  branch,
-		Base:  env.base,
-		Draft: true,
+		Head: branch,
+		Base: env.base,
+		// Not a draft: the policy classification scenario needs ADO to
+		// evaluate the base branch's policies, which it skipped on the
+		// leg's draft pull request. Nothing ever completes it.
+		Draft: false,
 		RunID: adoLiveTag + "-" + env.ns.runID + "-" + scenario,
 	}
 	if utf8.RuneCountInString(req.Body) <= adoMaxPRDescriptionChars {
@@ -235,10 +238,14 @@ func (e adoLiveWriteEnv) checkPolicyClassification(ctx context.Context, t *testi
 		t.Fatalf("PublishPullRequestStatus: %v", err)
 	}
 	var polled PullRequestPollResult
-	adoLivePoll(ctx, t, "the status policy evaluation to pass", func() (bool, string, error) {
+	// With no blocking evaluation at all the state also reads passing, so
+	// wait for the reviewer evaluation to exist, not just for "passing".
+	adoLivePoll(ctx, t, "the reviewer and status policy evaluations", func() (bool, string, error) {
 		var err error
 		polled, err = e.provider.PollPullRequest(ctx, PullRequestPollRequest{Repository: e.repo, PullID: pullID})
-		return err == nil && polled.CheckState == CheckStatePassing, fmt.Sprintf("check state %q, checks %+v", polled.CheckState, polled.Checks), err
+		evaluated := slices.ContainsFunc(polled.Checks, func(c CheckDetail) bool { return c.AwaitingHuman })
+		return err == nil && evaluated && polled.CheckState == CheckStatePassing,
+			fmt.Sprintf("check state %q, checks %+v", polled.CheckState, polled.Checks), err
 	})
 
 	detail, err := e.provider.getPullRequestDetail(ctx, e.repo, pullID)
