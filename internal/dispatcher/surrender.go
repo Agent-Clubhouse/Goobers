@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/providers"
@@ -95,6 +96,8 @@ type SurrenderedMutation struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // SurrenderedResult is the wire shape of one attempt's surrendered outcome:

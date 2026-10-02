@@ -9,6 +9,8 @@ import (
 	"log"
 	"strings"
 
+	"github.com/goobers/goobers/internal/mutationreceipt"
+	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/safeopen"
 	"github.com/goobers/goobers/providers"
@@ -26,25 +28,9 @@ import (
 // would have nowhere legal to write.
 const mutationsSidecarFile = "mutations.jsonl"
 
-// mutationFact is one line of mutationsSidecarFile — just enough to build a
-// journal.ExternalRef (Provider/Kind/ID/URL), operation, and claim outcome.
-// RunID identifies the claim owner, which can differ from the stage's run
-// during reconciliation. Provider Fields digests are not part of this handoff.
-type mutationFact struct {
-	ReceiptID         string                       `json:"receiptId,omitempty"`
-	LandingIntent     *providers.LandingIntent     `json:"landingIntent,omitempty"`
-	QueueAdmission    *providers.QueueAdmission    `json:"queueAdmission,omitempty"`
-	MergeConfirmation *providers.MergeConfirmation `json:"mergeConfirmation,omitempty"`
-	Provider          string                       `json:"provider"`
-	Kind              string                       `json:"kind"`
-	ID                string                       `json:"id"`
-	URL               string                       `json:"url,omitempty"`
-	Operation         string                       `json:"operation,omitempty"`
-	RunID             string                       `json:"runId,omitempty"`
-	Outcome           string                       `json:"outcome,omitempty"`
-	ErrorCode         string                       `json:"errorCode,omitempty"`
-	ProviderRunID     string                       `json:"providerRunId,omitempty"`
-}
+// mutationFact uses the shared custody wire shape so new receipt fields cannot
+// silently disappear between a stage subprocess and recovery.
+type mutationFact = mutationsidecar.Fact
 
 // sidecarMutationRecorder implements providers.MutationRecorder by appending
 // each recorded mutation as one JSON line to mutationsSidecarFile in the
@@ -80,6 +66,7 @@ func (r sidecarMutationRecorder) RecordExternalRef(_ context.Context, ref provid
 // cancelled: the local receipt must still be flushed before surrender.
 func (r sidecarMutationRecorder) RecordLandingReceipt(ctx context.Context, ref providers.ExternalRef) error {
 	fact := mutationFact{
+		SemanticMutation:  ref.SemanticMutation,
 		LandingIntent:     ref.LandingIntent,
 		QueueAdmission:    ref.QueueAdmission,
 		MergeConfirmation: ref.MergeConfirmation,
@@ -94,7 +81,7 @@ func (r sidecarMutationRecorder) RecordLandingReceipt(ctx context.Context, ref p
 	if err := appendMutationFact(fact); err != nil {
 		return err
 	}
-	if ref.LandingIntent != nil || ref.QueueAdmission != nil || ref.MergeConfirmation != nil {
+	if ref.LandingIntent != nil || ref.QueueAdmission != nil || ref.MergeConfirmation != nil || ref.SemanticMutation != nil {
 		return publishStageLandingReceipts(context.WithoutCancel(ctx))
 	}
 	return nil
@@ -166,4 +153,16 @@ func externalRefID(ref string) string {
 		return ref[i+1:]
 	}
 	return ref
+}
+
+// RecordSemanticMutation is the opt-in #6356 capture adapter. Provider mutation
+// methods do not activate it until reconciliation and continuation wiring land.
+func (r sidecarMutationRecorder) RecordSemanticMutation(ctx context.Context, receipt mutationreceipt.Receipt) error {
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.RecordLandingReceipt(ctx, providers.ExternalRef{Provider: providers.ProviderKind(receipt.Mutation.Provider), Ref: receipt.Mutation.Target, Operation: receipt.Mutation.Action, SemanticMutation: &receipt})
 }

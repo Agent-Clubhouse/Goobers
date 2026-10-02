@@ -314,3 +314,8 @@ github.com/goobers/goobers/internal/secretstore.KeyRegistry.resolve # Explicitly
 github.com/goobers/goobers/internal/secretstore.KeyRegistry.Wrap # Explicitly inert KeyStore surface and implementation from #5291; file/Azure round-trip and tamper tests exercise it. Remove when #5288 wires the runtime consumer. expires=2026-11-01
 github.com/goobers/goobers/internal/secretstore.KeyRegistry.Unwrap # Explicitly inert KeyStore surface and implementation from #5291; file/Azure round-trip and tamper tests exercise it. Remove when #5288 wires the runtime consumer. expires=2026-11-01
 github.com/goobers/goobers/internal/secretstore.validateKeyOperation # Explicitly inert KeyStore surface and implementation from #5291; file/Azure round-trip and tamper tests exercise it. Remove when #5288 wires the runtime consumer. expires=2026-11-01
+
+# #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
+# capture activation before all three approved slices land. Remove on activation.
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01

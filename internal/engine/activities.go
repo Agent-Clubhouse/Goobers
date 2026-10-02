@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/worktree"
@@ -297,6 +298,8 @@ type MutationFact struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
