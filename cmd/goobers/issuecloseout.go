@@ -383,6 +383,16 @@ func implementationInReviewComment(prURL string) string {
 	return implementationInReviewCommentPrefix + prURL + implementationInReviewCommentSuffix
 }
 
+// issueCloseOutIdempotencyKey names the one close-out update a run makes to
+// its claimed item, so a re-run of this stage after a partial failure (or a
+// crash before the ledger release) adopts the comment the earlier attempt
+// posted instead of appending a duplicate (#2657). It is built from the
+// subcommand rather than GOOBERS_STAGE, whose spelling differs by substrate
+// (#4119), and never from attempt state.
+func issueCloseOutIdempotencyKey(runID, itemID string) string {
+	return "issue-close-out/" + runID + "/" + itemID
+}
+
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	env, ok, exitCode := parseProviderStageCommand(args, "issue-close-out", stderr)
 	if !ok {
@@ -554,11 +564,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			parkLabel = needsRemediationLabel
 		}
 		req := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
-			Repository:   backlogRepo,
-			ID:           claim.ItemID,
-			Comment:      comment,
-			AddLabels:    []string{parkLabel},
-			RemoveLabels: []string{providers.LabelReady},
+			Repository:     backlogRepo,
+			ID:             claim.ItemID,
+			Comment:        comment,
+			AddLabels:      []string{parkLabel},
+			RemoveLabels:   []string{providers.LabelReady},
+			IdempotencyKey: issueCloseOutIdempotencyKey(runID, claim.ItemID),
 		}, assignee)
 		if _, err := provider.UpdateWorkItem(ctx, req); err != nil {
 			pf(stderr, "error: park work item: %v\n", err)
@@ -582,10 +593,11 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if _, err := provider.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
-			Repository: backlogRepo,
-			ID:         claim.ItemID,
-			Status:     status,
-			Comment:    comment,
+			Repository:     backlogRepo,
+			ID:             claim.ItemID,
+			Status:         status,
+			Comment:        comment,
+			IdempotencyKey: issueCloseOutIdempotencyKey(runID, claim.ItemID),
 		}); err != nil {
 			pf(stderr, "error: update work item status: %v\n", err)
 			return 1

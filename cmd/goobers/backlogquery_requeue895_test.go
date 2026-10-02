@@ -269,7 +269,7 @@ func TestIssueCloseOutThenUnmergedClosureRequeuesUnderAttribution(t *testing.T) 
 	if attribution, ok, err := providers.ParseAttribution(breadcrumbs[0]); err != nil || !ok || attribution.Task != "issue-close-out" {
 		t.Fatalf("breadcrumb attribution = %+v, %v, %v; want the close-out stage's run attribution: %q", attribution, ok, err, breadcrumbs[0])
 	}
-	if got, want := providers.StripAttribution(breadcrumbs[0]), implementationInReviewComment(server.prHTMLURL(1)); got != want {
+	if got, want := providers.StripOperationMarker(providers.StripAttribution(breadcrumbs[0])), implementationInReviewComment(server.prHTMLURL(1)); got != want {
 		t.Fatalf("breadcrumb without attribution = %q, want %q", got, want)
 	}
 
