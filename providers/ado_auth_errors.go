@@ -176,23 +176,17 @@ func azureCLICommandError(ctx context.Context, err error, out []byte) error {
 		}
 	}
 	if hasPathAmbiguity {
-		// Timeout and cancellation keep their cause codes; the launcher
-		// ambiguity is reported alongside them. Classified output causes are
-		// left undistracted.
-		appendAmbiguity := true
+		// Specific causes (timeout, cancellation, classified output) keep
+		// their stronger code; the launcher ambiguity is always reported
+		// alongside them.
 		switch code {
 		case azureCLIFailureCode, azureCLIStartFailedCode, azureCLIExitCode:
 			code = azureCLIPathAmbiguousCode
-		case azureCLITimeoutCode, azureCLICanceledCode:
-		default:
-			appendAmbiguity = false
 		}
-		if appendAmbiguity {
-			hint += fmt.Sprintf(
-				"; Goobers found %d Azure CLI launchers on PATH and used the first; inspect PATH and remove or reorder stale installations",
-				pathAmbiguity.candidateCount,
-			)
-		}
+		hint += fmt.Sprintf(
+			"; Goobers found %d Azure CLI launchers on PATH and used the first; inspect PATH and remove or reorder stale installations",
+			pathAmbiguity.candidateCount,
+		)
 	}
 	return &azureCLICommandFailure{
 		code:    code,

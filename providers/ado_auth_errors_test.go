@@ -310,7 +310,7 @@ func TestAzureCLICredentialFailureReportsAmbiguousPathAlongsideTimeoutAndCancel(
 	}
 }
 
-func TestAzureCLICredentialFailureDoesNotDistractFromKnownCauseWhenPathIsAmbiguous(t *testing.T) {
+func TestAzureCLICredentialFailureKeepsKnownCauseAndReportsAmbiguousPath(t *testing.T) {
 	exit := &exec.ExitError{}
 	err := azureCLICommandError(context.Background(), &azureCLIPathAmbiguityError{
 		cause:          exit,
@@ -323,9 +323,9 @@ func TestAzureCLICredentialFailureDoesNotDistractFromKnownCauseWhenPathIsAmbiguo
 	if !strings.Contains(err.Error(), "sign-in expired or requires interaction") {
 		t.Errorf("error %q does not contain the classified cause", err)
 	}
-	for _, unwanted := range []string{"found 2 Azure CLI launchers", "used the first", "remove or reorder"} {
-		if strings.Contains(err.Error(), unwanted) {
-			t.Errorf("error %q contains distracting ambiguity detail %q", err, unwanted)
+	for _, want := range []string{"found 2 Azure CLI launchers", "used the first", "remove or reorder"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not report ambiguity detail %q", err, want)
 		}
 	}
 	assertAzureCLIDiagnosticWithholdsOutput(t, err)
