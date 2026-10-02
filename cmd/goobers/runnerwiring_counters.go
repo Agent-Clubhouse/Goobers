@@ -56,7 +56,8 @@ type resolvingOpenPRLister struct {
 	resolver     credentials.Resolver
 	reg          runner.SecretRegistrar
 	schedulerDir string
-	newProvider  func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister
+	// newProvider is openPRListerDeps.github, fixed when the lister is built.
+	newProvider func(token string, opts ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister
 }
 
 func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo providers.RepositoryRef) ([]providers.OpenPRSummary, error) {
@@ -74,9 +75,10 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 // request. A build error is returned from the poll, which leaves the count
 // unknown so Admit fails open, the same as a GitHub token-resolution failure.
 type adoOpenPRLister struct {
-	repo        instance.RepoRef
-	reg         runner.SecretRegistrar
-	stores      credentials.StoreResolver
+	repo   instance.RepoRef
+	reg    runner.SecretRegistrar
+	stores credentials.StoreResolver
+	// newProvider is openPRListerDeps.ado, fixed when the lister is built.
 	newProvider func(repo instance.RepoRef, reg runner.SecretRegistrar, stores credentials.StoreResolver) (localscheduler.OpenPRLister, error)
 
 	mu       sync.Mutex
