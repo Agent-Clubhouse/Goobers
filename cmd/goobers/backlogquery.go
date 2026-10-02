@@ -377,6 +377,13 @@ func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
 	return env.ghIssueProvider != nil && !backlogOnOtherProvider(env.repo, env.backlogRepo)
 }
 
+func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogReconcileAssigneeScope {
+	if !respectAssignee {
+		assignedTo = ""
+	}
+	return backlogReconcileAssigneeScope{respectAssignee: respectAssignee, assignedTo: assignedTo}
+}
+
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
 	repo := env.repo
 	stderr := env.stderr
@@ -494,10 +501,10 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	observedAt := time.Now().UTC()
 
 	if reconcile {
-		return runReconcileBacklogQuery(ctx, env, trustLabel, stalenessPolicy, observedAt)
+		return runReconcileBacklogQuery(ctx, env, trustLabel, stalenessPolicy, observedAt, backlogReconcileScope(respectAssignee, assignedTo))
 	}
 	if curationRun && mode != backlogQueryModeResweep {
-		if code := reconcileBacklogQueryMetadata(ctx, env, trustLabel, stalenessPolicy, observedAt, "claimed-items.json"); code != 0 {
+		if code := reconcileBacklogQueryMetadata(ctx, env, trustLabel, stalenessPolicy, observedAt, "claimed-items.json", backlogReconcileScope(respectAssignee, assignedTo)); code != 0 {
 			return code
 		}
 	}
@@ -540,6 +547,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		eligible:          eligible,
 		maxItems:          maxItems,
 		trustLabel:        trustLabel,
+		assigneeScope:     backlogReconcileScope(respectAssignee, assignedTo),
 		requireLabels:     requireLabels,
 		fieldFilter:       fieldFilter,
 		fieldOrder:        fieldOrder,
@@ -1758,6 +1766,10 @@ type backlogResweepOptions struct {
 	eligible   []providers.WorkItem
 	maxItems   int
 	trustLabel string
+	// assigneeScope is the owner partition from backlog-query's normal
+	// eligibility scan. Re-sweeps mutate items too, so they must not widen
+	// beyond the same assignment scope.
+	assigneeScope backlogReconcileAssigneeScope
 	// requireLabels is the gaggle's partition scope (injected by
 	// defaultBacklogQueryRequireLabels, e.g. goobers:cloud/goobers:local — the
 	// ONLY mechanism that carries partition membership; there is no analogous
@@ -1814,7 +1826,7 @@ func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogRes
 		return result, 0
 	}
 	result.stateKey = backlogResweepStateKey(
-		env.repo, providerGaggle(), opts.trustLabel, opts.policy.readyLabel,
+		env.repo, providerGaggle(), opts.trustLabel, opts.policy.readyLabel, opts.assigneeScope,
 	)
 	var err error
 	result.state, err = readBacklogResweepState(ctx, opts.state, result.stateKey)
@@ -1850,6 +1862,13 @@ func missingRequiredLabel(item providers.WorkItem, requireLabels []string) (stri
 	return "", false
 }
 
+func resweepQueryAssignee(opts backlogResweepOptions) string {
+	if opts.assigneeScope.respectAssignee && opts.assigneeScope.assignedTo != "" {
+		return opts.assigneeScope.assignedTo
+	}
+	return ""
+}
+
 func appendBlockedResweepCandidates(
 	ctx context.Context,
 	env backlogQueryEnv,
@@ -1862,7 +1881,7 @@ func appendBlockedResweepCandidates(
 		env.issueRepo(),
 		compactLabels(opts.trustLabel, blockedOnSiblingLabel),
 		opts.requireLabels,
-		"",
+		resweepQueryAssignee(opts),
 		opts.fieldFilter,
 		backlogScanCeiling,
 		backlogScanCursor{Cursor: result.state.BlockedCursor},
@@ -1880,6 +1899,10 @@ func appendBlockedResweepCandidates(
 		}
 		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
 			env.debugf("excluded %s: missing required label %q", item.ID, label)
+			continue
+		}
+		if opts.assigneeScope.respectAssignee && !item.AssigneeMatches(opts.assigneeScope.assignedTo) {
+			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
 		if !item.HasLabel(blockedOnSiblingLabel) {
@@ -2001,7 +2024,7 @@ func appendReadyResweepCandidates(
 		env.issueRepo(),
 		compactLabels(opts.trustLabel, opts.policy.readyLabel),
 		opts.requireLabels,
-		"",
+		resweepQueryAssignee(opts),
 		opts.fieldFilter,
 		backlogScanCeiling,
 		backlogScanCursor{Cursor: result.state.Cursor},
@@ -2019,6 +2042,10 @@ func appendReadyResweepCandidates(
 		}
 		if label, ok := missingRequiredLabel(item, opts.requireLabels); ok {
 			env.debugf("excluded %s: missing required label %q", item.ID, label)
+			continue
+		}
+		if opts.assigneeScope.respectAssignee && !item.AssigneeMatches(opts.assigneeScope.assignedTo) {
+			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
 		if !item.HasLabel(opts.policy.readyLabel) {
@@ -2139,12 +2166,13 @@ func runReconcileBacklogQuery(
 	trustLabel string,
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
+	scope backlogReconcileAssigneeScope,
 ) int {
 	if backlogReconcileNotApplicable(env) {
 		return writeBacklogReconciliationNotApplicable(env.issueRepo().Provider, env.stdout, env.stderr)
 	}
 	result, code := performBacklogQueryReconciliation(
-		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json",
+		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json", scope,
 	)
 	if code != 0 {
 		return code
@@ -2159,12 +2187,13 @@ func reconcileBacklogQueryMetadata(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 	resultFile string,
+	scope backlogReconcileAssigneeScope,
 ) int {
 	if backlogReconcileNotApplicable(env) {
 		env.debugf("metadata reconciliation not applicable on %s; skipped", env.issueRepo().Provider)
 		return 0
 	}
-	_, code := performBacklogQueryReconciliation(ctx, env, trustLabel, stalenessPolicy, observedAt, resultFile)
+	_, code := performBacklogQueryReconciliation(ctx, env, trustLabel, stalenessPolicy, observedAt, resultFile, scope)
 	return code
 }
 
@@ -2175,6 +2204,7 @@ func performBacklogQueryReconciliation(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 	resultFile string,
+	scope backlogReconcileAssigneeScope,
 ) (backlogReconciliationResult, int) {
 	if env.ghIssueProvider == nil {
 		err := fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog")
@@ -2188,6 +2218,7 @@ func performBacklogQueryReconciliation(
 		trustLabel,
 		stalenessPolicy,
 		func() time.Time { return time.Now().UTC() },
+		scope,
 	)
 	if err != nil {
 		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)

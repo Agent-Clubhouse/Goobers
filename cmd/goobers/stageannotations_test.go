@@ -320,7 +320,7 @@ func TestBacklogResweepStateWritesThroughToTheDaemonsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := backlogResweepStateKey(providers.RepositoryRef{Owner: "Agent-Clubhouse", Name: "Goobers"}, "goobers", "trusted", "ready")
+	key := backlogResweepStateKey(providers.RepositoryRef{Owner: "Agent-Clubhouse", Name: "Goobers"}, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{})
 
 	state, err := readBacklogResweepState(t.Context(), store, key)
 	if err != nil {
@@ -359,7 +359,7 @@ func TestBacklogResweepStateWritesThroughToTheDaemonsFile(t *testing.T) {
 func TestBacklogResweepStateAdvanceIsCompareAndSwap(t *testing.T) {
 	plane := newStatePlane(t)
 	token := plane.admitRun(t, "goobers", "run-1")
-	key := backlogResweepStateKey(providers.RepositoryRef{Owner: "Agent-Clubhouse", Name: "Goobers"}, "goobers", "trusted", "ready")
+	key := backlogResweepStateKey(providers.RepositoryRef{Owner: "Agent-Clubhouse", Name: "Goobers"}, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{})
 	pod := plane.client(t, "goobers", token)
 	daemon := plane.daemonStore(t)
 
@@ -406,7 +406,7 @@ func TestBacklogResweepStateKeyIsAlwaysAValidStateKey(t *testing.T) {
 		{"all empty", providers.RepositoryRef{}, [3]string{"", "", ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			key := backlogResweepStateKey(tc.repo, tc.rest[0], tc.rest[1], tc.rest[2])
+			key := backlogResweepStateKey(tc.repo, tc.rest[0], tc.rest[1], tc.rest[2], backlogReconcileAssigneeScope{})
 			if !stateclient.ValidKey(key) {
 				t.Fatalf("backlogResweepStateKey(...) = %q, which the plane refuses", key)
 			}
@@ -420,11 +420,12 @@ func TestBacklogResweepStateKeyIsAlwaysAValidStateKey(t *testing.T) {
 		label string
 		key   string
 	}{
-		{"base", backlogResweepStateKey(base, "goobers", "trusted", "ready")},
-		{"other gaggle", backlogResweepStateKey(base, "other", "trusted", "ready")},
-		{"other trust label", backlogResweepStateKey(base, "goobers", "other", "ready")},
-		{"other ready label", backlogResweepStateKey(base, "goobers", "trusted", "other")},
-		{"other repo", backlogResweepStateKey(providers.RepositoryRef{Owner: "o", Name: "n"}, "goobers", "trusted", "ready")},
+		{"base", backlogResweepStateKey(base, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{})},
+		{"other gaggle", backlogResweepStateKey(base, "other", "trusted", "ready", backlogReconcileAssigneeScope{})},
+		{"other trust label", backlogResweepStateKey(base, "goobers", "other", "ready", backlogReconcileAssigneeScope{})},
+		{"other ready label", backlogResweepStateKey(base, "goobers", "trusted", "other", backlogReconcileAssigneeScope{})},
+		{"other repo", backlogResweepStateKey(providers.RepositoryRef{Owner: "o", Name: "n"}, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{})},
+		{"scoped assignee", backlogResweepStateKey(base, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{respectAssignee: true, assignedTo: "alice"})},
 	} {
 		if prior, dup := seen[probe.key]; dup {
 			t.Errorf("%s and %s share a re-sweep key", prior, probe.label)
