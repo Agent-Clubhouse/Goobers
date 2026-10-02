@@ -1589,6 +1589,14 @@ func TestRemediationCheckpointRecomputesDigestWhenBaseChangesBeforePublication(t
 }
 
 func TestRemediationCheckpointUsesRebaseBaseWhenPRMetadataIsStale(t *testing.T) {
+	testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t, true)
+}
+
+func TestRemediationCheckpointUsesLiveBaseWhenRebaseBaseIsUnavailable(t *testing.T) {
+	testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t, false)
+}
+
+func testRemediationCheckpointUsesEvaluatedBaseWhenPRMetadataIsStale(t *testing.T, provideRebaseBase bool) {
 	const branch = "goobers/impl/remediation-364"
 	priorBaseSHA, headSHA := initRemediationCheckpointRepo(t, branch)
 	runGitT(t, ".", "checkout", "-B", branch, "origin/"+branch)
@@ -1631,7 +1639,11 @@ func TestRemediationCheckpointUsesRebaseBaseWhenPRMetadataIsStale(t *testing.T) 
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
-	t.Setenv("GOOBERS_INPUT_REBASEBASESHA", evaluatedBaseSHA)
+	if provideRebaseBase {
+		t.Setenv("GOOBERS_INPUT_REBASEBASESHA", evaluatedBaseSHA)
+	} else {
+		t.Setenv("GOOBERS_INPUT_REBASEBASESHA", "")
+	}
 
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 0 {
