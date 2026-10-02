@@ -318,6 +318,9 @@ func (p *GitHubProvider) pullRequestReviewThreadStates(ctx context.Context, repo
 
 // ReplyPullRequestReviewThread posts one reply to an existing review thread.
 func (p *GitHubProvider) ReplyPullRequestReviewThread(ctx context.Context, req PullRequestReviewThreadReply) (PullRequestInlineComment, error) {
+	if p.mutationSession != nil {
+		return p.continuationReply(ctx, req)
+	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestInlineComment{}, err
 	}
@@ -347,6 +350,13 @@ func (p *GitHubProvider) ReplyPullRequestReviewThread(ctx context.Context, req P
 
 // ResolvePullRequestReviewThread resolves one GraphQL review-thread node.
 func (p *GitHubProvider) ResolvePullRequestReviewThread(ctx context.Context, repo RepositoryRef, threadID string) error {
+	if p.mutationSession != nil {
+		return p.continuationResolve(ctx, repo, threadID)
+	}
+	return p.resolvePullRequestReviewThread(ctx, repo, threadID)
+}
+
+func (p *GitHubProvider) resolvePullRequestReviewThread(ctx context.Context, repo RepositoryRef, threadID string) error {
 	if err := requireOwnerRepo(repo); err != nil {
 		return err
 	}

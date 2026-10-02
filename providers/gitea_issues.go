@@ -274,6 +274,9 @@ func (p *GiteaProvider) DeleteComment(ctx context.Context, repo RepositoryRef, c
 	if err := p.ready(); err != nil {
 		return err
 	}
+	if client := continuationClient(p); client != nil {
+		return client.deleteComment(ctx, repo, commentID)
+	}
 	if err := requireOwnerRepo(repo); err != nil {
 		return err
 	}
@@ -599,6 +602,9 @@ func (p *GiteaProvider) ListWorkItemLabelTransitionsForItem(ctx context.Context,
 func (p *GiteaProvider) EnsureWorkItemLabels(ctx context.Context, repo RepositoryRef, labels []WorkItemLabel) (EnsureWorkItemLabelsResult, error) {
 	if err := p.ready(); err != nil {
 		return EnsureWorkItemLabelsResult{}, err
+	}
+	if client := continuationClient(p); client != nil {
+		return client.ensureLabels(ctx, repo, labels)
 	}
 	if err := requireOwnerRepo(repo); err != nil {
 		return EnsureWorkItemLabelsResult{}, err
