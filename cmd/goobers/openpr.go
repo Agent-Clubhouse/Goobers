@@ -138,11 +138,21 @@ func openPullRequestWithADOLink(
 	return result, linkADOPullRequestToWorkItem(ctx, linker, repo, root, issueID, result.ID, haveIssue, stderr)
 }
 
-const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
+const openPRHelp = "Usage: goobers open-pr [--config-repo] [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
 	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
 	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
+	"Config-repo target (TUT-A8): flag --config-repo opens the PR in the\n" +
+	"instance CONFIG repository (the workflowSource repository) with the\n" +
+	"stage's declared configrepo:write credential instead of the gaggle's\n" +
+	"repository with provider:pr:write. base defaults to workflowSource's ref,\n" +
+	"and the write-boundary / Tutor-classification diffs are computed in the\n" +
+	"config-repo checkout (configRepoDir input, default \"config-repo\", as\n" +
+	"created by `goobers config-checkout`), so actionRoots/docsRoots/configRoot\n" +
+	"paths are relative to the config repo root (e.g. gaggles/<gaggle>).\n" +
+	"configRepo/configRepoBase name the repository where no instance config is\n" +
+	"readable (a stage pod).\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
 	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"), itemID,\n" +
 	"itemTitle, reviewers, resultFile, timeout. PR metadata is configured through these\n" +
@@ -238,10 +248,74 @@ func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issue
 	return title, issueID, issueTitle, haveIssue, nil
 }
 
+// openPRTarget is where open-pr opens its PR: the gaggle's routed repository
+// by default, or (flag --config-repo, TUT-A8) the instance config
+// repository, authenticated by configrepo:write instead of provider:pr:write.
+// inRepoDir runs a git inspection (write boundaries, Tutor classification) in
+// the repository the PR is for: the process cwd by default, the config-repo
+// checkout for the config target.
+type openPRTarget struct {
+	repo        providers.RepositoryRef
+	capability  capability.Capability
+	baseDefault string
+	inRepoDir   func(func() error) error
+	// configRepo is the config repository slug (owner/name), empty for the
+	// gaggle's own repository.
+	configRepo string
+}
+
+// prepareTutorHoldoutIn is prepareTutorHoldout that records the repository the
+// PR will live in (TUT-A8), so the merge-state refresh polls the right one.
+func prepareTutorHoldoutIn(configRepo, root, gaggle, runID, sourceTree string, classification tutorChangeClassification, changes []tutorFileChange, now time.Time) (*tutorHoldoutRecord, error) {
+	record, err := prepareTutorHoldout(root, gaggle, runID, sourceTree, classification, changes, now)
+	if record != nil {
+		record.ConfigRepo = configRepo
+	}
+	return record, err
+}
+
+// localTutorChangesIn is localTutorChanges evaluated inside the repository the
+// PR is for (see openPRTarget.inRepoDir).
+func localTutorChangesIn(inRepoDir func(func() error) error, base string) (changes []tutorFileChange, err error) {
+	err = inRepoDir(func() (changeErr error) {
+		changes, changeErr = localTutorChanges(base)
+		return changeErr
+	})
+	return changes, err
+}
+
+func resolveOpenPRTarget(configRepo bool, root string) (openPRTarget, error) {
+	configTarget, isConfig, err := configRepoTargetFor(configRepo, root)
+	if err != nil {
+		return openPRTarget{}, err
+	}
+	if isConfig {
+		checkout := configRepoDir()
+		return openPRTarget{
+			repo:        configTarget.Repo,
+			capability:  capability.ConfigRepoWrite,
+			baseDefault: configTarget.Base,
+			configRepo:  configTarget.Repo.Owner + "/" + configTarget.Repo.Name,
+			inRepoDir:   func(fn func() error) error { return withWorkingDir(checkout, fn) },
+		}, nil
+	}
+	repo, err := providerRepo(root)
+	if err != nil {
+		return openPRTarget{}, err
+	}
+	return openPRTarget{
+		repo:        repo,
+		capability:  capability.ProviderPRWrite,
+		baseDefault: providerBaseBranch(),
+		inRepoDir:   func(fn func() error) error { return fn() },
+	}, nil
+}
+
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "open-pr")
+	configRepo := fs.Bool(configRepoFlag, false, "open the PR in the instance config repository with configrepo:write")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -250,13 +324,14 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	repo, err := providerRepo(root)
+	target, err := resolveOpenPRTarget(*configRepo, root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	repo, inRepoDir := target.repo, target.inRepoDir
 	stageProvider, err := newProviderForStage(root, repo, false,
-		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderCapability(target.capability),
 		withStageProviderMutations("pr"),
 	)
 	if err != nil {
@@ -272,7 +347,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
-	base := providerInput("base", providerBaseBranch())
+	base := providerInput("base", target.baseDefault)
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
@@ -327,7 +402,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// cycle is aborted CLOSED before the PR is opened, so a self-improvement run
 	// can never open a PR touching platform code.
 	if providerInput("confineToConfigRoot", "") == "true" {
-		if err := confineDiffToConfigRoot(base, providerInput("configRoot", "")); err != nil {
+		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
 			pf(stderr, "error: config write-boundary: %v\n", err)
 			return 1
 		}
@@ -343,7 +418,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// the boundary enabled fails closed (configboundary.ErrNoDocsRoots), never
 	// silently allowing the whole tree.
 	if providerInput("confineToDocsRoots", "") == "true" {
-		if err := confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))); err != nil {
+		if err := inRepoDir(func() error { return confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))) }); err != nil {
 			pf(stderr, "error: docs write-boundary: %v\n", err)
 			return 1
 		}
@@ -357,7 +432,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
 	// CLOSED before the PR opens (configboundary.ConfineExclusive).
 	if providerInput("confineToActionRoots", "") == "true" {
-		if err := confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))); err != nil {
+		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
 			pf(stderr, "error: action write-boundary: %v\n", err)
 			return 1
 		}
@@ -366,7 +441,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	var tutorHoldout *tutorHoldoutRecord
 	recordTutorLiveVerification := false
 	if isTutorWorkflow(workflow) {
-		changes, err := localTutorChanges(base)
+		changes, err := localTutorChangesIn(inRepoDir, base)
 		if err != nil {
 			pf(stderr, "error: classify Tutor change: %v\n", err)
 			return 1
@@ -379,7 +454,8 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		body = strings.TrimRight(body, "\n") + "\n\n" + tutorClassificationPRSection(classification)
 		recordTutorLiveVerification = providerInput("recordLiveVerification", "") == "true"
 		if recordTutorLiveVerification {
-			tutorHoldout, err = prepareTutorHoldout(
+			tutorHoldout, err = prepareTutorHoldoutIn(
+				target.configRepo,
 				root,
 				os.Getenv(executor.GaggleEnvVar),
 				runID,

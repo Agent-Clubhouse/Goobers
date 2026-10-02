@@ -23,7 +23,10 @@ import (
 // Tutor may never remove or loosen the exact gate whose noise (gate-never-
 // fails / gate-repass-churn) produced this run's finding, without the
 // analyst having cited independent proof the gate is dead.
-const gateRemovalGuardHelp = "Usage: goobers gate-removal-guard [path]\n\n" +
+const gateRemovalGuardHelp = "Usage: goobers gate-removal-guard [--config-repo] [path]\n\n" +
+	"With --config-repo (TUT-A8) the guard inspects the instance config\n" +
+	"repository checkout (configRepoDir input, default \"config-repo\") against\n" +
+	"the workflowSource ref instead of the stage worktree.\n\n" +
 	"Block a tutor run whose drafted change removes or loosens the specific\n" +
 	"gate its own finding flagged as noisy, unless the finding cites\n" +
 	"independent proof the gate is dead. Runs after draft-change, before\n" +
@@ -37,6 +40,7 @@ func runGateRemovalGuard(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("gate-removal-guard", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gate-removal-guard")
+	configRepo := fs.Bool(configRepoFlag, false, "inspect the instance config repository checkout instead of the stage worktree")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -44,14 +48,18 @@ func runGateRemovalGuard(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
+	baseDefault, resultFile, root, err := guardWorkspace(*configRepo, root)
+	if err != nil {
+		pf(stderr, "error: gate-removal guard: %v\n", err)
+		return 1
+	}
 
 	runID, _, err := providerRunContext()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	base := providerInput("base", providerBaseBranch())
-	resultFile := providerInput("resultFile", "gate-edit.json")
+	base := providerInput("base", baseDefault)
 
 	meta, findErr := findingMetaFromJournal(root, runID)
 	if findErr != nil {
@@ -304,4 +312,35 @@ func gateEditReviewNote(kind string) string {
 		return "This is an ordinary tuning edit; standard review applies."
 	}
 	return "This removes or loosens the gate's enforcement — gate-removal-guard only allowed it because the analyst cited independent proof the gate is dead; verify that proof before approving."
+}
+
+// guardWorkspace is the guard's base default, result file and root: the stage
+// worktree's by default, or (TUT-A8 --config-repo) those of the config checkout
+// the process is moved into.
+func guardWorkspace(configRepo bool, root string) (base, resultFile, absRoot string, err error) {
+	base, resultFile = providerBaseBranch(), providerInput("resultFile", "gate-edit.json")
+	if !configRepo {
+		return base, resultFile, root, nil
+	}
+	return enterConfigRepoCheckout(root, resultFile)
+}
+
+// enterConfigRepoCheckout resolves the config repository, makes the
+// workspace-relative root and result file absolute, and moves the process into
+// the config checkout. It returns the config base branch as the base default.
+func enterConfigRepoCheckout(root, resultFile string) (base, absResult, absRoot string, err error) {
+	target, err := resolveConfigRepoTarget(root)
+	if err != nil {
+		return "", "", "", err
+	}
+	if absRoot, err = filepath.Abs(root); err != nil {
+		return "", "", "", err
+	}
+	if absResult, err = filepath.Abs(resultFile); err != nil {
+		return "", "", "", err
+	}
+	if err := os.Chdir(configRepoDir()); err != nil {
+		return "", "", "", fmt.Errorf("enter config checkout: %w", err)
+	}
+	return target.Base, absResult, absRoot, nil
 }

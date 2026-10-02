@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/instance"
+
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/testgit"
 )
@@ -264,5 +266,50 @@ func TestGateRemovalGuardNoOpWhenNoFindingArtifact(t *testing.T) {
 	code, _, stderr := runArgs(t, "gate-removal-guard", root)
 	if code != 0 {
 		t.Fatalf("code = %d, want 0 (no journal at all is a no-op); stderr = %q", code, stderr)
+	}
+}
+
+// TestGateRemovalGuardConfigRepoInspectsConfigCheckout pins TUT-A8: with
+// --config-repo the guard reads git in the config checkout (not the stage
+// workspace, which here is not even a git repository), so a gate removal in
+// the config repo is blocked instead of passing vacuously.
+func TestGateRemovalGuardConfigRepoInspectsConfigCheckout(t *testing.T) {
+	root := initDemo(t)
+	cfgFile := instance.NewLayout(root).ConfigFile()
+	data, err := os.ReadFile(cfgFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgFile, append(data, []byte("\nworkflowSource:\n  kind: git\n  url: https://github.com/acme/workflows.git\n  token:\n    env: CFG_READ\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-1"
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "tutor")
+	seedTutorFindingJournal(t, root, runID, gateNoiseFinding("local-ci-gate", ""))
+
+	checkout := gitRepoWithGateChange(t, "gaggles/goobers/workflows/example.yaml",
+		gateRemovalGuardWorkflowBase, strings.Replace(gateRemovalGuardWorkflowBase,
+			`  gates:
+    - name: local-ci-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: done
+        fail: "@abort"
+`, "  gates: []\n", 1))
+	stage := t.TempDir()
+	if err := os.Rename(checkout, filepath.Join(stage, "config-repo")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(stage)
+
+	code, _, stderr := runArgs(t, "gate-removal-guard", "--config-repo", root)
+	if code != 1 || !strings.Contains(stderr, "local-ci-gate") {
+		t.Fatalf("code = %d, stderr = %q, want a block naming local-ci-gate", code, stderr)
+	}
+	if code, _, _ := runArgs(t, "gate-removal-guard", root); code == 0 {
+		t.Fatal("without --config-repo the non-git stage workspace must not pass")
 	}
 }

@@ -772,6 +772,7 @@ var replayExempt = map[string]string{
 	"validate-plan":          "read-only: validates the plan artifact",
 	"reconcile-branches":     "no read-back: reconciles git branches, no provider text",
 	"push-branch":            "no read-back: pushes a git branch",
+	"config-checkout":        "no read-back: clones the config repository, no provider text",
 	"preflight-repo-write":   "no read-back: probes push permission with a scratch ref",
 	"check-fail-first":       "read-only: runs the project's tests locally",
 	"open-pr":                "no read-back: finds an existing pull request by head branch, not by text it wrote",
