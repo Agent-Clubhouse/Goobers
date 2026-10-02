@@ -143,6 +143,16 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
 	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
 	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
+	"Config-repo target (TUT-A8): input target: config-repo opens the PR in the\n" +
+	"instance CONFIG repository (the workflowSource repository) with the\n" +
+	"stage's declared configrepo:write credential instead of the gaggle's\n" +
+	"repository with provider:pr:write. base defaults to workflowSource's ref,\n" +
+	"and the write-boundary / Tutor-classification diffs are computed in the\n" +
+	"config-repo checkout (configRepoDir input, default \"config-repo\", as\n" +
+	"created by `goobers config-checkout`), so actionRoots/docsRoots/configRoot\n" +
+	"paths are relative to the config repo root (e.g. gaggles/<gaggle>).\n" +
+	"configRepo/configRepoBase name the repository where no instance config is\n" +
+	"readable (a stage pod).\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
 	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"), itemID,\n" +
 	"itemTitle, resultFile, timeout. PR metadata is configured through these\n" +
@@ -230,6 +240,45 @@ func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issue
 	return title, issueID, issueTitle, haveIssue, nil
 }
 
+// openPRTarget is where open-pr opens its PR: the gaggle's routed repository
+// by default, or (input target: config-repo, TUT-A8) the instance config
+// repository, authenticated by configrepo:write instead of provider:pr:write.
+// inRepoDir runs a git inspection (write boundaries, Tutor classification) in
+// the repository the PR is for: the process cwd by default, the config-repo
+// checkout for the config target.
+type openPRTarget struct {
+	repo        providers.RepositoryRef
+	capability  capability.Capability
+	baseDefault string
+	inRepoDir   func(func() error) error
+}
+
+func resolveOpenPRTarget(root string) (openPRTarget, error) {
+	configTarget, isConfig, err := pushBranchConfigTarget(root)
+	if err != nil {
+		return openPRTarget{}, err
+	}
+	if isConfig {
+		checkout := configRepoDir()
+		return openPRTarget{
+			repo:        configTarget.Repo,
+			capability:  capability.ConfigRepoWrite,
+			baseDefault: configTarget.Base,
+			inRepoDir:   func(fn func() error) error { return withWorkingDir(checkout, fn) },
+		}, nil
+	}
+	repo, err := providerRepo(root)
+	if err != nil {
+		return openPRTarget{}, err
+	}
+	return openPRTarget{
+		repo:        repo,
+		capability:  capability.ProviderPRWrite,
+		baseDefault: providerBaseBranch(),
+		inRepoDir:   func(fn func() error) error { return fn() },
+	}, nil
+}
+
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -242,13 +291,14 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	repo, err := providerRepo(root)
+	target, err := resolveOpenPRTarget(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	repo, inRepoDir := target.repo, target.inRepoDir
 	stageProvider, err := newProviderForStage(root, repo, false,
-		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderCapability(target.capability),
 		withStageProviderMutations("pr"),
 	)
 	if err != nil {
@@ -264,7 +314,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
-	base := providerInput("base", providerBaseBranch())
+	base := providerInput("base", target.baseDefault)
 
 	// Issue linkage (#241): derive the PR title from the claimed issue and add a
 	// `Fixes #N` back-reference, so a human triaging several loop PRs can tell
@@ -319,7 +369,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// cycle is aborted CLOSED before the PR is opened, so a self-improvement run
 	// can never open a PR touching platform code.
 	if providerInput("confineToConfigRoot", "") == "true" {
-		if err := confineDiffToConfigRoot(base, providerInput("configRoot", "")); err != nil {
+		if err := inRepoDir(func() error { return confineDiffToConfigRoot(base, providerInput("configRoot", "")) }); err != nil {
 			pf(stderr, "error: config write-boundary: %v\n", err)
 			return 1
 		}
@@ -335,7 +385,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// the boundary enabled fails closed (configboundary.ErrNoDocsRoots), never
 	// silently allowing the whole tree.
 	if providerInput("confineToDocsRoots", "") == "true" {
-		if err := confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))); err != nil {
+		if err := inRepoDir(func() error { return confineDiffToDocsRoots(base, parseDocsRoots(providerInput("docsRoots", ""))) }); err != nil {
 			pf(stderr, "error: docs write-boundary: %v\n", err)
 			return 1
 		}
@@ -349,7 +399,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
 	// CLOSED before the PR opens (configboundary.ConfineExclusive).
 	if providerInput("confineToActionRoots", "") == "true" {
-		if err := confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))); err != nil {
+		if err := inRepoDir(func() error { return confineDiffToActionRoots(base, parseDocsRoots(providerInput("actionRoots", ""))) }); err != nil {
 			pf(stderr, "error: action write-boundary: %v\n", err)
 			return 1
 		}
@@ -358,7 +408,11 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	var tutorHoldout *tutorHoldoutRecord
 	recordTutorLiveVerification := false
 	if isTutorWorkflow(workflow) {
-		changes, err := localTutorChanges(base)
+		var changes []tutorFileChange
+		err := inRepoDir(func() (changeErr error) {
+			changes, changeErr = localTutorChanges(base)
+			return changeErr
+		})
 		if err != nil {
 			pf(stderr, "error: classify Tutor change: %v\n", err)
 			return 1
