@@ -88,50 +88,6 @@ func interventionTestMachineWithPassTarget(
 	return machine
 }
 
-func interventionTwoGateMachine(t *testing.T) *workflow.Machine {
-	t.Helper()
-	machine, err := workflow.Compile(workflow.Definition{
-		Name: "two-gate-intervention", Version: 1,
-		Spec: apiv1.WorkflowSpec{
-			Gaggle: "example", Start: "implement",
-			Tasks: []apiv1.Task{
-				{
-					Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review",
-				},
-				{
-					Name: "finish", Type: apiv1.TaskDeterministic, Goal: "finish",
-					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete,
-				},
-			},
-			Gates: []apiv1.Gate{
-				{
-					Name: "review", Evaluator: apiv1.EvaluatorAgentic,
-					Agentic: &apiv1.AgenticGate{Goober: "reviewer"},
-					Branches: map[string]string{
-						"pass":          "approval",
-						"fail":          workflow.TargetEscalate,
-						"needs-changes": workflow.TargetEscalate,
-					},
-				},
-				{
-					Name: "approval", Evaluator: apiv1.EvaluatorHuman,
-					Human: &apiv1.HumanGate{},
-					Branches: map[string]string{
-						"pass": "finish",
-						"fail": workflow.TargetEscalate,
-					},
-				},
-			},
-		},
-	}, workflow.WithPreviewFeatures(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	return machine
-}
-
 func interventionParallelGateMachine(t *testing.T) *workflow.Machine {
 	t.Helper()
 	machine, err := workflow.Compile(workflow.Definition{

@@ -409,6 +409,12 @@
       "reason": "Only the read-model definition invalidation test runs, in the 'Windows worktree and event stream' step."
     },
     {
+      "package": "internal/intervention",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#3066), whose Windows CLI step never selected the intervention tests; no Windows-specific seam identified, runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/intsplit",
       "coverage": "none",
       "category": "not-selected",

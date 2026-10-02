@@ -178,10 +178,13 @@ func (s *Service) AttachScheduler(scheduler *localscheduler.Scheduler) {
 	}
 }
 
+// Approve resolves a paused or terminal gate and waits for the resumed run.
 func (s *Service) Approve(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.approve(ctx, ctx, input, false)
 }
 
+// AcceptApprove admits an approval within admission and finishes it in the
+// background under execution.
 func (s *Service) AcceptApprove(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.approve(admission, execution, input, true)
 }
@@ -289,10 +292,14 @@ func (s *Service) approve(admission, execution context.Context, input httpapi.In
 	return finishIntervention("approve", resolved, err)
 }
 
+// Override reopens an escalated or failed run past a non-deterministic gate
+// and waits for the resumed run.
 func (s *Service) Override(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.override(ctx, ctx, input, false)
 }
 
+// AcceptOverride admits an override within admission and finishes it in the
+// background under execution.
 func (s *Service) AcceptOverride(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.override(admission, execution, input, true)
 }
@@ -344,10 +351,14 @@ func (s *Service) override(admission, execution context.Context, input httpapi.I
 	return finishIntervention("override", resolved, err)
 }
 
+// RerunStage reruns a stage of an escalated run with an instruction addendum
+// and waits for the rerun.
 func (s *Service) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.rerunStage(ctx, ctx, input, false)
 }
 
+// AcceptRerunStage admits a stage rerun within admission and finishes it in
+// the background under execution.
 func (s *Service) AcceptRerunStage(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.rerunStage(admission, execution, input, true)
 }
