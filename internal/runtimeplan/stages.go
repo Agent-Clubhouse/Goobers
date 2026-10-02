@@ -16,6 +16,7 @@ type StageSettings struct {
 	Source               Source        `json:"source"`
 }
 
+// ResolveStages reports each task and gate's configured runtime settings.
 func ResolveStages(spec apiv1.WorkflowSpec, goobers map[string]apiv1.GooberSpec) map[string]StageSettings {
 	result := make(map[string]StageSettings)
 	source := Source{"static", "compiled stage timeout and workspace inputs; instance/repository defaults apply when unset; parent cancellation remains runtime-only"}

@@ -25,6 +25,7 @@ type Process struct {
 	Source Source `json:"source"`
 }
 
+// ObserveProcess reports the current process identity directly from the OS.
 func ObserveProcess() Process {
 	p := Process{PID: os.Getpid(), OS: runtime.GOOS, Source: Source{"observed", "current process OS and effective identity"}}
 	if runtime.GOOS != "windows" {
@@ -49,6 +50,7 @@ type Identity struct {
 	Source  Source `json:"source"`
 }
 
+// TargetIdentity records whether the selected execution target was observed.
 func TargetIdentity(p Process, kind string) Identity {
 	result := Identity{Outcome: "unsupported", Code: "target_identity_unobservable", Detail: "checks ran in the reporting process; target daemon/service identity and environment are unobservable; safe impersonation is unavailable", Source: Source{"unobservable", "no target-process attestation or safe impersonation"}}
 	if p.UID == "" || p.Source.Fidelity != "observed" {

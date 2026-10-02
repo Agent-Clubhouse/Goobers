@@ -20,11 +20,15 @@ type Inputs struct {
 	Timeouts          Timeouts           `json:"timeouts"`
 	Source            Source             `json:"source"`
 }
+
+// Path describes one configured filesystem location and its evidence source.
 type Path struct {
 	Purpose string `json:"purpose"`
 	Path    string `json:"path"`
 	Source  Source `json:"source"`
 }
+
+// CredentialSource names the credential mechanism without resolving secrets.
 type CredentialSource struct {
 	Scope      string `json:"scope"`
 	Capability string `json:"capability,omitempty"`
@@ -32,16 +36,22 @@ type CredentialSource struct {
 	Kind       string `json:"kind"`
 	AuthKind   string `json:"authKind,omitempty"`
 }
+
+// Sandbox describes configured isolation and whether enforcement was observed.
 type Sandbox struct {
 	Agentic     string                    `json:"agentic"`
 	Isolation   *instance.IsolationConfig `json:"isolation,omitempty"`
 	Runners     []RunnerIsolation         `json:"runners,omitempty"`
 	Enforcement Identity                  `json:"enforcement"`
 }
+
+// RunnerIsolation lists a runner's declared restrictions.
 type RunnerIsolation struct {
 	Name         string                       `json:"name"`
 	Restrictions []instance.RunnerRestriction `json:"restrictions,omitempty"`
 }
+
+// Timeouts collects configured deadlines and cancellation evidence.
 type Timeouts struct {
 	RunnerDefault      string            `json:"runnerDefault,omitempty"`
 	RequiredMCPSettle  string            `json:"requiredMCPSettle,omitempty"`
@@ -50,6 +60,7 @@ type Timeouts struct {
 	Cancellation       Identity          `json:"cancellation"`
 }
 
+// ResolveInputs resolves gaggle-scoped paths and declared execution settings.
 func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.GaggleSpec, controls runcontrol.Effective) (Inputs, error) {
 	static := Source{"static", "loaded instance and workflow configuration; no path access or runtime enforcement probe"}
 	// The caller supplies an already gaggle-scoped layout. Keep that scope when
