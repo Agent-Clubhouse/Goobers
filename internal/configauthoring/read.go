@@ -28,10 +28,11 @@ const (
 	apiVersion    = "v1"
 )
 
-var (
-	ErrSourceNotFound   = errors.New("configuration source not found")
-	ErrDocumentNotFound = errors.New("configuration document not found")
-)
+// ErrSourceNotFound indicates that a source ID is unknown.
+var ErrSourceNotFound = errors.New("configuration source not found")
+
+// ErrDocumentNotFound indicates that a logical document path is unavailable.
+var ErrDocumentNotFound = errors.New("configuration document not found")
 
 // Reader is the configuration-source read plane consumed by the HTTP adapter.
 type Reader interface {
@@ -71,6 +72,7 @@ func NewReader(root string, kind apicontract.ConfigSourceKind, writable bool) (*
 	}, nil
 }
 
+// Sources returns the available configuration sources.
 func (r *LocalReader) Sources(ctx context.Context) (apicontract.ConfigSourcePage, error) {
 	snapshot, err := r.snapshot(ctx)
 	if err != nil {
@@ -83,6 +85,7 @@ func (r *LocalReader) Sources(ctx context.Context) (apicontract.ConfigSourcePage
 	}, nil
 }
 
+// Documents returns the authorable documents in sourceID.
 func (r *LocalReader) Documents(ctx context.Context, sourceID string) (apicontract.ConfigDocumentPage, error) {
 	if sourceID != localSourceID {
 		return apicontract.ConfigDocumentPage{}, ErrSourceNotFound
@@ -104,6 +107,7 @@ func (r *LocalReader) Documents(ctx context.Context, sourceID string) (apicontra
 	}, nil
 }
 
+// Document returns one authorable document by logical path.
 func (r *LocalReader) Document(ctx context.Context, sourceID, logicalPath string) (apicontract.ConfigDocument, error) {
 	if sourceID != localSourceID {
 		return apicontract.ConfigDocument{}, ErrSourceNotFound
@@ -134,11 +138,14 @@ func (r *LocalReader) Document(ctx context.Context, sourceID, logicalPath string
 }
 
 func (r *LocalReader) descriptor(revision string) apicontract.ConfigSourceDescriptor {
-	displayName := "Local configuration"
-	if r.kind == apicontract.ConfigSourceGit {
+	var displayName string
+	switch r.kind {
+	case apicontract.ConfigSourceGit:
 		displayName = "Git configuration"
-	} else if r.kind == apicontract.ConfigSourceProvider {
+	case apicontract.ConfigSourceProvider:
 		displayName = "Managed configuration"
+	default:
+		displayName = "Local configuration"
 	}
 	return apicontract.ConfigSourceDescriptor{
 		ID:          localSourceID,
