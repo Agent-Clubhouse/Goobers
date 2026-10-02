@@ -24,11 +24,17 @@ import (
 // validated, so a partial apply never becomes visible.
 const (
 	GenerationLabel = "goobers.dev/config-generation"
+	// OriginalNameAnnotation preserves the config object's logical name when a
+	// direct-apply generation publishes a versioned Kubernetes object name.
+	OriginalNameAnnotation = "goobers.dev/config-name"
 	// GenerationConfigMapName is the authoritative reference switched atomically
 	// after a complete generation is applied.
 	GenerationConfigMapName = "goobers-config-generation"
 	// GenerationConfigMapKey holds the authoritative generation value.
 	GenerationConfigMapKey = "generation"
+	// PreviousGenerationConfigMapKey records the generation that still needs
+	// pruning after the authoritative pointer moves.
+	PreviousGenerationConfigMapKey = "previousGeneration"
 )
 
 // Applier applies a desired RenderSet to a target. The default GitOps path
@@ -76,15 +82,12 @@ type ClientApplier struct {
 }
 
 // Apply publishes rs as a single immutable generation: every desired object is
-// stamped with the generation and upserted, the generation is validated as
-// complete, the authoritative pointer is switched atomically, and only then are
-// stale objects pruned. Any failure before the switch leaves the previous
-// generation authoritative and returns an *ApplyError naming every mutation that
-// committed or whose outcome is ambiguous. Objects are stamped and upserted in
-// place, so only the authoritative pointer — not the previous generation's object
-// contents — is preserved on failure: a consumer selecting the previous
-// generation during the apply window sees a shrinking set as objects are
-// re-stamped to the new, not-yet-published generation.
+// stamped with the generation, published under a generation-versioned name, and
+// upserted. The generation is validated as complete, the authoritative pointer
+// is switched atomically, and only then are stale objects pruned. Any failure
+// before the switch leaves the previous generation's selected object set intact
+// and returns an *ApplyError naming every mutation that committed or whose
+// outcome is ambiguous.
 func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	objects, generation, err := generationObjects(rs)
 	if err != nil {
@@ -95,8 +98,8 @@ func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	keys := make([]string, len(objects))
 	desired := make(map[string]bool, len(objects))
 	for i, obj := range objects {
-		keys[i] = objKey(obj)
-		desired[keys[i]] = true
+		keys[i] = logicalObjKey(obj)
+		desired[objKey(obj)] = true
 	}
 
 	ledger := &mutationLedger{}
@@ -112,11 +115,15 @@ func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	if err := a.validateGeneration(ctx, objects, keys, generation); err != nil {
 		return ledger.fail(generation, "validate", err)
 	}
-	if err := a.switchGeneration(ctx, rs.Namespace, generation, ledger); err != nil {
+	previousGeneration, err := a.switchGeneration(ctx, rs.Namespace, generation, ledger)
+	if err != nil {
 		return ledger.fail(generation, "switch", err)
 	}
-	if err := a.prune(ctx, rs.Namespace, desired, ledger); err != nil {
+	if err := a.prune(ctx, rs.Namespace, desired, previousGeneration, ledger); err != nil {
 		return ledger.fail(generation, "prune", err)
+	}
+	if err := a.clearPendingPrune(ctx, rs.Namespace, generation, previousGeneration); err != nil {
+		return ledger.fail(generation, "finalize", err)
 	}
 	if a.Log != nil {
 		a.Log.Info("config-sync generation published",
@@ -125,9 +132,31 @@ func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	return nil
 }
 
+func (a *ClientApplier) clearPendingPrune(ctx context.Context, namespace, generation, previousGeneration string) error {
+	key := client.ObjectKey{Namespace: namespace, Name: GenerationConfigMapName}
+	var pointer corev1.ConfigMap
+	if err := a.Client.Get(ctx, key, &pointer); err != nil {
+		return fmt.Errorf("read authoritative generation for prune finalization: %w", err)
+	}
+	if pointer.Data[GenerationConfigMapKey] != generation ||
+		pointer.Data[PreviousGenerationConfigMapKey] != previousGeneration {
+		return nil
+	}
+	delete(pointer.Data, PreviousGenerationConfigMapKey)
+	if err := a.Client.Update(ctx, &pointer); err != nil {
+		if apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("clear pending prune generation: %w", err)
+	}
+	return nil
+}
+
 // generationObjects deep-copies the desired set and stamps every object with the
-// generation derived from the set's content, so an unchanged config re-applies
-// to the same generation and the caller's objects are left untouched.
+// generation derived from the set's content, then renames it into that
+// generation's immutable object namespace. An unchanged config re-applies to the
+// same generation, while a changed config can coexist with the previous
+// generation until the authoritative pointer switches.
 func generationObjects(rs *RenderSet) ([]client.Object, string, error) {
 	objects := make([]client.Object, 0, len(rs.Objects))
 	for _, obj := range rs.Objects {
@@ -141,13 +170,23 @@ func generationObjects(rs *RenderSet) ([]client.Object, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	gaggles := versionedGaggleNames(objects, generation)
 	for _, obj := range objects {
+		originalName := obj.GetName()
 		labels := obj.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}
 		}
 		labels[GenerationLabel] = generation
 		obj.SetLabels(labels)
+		annotations := obj.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[OriginalNameAnnotation] = originalName
+		obj.SetAnnotations(annotations)
+		obj.SetName(versionedObjectName(originalName, generation))
+		rewriteGaggleRefs(obj, gaggles)
 	}
 	return objects, generation, nil
 }
@@ -207,7 +246,7 @@ func (a *ClientApplier) validateGeneration(ctx context.Context, objects []client
 
 // switchGeneration atomically moves the authoritative pointer to the validated
 // generation. Until it succeeds, consumers keep selecting the previous one.
-func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generation string, ledger *mutationLedger) error {
+func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generation string, ledger *mutationLedger) (string, error) {
 	key := client.ObjectKey{Namespace: namespace, Name: GenerationConfigMapName}
 	var pointer corev1.ConfigMap
 	err := a.Client.Get(ctx, key, &pointer)
@@ -219,25 +258,36 @@ func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generat
 				Namespace: namespace,
 				Labels:    map[string]string{ManagedByLabel: ManagedByValue},
 			},
-			Data: map[string]string{GenerationConfigMapKey: generation},
+			Data: map[string]string{
+				GenerationConfigMapKey:         generation,
+				PreviousGenerationConfigMapKey: "",
+			},
 		}
 		createErr := a.Client.Create(ctx, &pointer)
 		ledger.record(target, "create", createErr)
 		if createErr != nil {
-			return fmt.Errorf("publish generation %s: %w", generation, createErr)
+			return "", fmt.Errorf("publish generation %s: %w", generation, createErr)
 		}
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return fmt.Errorf("read authoritative generation: %w", err)
+		return "", fmt.Errorf("read authoritative generation: %w", err)
 	}
-	if pointer.Data[GenerationConfigMapKey] == generation {
-		return nil
+	previous := pointer.Data[GenerationConfigMapKey]
+	if previous == generation {
+		if pending, ok := pointer.Data[PreviousGenerationConfigMapKey]; ok {
+			return pending, nil
+		}
+		return previous, nil
+	}
+	if _, ok := pointer.Data[PreviousGenerationConfigMapKey]; ok {
+		return "", fmt.Errorf("pending prune generation %q must complete before publishing generation %s", pointer.Data[PreviousGenerationConfigMapKey], generation)
 	}
 	if pointer.Data == nil {
 		pointer.Data = map[string]string{}
 	}
 	pointer.Data[GenerationConfigMapKey] = generation
+	pointer.Data[PreviousGenerationConfigMapKey] = previous
 	if pointer.Labels == nil {
 		pointer.Labels = map[string]string{}
 	}
@@ -247,9 +297,9 @@ func (a *ClientApplier) switchGeneration(ctx context.Context, namespace, generat
 	updateErr := a.Client.Update(ctx, &pointer)
 	ledger.record(target, "update", updateErr)
 	if updateErr != nil {
-		return fmt.Errorf("publish generation %s: %w", generation, updateErr)
+		return "", fmt.Errorf("publish generation %s: %w", generation, updateErr)
 	}
-	return nil
+	return previous, nil
 }
 
 // AuthoritativeGeneration returns the generation consumers must select in the
@@ -276,8 +326,10 @@ func generationPointerKey(namespace string) string {
 	return "ConfigMap/" + namespace + "/" + GenerationConfigMapName
 }
 
-// prune deletes managed CRs in the namespace that are not in the desired set.
-func (a *ClientApplier) prune(ctx context.Context, namespace string, desired map[string]bool, ledger *mutationLedger) error {
+// prune deletes managed CRs from the generation this apply replaced. In-flight
+// generations from concurrent applies are left alone until one becomes the
+// previous authoritative generation of a later successful apply.
+func (a *ClientApplier) prune(ctx context.Context, namespace string, desired map[string]bool, previousGeneration string, ledger *mutationLedger) error {
 	lists := []client.ObjectList{
 		&v1alpha1.GaggleList{}, &v1alpha1.GooberList{}, &v1alpha1.WorkflowList{}, &v1alpha1.ManifestList{},
 	}
@@ -297,11 +349,14 @@ func (a *ClientApplier) prune(ctx context.Context, namespace string, desired map
 			if desired[key] {
 				continue
 			}
+			if obj.GetLabels()[GenerationLabel] != previousGeneration {
+				continue
+			}
 			err := a.Client.Delete(ctx, obj)
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			ledger.record(key, "delete", err)
+			ledger.record(logicalObjKey(obj), "delete", err)
 			if err != nil {
 				return fmt.Errorf("prune %s: %w", key, err)
 			}
@@ -316,6 +371,55 @@ func (a *ClientApplier) prune(ctx context.Context, namespace string, desired map
 // objKey identifies an object by kind/namespace/name for desired-set membership.
 func objKey(obj client.Object) string {
 	return obj.GetObjectKind().GroupVersionKind().Kind + "/" + obj.GetNamespace() + "/" + obj.GetName()
+}
+
+func logicalObjKey(obj client.Object) string {
+	name := obj.GetAnnotations()[OriginalNameAnnotation]
+	if name == "" {
+		name = obj.GetName()
+	}
+	return obj.GetObjectKind().GroupVersionKind().Kind + "/" + obj.GetNamespace() + "/" + name
+}
+
+func versionedObjectName(name, generation string) string {
+	const maxKubernetesNameLength = 253
+	suffix := "-" + generation
+	if len(name)+len(suffix) <= maxKubernetesNameLength {
+		return name + suffix
+	}
+	sum := sha256.Sum256([]byte(name))
+	hash := hex.EncodeToString(sum[:])[:8]
+	prefixLen := maxKubernetesNameLength - len(suffix) - len(hash) - 1
+	return name[:prefixLen] + "-" + hash + suffix
+}
+
+func versionedGaggleNames(objects []client.Object, generation string) map[string]string {
+	gaggles := map[string]string{}
+	for _, obj := range objects {
+		if _, ok := obj.(*v1alpha1.Gaggle); ok {
+			gaggles[obj.GetName()] = versionedObjectName(obj.GetName(), generation)
+		}
+	}
+	return gaggles
+}
+
+func rewriteGaggleRefs(obj client.Object, gaggles map[string]string) {
+	switch typed := obj.(type) {
+	case *v1alpha1.Manifest:
+		for i, name := range typed.Spec.Gaggles {
+			if versioned, ok := gaggles[name]; ok {
+				typed.Spec.Gaggles[i] = versioned
+			}
+		}
+	case *v1alpha1.Goober:
+		if versioned, ok := gaggles[typed.Spec.Gaggle]; ok {
+			typed.Spec.Gaggle = versioned
+		}
+	case *v1alpha1.Workflow:
+		if versioned, ok := gaggles[typed.Spec.Gaggle]; ok {
+			typed.Spec.Gaggle = versioned
+		}
+	}
 }
 
 // metaItems extracts the items of a typed CR list as client.Objects, tagging each

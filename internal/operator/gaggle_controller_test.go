@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/configsync"
 )
 
 // --- pure helpers ----------------------------------------------------------
@@ -246,10 +247,114 @@ func gooberFixture(name, gaggle string, scale int32) *v1alpha1.Goober {
 	}
 }
 
+func generationPointer(generation string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: configsync.GenerationConfigMapName, Namespace: "goobers-system"},
+		Data:       map[string]string{configsync.GenerationConfigMapKey: generation},
+	}
+}
+
+func publishedGaggleFixture(logicalName, generation string) *v1alpha1.Gaggle {
+	g := gaggleFixture()
+	g.Name = logicalName + "-" + generation
+	g.Labels = map[string]string{
+		configsync.ManagedByLabel:  configsync.ManagedByValue,
+		configsync.GenerationLabel: generation,
+	}
+	g.Annotations = map[string]string{configsync.OriginalNameAnnotation: logicalName}
+	return g
+}
+
+func publishedGooberFixture(name, gaggle, generation string) *v1alpha1.Goober {
+	gb := gooberFixture(name, gaggle, 1)
+	gb.Name = name + "-" + generation
+	gb.Labels = map[string]string{
+		configsync.ManagedByLabel:  configsync.ManagedByValue,
+		configsync.GenerationLabel: generation,
+	}
+	gb.Annotations = map[string]string{configsync.OriginalNameAnnotation: name}
+	gb.Spec.Gaggle = gaggle
+	return gb
+}
+
 func reconcileOnce(t *testing.T, r *GaggleReconciler) {
 	t.Helper()
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "goobers-system", Name: "web"}}); err != nil {
 		t.Fatalf("reconcile: %v", err)
+	}
+}
+
+func TestReconcile_IgnoresUnpublishedGeneration(t *testing.T) {
+	pending := publishedGaggleFixture("web", "gnew")
+	r, c := newReconciler(t, nil,
+		generationPointer("gold"),
+		pending,
+		publishedGooberFixture("coder", pending.Name, "gnew"),
+	)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: pending.Namespace, Name: pending.Name},
+	}); err != nil {
+		t.Fatalf("reconcile unpublished generation: %v", err)
+	}
+
+	var ns corev1.Namespace
+	err := c.Get(context.Background(), types.NamespacedName{Name: "gaggle-web"}, &ns)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("unpublished generation should not create namespace, got err=%v", err)
+	}
+
+	reqs := r.generationPointerToGaggles(context.Background(), generationPointer("gnew"))
+	if len(reqs) != 1 || reqs[0].Name != pending.Name || reqs[0].Namespace != pending.Namespace {
+		t.Fatalf("generation pointer map = %+v, want %s/%s", reqs, pending.Namespace, pending.Name)
+	}
+}
+
+func TestReconcile_UsesOnlyAuthoritativeGenerationGoobers(t *testing.T) {
+	current := publishedGaggleFixture("web", "gnew")
+	old := publishedGooberFixture("old", current.Name, "gold")
+	orphanWorker := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "goober-old",
+			Namespace: "gaggle-web",
+			Labels: map[string]string{
+				managedByLabel: managedByValue,
+				gaggleLabel:    "web",
+				gooberLabel:    "old",
+			},
+		},
+	}
+	r, c := newReconciler(t, nil,
+		generationPointer("gnew"),
+		current,
+		publishedGooberFixture("coder", current.Name, "gnew"),
+		old,
+		orphanWorker,
+	)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: current.Namespace, Name: current.Name},
+	}); err != nil {
+		t.Fatalf("reconcile authoritative generation: %v", err)
+	}
+
+	var g v1alpha1.Gaggle
+	_ = c.Get(context.Background(), types.NamespacedName{Namespace: current.Namespace, Name: current.Name}, &g)
+	if g.Status.GooberCount != 1 {
+		t.Fatalf("GooberCount = %d, want only the authoritative-generation goober", g.Status.GooberCount)
+	}
+	var dep appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "gaggle-web", Name: "goober-coder"}, &dep); err != nil {
+		t.Fatalf("stable worker was not created: %v", err)
+	}
+	if dep.Labels[gaggleLabel] != "web" || dep.Labels[gooberLabel] != "coder" {
+		t.Fatalf("worker labels = %v, want stable logical gaggle/goober labels", dep.Labels)
+	}
+	reqs := workerToGaggle(context.Background(), &dep)
+	if len(reqs) != 1 || reqs[0].Name != current.Name || reqs[0].Namespace != current.Namespace {
+		t.Fatalf("workerToGaggle = %+v, want published Gaggle %s/%s", reqs, current.Namespace, current.Name)
+	}
+	err := c.Get(context.Background(), types.NamespacedName{Namespace: "gaggle-web", Name: "goober-old"}, &dep)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("old generation worker should be pruned, got err=%v", err)
 	}
 }
 

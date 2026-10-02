@@ -130,8 +130,6 @@ github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # 
 
 # Quarantined, reserved, and extension seams required by the architecture.
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
-github.com/goobers/goobers/internal/configsync.AuthoritativeGeneration # Generation-barrier read side (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's authoritative-generation assertions.
-github.com/goobers/goobers/internal/configsync.GenerationSelector # Single-generation label selector (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's single-generation consistency assertions.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
