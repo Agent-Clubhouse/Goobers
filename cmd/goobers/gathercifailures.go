@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -238,18 +239,64 @@ func readRemediationBriefArtifact(root, runID, stage string) (apiv1.RemediationB
 func writeRemediationBrief(path string, brief apiv1.RemediationBrief) error {
 	data, err := json.MarshalIndent(brief, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal remediation brief: %w", err)
+		return &remediationBriefError{
+			kind: remediationBriefErrorMarshal,
+			err:  fmt.Errorf("marshal remediation brief: %w", err),
+		}
 	}
 	if err := validateRemediationBriefJSON(data); err != nil {
-		return err
+		return &remediationBriefError{kind: remediationBriefErrorValidate, err: err}
 	}
 	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("result file is required")
+		return &remediationBriefError{
+			kind: remediationBriefErrorWrite,
+			err:  fmt.Errorf("result file is required"),
+		}
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+		return &remediationBriefError{
+			kind: remediationBriefErrorWrite,
+			err:  fmt.Errorf("write %s: %w", path, err),
+		}
 	}
 	return nil
+}
+
+type remediationBriefErrorKind uint8
+
+const (
+	remediationBriefErrorMarshal remediationBriefErrorKind = iota
+	remediationBriefErrorValidate
+	remediationBriefErrorWrite
+)
+
+type remediationBriefError struct {
+	kind remediationBriefErrorKind
+	err  error
+}
+
+func (e *remediationBriefError) Error() string {
+	return e.err.Error()
+}
+
+func (e *remediationBriefError) Unwrap() error {
+	return e.err
+}
+
+func remediationBriefErrorExitCode(err error, writeErrorExitCode int) int {
+	var briefErr *remediationBriefError
+	if errors.As(err, &briefErr) && briefErr.kind == remediationBriefErrorWrite {
+		return writeErrorExitCode
+	}
+	return 1
+}
+
+func writeGatherRemediationBrief(stderr io.Writer, path string, brief apiv1.RemediationBrief, writeErrorExitCode int) int {
+	if err := writeRemediationBrief(path, brief); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return remediationBriefErrorExitCode(err, writeErrorExitCode)
+	}
+	return 0
 }
 
 func validateRemediationBriefJSON(data []byte) error {

@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -115,18 +114,8 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 	}
 	brief.Integrity = apiv1.WeakestIntegrity(integrities...)
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
-	data, err := json.MarshalIndent(brief, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal remediation brief: %v\n", err)
-		return 1
-	}
-	if err := validateRemediationBriefJSON(data); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 2
+	if code := writeGatherRemediationBrief(stderr, resultFile, brief, 2); code != 0 {
+		return code
 	}
 	pf(stdout, "gathered %d originating issue(s) for PR #%s\n", len(issues), brief.SelectedNumber)
 	return 0
