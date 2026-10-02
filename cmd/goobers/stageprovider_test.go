@@ -286,6 +286,43 @@ func TestRunCostIsVendorEstimate(t *testing.T) {
 	}
 }
 
+// TestStageCostReceiptDistinguishesUnmeasuredAgentWork pins #6353's coverage
+// signal: a run with no agent work publishes no receipt (it cost nothing), and
+// a run whose agent reported no usage publishes an empty one (cost unknown).
+func TestStageCostReceiptDistinguishesUnmeasuredAgentWork(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	newRun := func(runID string, events ...journal.Event) {
+		run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+			RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "g",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual}, StartedAt: now,
+		}, nil)
+		if err != nil {
+			t.Fatalf("create run: %v", err)
+		}
+		for _, event := range events {
+			if err := run.Append(event); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+		}
+		if err := run.Close(); err != nil {
+			t.Fatalf("close run: %v", err)
+		}
+	}
+	newRun("run-deterministic")
+	newRun("run-unmeasured", journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "implementer", RunID: "run-unmeasured", Stage: "implement",
+		Attempt: 1, Lifecycle: journal.AgentCompleted, StartedAt: now, UpdatedAt: now,
+	}})
+	if got := stageCostReceipt(root, "run-deterministic"); got != nil {
+		t.Fatalf("deterministic run receipt = %+v, want none", got)
+	}
+	got := stageCostReceipt(root, "run-unmeasured")
+	if got == nil || got.NanoAIU != nil || got.JournalSequence == 0 {
+		t.Fatalf("unmeasured agent run receipt = %+v, want an empty receipt", got)
+	}
+}
+
 func TestStageAttributionRequiresCompleteStageContext(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", "run-1")
 	t.Setenv("GOOBERS_GAGGLE", "gaggle")

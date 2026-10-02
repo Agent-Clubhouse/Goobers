@@ -151,12 +151,16 @@ func TestPostMergePublishesSummaryAndIssueAllocationFromReceipts(t *testing.T) {
 }
 
 // TestPostMergeCostCommentsDisclosePartialCoverage is #6353's coverage half:
-// a run that left a trusted attribution marker but no measured cost makes the
-// total a lower bound, and both the PR summary and the issue close-out say so.
+// a run that did agent work but published no measured cost (an empty receipt)
+// makes the total a lower bound, and both the PR summary and the issue
+// close-out say so. A deterministic run's marker carries no receipt, costs
+// nothing, and must not count against coverage.
 func TestPostMergeCostCommentsDisclosePartialCoverage(t *testing.T) {
+	tokens := int64(1200)
 	prReader := staticCostCommentReader{"77": {
 		costComment(t, "goobers", "implementation", "run-impl", 20, 8_000_000_000),
-		{Author: "goobers", Body: attributionBodyForTest(t, "merge-review", "run-review", nil)},
+		{Author: "goobers", Body: attributionBodyForTest(t, "merge-review", "run-review", &providers.CostReceipt{JournalSequence: 5, InputTokens: &tokens})},
+		{Author: "goobers", Body: attributionBodyForTest(t, "post-merge", "run-deterministic", nil)},
 	}}
 	report, err := collectPostMergeCostReport(
 		context.Background(), prReader, staticCostCommentReader{},
@@ -178,6 +182,30 @@ func TestPostMergeCostCommentsDisclosePartialCoverage(t *testing.T) {
 		}
 		if strings.Contains(body, "estimate") {
 			t.Fatalf("%s %q labels an AI-credit-only total as an estimate", name, body)
+		}
+	}
+}
+
+// TestPostMergeCostCommentsOmitCoverageForDeterministicRuns: runs without
+// agent work (no receipt) never turn a complete total into a lower bound.
+func TestPostMergeCostCommentsOmitCoverageForDeterministicRuns(t *testing.T) {
+	prReader := staticCostCommentReader{"77": {
+		costComment(t, "goobers", "implementation", "run-impl", 20, 8_000_000_000),
+		{Author: "goobers", Body: attributionBodyForTest(t, "post-merge", "run-deterministic", nil)},
+	}}
+	report, err := collectPostMergeCostReport(
+		context.Background(), prReader, staticCostCommentReader{},
+		providers.RepositoryRef{}, providers.RepositoryRef{}, "77", []string{"42"}, "goobers", "goobers",
+	)
+	if err != nil {
+		t.Fatalf("collectPostMergeCostReport: %v", err)
+	}
+	for name, body := range map[string]string{
+		"summary":   renderPostMergeCostSummary(report),
+		"close-out": mergedPullRequestComment("77", report, "42"),
+	} {
+		if strings.Contains(body, "lower bound") {
+			t.Fatalf("%s %q discloses partial coverage for a deterministic run", name, body)
 		}
 	}
 }

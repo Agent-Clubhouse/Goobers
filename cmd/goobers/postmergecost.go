@@ -26,10 +26,6 @@ type postMergeCostReport struct {
 	ByWorkflow     map[string]providers.CostReceipt
 	IssueNanoAIU   map[string]int64
 	SummaryPresent bool
-	// ObservedRuns is every run with a trusted attribution marker on the PR
-	// or its issues, whether or not that run published a cost. It is the
-	// denominator of the "cost known for N of M runs" disclosure (#6353).
-	ObservedRuns map[string]bool
 }
 
 type postMergeCostCommentReader interface {
@@ -59,7 +55,6 @@ func collectPostMergeCostReport(
 		Receipts:     map[string]postMergeCostReceipt{},
 		ByWorkflow:   map[string]providers.CostReceipt{},
 		IssueNanoAIU: map[string]int64{},
-		ObservedRuns: map[string]bool{},
 	}
 	var errs []error
 
@@ -71,7 +66,7 @@ func collectPostMergeCostReport(
 			if isTrustedCostComment(comment, trustedPRAuthor) && strings.Contains(comment.Body, postMergeCostSummaryMarker) {
 				report.SummaryPresent = true
 			}
-			addCostReceiptObservation(report.Receipts, report.ObservedRuns, comment, "", trustedPRAuthor)
+			addCostReceiptObservation(report.Receipts, comment, "", trustedPRAuthor)
 		}
 	}
 
@@ -82,7 +77,7 @@ func collectPostMergeCostReport(
 			continue
 		}
 		for _, comment := range comments {
-			addCostReceiptObservation(report.Receipts, report.ObservedRuns, comment, issueID, trustedIssueAuthor)
+			addCostReceiptObservation(report.Receipts, comment, issueID, trustedIssueAuthor)
 		}
 	}
 
@@ -252,16 +247,12 @@ func collectADOPostMergeCostReport(
 	return report
 }
 
-func addCostReceiptObservation(receipts map[string]postMergeCostReceipt, observed map[string]bool, comment providers.Comment, issueID, trustedAuthor string) {
+func addCostReceiptObservation(receipts map[string]postMergeCostReceipt, comment providers.Comment, issueID, trustedAuthor string) {
 	if !isTrustedCostComment(comment, trustedAuthor) {
 		return
 	}
 	attribution, ok, err := providers.ParseAttribution(comment.Body)
-	if err != nil || !ok || strings.TrimSpace(attribution.Run) == "" {
-		return
-	}
-	observed[attribution.Run] = true
-	if attribution.Cost == nil {
+	if err != nil || !ok || attribution.Cost == nil || strings.TrimSpace(attribution.Run) == "" {
 		return
 	}
 
@@ -434,21 +425,17 @@ func renderPostMergeCostSummary(report postMergeCostReport) string {
 	return body + postMergeCostDisclosures(report) + "\n\n" + postMergeCostSummaryMarker
 }
 
-// postMergeCostCoverage counts the observed runs whose cost is known: a run
-// that left a trusted attribution marker but no measured AIC (no published
-// receipt, or tokens without a cost) makes the total a lower bound.
+// postMergeCostCoverage counts the receipted runs whose cost is known. Every
+// run that did agent work publishes a receipt; one without a measured AIC
+// (its agents reported nothing, or tokens without a cost) makes the total a
+// lower bound. Runs with no agent work publish no receipt and cost nothing.
 func postMergeCostCoverage(report postMergeCostReport) (known, total int) {
-	runs := make(map[string]bool, len(report.ObservedRuns)+len(report.Receipts))
-	for run := range report.ObservedRuns {
-		runs[run] = true
-	}
-	for run, receipt := range report.Receipts {
-		runs[run] = true
-		if receipt.Attribution.Cost != nil && receipt.Attribution.Cost.NanoAIU != nil {
+	for _, receipt := range report.Receipts {
+		if receipt.Attribution.Cost.NanoAIU != nil {
 			known++
 		}
 	}
-	return known, len(runs)
+	return known, len(report.Receipts)
 }
 
 // postMergeCostDisclosures renders the epic #4383 disclosures (#6353): partial

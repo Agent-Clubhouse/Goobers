@@ -294,7 +294,11 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		usage.CacheWriteTokens == nil &&
 		usage.ReasoningTokens == nil &&
 		usage.NanoAIU == nil &&
-		usage.CostUSD == nil {
+		usage.CostUSD == nil &&
+		!runHasAgentUsageEvents(events, runID) {
+		// A run with no agent work has no AI cost to report. A run whose
+		// agents reported nothing still gets an empty receipt below, so the
+		// merge-time comments count it as cost unknown (#6353).
 		return nil
 	}
 	var sequence uint64
@@ -315,6 +319,17 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		CostUSD:          usage.CostUSD,
 		VendorEstimated:  runCostIsVendorEstimate(events, runID),
 	}
+}
+
+// runHasAgentUsageEvents reports whether the run journaled any agent
+// lifecycle event, i.e. did agentic work whose cost may be unmeasured.
+func runHasAgentUsageEvents(events []journal.Event, runID string) bool {
+	for _, event := range events {
+		if event.Type == journal.EventAgentLifecycle && event.Agent != nil && event.Agent.RunID == runID {
+			return true
+		}
+	}
+	return false
 }
 
 // runCostIsVendorEstimate reports whether any of the run's agent usage carries

@@ -332,6 +332,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
 	ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
+	// Terminal handlers read the active run's attempt context, which
+	// withActiveRun built before the attribution above existed. Rebase it now
+	// so a terminal reached while replaying (before the walk's own rebase
+	// below) is attributed too (#5178).
+	setStalledAttemptContext(ctx)
 	if res, done, terr := r.resumeTerminalPhase(rd, jr, in); done || terr != nil {
 		return res, terr
 	}
