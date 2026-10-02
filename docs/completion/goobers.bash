@@ -260,6 +260,9 @@ _goobers_completion()
         open-pr)
             flags+=" --config-repo"
             ;;
+        gate-removal-guard)
+            flags+=" --config-repo"
+            ;;
         set-milestone)
             flags+=" --item --milestone"
             ;;

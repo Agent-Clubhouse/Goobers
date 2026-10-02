@@ -31,9 +31,9 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"configrepotarget.go": {
 		command: "push-branch",
 		shared: map[string][]string{
-			"configRepo":     {"open-pr", "config-checkout"},
-			"configRepoBase": {"open-pr", "config-checkout"},
-			"configRepoDir":  {"open-pr", "config-checkout"},
+			"configRepo":     {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoBase": {"open-pr", "config-checkout", "gate-removal-guard"},
+			"configRepoDir":  {"open-pr", "config-checkout", "gate-removal-guard"},
 		},
 	},
 	"backlogassignment.go":           {command: "backlog-assignment"},

@@ -222,3 +222,21 @@ config repositories are supported.
 repository. The write-boundary and Tutor-classification diffs run inside the
 config checkout, so tutor branch naming (`<namespace>/tutor/...`) and
 risk classification are unchanged.
+
+Related behavior for config-repo-targeted stages:
+
+- **Validation.** `goobers validate` honours the flag: `push-branch --config-repo`
+  prescribes `push-config-repo-branch` and `open-pr --config-repo` prescribes
+  `open-or-update-config-pr`, both requiring only `configrepo:write` (never
+  `repo:push` / `provider:pr:write`). `configrepo:write` is accepted in the
+  workflow, goober and invocation schemas and in `instance.yaml` `credentials[]`.
+- **gate-removal-guard.** `gate-removal-guard --config-repo` runs its git
+  inspection inside the config checkout (`configRepoDir`, base = the
+  `workflowSource` ref), so a gate removal in the config repository is blocked
+  instead of passing vacuously.
+- **Live-verification holdouts.** `open-pr --config-repo` with
+  `recordLiveVerification` records the PR's repository (`configRepo`) with the
+  holdout; the merge-state refresh polls that PR number in the config repository
+  using the stage's `configrepo:write` credential. A stage without that
+  credential leaves such holdouts pending (stating why) rather than looking up
+  the product repository's same-numbered PR.

@@ -2215,7 +2215,11 @@ $ goobers gaggle import --name copied-example example.bundle.json ./instance
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
 
 ~~~text
-Usage: goobers gate-removal-guard [path]
+Usage: goobers gate-removal-guard [--config-repo] [path]
+
+With --config-repo (TUT-A8) the guard inspects the instance config
+repository checkout (configRepoDir input, default "config-repo") against
+the workflowSource ref instead of the stage worktree.
 
 Block a tutor run whose drafted change removes or loosens the specific
 gate its own finding flagged as noisy, unless the finding cites

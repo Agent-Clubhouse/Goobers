@@ -251,6 +251,19 @@ type openPRTarget struct {
 	capability  capability.Capability
 	baseDefault string
 	inRepoDir   func(func() error) error
+	// configRepo is the config repository slug (owner/name), empty for the
+	// gaggle's own repository.
+	configRepo string
+}
+
+// prepareTutorHoldoutIn is prepareTutorHoldout that records the repository the
+// PR will live in (TUT-A8), so the merge-state refresh polls the right one.
+func prepareTutorHoldoutIn(configRepo, root, gaggle, runID, sourceTree string, classification tutorChangeClassification, changes []tutorFileChange, now time.Time) (*tutorHoldoutRecord, error) {
+	record, err := prepareTutorHoldout(root, gaggle, runID, sourceTree, classification, changes, now)
+	if record != nil {
+		record.ConfigRepo = configRepo
+	}
+	return record, err
 }
 
 // localTutorChangesIn is localTutorChanges evaluated inside the repository the
@@ -274,6 +287,7 @@ func resolveOpenPRTarget(configRepo bool, root string) (openPRTarget, error) {
 			repo:        configTarget.Repo,
 			capability:  capability.ConfigRepoWrite,
 			baseDefault: configTarget.Base,
+			configRepo:  configTarget.Repo.Owner + "/" + configTarget.Repo.Name,
 			inRepoDir:   func(fn func() error) error { return withWorkingDir(checkout, fn) },
 		}, nil
 	}
@@ -432,7 +446,8 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		body = strings.TrimRight(body, "\n") + "\n\n" + tutorClassificationPRSection(classification)
 		recordTutorLiveVerification = providerInput("recordLiveVerification", "") == "true"
 		if recordTutorLiveVerification {
-			tutorHoldout, err = prepareTutorHoldout(
+			tutorHoldout, err = prepareTutorHoldoutIn(
+				target.configRepo,
 				root,
 				os.Getenv(executor.GaggleEnvVar),
 				runID,
