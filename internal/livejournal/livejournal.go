@@ -296,6 +296,7 @@ func WithClock(now func() time.Time) Option {
 // the handle on loan instead of opening a second one; see Adopt. One handle,
 // one lock, either way.
 type Writer struct {
+	startAuthority  ControllerStartAuthority
 	runsDir         func(gaggle string) (string, bool)
 	spans           SpanSource
 	artifacts       ArtifactSource
@@ -323,10 +324,12 @@ type Writer struct {
 }
 
 type liveRun struct {
-	mu     sync.Mutex
-	gaggle string
-	dir    string
-	jr     *journal.Run
+	runID          string
+	startAuthority ControllerStartAuthority
+	mu             sync.Mutex
+	gaggle         string
+	dir            string
+	jr             *journal.Run
 	// clock is nil for an adopted run: the handle belongs to another driver
 	// and was constructed with that driver's clock, which this writer cannot
 	// (and must not) reach into. See Adopt.
@@ -622,6 +625,7 @@ func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), e
 		return nil, fmt.Errorf("livejournal: adopt run %s: read applied keys: %w", runID, err)
 	}
 	fresh := &liveRun{
+		runID: runID, startAuthority: w.startAuthority,
 		gaggle: gaggle, dir: dir, jr: jr, adopted: true,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
@@ -975,6 +979,7 @@ func (w *Writer) create(req EmitRequest, runsDir, dir string) (*liveRun, error) 
 		return nil, fmt.Errorf("livejournal: create run journal for %s: %w", req.RunID, err)
 	}
 	return &liveRun{
+		runID: req.RunID, startAuthority: w.startAuthority,
 		gaggle: req.Gaggle, dir: dir, jr: jr, clock: clock,
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
@@ -1028,6 +1033,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		return nil, fmt.Errorf("livejournal: reopen journal for %s: %w", req.RunID, err)
 	}
 	run := &liveRun{
+		runID: req.RunID, startAuthority: w.startAuthority,
 		gaggle:       req.Gaggle,
 		dir:          dir,
 		keys:         map[string]uint64{},
@@ -1123,6 +1129,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			ev.TerminalCause = &cause
 		}
 		ev.Runner = withEmitKey(ev.Runner, op.Key)
+		w.stampControllerStart(ctx, runID, run, op.Key, &ev)
 		if err := run.jr.Append(ev); err != nil {
 			return false, err
 		}
@@ -1253,6 +1260,7 @@ func withEmitKey(runner map[string]any, key string) map[string]any {
 	for k, v := range runner {
 		merged[k] = v
 	}
+	delete(merged, ControllerStartProofField)
 	merged[EmitKeyRunnerField] = key
 	return merged
 }

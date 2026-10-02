@@ -83,6 +83,11 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 		runsDirs[gaggle] = l.ForGaggle(gaggle).RunsDir()
 	}
 	opts := []livejournal.Option{}
+	if signed, err := podTokenMinter(cfg); err != nil {
+		return nil, err
+	} else if signed != nil {
+		opts = append(opts, livejournal.WithControllerStartAuthority(signed))
+	}
 	if blobs != nil {
 		opts = append(opts, livejournal.WithSpanSource(blobs))
 		// Prepared artifact sets use content references instead of placing

@@ -46,7 +46,7 @@ import (
 
 // newLiveWriter builds a real daemon live writer over a temp runs directory —
 // the in-process emission seam, exactly as the daemon wires it.
-func newLiveWriter(t *testing.T) (*livejournal.Writer, string) {
+func newLiveWriter(t *testing.T, opts ...livejournal.Option) (*livejournal.Writer, string) {
 	t.Helper()
 	runsDir := filepath.Join(t.TempDir(), "runs")
 	w, err := livejournal.NewWriter(func(gaggle string) (string, bool) {
@@ -54,7 +54,7 @@ func newLiveWriter(t *testing.T) (*livejournal.Writer, string) {
 			return "", false
 		}
 		return runsDir, true
-	})
+	}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

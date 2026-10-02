@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
@@ -116,6 +118,10 @@ type interleavingLaunchJournal struct {
 }
 
 func (j *interleavingLaunchJournal) Emit(ctx context.Context, req livejournal.EmitRequest) (livejournal.EmitResponse, error) {
+	return j.writer.Emit(ctx, req)
+}
+
+func (j *interleavingLaunchJournal) EmitController(ctx context.Context, req livejournal.EmitRequest) (livejournal.EmitResponse, error) {
 	if req.Open == nil {
 		j.ordinal++
 		aux := livejournal.EmitRequest{RunID: req.RunID, Gaggle: req.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: fmt.Sprintf("pod-aux-%d", j.ordinal), Event: &journal.Event{Type: journal.EventRunnerAnnotation}}}}
@@ -123,7 +129,7 @@ func (j *interleavingLaunchJournal) Emit(ctx context.Context, req livejournal.Em
 			return livejournal.EmitResponse{}, err
 		}
 	}
-	return j.writer.Emit(ctx, req)
+	return j.writer.EmitController(ctx, req)
 }
 
 func TestRemoteLaunchBindingUsesExactLiveStartAmidAuxiliaryEvents(t *testing.T) {
@@ -132,7 +138,11 @@ func TestRemoteLaunchBindingUsesExactLiveStartAmidAuxiliaryEvents(t *testing.T) 
 	in.Placements = []PinnedPlacement{remotePin("implement"), remoteGatePin()}
 	in.MaxRepasses = 2
 	in.LiveJournal = true
-	w, runsDir := newLiveWriter(t)
+	key, err := podauth.NewSignedKey(bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, runsDir := newLiveWriter(t, livejournal.WithControllerStartAuthority(key))
 	d := &repassIdentityAuditDispatcher{plane: surrenderStore(t)}
 	var suite testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&suite)

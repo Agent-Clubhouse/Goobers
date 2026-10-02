@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
@@ -154,6 +155,9 @@ const PodPrincipalIssuer = "goobers/pod"
 // config-observability credential. It carries neither instance roles nor a run
 // identity.
 const WorkerPrincipalIssuer = "goobers/worker"
+
+// ControllerJournalPrincipalIssuer confines trusted emission to the journal plane.
+const ControllerJournalPrincipalIssuer = "goobers/controller-journal"
 
 // WorkerBlobPrincipalIssuer is a blob-only resident-worker credential.
 const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
@@ -425,6 +429,12 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == ControllerJournalPrincipalIssuer {
+			if request.Method == http.MethodPost && journalPlanePath(request.URL.Path) {
+				return nil
+			}
+			return errors.New("controller journal capability is confined to journal emission")
+		}
 		if handled, err := authorizeLaunchReceipt(request, principal); handled {
 			return err
 		}
@@ -621,6 +631,7 @@ type handlerConfig struct {
 	recovery                RecoveryService
 	surrenders              SurrenderService
 	launchReceipts          LaunchReceiptService
+	controllerJournal       livejournal.ControllerJournalVerifier
 	state                   StateService
 	telemetryDefects        TelemetryDefectAggregateService
 	podRunGaggle            func(context.Context, string) (string, error)

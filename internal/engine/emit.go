@@ -52,7 +52,7 @@ func (a *Activities) EmitJournal(ctx context.Context, req livejournal.EmitReques
 		return livejournal.EmitResponse{}, classifySeamError(invoke.InfrastructureFailure(
 			fmt.Errorf("run %s requires live journaling but this worker wires no journal emitter: %w", req.RunID, ErrNotConfigured)))
 	}
-	resp, err := a.Journal.Emit(ctx, req)
+	resp, err := emitControllerJournal(ctx, a.Journal, req)
 	if err != nil {
 		return livejournal.EmitResponse{}, classifySeamError(invoke.InfrastructureFailure(err))
 	}
@@ -261,4 +261,13 @@ func liveOpFrom(op JournalOp) livejournal.Op {
 		}
 	}
 	return out
+}
+
+func emitControllerJournal(ctx context.Context, emitter JournalEmitter, req livejournal.EmitRequest) (livejournal.EmitResponse, error) {
+	if trusted, ok := emitter.(interface {
+		EmitController(context.Context, livejournal.EmitRequest) (livejournal.EmitResponse, error)
+	}); ok {
+		return trusted.EmitController(ctx, req)
+	}
+	return emitter.Emit(ctx, req)
 }

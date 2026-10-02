@@ -283,8 +283,9 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		//   livejournal: emit refused (401 unauthenticated)
 		// It does hold the shared signing key — the same one it uses to mint
 		// the bearer it stamps on stage pods — so it mints per batch, scoped to
-		// the run being emitted for. Env token still wins when present, which
-		// keeps the single-run/pod posture working unchanged.
+		// the exact run and batch being emitted. Env token still wins when present, which
+		// retains ordinary pod journal privileges. Trusted launch anchors require
+		// the controller signer; a fixed pod bearer cannot establish them.
 		emitter := &livejournal.HTTPEmitter{
 			BaseURL: *daemonAPI,
 			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
@@ -299,7 +300,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 					pf(stderr, "error: load pod token key for live journal: %v\n", kerr)
 					return 2
 				} else if signed != nil {
-					emitter.Minter = signed
+					emitter.ControllerMinter = signed
 				}
 			}
 		}

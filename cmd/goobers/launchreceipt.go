@@ -5,6 +5,7 @@ import (
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/launchreceipt"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -18,5 +19,9 @@ func appendLaunchReceiptHandlerOption(options []httpapi.HandlerOption, root stri
 	if err != nil {
 		return nil, err
 	}
-	return append(options, httpapi.WithLaunchReceiptService(store)), nil
+	options = append(options, httpapi.WithLaunchReceiptService(store))
+	if controller, ok := verifier.(livejournal.ControllerJournalVerifier); ok {
+		options = append(options, httpapi.WithControllerJournalVerifier(controller))
+	}
+	return options, nil
 }

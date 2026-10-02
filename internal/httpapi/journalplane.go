@@ -117,7 +117,7 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 				return
 			}
 		}
-		response, err := journal.Emit(request.Context(), input)
+		response, err := emitJournalWithAuthority(request, input, journal, config.controllerJournal)
 		if err != nil {
 			writeJournalPlaneError(w, errorLog, err)
 			return
@@ -136,6 +136,8 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 // write-plane mapping.
 func writeJournalPlaneError(w http.ResponseWriter, errorLog *log.Logger, err error) {
 	switch {
+	case errors.Is(err, errControllerJournalAuthority):
+		writeError(w, http.StatusForbidden, "controller_authority_required", "controller journal authority was not accepted")
 	case errors.Is(err, livejournal.ErrTerminal):
 		writeError(w, http.StatusConflict, "journal_terminal", "the run journal is terminal; new events are refused")
 	case errors.Is(err, livejournal.ErrUnknownRun):

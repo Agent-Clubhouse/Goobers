@@ -8,10 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/launchreceipt"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/podauth"
 )
 
@@ -49,5 +55,44 @@ func TestDaemonLaunchReceiptWiringPersistsOutsideRunMounts(t *testing.T) {
 	}
 	if err := client.Record(t.Context(), r); err == nil {
 		t.Fatal("duplicate accepted")
+	}
+}
+
+func TestDaemonControllerJournalWiring(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q"}}
+	cfg.API.PodTokenKeyFile = filepath.Join(layout.Root, "controller.key")
+	if err := os.WriteFile(cfg.API.PodTokenKeyFile, bytes.Repeat([]byte{7}, 32), 0600); err != nil {
+		t.Fatal(err)
+	}
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "web"}}}}
+	writer, err := buildLiveJournalWriter(layout, cfg, set, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	key, err := podTokenMinter(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := appendLaunchReceiptHandlerOption([]httpapi.HandlerOption{httpapi.WithJournalService(writer)}, layout.Root, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := podauth.NewAuthenticator(key, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts = append(opts, httpapi.WithAuthenticator(auth))
+	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0), opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := livejournal.HTTPEmitter{BaseURL: server.URL, ControllerMinter: key}
+	response, err := client.Emit(t.Context(), liveOpenBatch("controller-wired", "web", time.Now()))
+	if err != nil || len(response.Starts) != 1 {
+		t.Fatalf("controller wiring: %+v %v", response, err)
 	}
 }

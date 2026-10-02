@@ -2,7 +2,7 @@ package livejournal
 
 import "github.com/goobers/goobers/internal/journal"
 
-// StartAcknowledgment identifies an actual durable start event. Its metadata
+// StartAcknowledgment identifies a durable, controller-authenticated start. Its metadata
 // comes from the accepted journal event, including on duplicate requests; a
 // caller-supplied op cannot relabel another event that already owns its key.
 type StartAcknowledgment struct {
@@ -17,6 +17,10 @@ type StartAcknowledgment struct {
 
 func (run *liveRun) rememberStart(key string, ev journal.Event) {
 	if ev.Type != journal.EventStageStarted && ev.Type != journal.EventReviewerStarted {
+		return
+	}
+	proof, _ := ev.Runner[ControllerStartProofField].(string)
+	if run.startAuthority == nil || !run.startAuthority.VerifyControllerStart(run.runID, key, ev, proof) {
 		return
 	}
 	if run.starts == nil {

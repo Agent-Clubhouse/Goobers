@@ -21,7 +21,7 @@ import (
 // Token carries a fixed bearer when the caller already holds one (a stage pod
 // is handed its own per-run token). A WORKER holds no such token: it serves
 // many runs and is not itself a pod, so it carries the signing KEY instead and
-// mints per batch — set Minter for that. With neither, no Authorization header
+// mints exact-batch controller authority — set ControllerMinter for that. With neither, no Authorization header
 // is sent, which is the loopback/no-auth posture only. A transport error or
 // 5xx response is retried with jittered backoff (RetryDeadline, #4260) before
 // surfacing as a plain error; a non-retryable refusal (4xx) surfaces
@@ -36,11 +36,11 @@ type HTTPEmitter struct {
 	// Token is the bearer presented as Authorization; empty sends none.
 	Token string
 	// Minter, used only when Token is empty, issues a bearer scoped to the run
-	// each batch belongs to. This is the worker's posture: it holds the shared
-	// signing key (the same one it uses to mint stage-pod tokens) rather than
-	// any single run's token, so the credential is derived per batch from the
-	// run being emitted for — never a long-lived ambient one.
+	// each batch belongs to. This grants ordinary pod journal access only;
+	// it cannot establish controller origin for lifecycle starts.
 	Minter TokenMinter
+	// ControllerMinter authorizes exact controller batches; it is never given to pods.
+	ControllerMinter ControllerJournalMinter
 	// Client overrides the HTTP client; nil uses a 30s-timeout default.
 	Client *http.Client
 	// RetryDeadline bounds how long Emit retries a transport error or 5xx
@@ -93,6 +93,11 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	if e.ControllerMinter != nil {
+		copyClient := *client
+		copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copyClient
+	}
 	deadline := e.RetryDeadline
 	if deadline <= 0 {
 		deadline = defaultEmitRetryDeadline
@@ -107,6 +112,16 @@ func (e *HTTPEmitter) Emit(ctx context.Context, req EmitRequest) (EmitResponse, 
 		switch {
 		case e.Token != "":
 			httpReq.Header.Set("Authorization", "Bearer "+e.Token)
+		case e.ControllerMinter != nil:
+			digest, digestErr := ControllerJournalDigest(req)
+			if digestErr != nil {
+				return false, digestErr
+			}
+			token, mintErr := e.ControllerMinter.MintControllerJournal(req.RunID, digest, ControllerJournalTTL)
+			if mintErr != nil {
+				return false, mintErr
+			}
+			httpReq.Header.Set("Authorization", "Bearer "+token)
 		case e.Minter != nil:
 			// Scoped to THIS batch's run, so a worker serving many runs never
 			// presents one run's authority while emitting for another. Minted
