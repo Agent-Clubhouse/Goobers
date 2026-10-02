@@ -167,10 +167,6 @@ func runRuntimePreflight(args []string, stdout, stderr io.Writer) int {
 	return exitCode
 }
 
-func buildRuntimePreflightReport(root, workflowName, identityMode string) (runtimePreflightReport, error) {
-	return buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode, false)
-}
-
 func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode string, probe bool) (runtimePreflightReport, error) {
 	layout := layoutFor(root)
 	if _, err := os.Stat(layout.ConfigFile()); err != nil {

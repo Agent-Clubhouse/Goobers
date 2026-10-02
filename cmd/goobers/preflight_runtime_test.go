@@ -505,7 +505,7 @@ func TestRuntimePreflightIdentityAndPlanAcrossDSLVersions(t *testing.T) {
 			if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			report, err := buildRuntimePreflightReport(root, "implement", "actual")
+			report, err := buildRuntimePreflightReportWithReadiness(root, "implement", "actual", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -565,7 +565,7 @@ func TestRuntimePreflightResolvesExecutionRunControlPolicy(t *testing.T) {
 				wf.Spec.RunControls = policySet.Workflows[0].Spec.RunControls
 				rewriteRuntimePreflightYAML(t, workflowPath, wf)
 			}
-			got, err := buildRuntimePreflightReport(root, "implement", "actual")
+			got, err := buildRuntimePreflightReportWithReadiness(root, "implement", "actual", false)
 			if err != nil {
 				t.Fatal(err)
 			}
