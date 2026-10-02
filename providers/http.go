@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/goobers/goobers/internal/mutationreceipt"
 )
 
 // maxPerPage is the GitHub REST API's maximum page size; getAllPages requests
@@ -407,6 +409,10 @@ func newJSONRequest(ctx context.Context, method, endpoint string, body interface
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	if mutationreceipt.IsFreshRead(ctx) {
+		req.Header.Set(mutationreceipt.FreshReadHeader, "true")
+		req.Header.Set("Cache-Control", "no-cache")
+	}
 	return req, nil
 }
 

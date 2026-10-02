@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apireadstore"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/sqliteuri"
 
 	"github.com/goobers/goobers/internal/platform/lock"
@@ -781,5 +782,40 @@ func TestCleanStaleAPIReadCacheLocksSweepsAcrossRepeatedCallsWithoutRestart(t *t
 	}
 	if len(entriesBefore) != len(entriesAfter) {
 		t.Fatalf("directory entry count changed on a no-op sweep: before=%d after=%d", len(entriesBefore), len(entriesAfter))
+	}
+}
+
+func TestAPIReadCacheMutationEvidenceBypassesSnapshot(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("If-None-Match") != "" {
+			t.Error("fresh evidence must not use stored validators")
+		}
+		w.Header().Set("ETag", `"snapshot"`)
+		if calls == 1 {
+			_, _ = io.WriteString(w, `[{"body":"old"}]`)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"body":"current"}]`)
+	}))
+	t.Cleanup(server.Close)
+	cache := newAPIReadCache(t.TempDir(), "same-tick", server.Client())
+	url := server.URL + "/repos/acme/app/issues/7/comments"
+	if got := apiReadBody(t, apiReadGet(t, cache, url, "token")); got != `[{"body":"old"}]` {
+		t.Fatal(got)
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set(mutationreceipt.FreshReadHeader, "true")
+	response, err := cache.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := apiReadBody(t, response); got != `[{"body":"current"}]` || calls != 2 {
+		t.Fatalf("fresh evidence=%s calls=%d", got, calls)
 	}
 }

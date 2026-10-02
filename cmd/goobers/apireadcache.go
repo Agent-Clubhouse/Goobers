@@ -231,7 +231,7 @@ func invalidateCurrentProviderSnapshot(root string) error {
 // Do implements providers.HTTPClient. Only idempotent GETs are cached; every
 // other method and any error path is a straight pass-through.
 func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
-	if c == nil || c.schedulerDir == "" || req == nil || req.Method != http.MethodGet {
+	if c == nil || c.schedulerDir == "" || req == nil || req.Method != http.MethodGet || req.Header.Get(providers.MutationFreshReadHeader) == "true" {
 		return c.do(req)
 	}
 

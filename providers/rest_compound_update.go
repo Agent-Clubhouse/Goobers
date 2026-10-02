@@ -137,6 +137,9 @@ func restWorkItemPatch(before WorkItem, req UpdateWorkItemRequest) (map[string]i
 }
 
 func patchRESTIssue(ctx context.Context, c restDoer, baseURL string, repo RepositoryRef, id string, patch map[string]interface{}) error {
+	if client := continuationClient(c); client != nil {
+		return client.patch(ctx, repo, "issues", id, patch, nil)
+	}
 	endpoint, err := joinURL(baseURL, "repos", repo.Owner, repo.Name, "issues", id)
 	if err != nil {
 		return err
@@ -332,7 +335,7 @@ var operationMarkerPattern = regexp.MustCompile(`\n*<!-- goobers:operation key=[
 // comment is its last effect. Unkeyed or comment-less updates carry no marker
 // and are never treated as applied.
 func operationApplied(ctx context.Context, c restPager, baseURL string, repo RepositoryRef, id, key, comment string) (bool, error) {
-	if key == "" || comment == "" {
+	if continuationClient(c) != nil || key == "" || comment == "" {
 		return false, nil
 	}
 	return hasOperationComment(ctx, c, baseURL, repo, id, key)
@@ -357,7 +360,7 @@ func hasOperationComment(ctx context.Context, c restPager, baseURL string, repo 
 // response) is adopted rather than reported by re-reading for the marker —
 // the create-then-adopt shape decomposition's AppendMarkerComment uses.
 func postOperationComment(ctx context.Context, c restPager, baseURL string, repo RepositoryRef, id, key, body string, post func(string) error) error {
-	if key == "" {
+	if continuationClient(c) != nil || key == "" {
 		return post(body)
 	}
 	createErr := post(body + "\n\n" + OperationCommentMarker(key))

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/mutationreceipt"
+
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
@@ -52,6 +54,8 @@ type GiteaProvider struct {
 	tokenSource TokenSource
 	// recorder receives "external ref touched" facts for the run journal.
 	recorder MutationRecorder
+	// Private and nil in production until #6356 PR3 completes transport and provider coverage.
+	mutationSession *mutationreceipt.Session
 	// registrar receives credential forms that must be scrubbed from journals.
 	registrar SecretRegistrar
 	// rateLimitObserver receives rate-limit decisions. Mostly inert on Gitea

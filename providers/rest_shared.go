@@ -251,6 +251,14 @@ func scanClaimEpochs(raw []restComment, markerAuthor string) []ClaimEpoch {
 // postAttributedComment appends an issue comment carrying the run's
 // attribution marker for the named action.
 func postAttributedComment(ctx context.Context, c restDoer, baseURL string, attribution Attribution, repo RepositoryRef, id, body, action string) error {
+	if client := continuationClient(c); client != nil {
+		comment, err := client.comment(ctx, repo, id, body, action, attribution)
+		if err != nil {
+			return err
+		}
+		client.provider.recordExternalRef(ctx, ExternalRef{Provider: client.kind, Ref: issueRef(repo, id), URL: comment.HTMLURL, Operation: "comment"})
+		return nil
+	}
 	body, err := withAttribution(body, attribution, action)
 	if err != nil {
 		return err
@@ -342,6 +350,9 @@ func repositoryRef(kind ProviderKind, repo *restRepository) *RepositoryRef {
 }
 
 func updateRESTComment(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, repo RepositoryRef, commentID, body string) error {
+	if client := continuationClient(c); client != nil {
+		return client.updateComment(ctx, repo, commentID, body, attribution)
+	}
 	if err := requireOwnerRepo(repo); err != nil {
 		return err
 	}
@@ -367,6 +378,14 @@ func updateRESTComment(ctx context.Context, c restMutationRecorder, kind Provide
 }
 
 func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, repo RepositoryRef, id, body string, mapComment func(restComment) Comment) (Comment, error) {
+	if client := continuationClient(c); client != nil {
+		comment, err := client.comment(ctx, repo, id, body, "comment", attribution)
+		if err != nil {
+			return Comment{}, err
+		}
+		c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(repo, id), URL: comment.HTMLURL, Operation: "comment"})
+		return mapComment(comment), nil
+	}
 	if err := requireOwnerRepo(repo); err != nil {
 		return Comment{}, err
 	}
@@ -497,7 +516,7 @@ func closeRESTPullRequest(ctx context.Context, c restMutationRecorder, kind Prov
 		return ClosePullRequestResult{}, err
 	}
 	var out restClosedPull
-	if err := c.do(ctx, http.MethodPatch, endpoint, map[string]string{"state": "closed"}, &out); err != nil {
+	if err := closeContinuationPull(ctx, c, req, endpoint, &out); err != nil {
 		return ClosePullRequestResult{}, err
 	}
 	if req.Comment != "" {
@@ -556,6 +575,9 @@ type restReviewResponse struct {
 }
 
 func submitRESTPullRequestReview(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req PullRequestReviewRequest) (PullRequestReviewResult, error) {
+	if client := continuationClient(c); client != nil {
+		return client.review(ctx, req, attribution)
+	}
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestReviewResult{}, err
 	}

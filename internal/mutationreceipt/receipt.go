@@ -1,5 +1,5 @@
 // Package mutationreceipt defines inert semantic provider-mutation capture and
-// evidence contracts. It never decides whether to skip or retry an action.
+// evidence contracts. Reconciliation requires fresh provider-specific evidence.
 package mutationreceipt
 
 import (
