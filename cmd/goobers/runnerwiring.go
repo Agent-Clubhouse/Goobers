@@ -346,8 +346,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		GateGooberCapabilities:    gateGooberCaps,
 		AgentProvenance:           agentProvenance,
 		BaselineHealth:            baselineHealth,
-		IssueOwnershipAssignees:   input.IssueOwnershipAssignees,
-		IssueOwnershipUnassigned:  input.IssueOwnershipUnassigned,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(l, cfg, resolver, sharedReg),
@@ -377,9 +375,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
 	}, cfg, tel)
-	if tel != nil {
-		rc.Telemetry = tel
-	}
+	applyRunnerConfigFinalizers(&rc, input, tel)
 	wtMgr.SetPathLengthLimits(pathLimits)
 	// Refreshed unconditionally, exactly like the path-length limits above —
 	// on BOTH the newly-constructed and the reused-manager path (#4405). A
@@ -393,6 +389,14 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// (SetPathLengthLimits's own shape) is the wrong model here.
 	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
 	return rc, wtMgr, nil
+}
+
+func applyRunnerConfigFinalizers(cfg *runner.Config, input runnerCompositionInput, tel *telemetry.Client) {
+	if tel != nil {
+		cfg.Telemetry = tel
+	}
+	cfg.IssueOwnershipAssignees = input.IssueOwnershipAssignees
+	cfg.IssueOwnershipUnassigned = input.IssueOwnershipUnassigned
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {
