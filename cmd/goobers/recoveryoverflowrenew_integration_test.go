@@ -4,6 +4,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,39 @@ func TestIntegrationTerminalFinalizationRenewsOverflowLikeABundle(t *testing.T) 
 	}
 	if !f.journaledOverflowDeadline("renew-overflow", want) {
 		t.Fatal("the overflow renewal was not journaled with recoveryOverflow=true and its new deadline")
+	}
+}
+
+// TestIntegrationTerminalOverflowRenewalSkipsAnUnresolvablePin pins the
+// best-effort half of the design: an overflow record whose pin is gone has
+// nothing restorable to extend, and that must never defer terminal
+// finalization (#5354) — the record keeps its capture-time deadline and the
+// skip is journaled so the unrenewed deadline is explicable.
+func TestIntegrationTerminalOverflowRenewalSkipsAnUnresolvablePin(t *testing.T) {
+	testdep.Require(t, "git")
+	f := newReclaimFixture(t, 1)
+	f.writeConfig()
+	f.seed(nil)
+	captured := f.overflowSeed("renew-unpinned", 4, "pin removed\n")
+	recoveryCLIGit(t, f.mirror, "update-ref", "-d", captured.Ref)
+	if err := finalizeTerminalRun(f.layout, nil, f.manager, "renew-unpinned"); err != nil {
+		t.Fatalf("an unresolvable overflow pin deferred terminal finalization: %v", err)
+	}
+	if got := f.overflowRecordFor("renew-unpinned").RetainUntil; !got.Equal(captured.RetainUntil) {
+		t.Fatalf("an overflow record whose pin is gone was renewed: got %s, want %s", got, captured.RetainUntil)
+	}
+	events, err := journal.ReadInstanceLog(f.layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := false
+	for _, event := range events {
+		if event.Error != nil && event.Error.Code == "recovery_overflow_renewal_skipped" && strings.Contains(event.Error.Message, captured.Ref) {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Fatal("the skipped overflow renewal was not journaled")
 	}
 }
 
