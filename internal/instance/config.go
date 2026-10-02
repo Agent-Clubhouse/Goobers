@@ -457,14 +457,14 @@ type APIConfig struct {
 	// Path only; key material never appears in instance.yaml (CFG-009).
 	// Unset keeps the in-memory registry, which is correct whenever daemon
 	// and dispatcher share a process.
-	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty"`
+	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.
 // Paths only — key material never appears in instance.yaml (CFG-009).
 type APITLSConfig struct {
 	CertFile string `json:"certFile" yaml:"certFile"`
-	KeyFile  string `json:"keyFile" yaml:"keyFile"`
+	KeyFile  string `json:"keyFile" yaml:"keyFile" credentialPath:"file"`
 }
 
 // APIAuthConfig selects the daemon API authenticator behind the
@@ -1192,7 +1192,7 @@ type SecretStoreConfig struct {
 	// VaultURI is the https vault endpoint, e.g. "https://acme.vault.azure.net".
 	VaultURI string `json:"vaultURI,omitempty" yaml:"vaultURI,omitempty"`
 	// Directory is an absolute directory of versioned RSA keys for file-key.
-	Directory string `json:"directory,omitempty" yaml:"directory,omitempty"`
+	Directory string `json:"directory,omitempty" yaml:"directory,omitempty" credentialPath:"directory"`
 	// Auth selects how this process authenticates to the store.
 	Auth *SecretStoreAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 	// CacheTTLSeconds bounds the in-memory cache of resolved secrets so
@@ -1483,7 +1483,7 @@ type OTLPTLSConfig struct {
 	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
 	// KeyFile is the PEM private key for CertFile. Requires CertFile; both
 	// or neither.
-	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty"`
+	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty" credentialPath:"file"`
 }
 
 // EngineConfig identifies the Temporal frontend and task queue shared by all
