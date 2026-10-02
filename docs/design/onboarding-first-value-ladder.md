@@ -400,8 +400,8 @@ Hygiene preconditions before the gate becomes required: fix the demo-tour
 flake (#1557 leaked global OTLP provider) and delete its wall-clock assert
 (the repo's own never-assert-wall-clock lesson); service-lifecycle smoke
 (#2438) rides systemd user-mode on ubuntu-latest separately. A manual-dispatch
-real-agent variant (GHCP PAT exists in CI) mirrors ghcp-echo.yml — optional,
-never a merge gate.
+real-agent variant would need a provisioned Copilot token (the former
+ghcp-echo drift workflow was removed, #6345) — optional, never a merge gate.
 
 ## 7. Decisions (recommendations adopted as rulings)
 
