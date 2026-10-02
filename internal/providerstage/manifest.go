@@ -476,6 +476,7 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.TelemetryRead, "telemetry access is not admitted, so the connector would read telemetry without declared authority at runtime"),
 			requiredWhenFlagEquals(capability.GitHubPRWrite, "--format", "tutor-live-verification", "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime"),
+			optional(capability.ConfigRepoWrite, "optional with --format tutor-live-verification: it lets the holdout merge-state refresh read PRs the Tutor opened in the instance config repository; without it those holdouts stay pending"),
 		},
 	},
 }

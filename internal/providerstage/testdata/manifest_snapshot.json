@@ -594,6 +594,11 @@
         "consequence": "the capability-scoped credential is not injected, so Tutor holdout merge-state refresh fails at runtime",
         "flag": "--format",
         "flagValue": "tutor-live-verification"
+      },
+      {
+        "capability": "configrepo:write",
+        "consequence": "optional with --format tutor-live-verification: it lets the holdout merge-state refresh read PRs the Tutor opened in the instance config repository; without it those holdouts stay pending",
+        "optional": true
       }
     ]
   },

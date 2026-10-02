@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "93acf9ac8e362ed84a0c7ca2ec8d9199b7746ec2d7d1d7085ce45a1d8c3fe960",
+  "snapshotSha256": "983df6e84bbe4be6447a4dc28cd22a575b0bb839570ce3c97791594d49444bcb",
   "changes": [
     {
       "version": 1,
@@ -64,6 +64,10 @@
     {
       "version": 16,
       "description": "push-branch and open-pr gain an opt-in --config-repo flag (TUT-A8, #1220): with it, push-branch requires configrepo:write instead of repo:push and open-pr requires configrepo:write instead of provider:pr:write, so a config-repo-targeted stage declares only the config-repository credential. Add config-checkout (requires configrepo:write). Without the flag every requirement is unchanged (the existing uses become required-unless-flag), so no shipped config's admission changes; configrepo:write is a new stage-declarable capability no shipped config declares."
+    },
+    {
+      "version": 17,
+      "description": "telemetry-query declares configrepo:write as an OPTIONAL use (TUT-A8, #1220): the Tutor live-verification holdout refresh reads PRs opened in the instance config repository with it, and leaves such holdouts pending without it. Optional is never required, so no shipped config's admission changes."
     }
   ]
 }
