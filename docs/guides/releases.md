@@ -121,7 +121,8 @@ matrix's declared level must match its last history transition, merging a
 transition effective in (for example) `v0.5.0` prevents an intermediate
 `v0.4.x` patch from passing release validation. If that hotfix must ship first,
 prepare its branch from the intended release base and edit the support matrix
-there to remove the not-yet-effective transition, then validate and publish the
+there to remove the not-yet-effective transition, set `NextPlannedRelease` on
+that branch to no earlier than the patch being cut, then validate and publish the
 patch from that branch. Do not rewrite the already-merged transition on the
 main development line merely to cut the hotfix.
 
