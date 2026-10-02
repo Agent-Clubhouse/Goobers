@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -145,28 +144,15 @@ func readInventory(ctx context.Context, root string, maxEntries int, tolerant bo
 }
 
 func readInventoryNames(root string, before os.FileInfo, limit int) ([]string, error) {
-	file, err := os.Open(root)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	after, err := file.Stat()
-	if err != nil || !os.SameFile(before, after) {
-		return nil, fmt.Errorf("recovery inventory changed while opening")
-	}
-	names, err := file.Readdirnames(limit + 2) // one lock plus one overflow probe
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	count := len(names)
-	if slices.Contains(names, ".inventory.lock") {
-		count--
-	}
-	if count > limit {
-		return nil, fmt.Errorf("%w: %d of %d slots used in %s", ErrInventoryFull, count, limit, root)
-	}
-	slices.Sort(names)
-	return names, nil
+	return listStableNames(root, before, listNamesOptions{
+		readLimit:        limit + 2, // one lock plus one overflow probe
+		changedRootError: "recovery inventory changed while opening",
+		ignoredForCount:  []string{".inventory.lock"},
+		maxCount:         limit,
+		fullError: func(count int) error {
+			return fmt.Errorf("%w: %d of %d slots used in %s", ErrInventoryFull, count, limit, root)
+		},
+	})
 }
 
 func readInventoryEntry(root, name string) (InventoryEntry, error) {
