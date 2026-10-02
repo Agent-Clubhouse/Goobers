@@ -6,11 +6,11 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-func (row *RunRow) observeGateOutcome(event journal.Event, stages map[string]*StageRow) {
-	row.OutcomeVerdict = event.Verdict
-	row.OutcomeTarget = event.Target
+func (r *RunRow) observeGateOutcome(event journal.Event, stages map[string]*StageRow) {
+	r.OutcomeVerdict = event.Verdict
+	r.OutcomeTarget = event.Target
 	if gateRepassesStage(event, stages) {
-		row.RepassCount++
+		r.RepassCount++
 	}
 }
 
