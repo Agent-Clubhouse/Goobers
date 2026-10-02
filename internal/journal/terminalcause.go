@@ -102,3 +102,13 @@ func TerminalCauseFromEvents(events []Event) (*TerminalCause, error) {
 	}
 	return nil, ErrTerminalCauseUnavailable
 }
+
+// OperatorAbortEvent records an offline operator abort. The terminal event is
+// itself the causal fact; nextSeq is the sequence the exclusive run writer will
+// assign to this append, after any best-effort cleanup events.
+func OperatorAbortEvent(nextSeq uint64) Event {
+	return Event{Type: EventRunFinished, Status: string(PhaseAborted), Disposition: RunDispositionProduced,
+		TerminalCause: &TerminalCause{Schema: TerminalCauseSchema, Phase: PhaseAborted,
+			Classification: TerminalOperatorAbort, SelectorKind: "condition", Code: "run_canceled",
+			Message: "run aborted by operator request", CausalEventSeq: nextSeq}}
+}
