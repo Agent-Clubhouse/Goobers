@@ -87,6 +87,65 @@ func TestPRSelectLeavesRunAbortedPRWithCommentsParked(t *testing.T) {
 	assertFakeIssueLabels(t, server, 5438, []string{abortedRunLabel}, nil)
 }
 
+func TestPRSelectClearsRunAbortedAfterVerifiedSuccessfulRemediation(t *testing.T) {
+	const number = 6407
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	remediatedAt := abortedAt.Add(2 * time.Hour)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	server.addRawCommentAtAsType(number, "reviewer", "", "substantive finding", remediatedAt.Add(-time.Hour))
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), remediatedAt)
+
+	root := initDemo(t)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	resultFile := filepath.Join(workDir, "selected-pr.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 0 || !strings.Contains(stdout, "selected PR #6407") {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want remediated PR selected", code, stdout, stderr)
+	}
+	assertFakeIssueLabels(t, server, number, nil, []string{abortedRunLabel})
+}
+
+func TestPRSelectLeavesVerifiedRemediationParkedAfterNewerAbort(t *testing.T) {
+	const number = 6408
+	remediatedAt := time.Date(2026, 10, 1, 21, 21, 22, 0, time.UTC)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), remediatedAt)
+	server.setLabelEventTime(number, abortedRunLabel, true, remediatedAt.Add(time.Minute))
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
+func TestPRSelectLeavesVerifiedRemediationWithUnresolvedThreadParked(t *testing.T) {
+	const number = 6409
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), abortedAt.Add(time.Hour))
+	server.addPRInlineReviewComment(number)
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
+func TestPRSelectLeavesVerifiedRemediationUnderHumanHoldParked(t *testing.T) {
+	const number = 6410
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), abortedAt.Add(time.Hour))
+	server.mu.Lock()
+	server.prs[number].labels = append(server.prs[number].labels, providers.LabelNeedsHuman)
+	server.issues[number].labels = append(server.issues[number].labels, providers.LabelNeedsHuman)
+	server.mu.Unlock()
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
 func TestPRSelectLeavesRunAbortedPRWithChangesRequestedReviewParked(t *testing.T) {
 	server := newReviewedRunAbortedPRFixture(t, 5439)
 	server.addPRReview(5439, "CHANGES_REQUESTED")
