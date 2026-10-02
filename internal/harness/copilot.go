@@ -1005,8 +1005,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: tool-constrained run conflicts with configured argument %q", conflict)
 		}
 	}
-	argv := append(baseCommand, copilotPromptArg(flag, prompt))
+	var promptStdin []byte
 	promptArg := len(baseCommand)
+	argv := append(baseCommand, copilotPromptArg(flag, prompt))
+	if shouldUseCopilotPromptStdin(c.Command, prompt) {
+		baseCommand = resolveStdioHarnessCommand(c.Command)
+		argv = append(append([]string(nil), baseCommand...), copilotPromptArg(flag, ""))
+		promptArg = -1
+		promptStdin = []byte(prompt)
+	}
 	if resolution.Model != "" {
 		argv = append(argv, "--model", resolution.Model)
 	}
@@ -1087,7 +1094,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 			return Outcome{}, fmt.Errorf("harness: copilot-cli: sandbox: %w", err)
 		}
 		argv = wrapped
-		promptArg += shift
+		if promptArg >= 0 {
+			promptArg += shift
+		}
 	}
 
 	// #2962: record the CLI version and the effective tool/permission
@@ -1116,7 +1125,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// Finish while the wrapper-owned log still exists, before cleanupSession.
 	defer func() { runErr = errors.Join(runErr, nativeCheckpoints.finish(runErr)) }()
 
-	runner, closeControlledSession := c.prepareRequiredMCPRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
+	runner, closeControlledSession := c.prepareCopilotProcessRunner(req, promptArg, mcpArg, resolution.Model, harnessOptions, confinement)
 	defer closeControlledSession()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -1127,6 +1136,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	}
 	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:                      argv,
+		Stdin:                        promptStdin,
 		Dir:                          req.Workspace,
 		Env:                          env,
 		Timeout:                      req.Timeout,
@@ -1155,7 +1165,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		}
 		result, payload, runErr, completionErr = runCopilotCompletionRepair(
 			ctx, runner, req, result, payload, argv, env, promptArg, flag,
-			completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
+			promptStdin, completionInResponse, nativeTranscriptPath, started, completionErr, agentTelemetry,
 		)
 	}
 	out = Outcome{
@@ -1201,6 +1211,7 @@ func runCopilotCompletionRepair(
 	argv, env []string,
 	promptArg int,
 	flag string,
+	promptStdin []byte,
 	completionInResponse bool,
 	nativeTranscriptPath string,
 	started time.Time,
@@ -1229,9 +1240,15 @@ func runCopilotCompletionRepair(
 		recoveryCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		recoveryStdout = recoveryCapture
 	}
-	recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
+	recoveryStdin := promptStdin
+	if promptArg >= 0 {
+		recoveryArgv[promptArg] = copilotPromptArg(flag, recoveryPrompt)
+	} else {
+		recoveryStdin = []byte(recoveryPrompt)
+	}
 	recovery, err := runner.Run(ctx, ProcessRequest{
 		Command:                      recoveryArgv,
+		Stdin:                        recoveryStdin,
 		Dir:                          req.Workspace,
 		Env:                          env,
 		Timeout:                      remaining,
