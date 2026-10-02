@@ -127,6 +127,8 @@ type Config struct {
 	Webhook          WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal           PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry        TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// Temporal declares opt-in payload codec library settings.
+	Temporal *TemporalConfig `json:"temporal,omitempty" yaml:"temporal,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
@@ -1331,6 +1333,9 @@ type AgentModelGitHubAppConfig struct {
 // TelemetryConfig configures the local telemetry rollup store and optional
 // collector push (§8).
 type TelemetryConfig struct {
+	// Exporters are named, independent remote destinations. The legacy single
+	// destination blocks remain supported when this list is empty.
+	Exporters []TelemetryExporterConfig `json:"exporters,omitempty" yaml:"exporters,omitempty"`
 	// Enabled toggles OTel client construction, span emission, local SQLite
 	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
@@ -2580,6 +2585,9 @@ func (c *Config) Validate() error {
 	// Store declarations must validate before any section checks a store-backed token.
 	stores, err := c.validateSecretStores()
 	if err != nil {
+		return err
+	}
+	if err := c.validateTemporalPayloadCodec(); err != nil {
 		return err
 	}
 	return c.validateConfigSections(stores)

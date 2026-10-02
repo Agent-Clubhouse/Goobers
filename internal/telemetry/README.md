@@ -136,7 +136,9 @@ The default `go test ./test/scale/...` runs a fast, merge-safe correctness check
 oversized records proving resilience) and asserts no wall-clock threshold. The
 target-scale latency measurement is opt-in: set `GOOBERS_SCALE_LARGE=<mult>`
 (e.g. `1`, `10`, `100`) to run `TestMeasureLargeScale`. See the `test/scale`
-package doc for the full flag reference.
+package doc for the full flag reference. `.github/workflows/scale-suite.yml`
+runs that measurement weekly (and on `workflow_dispatch`) at 3× and 10×, and
+publishes each report as a `scale-results-<mult>x` artifact and job summary.
 
 ## OTLP collector
 

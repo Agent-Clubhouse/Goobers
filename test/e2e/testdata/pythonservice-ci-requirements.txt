@@ -1,0 +1,13 @@
+# The pytest environment the declared-dependency integration job provisions for
+# test/e2e/python_gaggle_integration_test.go (#4615). Every distribution is
+# pinned: CI caches these wheels under a key derived from this file and installs
+# them with --no-index, so the PyPI index is contacted only when this file
+# changes (or on a cold cache), never inside the test itself.
+#
+# Kept outside testdata/pythonservice/ on purpose: that directory is copied
+# verbatim into the fixture repository the gaggle runs against.
+pytest==9.1.1
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+pygments==2.21.0

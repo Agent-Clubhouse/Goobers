@@ -513,3 +513,29 @@ func TestBranchEffectiveWorkspaceMatchesAPIResolution(t *testing.T) {
 		}
 	}
 }
+
+// TestParallelWarnsWhenBranchesRunSequentiallyByDefault pins #2738: an unset
+// maxConcurrentBranches means 1, so the branches run one at a time, and the
+// author is told so. Declaring the field, even as 1, acknowledges it.
+func TestParallelWarnsWhenBranchesRunSequentiallyByDefault(t *testing.T) {
+	const want = `parallel "fan": maxConcurrentBranches is unset, so its 2 branches run sequentially`
+	countWarnings := func(def Definition) int {
+		n := 0
+		for _, w := range CheckWarnings(def) {
+			if strings.Contains(w, want) {
+				n++
+			}
+		}
+		return n
+	}
+	if got := countWarnings(parallelDef()); got != 1 {
+		t.Fatalf("unset maxConcurrentBranches: %d sequential warnings, want 1: %q", got, CheckWarnings(parallelDef()))
+	}
+	for _, limit := range []int32{1, 2} {
+		def := parallelDef()
+		def.Spec.Parallels[0].MaxConcurrentBranches = limit
+		if got := countWarnings(def); got != 0 {
+			t.Fatalf("maxConcurrentBranches %d: %d sequential warnings, want 0: %q", limit, got, CheckWarnings(def))
+		}
+	}
+}

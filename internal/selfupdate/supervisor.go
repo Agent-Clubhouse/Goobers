@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	hashiversion "github.com/hashicorp/go-version"
@@ -576,11 +577,7 @@ func waitOrKill(process process, timeout time.Duration) error {
 	case err := <-process.Done():
 		return err
 	case <-timer.C:
-		if err := process.Kill(); err != nil {
-			return err
-		}
-		<-process.Done()
-		return nil
+		return terminateProcess(process, timeout)
 	}
 }
 func terminateProcess(process process, timeout time.Duration) error {
@@ -592,7 +589,10 @@ func terminateProcess(process process, timeout time.Duration) error {
 		return nil
 	default:
 	}
-	if err := process.Kill(); err != nil {
+	// Wait's result may already have been consumed while execLauncher's Done
+	// channel is still open. An exited-child signal is benign only once Done
+	// confirms completion below; it must not bypass the bounded wait.
+	if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	timer := time.NewTimer(timeout)

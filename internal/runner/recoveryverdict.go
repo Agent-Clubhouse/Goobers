@@ -52,3 +52,21 @@ func latestRecoveryVerdict(events []journal.Event, gateName string, branch int, 
 	}
 	return nil, nil
 }
+
+func reviewerContinuationResolver(jr executionJournal) func(string) (int, error) {
+	return func(gateName string) (int, error) {
+		reader, err := journal.OpenRead(jr.Dir())
+		if err != nil {
+			return 0, err
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return 0, err
+		}
+		branch := 0
+		if scoped, ok := jr.(*branchJournal); ok {
+			branch = scoped.branch
+		}
+		return journal.ReviewerContinuation(events, gateName, branch), nil
+	}
+}

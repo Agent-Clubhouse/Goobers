@@ -16,7 +16,7 @@
       "package": "api/schemas",
       "coverage": "partial",
       "category": "seam-selection",
-      "reason": "Only the journal-logs schema tests run, in the 'Windows journal OTLP export' step."
+      "reason": "Journal-logs and named-exporter schema tests run in the 'Windows journal OTLP export' step."
     },
     {
       "package": "api/validate",
@@ -749,6 +749,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/temporalcodec",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Portable AES-GCM/protobuf codec and HTTP role checks have no Windows-specific seam; tests run in Linux unit shards."
     },
     {
       "package": "internal/temporaldial",

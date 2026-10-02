@@ -107,6 +107,16 @@ func resolvedSkillPackages(skills []string, shared bool, packages map[string][]S
 	return resolved
 }
 
+// ResolvedSkillFiles returns the same declared package snapshot used by the
+// goober digest, with shared-persona precedence and independent file slices.
+func ResolvedSkillFiles(spec apiv1.GooberSpec, packages map[string][]SkillFile) map[string][]SkillFile {
+	resolved := make(map[string][]SkillFile)
+	for _, pkg := range resolvedSkillPackages(spec.Skills, spec.Gaggle == "", packages) {
+		resolved[pkg.Name] = pkg.Files
+	}
+	return resolved
+}
+
 func canonicalMCPServers(servers []apiv1.MCPServer) []apiv1.MCPServer {
 	if len(servers) == 0 {
 		return nil
