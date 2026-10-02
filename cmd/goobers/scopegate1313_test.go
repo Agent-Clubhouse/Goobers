@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -477,4 +478,28 @@ func TestReconcileScopeGate(t *testing.T) {
 			t.Fatal("parked = true, want false — both thresholds disabled")
 		}
 	})
+}
+
+// TestScopeGateParkedMarkerRoundTrip pins #4219: the writer emits the
+// goobers:-namespaced marker, the reader recognizes it and the legacy
+// spelling, and an unparked verdict carries neither.
+func TestScopeGateParkedMarkerRoundTrip(t *testing.T) {
+	comment := renderVerdictComment(apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "ok"})
+
+	parked := renderScopeGateStateComment(comment, true)
+	if !strings.Contains(parked, "<!-- goobers:scope-gate-parked -->") {
+		t.Fatalf("parked comment lacks the namespaced marker:\n%s", parked)
+	}
+	if strings.Contains(parked, legacyScopeGateParkedCommentMarker) {
+		t.Fatalf("parked comment still writes the legacy marker:\n%s", parked)
+	}
+	if !hasScopeGateParkedMarker(parked) {
+		t.Fatal("reader does not recognize the marker the writer emits")
+	}
+	if !hasScopeGateParkedMarker(comment + "\n\n<!-- scope-gate-parked: true -->") {
+		t.Fatal("reader no longer recognizes the legacy marker")
+	}
+	if unparked := renderScopeGateStateComment(comment, false); hasScopeGateParkedMarker(unparked) {
+		t.Fatalf("unparked comment carries a parked marker:\n%s", unparked)
+	}
 }

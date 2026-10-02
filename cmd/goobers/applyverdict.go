@@ -1939,7 +1939,21 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
 }
 
-const scopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+// scopeGateParkedCommentMarker records, in the verdict comment, that the
+// verdict was published while the scope gate parked the PR (#4219: namespaced
+// under goobers: like every other durable comment marker).
+// legacyScopeGateParkedCommentMarker is the pre-#4219 spelling, still
+// recognized on read so PRs parked before the rename are not silently
+// un-parked.
+const (
+	scopeGateParkedCommentMarker       = "<!-- goobers:scope-gate-parked -->"
+	legacyScopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+)
+
+func hasScopeGateParkedMarker(body string) bool {
+	return strings.Contains(body, scopeGateParkedCommentMarker) ||
+		strings.Contains(body, legacyScopeGateParkedCommentMarker)
+}
 
 func renderScopeGateStateComment(comment string, parked bool) string {
 	if !parked {
