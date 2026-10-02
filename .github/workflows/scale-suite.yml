@@ -11,7 +11,9 @@ name: Read-Path Scale Suite
 
 on:
   schedule:
-    - cron: "23 6 * * 6"
+    # Weekly (the 10x leg is hours long), offset from the other scheduled
+    # workflows' start minutes so it does not pile onto the same slot.
+    - cron: "53 6 * * 6"
   workflow_dispatch:
 
 permissions:
@@ -71,9 +73,18 @@ jobs:
           set -o pipefail
           mkdir -p scale-results
           log="scale-results/scale-${GOOBERS_SCALE_LARGE}x.log"
-          # The corpus lands in t.TempDir; record headroom so a disk-full
-          # failure is diagnosable from the artifact alone.
-          df -h /tmp . > scale-results/disk-before.txt 2>&1 || true
+          # The corpus lands in t.TempDir, and at 10x it is ~30 GB (32 KiB
+          # spans x ~2.4 per run x ~300k runs) -- more than the root disk's
+          # guaranteed free space. Put TMPDIR on the runner's larger /mnt
+          # volume when it is available, and record headroom either side so a
+          # disk-full failure is diagnosable from the artifact alone.
+          if sudo mkdir -p /mnt/scale-tmp && sudo chown "$(id -u):$(id -g)" /mnt/scale-tmp; then
+            export TMPDIR=/mnt/scale-tmp
+          else
+            echo "::warning::/mnt unavailable; generating the corpus under the default TMPDIR"
+          fi
+          df -h "${TMPDIR:-/tmp}" / > scale-results/disk-before.txt 2>&1 || true
+          trap 'df -h "${TMPDIR:-/tmp}" / > scale-results/disk-after.txt 2>&1 || true' EXIT
           go test -v -count=1 -timeout "${TEST_TIMEOUT}" -run '^TestMeasureLargeScale$' ./test/scale 2>&1 | tee "$log"
           # The test skips itself when GOOBERS_SCALE_LARGE is unset, and a skip
           # exits 0: require an actual pass so a broken opt-in cannot publish
@@ -92,7 +103,9 @@ jobs:
             echo "## Read-path scale at ${GOOBERS_SCALE_LARGE}x"
             echo
             echo '```text'
-            if [ -f "$log" ]; then cat "$log"; else echo "no log produced"; fi
+            # Step summaries are capped at 1 MiB; a timeout's goroutine dump
+            # can exceed that, and the full log is in the artifact anyway.
+            if [ -f "$log" ]; then tail -c 900000 "$log"; else echo "no log produced"; fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
