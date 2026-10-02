@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -17,7 +16,6 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/runner"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
@@ -261,13 +259,8 @@ func runPRSelectCore(
 			continue
 		}
 		occupancy, occupied := branchOccupancies[pr.Head]
-		liveOwner, err := prSelectOccupancyHasLiveOwner(root, occupancy, occupied)
-		if err != nil {
-			pf(stderr, "error: inspect PR #%d branch owner: %v\n", pr.Number, err)
-			return 1
-		}
-		if liveOwner {
-			pf(stdout, "excluded PR #%d: branch %s is owned by live run %s\n",
+		if occupied {
+			pf(stdout, "excluded PR #%d: branch %s is registered to run %s\n",
 				pr.Number, pr.Head, occupancy.OwnerRunID)
 			exclusions.recordPR(pr.Number, exclusionBranchOccupied)
 			continue
@@ -723,28 +716,6 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 		}
 	}
 	return occupancies, nil
-}
-
-func prSelectOccupancyHasLiveOwner(root string, occupancy worktree.BranchOccupancy, occupied bool) (bool, error) {
-	if !occupied || occupancy.Status != worktree.BranchOccupancyActive || !occupancy.OwnerProcessLive {
-		return false, nil
-	}
-	runDir, err := instance.NewLayout(root).FindRunDir(occupancy.OwnerRunID)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("find run %s: %w", occupancy.OwnerRunID, err)
-	}
-	reader, err := journal.OpenRead(runDir)
-	if err != nil {
-		return false, fmt.Errorf("open run %s journal: %w", occupancy.OwnerRunID, err)
-	}
-	phase, err := reader.Phase()
-	if err != nil {
-		return false, fmt.Errorf("read run %s phase: %w", occupancy.OwnerRunID, err)
-	}
-	return phase == journal.PhaseRunning, nil
 }
 
 // prSelectExclusions tallies why the pull requests this workflow is

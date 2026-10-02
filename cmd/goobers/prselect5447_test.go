@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,52 +19,30 @@ import (
 )
 
 func TestPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T) {
-	testPRSelectBranchOccupancy(t, false, "active", "live", true)
+	testPRSelectBranchOccupancy(t, false, "active", "live", false)
 }
 
 func TestPRSelectDefersBranchOwnedInPinnedWorkspace(t *testing.T) {
-	testPRSelectBranchOccupancy(t, true, "active", "live", true)
+	testPRSelectBranchOccupancy(t, true, "active", "live", false)
 }
 
-func TestPRSelectSelectsBranchWithCleanupPending(t *testing.T) {
+func TestPRSelectDefersBranchWithCleanupPending(t *testing.T) {
 	testPRSelectBranchOccupancy(t, false, "cleanup-pending", "live", false)
 }
 
-func TestPRSelectSelectsBranchKeptForDebugging(t *testing.T) {
+func TestPRSelectDefersBranchKeptForDebugging(t *testing.T) {
 	testPRSelectBranchOccupancy(t, false, "kept", "live", false)
 }
 
-func TestPRSelectSelectsStaleActiveBranchFromSettledRun(t *testing.T) {
+func TestPRSelectDefersStaleActiveBranchFromSettledRun(t *testing.T) {
 	testPRSelectBranchOccupancy(t, false, "active", "terminal", false)
 }
 
-func TestPRSelectDoesNotDeferActiveRunningOccupancyWithDeadProcess(t *testing.T) {
-	root := initDemo(t)
-	layout := layoutFor(root)
-	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
-		RunID: "implementation-run", Workflow: "implementation",
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := run.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	live, err := prSelectOccupancyHasLiveOwner(root, worktree.BranchOccupancy{
-		OwnerRunID:       "implementation-run",
-		Status:           worktree.BranchOccupancyActive,
-		OwnerProcessLive: false,
-	}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if live {
-		t.Fatal("active occupancy with running journal and dead owner process reported live")
-	}
+func TestPRSelectDefersActiveRunningOccupancyWithDeadProcess(t *testing.T) {
+	testPRSelectBranchOccupancy(t, false, "active", "live", true)
 }
 
-func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, ownerState string, wantDeferred bool) {
+func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, ownerState string, deadOwnerProcess bool) {
 	t.Helper()
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -137,6 +116,9 @@ func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, own
 			t.Fatal(err)
 		}
 	}
+	if deadOwnerProcess {
+		setWorktreeOwnerPID(t, workcopiesRoot, "implementation-run", 999999)
+	}
 
 	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
 		RunID: "implementation-run", Workflow: "implementation",
@@ -157,6 +139,25 @@ func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, own
 		t.Fatal(err)
 	}
 
+	occupancies, err := manager.BranchOccupancies(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupancy, occupied := occupancies[branch]
+	if !occupied {
+		t.Fatal("fixture branch is not registered before selection")
+	}
+	if deadOwnerProcess && occupancy.OwnerProcessLive {
+		t.Fatalf("occupancy = %+v, want dead owner process", occupancy)
+	}
+	_, err = manager.Create(context.Background(), worktree.CreateOptions{
+		RepoURL: repo, RunID: "merge-review-stage", OwnerRunID: "merge-review-run",
+		BaseRef: "main", Branch: branch,
+	})
+	if err == nil || !strings.Contains(err.Error(), "owned by another run") {
+		t.Fatalf("cross-run acquisition error = %v, want ownership refusal", err)
+	}
+
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "merge-review-run")
 	workDir := t.TempDir()
 	t.Chdir(workDir)
@@ -170,20 +171,47 @@ func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, own
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wantDeferred {
-		if !strings.Contains(stdout, exclusionBranchOccupied) || !strings.Contains(stdout, "implementation-run") {
-			t.Fatalf("stdout = %q, want live branch owner exclusion", stdout)
-		}
-		if !strings.Contains(string(data), `"noWork":true`) || !strings.Contains(string(data), exclusionBranchOccupied) {
-			t.Fatalf("result = %s, want no-work with branch occupancy evidence", data)
-		}
-		return
+	if !strings.Contains(stdout, exclusionBranchOccupied) || !strings.Contains(stdout, "implementation-run") {
+		t.Fatalf("stdout = %q, want registered branch exclusion", stdout)
 	}
-	var selected map[string]string
-	if err := decodePRSelectionTestResult(data, &selected); err != nil {
-		t.Fatalf("unmarshal selected-pr.json: %v", err)
+	if !strings.Contains(string(data), `"noWork":true`) || !strings.Contains(string(data), exclusionBranchOccupied) {
+		t.Fatalf("result = %s, want no-work with branch occupancy evidence", data)
 	}
-	if selected["number"] != "5447" {
-		t.Fatalf("selected PR = %q, want non-live occupied PR #5447", selected["number"])
+}
+
+func setWorktreeOwnerPID(t *testing.T, root, ownerRunID string, pid int) {
+	t.Helper()
+	updated := 0
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var record map[string]any
+		if json.Unmarshal(data, &record) != nil || record["owner_run_id"] != ownerRunID || record["pid"] == nil {
+			return nil
+		}
+		record["pid"] = pid
+		data, err = json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return err
+		}
+		updated++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 2 {
+		t.Fatalf("updated %d ownership records, want 2", updated)
 	}
 }
