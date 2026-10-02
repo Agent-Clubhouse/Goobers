@@ -373,7 +373,7 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 		t.Fatalf("issue comments = %v, want exactly the routed reason and question", parked.comments)
 	}
 	assertBodyEqualIgnoringAttribution(t, parked.comments[0], "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?\n\n"+
-		providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7")))
+		providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7", issueCloseOutNeedsHuman)))
 }
 
 // TestIssueCloseOutRerunAdoptsEarlierAttemptsComment is #2657 at the stage
@@ -393,7 +393,7 @@ func TestIssueCloseOutRerunAdoptsEarlierAttemptsComment(t *testing.T) {
 	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
 		t.Fatalf("seed claim ledger: %v", err)
 	}
-	earlier := "Implementation complete.\n\n" + providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7"))
+	earlier := "Implementation complete.\n\n" + providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7", providers.WorkItemStatusDone))
 	server.mu.Lock()
 	server.issues[7].state = "closed"
 	server.issues[7].comments = append(server.issues[7].comments, earlier)

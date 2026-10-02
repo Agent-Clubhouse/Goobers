@@ -198,13 +198,14 @@ func updateRESTWorkItemStatus(ctx context.Context, c restWorkItemMutator, kind P
 	return update.finish(ctx, c, req.Repository, req.ID)
 }
 
-// PartialUpdateError reports a compound work-item update that failed after
-// some of its effects committed (#2657). Completed and Pending name effects
+// PartialUpdateError reports a compound work-item update that failed once it
+// had started applying effects (#2657). Completed and Pending name effects
 // ("fields", "labels", "state", "comment") in application order; the effect
-// that failed heads Pending and may or may not have reached the provider.
-// Completed effects are already recorded as a mutation. Retrying the same
-// request with the same IdempotencyKey is safe: completed effects are
-// idempotent and the comment is adopted by its operation marker.
+// that failed heads Pending and may or may not have reached the provider (a
+// write whose response was lost), so an empty Completed still means "maybe
+// partially applied". Completed effects are already recorded as a mutation.
+// Retrying the same request with the same IdempotencyKey is safe: completed
+// effects are idempotent and the comment is adopted by its operation marker.
 type PartialUpdateError struct {
 	Ref       string
 	Completed []string
@@ -241,8 +242,7 @@ func (u *compoundUpdate) planIf(planned bool, effect string) {
 }
 
 // apply runs one planned effect. On failure it records the effects already
-// committed and returns a *PartialUpdateError, or err unchanged when nothing
-// had committed yet.
+// committed and returns a *PartialUpdateError.
 func (u *compoundUpdate) apply(ctx context.Context, effect string, fields map[string]FieldDigest, run func() error) error {
 	if err := run(); err != nil {
 		return u.fail(ctx, err)
@@ -261,9 +261,6 @@ func (u *compoundUpdate) apply(ctx context.Context, effect string, fields map[st
 }
 
 func (u *compoundUpdate) fail(ctx context.Context, err error) error {
-	if len(u.completed) == 0 {
-		return err
-	}
 	u.record(ctx)
 	return &PartialUpdateError{
 		Ref:       u.ref.Ref,
@@ -286,9 +283,12 @@ func (u *compoundUpdate) finish(ctx context.Context, c restWorkItemMutator, repo
 	return final, nil
 }
 
+// record journals the committed effects. It detaches from cancellation: a
+// failure caused by a cancelled or expired context must still record what
+// had already reached the provider.
 func (u *compoundUpdate) record(ctx context.Context) {
 	if len(u.ref.Fields) > 0 {
-		u.recorder.recordExternalRef(ctx, u.ref)
+		u.recorder.recordExternalRef(context.WithoutCancel(ctx), u.ref)
 	}
 }
 

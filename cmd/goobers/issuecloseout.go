@@ -388,9 +388,11 @@ func implementationInReviewComment(prURL string) string {
 // crash before the ledger release) adopts the comment the earlier attempt
 // posted instead of appending a duplicate (#2657). It is built from the
 // subcommand rather than GOOBERS_STAGE, whose spelling differs by substrate
-// (#4119), and never from attempt state.
-func issueCloseOutIdempotencyKey(runID, itemID string) string {
-	return "issue-close-out/" + runID + "/" + itemID
+// (#4119), and never from attempt state. The status is part of the key: the
+// marker check does not compare request content, so a park and a done update
+// of the same run must never adopt each other's comment.
+func issueCloseOutIdempotencyKey(runID, itemID string, status providers.WorkItemStatus) string {
+	return "issue-close-out/" + runID + "/" + itemID + "/" + string(status)
 }
 
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
@@ -569,7 +571,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			Comment:        comment,
 			AddLabels:      []string{parkLabel},
 			RemoveLabels:   []string{providers.LabelReady},
-			IdempotencyKey: issueCloseOutIdempotencyKey(runID, claim.ItemID),
+			IdempotencyKey: issueCloseOutIdempotencyKey(runID, claim.ItemID, status),
 		}, assignee)
 		if _, err := provider.UpdateWorkItem(ctx, req); err != nil {
 			pf(stderr, "error: park work item: %v\n", err)
@@ -597,7 +599,7 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 			ID:             claim.ItemID,
 			Status:         status,
 			Comment:        comment,
-			IdempotencyKey: issueCloseOutIdempotencyKey(runID, claim.ItemID),
+			IdempotencyKey: issueCloseOutIdempotencyKey(runID, claim.ItemID, status),
 		}); err != nil {
 			pf(stderr, "error: update work item status: %v\n", err)
 			return 1
