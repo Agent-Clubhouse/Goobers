@@ -228,7 +228,11 @@ command instead. **CI:** each validation job maps to the same contract:
 The dedicated vulnerability, integration, sandbox, and Linux-node CI jobs invoke
 their corresponding Make targets. The vulnerability target also runs daily from
 `.github/workflows/vulnerability-scan.yml`, so newly disclosed findings surface
-without a code change.
+without a code change. That daily workflow also audits the non-Go dependency
+surfaces: the portal and sample API npm lockfiles (`npm audit`), the eval suite
+and monitoring exporter Python requirements (`pip-audit`), the Java e2e fixture
+POM (`osv-scanner`), and both .NET e2e fixture projects (`dotnet list package
+--vulnerable`).
 
 #### Frozen candidate CI
 
