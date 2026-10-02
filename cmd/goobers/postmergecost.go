@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/goobers/goobers/internal/intsplit"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -354,7 +354,7 @@ func allocateIssueNanoAIU(receipts map[string]postMergeCostReceipt, issueIDs []s
 		}
 		return allocations
 	}
-	for issueID, value := range splitInt64ByWeight(prOnly, issueIDs, weights, weightTotal) {
+	for issueID, value := range splitInt64ByWeight(prOnly, issueIDs, weights) {
 		allocations[issueID] += value
 	}
 	return allocations
@@ -377,35 +377,10 @@ func splitInt64Evenly(total int64, keys []string) map[string]int64 {
 	return out
 }
 
-func splitInt64ByWeight(total int64, keys []string, weights map[string]int64, weightTotal int64) map[string]int64 {
-	sort.Strings(keys)
-	out := make(map[string]int64, len(keys))
-	type remainder struct {
-		key       string
-		remainder *big.Int
-	}
-	remainders := make([]remainder, 0, len(keys))
-	var assigned int64
-	divisor := big.NewInt(weightTotal)
-	for _, key := range keys {
-		product := new(big.Int).Mul(big.NewInt(total), big.NewInt(weights[key]))
-		quotient, rem := new(big.Int), new(big.Int)
-		quotient.QuoRem(product, divisor, rem)
-		out[key] = quotient.Int64()
-		assigned += out[key]
-		remainders = append(remainders, remainder{key: key, remainder: rem})
-	}
-	sort.SliceStable(remainders, func(i, j int) bool {
-		if cmp := remainders[i].remainder.Cmp(remainders[j].remainder); cmp != 0 {
-			return cmp > 0
-		} else {
-			return remainders[i].key < remainders[j].key
-		}
+func splitInt64ByWeight(total int64, keys []string, weights map[string]int64) map[string]int64 {
+	return intsplit.LargestRemainder(total, keys, func(key string) int64 {
+		return weights[key]
 	})
-	for i := int64(0); i < total-assigned; i++ {
-		out[remainders[i%int64(len(remainders))].key]++
-	}
-	return out
 }
 
 func mergedPullRequestComment(pullNumber string, report postMergeCostReport, issueID string) string {
