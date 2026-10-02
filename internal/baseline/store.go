@@ -14,13 +14,18 @@ import (
 // branch at a pinned base SHA. It is cached so the second and every later run
 // that syncs the same base pays nothing to learn the base's health.
 type Observation struct {
-	Repo        string    `json:"repo"`
-	BaseSHA     string    `json:"baseSha"`
-	Command     string    `json:"command"`
-	Green       bool      `json:"green"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	Signature   string    `json:"signature,omitempty"`
-	ObservedAt  time.Time `json:"observedAt"`
+	Repo        string `json:"repo"`
+	BaseSHA     string `json:"baseSha"`
+	Command     string `json:"command"`
+	Green       bool   `json:"green"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Signature   string `json:"signature,omitempty"`
+	// FailureLines is executor.FailureLineCount over the probe's output: how
+	// many distinct failure lines the base produced, including any outside
+	// the window the signature is drawn from (#4477). Zero on records written
+	// before it existed.
+	FailureLines int       `json:"failureLines,omitempty"`
+	ObservedAt   time.Time `json:"observedAt"`
 }
 
 // Waiter is one subject (backlog item or pull request) parked on a shared

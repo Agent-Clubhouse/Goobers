@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/flake"
 )
 
@@ -201,6 +202,15 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 		return decision, nil
 	}
 
+	// The signature is drawn from one window of the output; the count covers
+	// all of it. A run that recorded a different number of distinct failure
+	// lines than the base produced has a finding the window did not show.
+	if runLines, ok := recordedFailureLines(req.FailureText); ok && runLines != observation.FailureLines {
+		decision.Reason = fmt.Sprintf("the run recorded %d distinct failure line(s) and baseline %s %d, so the failures cannot be shown identical",
+			runLines, short(req.BaseSHA), observation.FailureLines)
+		return decision, nil
+	}
+
 	decision.Class = ClassSharedBaselineFailure
 	decision.Park = !e.RepairLane
 	blocker, err := e.Store.Park(observation, Waiter{
@@ -275,6 +285,7 @@ func (e *Evaluator) probe(ctx context.Context, req Request) (Observation, error)
 	if !result.Green {
 		observation.Signature = failureSignature(result.Output)
 		observation.Fingerprint = Fingerprint(req.Command, observation.Signature)
+		observation.FailureLines = executor.FailureLineCount([]byte(result.Output), nil)
 	}
 	if err := e.Store.Record(observation); err != nil {
 		return Observation{}, err
