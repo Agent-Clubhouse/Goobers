@@ -66,6 +66,12 @@ func TestManager_WorkingCopy_PinnedToUnpinnedMigrationRefreshes(t *testing.T) {
 		if got := strings.TrimSpace(runTestGit(t, mirror, "rev-parse", "refs/heads/main")); got != want {
 			t.Fatalf("refresh %d: mirror main = %s, want origin head %s", i+1, got, want)
 		}
+		// The stale pinned-era tracking ref must be retired, not left behind:
+		// linked worktrees resolve origin/<base> before refs/heads/<base>, so
+		// a leftover refs/remotes/origin/main would shadow the refreshed base.
+		if out := runTestGitAllowFailure(t, mirror, "for-each-ref", "refs/remotes/origin/"); strings.TrimSpace(out) != "" {
+			t.Fatalf("refresh %d: stale tracking refs survived the refresh:\n%s", i+1, out)
+		}
 		for _, ref := range []string{runBranch, recoveryRef} {
 			if got := strings.TrimSpace(runTestGit(t, mirror, "rev-parse", ref)); got != head {
 				t.Fatalf("refresh %d: local ref %s = %q, want preserved at %s", i+1, ref, got, head)
