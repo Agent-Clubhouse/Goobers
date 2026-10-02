@@ -189,11 +189,15 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"whichever appears earliest in selectionPriority. Unset (the default)\n" +
 	"preserves plain FIFO exactly. fieldOrder is an optional comma-separated\n" +
 	"field[:asc|desc] list applied within each label-priority tier before FIFO.\n\n" +
-	"A separate scheduled workflow uses --claim --resweep with bounded\n" +
-	"resweepMaxItems to recheck blocked dependencies and ready items. Forward\n" +
+	"A separate scheduled workflow uses --claim --resweep to recheck blocked\n" +
+	"dependencies and ready items; a bounded resweepMaxItems enables it. Forward\n" +
 	"candidates reserve maxItems capacity first but are never claimed by this\n" +
 	"mode. The sweep uses leftover capacity and rotates within selectionPriority\n" +
-	"tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and\n" +
+	"tiers. The two lanes have independent budgets: resweepMaxItems bounds\n" +
+	"ready-drift reviews, and resweepDependencyMaxItems (default 25, at most\n" +
+	"250) bounds how many blocked items have their native blockers rechecked.\n" +
+	"Both lanes share the leftover batch capacity, dependency rechecks first.\n" +
+	"Cadence belongs to workflow schedule/readiness; resweepInterval and\n" +
 	"inline re-sweep inputs on ordinary --claim runs are retired. Ready items\n" +
 	"already in implementation/review are emitted as read-only context and are\n" +
 	"never claimed.\n\n" +
@@ -1898,37 +1902,61 @@ func appendBlockedResweepCandidates(
 		pf(env.stderr, "error: order blocked dependency rechecks: %v\n", err)
 		return nil, 1
 	}
-	if len(items) > opts.policy.maxItems {
-		for _, item := range items[opts.policy.maxItems:] {
-			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
+	// The dependency-recheck lane rotates through parked items on its OWN
+	// budget (#4884), independent of the ready-drift lane's resweepMaxItems.
+	if len(items) > opts.policy.dependencyMaxItems {
+		for _, item := range items[opts.policy.dependencyMaxItems:] {
+			env.debugf("excluded %s: dependency recheck budget exhausted", item.ID)
 		}
-		items = items[:opts.policy.maxItems]
+		items = items[:opts.policy.dependencyMaxItems]
 	}
+	rechecked, code := recheckBlockedResweepCandidates(ctx, env, opts, result, items)
+	if code != 0 {
+		return nil, code
+	}
+	result.state.BlockedCursor = blockedWindow.Cursor.Cursor
+	return rechecked, 0
+}
+
+// recheckBlockedResweepCandidates asks the provider for each parked item's
+// native blockers and selects the ones whose blockers have all closed. It
+// returns the items to record as swept: every item actually rechecked, minus
+// any actionable item left unselected for lack of batch capacity, so the
+// rotation offers that item first on the next run instead of a full cycle
+// later.
+func recheckBlockedResweepCandidates(
+	ctx context.Context,
+	env backlogQueryEnv,
+	opts backlogResweepOptions,
+	result *backlogResweepResult,
+	items []providers.WorkItem,
+) ([]providers.WorkItem, int) {
+	// Claims share the run's batch capacity left after forward work; the
+	// recheck budget itself is the lane's own (applied by the caller).
 	budget := opts.maxItems - len(result.eligible)
+	rechecked := make([]providers.WorkItem, 0, len(items))
 	for _, item := range items {
 		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.issueRepo(), item.ID)
 		if err != nil {
 			return nil, failProviderStage(env.stderr, "recheck blocked-item dependencies", fmt.Errorf("dependency recheck item %s: %w", item.ID, err), "claimed-items.json")
 		}
-		if len(blockers) == 0 {
+		switch {
+		case len(blockers) == 0:
 			pf(env.stderr, "warning: dependency recheck item %s has no named native blocker; leaving it parked\n", item.ID)
 			env.debugf("excluded %s: dependency recheck has no named native blocker", item.ID)
-			continue
-		}
-		if !blockersActionable(blockers) {
+		case !blockersActionable(blockers):
 			env.debugf("excluded %s: %s", item.ID, openBlockersExclusionReason(blockers))
-			continue
-		}
-		if budget == 0 {
+		case budget <= 0:
 			env.debugf("excluded %s: blocked re-sweep selection capacity exhausted", item.ID)
 			continue
+		default:
+			result.eligible = append(result.eligible, item)
+			result.modeByID[item.ID] = "dependency-recheck"
+			budget--
 		}
-		result.eligible = append(result.eligible, item)
-		result.modeByID[item.ID] = "dependency-recheck"
-		budget--
+		rechecked = append(rechecked, item)
 	}
-	result.state.BlockedCursor = blockedWindow.Cursor.Cursor
-	return items, 0
+	return rechecked, 0
 }
 
 func blockersActionable(blockers []providers.WorkItem) bool {
@@ -1960,10 +1988,10 @@ func appendReadyResweepCandidates(
 	opts backlogResweepOptions,
 	result *backlogResweepResult,
 ) ([]providers.WorkItem, backlogScanCursor, int) {
-	// Both lanes share one re-sweep allowance. Forward candidates reserve
-	// total-batch slots but do not spend the re-sweep-specific allowance.
-	selected := len(result.eligible) - len(opts.eligible) + len(result.readOnly)
-	budget := min(opts.policy.maxItems-selected, opts.maxItems-len(result.eligible)-len(result.readOnly))
+	// The ready-drift lane spends only its own resweepMaxItems allowance;
+	// dependency rechecks no longer draw it down (#4884). Forward candidates
+	// and dependency-recheck selections still occupy total-batch slots.
+	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible)-len(result.readOnly))
 	if budget <= 0 {
 		return nil, backlogScanCursor{Cursor: result.state.Cursor}, 0
 	}

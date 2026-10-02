@@ -41,7 +41,7 @@ func TestScheduledResweepWorkflowsCompileWithIndependentBudgets(t *testing.T) {
 			if !ok || query.Run == nil || !slices.Equal(query.Run.Command, []string{"goobers", "backlog-query", "--claim", "--resweep"}) {
 				t.Fatalf("not an explicit claiming sweep: %+v", query)
 			}
-			if query.Inputs["resweepMaxItems"] != "5" || query.Inputs["maxItems"] != "20" || query.Inputs["resweepInterval"] != "" || query.Inputs["resultFile"] != "claimed-items.json" {
+			if query.Inputs["resweepMaxItems"] != "5" || query.Inputs["resweepDependencyMaxItems"] != "25" || query.Inputs["maxItems"] != "20" || query.Inputs["resweepInterval"] != "" || query.Inputs["resultFile"] != "claimed-items.json" {
 				t.Fatalf("selection limits/output or cadence ownership drifted: %+v", query.Inputs)
 			}
 			for _, edge := range [][2]string{{"query-resweep", "surface-duplicates"}, {"surface-duplicates", "curate"}, {"curate", "release-claim"}, {"release-claim", ""}} {
