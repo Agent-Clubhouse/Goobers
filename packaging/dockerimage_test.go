@@ -26,21 +26,30 @@ func TestProductImageBasesAreDigestPinnedAndUpdateable(t *testing.T) {
 	}
 	var config struct {
 		Updates []struct {
-			Ecosystem string `json:"package-ecosystem"`
-			Directory string `json:"directory"`
+			Ecosystem   string   `json:"package-ecosystem"`
+			Directory   string   `json:"directory"`
+			Directories []string `json:"directories"`
 		} `json:"updates"`
 	}
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"docker:/packaging/docker": false,
-		"pip:/deploy/monitoring":   false,
+		"docker:/packaging/docker":                     false,
+		"pip:/deploy/monitoring":                       false,
+		"docker:/deploy/monitoring":                    false,
+		"pip:/evals":                                   false,
+		"maven:/test/e2e/testdata/javaservice":         false,
+		"nuget:/test/e2e/testdata/dotnetservice/src":   false,
+		"nuget:/test/e2e/testdata/dotnetservice/tests": false,
 	}
 	for _, update := range config.Updates {
-		key := update.Ecosystem + ":" + update.Directory
-		if _, tracked := want[key]; tracked {
-			want[key] = true
+		dirs := append([]string{update.Directory}, update.Directories...)
+		for _, dir := range dirs {
+			key := update.Ecosystem + ":" + dir
+			if _, tracked := want[key]; tracked {
+				want[key] = true
+			}
 		}
 	}
 	for update, found := range want {
