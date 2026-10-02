@@ -157,6 +157,23 @@ func IsFailureLine(line string) bool {
 	return failureLineSpecificity(line) > specificityBuildTrailer
 }
 
+// diagnosticTruncationMarker ends a diagnostic boundDiagnostic cut.
+const diagnosticTruncationMarker = "..."
+
+// DiagnosticTruncated reports whether a FailureDiagnostic result (or the
+// diagnostic a stage message carries) was cut at its size bound, so whatever
+// followed the cut is unseen. A caller deciding two failures are IDENTICAL
+// (internal/baseline, #4477) cannot do so from a truncated window: the
+// findings that differ may all lie past the cut. The test is conservative —
+// a full-length diagnostic that happens to end in "..." also reads as
+// truncated — which only ever withholds an identity claim.
+func DiagnosticTruncated(diagnostic string) bool {
+	// boundDiagnostic keeps maxFailureSummaryBytes-3 bytes, then may shed up
+	// to 3 for a split rune and some whitespace before appending the marker.
+	const slack = 16
+	return strings.HasSuffix(diagnostic, diagnosticTruncationMarker) && len(diagnostic) >= maxFailureSummaryBytes-slack
+}
+
 // Specificity tiers are spaced so a tier can be inserted between two existing
 // ones without renumbering every caller's expectations. Higher wins.
 const (
@@ -330,7 +347,7 @@ func boundDiagnostic(value string) string {
 	for !utf8.ValidString(value) {
 		value = value[:len(value)-1]
 	}
-	return strings.TrimSpace(value) + "..."
+	return strings.TrimSpace(value) + diagnosticTruncationMarker
 }
 
 func applyCommandFailureDiagnostic(result *apiv1.ResultEnvelope, exitCode int, diagnostic commandFailureDiagnostic, stdoutPath, stderrPath string) bool {

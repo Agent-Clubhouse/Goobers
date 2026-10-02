@@ -180,16 +180,66 @@ func TestBranchFindingBeyondTheVisibleSignatureIsPRIntroduced(t *testing.T) {
 }
 
 // TestTruncatedMultiFindingWindowFailsOpen pins the known limit: the executor
-// bounds a failure window at 512 bytes, so several long findings are cut at a
-// point that depends on each checkout's path length and recipe echo. The two
-// windows then hold different complete findings and the comparison must fail
-// OPEN, to the pre-existing branch attribution, never park.
+// bounds a failure window at 512 bytes, and whatever lies past the cut is
+// unseen — the findings that tell two failures apart may all be there. A
+// truncated diagnostic on either side is therefore ClassUnknown (the caller's
+// pre-existing routing), never a parked shared failure.
 func TestTruncatedMultiFindingWindowFailsOpen(t *testing.T) {
 	decision := classifyDeadcode(t,
 		deadcodeFindings(realisticRunRoot, "alphaHelper", "betaHelper", "gammaHelper"),
 		deadcodeFindings(realisticProbeRoot, "alphaHelper", "betaHelper", "gammaHelper"))
-	if decision.Class == ClassSharedBaselineFailure || decision.Park {
-		t.Fatalf("class = %q park = %v, want a truncated window never parked", decision.Class, decision.Park)
+	if decision.Class != ClassUnknown || decision.Park {
+		t.Fatalf("class = %q park = %v, want %q for a truncated run diagnostic", decision.Class, decision.Park, ClassUnknown)
+	}
+
+	// Run side fits; the base's transcript is long enough to be cut.
+	baseOnly := classifyDeadcode(t,
+		deadcodeFindings("/w/r", "alphaHelper"),
+		deadcodeFindings(realisticProbeRoot, "alphaHelper", "betaHelper", "gammaHelper"))
+	if baseOnly.Class == ClassSharedBaselineFailure || baseOnly.Park {
+		t.Fatalf("class = %q park = %v, want a truncated baseline never matched", baseOnly.Class, baseOnly.Park)
+	}
+}
+
+// TestDifferingTruncatedTailsNeverPark guards the wrong-park direction of the
+// 512-byte bound: two windows cut at the same line count whose cut-off tails
+// differ (the base fails gamma, the branch fixed gamma but added delta; or the
+// branch adds a finding the base lacks) must never share a signature. The
+// partial last line is evidence, never dropped.
+func TestDifferingTruncatedTailsNeverPark(t *testing.T) {
+	for pad := 0; pad < 200; pad += 5 {
+		runRoot := "/w/run/" + strings.Repeat("r", pad) + "/repo"
+		probeRoot := "/w/prb/" + strings.Repeat("p", pad) + "/repo"
+		swapped := classifyDeadcode(t,
+			deadcodeFindings(runRoot, "alphaHelper", "betaHelper", "deltaHelperX"),
+			deadcodeFindings(probeRoot, "alphaHelper", "betaHelper", "gammaHelper"))
+		if swapped.Class == ClassSharedBaselineFailure {
+			t.Fatalf("pad=%d: branch failing a different third symbol parked, signature %q", pad, swapped.Signature)
+		}
+
+		diagnostic := executor.FailureDiagnostic(nil, []byte(deadcodeFindings(runRoot, "alphaHelper", "betaHelper", "gammaHelper")+"exit status 1\n"))
+		message := "command exited 2; failure: " + diagnostic
+		e := newEvaluator(t, &stubProber{result: ProbeResult{Output: deadcodeFindings(probeRoot, "alphaHelper", "betaHelper") + "exit status 1\n"}})
+		added, err := e.Classify(context.Background(), Request{
+			Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"go", "run", "./test/deadcode"},
+			FailureText: message + "\n" + message,
+		})
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		if added.Class == ClassSharedBaselineFailure {
+			t.Fatalf("pad=%d: branch-added truncated finding parked, signature %q", pad, added.Signature)
+		}
+	}
+}
+
+// TestEllipsisInAnAssertionIsEvidence: an assertion that merely ends in "..."
+// was never truncated and still distinguishes two failures of one test.
+func TestEllipsisInAnAssertionIsEvidence(t *testing.T) {
+	run := executor.FailureDiagnostic([]byte("--- FAIL: TestX (0.01s)\n    x_test.go:12: waiting for leader...\nFAIL\n"), nil)
+	probe := "--- FAIL: TestX (0.02s)\n    x_test.go:40: retrying connection...\nFAIL\n"
+	if got, base := failureSignature("command exited 1; failure: "+run), failureSignature(probe); got == base {
+		t.Fatalf("different assertions in one test collided on %q", got)
 	}
 }
 
