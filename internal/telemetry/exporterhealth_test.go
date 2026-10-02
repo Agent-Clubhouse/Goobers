@@ -287,8 +287,84 @@ func TestClientFlushFailedTraceExportIncrementsOnce(t *testing.T) {
 	}
 }
 
+func TestClientShutdownFailedTraceExportMarksUnhealthy(t *testing.T) {
+	health := NewExporterHealth(true, string(ExporterOTLP), "127.0.0.1:4317")
+	health.configureTraceExporter(exporterHealthExporterOTLP)
+	exporter := observedSpanExporter{
+		next:     shutdownFailingSpanExporter{err: context.DeadlineExceeded},
+		health:   health,
+		exporter: exporterHealthExporterOTLP,
+	}
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(exporter)))
+	client := &Client{tracerProvider: provider, exporterHealth: health}
+
+	if err := client.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := health.Snapshot().Trace
+	if got.State != "unhealthy" || got.LastFailureReason != "deadline_exceeded" ||
+		got.ConsecutiveFailures != 1 || got.FailureTransitions != 1 {
+		t.Fatalf("failed trace shutdown health = %+v", got)
+	}
+}
+
+func TestClientFlushFailedMetricExportMarksUnhealthyAndRecovers(t *testing.T) {
+	health := NewExporterHealth(true, string(ExporterOTLP), "127.0.0.1:4317")
+	exporter := &flakyMetricExporter{err: context.DeadlineExceeded}
+	client := &Client{
+		meterProvider: metric.NewMeterProvider(metric.WithReader(metric.NewPeriodicReader(
+			observedMetricExporter{next: exporter, health: health, exporter: exporterHealthExporterOTLP},
+		))),
+		exporterHealth: health,
+	}
+	health.configureMetricExporter(exporterHealthExporterOTLP)
+
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failed := health.Snapshot().Metric
+	if failed.State != "unhealthy" || failed.LastFailureReason != "deadline_exceeded" ||
+		failed.ConsecutiveFailures != 1 || failed.FailureTransitions != 1 {
+		t.Fatalf("failed metric flush health = %+v", failed)
+	}
+
+	exporter.err = nil
+	if err := client.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered := health.Snapshot().Metric
+	if recovered.State != "healthy" || recovered.RecoveryTransitions != 1 ||
+		recovered.ConsecutiveFailures != 0 || recovered.LastSuccessAt == nil {
+		t.Fatalf("recovered metric flush health = %+v", recovered)
+	}
+}
+
+func TestClientShutdownFailedMetricExportMarksUnhealthy(t *testing.T) {
+	health := NewExporterHealth(true, string(ExporterOTLP), "127.0.0.1:4317")
+	exporter := &flakyMetricExporter{shutdownErr: context.DeadlineExceeded}
+	client := &Client{
+		meterProvider: metric.NewMeterProvider(metric.WithReader(metric.NewPeriodicReader(
+			observedMetricExporter{next: exporter, health: health, exporter: exporterHealthExporterOTLP},
+		))),
+		exporterHealth: health,
+	}
+	health.configureMetricExporter(exporterHealthExporterOTLP)
+
+	if err := client.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := health.Snapshot().Metric
+	if got.State != "unhealthy" || got.LastFailureReason != "deadline_exceeded" ||
+		got.ConsecutiveFailures != 1 || got.FailureTransitions != 1 {
+		t.Fatalf("failed metric shutdown health = %+v", got)
+	}
+}
+
 type flakyMetricExporter struct {
-	err error
+	err         error
+	exportErr   error
+	flushErr    error
+	shutdownErr error
 }
 
 func (e *flakyMetricExporter) Temporality(kind metric.InstrumentKind) metricdata.Temporality {
@@ -300,14 +376,23 @@ func (e *flakyMetricExporter) Aggregation(kind metric.InstrumentKind) metric.Agg
 }
 
 func (e *flakyMetricExporter) Export(context.Context, *metricdata.ResourceMetrics) error {
+	if e.exportErr != nil {
+		return e.exportErr
+	}
 	return e.err
 }
 
 func (e *flakyMetricExporter) ForceFlush(context.Context) error {
+	if e.flushErr != nil {
+		return e.flushErr
+	}
 	return e.err
 }
 
 func (e *flakyMetricExporter) Shutdown(context.Context) error {
+	if e.shutdownErr != nil {
+		return e.shutdownErr
+	}
 	return e.err
 }
 
@@ -321,4 +406,16 @@ func (e failingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpa
 
 func (e failingSpanExporter) Shutdown(context.Context) error {
 	return nil
+}
+
+type shutdownFailingSpanExporter struct {
+	err error
+}
+
+func (e shutdownFailingSpanExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	return nil
+}
+
+func (e shutdownFailingSpanExporter) Shutdown(context.Context) error {
+	return e.err
 }
