@@ -322,15 +322,10 @@ func OperationCommentMarker(key string) string {
 	return "<!-- goobers:operation key=" + base64.RawURLEncoding.EncodeToString([]byte(key)) + " -->"
 }
 
+// operationMarkerPattern matches the operation marker line. StripAttribution
+// removes it with the rest of a provider write's stamp, so every reader that
+// compares stored text against what Goobers meant to write tolerates it.
 var operationMarkerPattern = regexp.MustCompile(`\n*<!-- goobers:operation key=[A-Za-z0-9_-]* -->\n?`)
-
-// StripOperationMarker removes the operation marker a keyed update appends to
-// its comment, then trims surrounding whitespace. Like StripAttribution it
-// leaves other markers untouched; a reader matching the text Goobers meant to
-// write strips both.
-func StripOperationMarker(body string) string {
-	return strings.TrimSpace(operationMarkerPattern.ReplaceAllString(body, "\n"))
-}
 
 // operationApplied reports whether a keyed update's marked comment already
 // exists — meaning an earlier attempt applied the whole update, since the

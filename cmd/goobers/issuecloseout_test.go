@@ -372,8 +372,10 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	if len(parked.comments) != 1 {
 		t.Fatalf("issue comments = %v, want exactly the routed reason and question", parked.comments)
 	}
-	assertBodyEqualIgnoringAttribution(t, parked.comments[0], "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?\n\n"+
-		providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7", issueCloseOutNeedsHuman)))
+	if !strings.Contains(parked.comments[0], providers.OperationCommentMarker(issueCloseOutIdempotencyKey(runID, "7", issueCloseOutNeedsHuman))) {
+		t.Fatalf("park comment lacks the close-out operation marker: %q", parked.comments[0])
+	}
+	assertBodyEqualIgnoringAttribution(t, parked.comments[0], "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?")
 }
 
 // TestIssueCloseOutRerunAdoptsEarlierAttemptsComment is #2657 at the stage
