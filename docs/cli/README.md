@@ -3247,8 +3247,9 @@ true; known failing and unknown states are never eligible. authorScope
 defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
-PRs labeled goobers:no-merge-review or goobers:run-aborted are always
-excluded. Before selection,
+PRs labeled goobers:no-merge-review are always excluded. A run-aborted
+PR is excluded unless audited recovery proves a later remediation completed.
+Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
 selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared
