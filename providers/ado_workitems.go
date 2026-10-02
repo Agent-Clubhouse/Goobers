@@ -416,29 +416,76 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 	return p.mapADOWorkItem(ctx, req.Repository, out)
 }
 
+// findRunItem finds the work item an earlier attempt of this run created: one
+// whose description carries the run-id footer. It is what makes CreateWorkItem
+// idempotent across a retry (#140).
+//
+// The footer search alone is not enough. WIQL's CONTAINS WORDS runs against
+// Azure Boards' full-text index, which is updated asynchronously, so an item
+// created moments ago is not yet findable through it, and a retry inside
+// that window filed a duplicate (seen live by the ADO write leg). The second
+// query filters only on fields the work-item store answers consistently on
+// write: the items this identity created since yesterday, newest first.
+// Together they cover a fresh item (recency) and an old one (full text).
 func (p *ADOProvider) findRunItem(ctx context.Context, repo RepositoryRef, runID string) (WorkItem, bool, error) {
+	item, found, err := p.findRunItemByQuery(ctx, repo, adoRunItemFullTextQuery(runID), adoRunItemFullTextTop, runID)
+	if err != nil || found {
+		return item, found, err
+	}
+	return p.findRunItemByQuery(ctx, repo, adoRunItemRecentQuery, adoRunItemRecentTop, runID)
+}
+
+// adoRunItemFullTextQuery searches descriptions for runID's footer through
+// the full-text index.
+func adoRunItemFullTextQuery(runID string) string {
+	return fmt.Sprintf(
+		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Description] CONTAINS WORDS '%s' ORDER BY [System.Id] ASC",
+		escapeWIQLString(runFooter(runID)),
+	)
+}
+
+const (
+	// adoRunItemFullTextTop bounds the footer full-text search.
+	adoRunItemFullTextTop = 20
+	// adoRunItemRecentTop bounds the recency window. The retry that matters
+	// lands moments after the create it repeats, so the item is among the
+	// newest this identity created, even in a busy project.
+	adoRunItemRecentTop = 200
+	// adoRunItemRecentQuery lists the items this identity created since
+	// yesterday, newest first. @today has day precision and follows the
+	// project's time zone; the extra day keeps a just-created item inside the
+	// window whatever the hour. No clause touches the full-text index.
+	adoRunItemRecentQuery = "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.CreatedBy] = @me AND [System.CreatedDate] >= @today - 1 ORDER BY [System.Id] DESC"
+)
+
+// findRunItemByQuery runs one bounded WIQL query and returns the first hit
+// whose body carries runID's footer exactly.
+func (p *ADOProvider) findRunItemByQuery(ctx context.Context, repo RepositoryRef, query string, top int, runID string) (WorkItem, bool, error) {
 	endpoint, err := p.workURL(p.project(repo), "wiql")
 	if err != nil {
 		return WorkItem{}, false, err
 	}
-	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{"20"}})
+	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(top)}})
 	if err != nil {
 		return WorkItem{}, false, err
 	}
-	footer := runFooter(runID)
-	query := fmt.Sprintf(
-		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Description] CONTAINS WORDS '%s' ORDER BY [System.Id] ASC",
-		escapeWIQLString(footer),
-	)
 	var result adoWIQLResponse
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
 		return WorkItem{}, false, err
 	}
-	candidates, err := p.getWorkItemsBatch(ctx, repo, adoRefIDs(result.WorkItems))
+	refs := result.WorkItems[:min(top, len(result.WorkItems))]
+	candidates, err := p.getWorkItemsBatch(ctx, repo, adoRefIDs(refs))
 	if err != nil {
 		return WorkItem{}, false, err
 	}
+	footer := runFooter(runID)
 	for _, raw := range candidates {
+		// Match on the raw description before mapping: the mapped body embeds
+		// it verbatim, and mapping reads the item type's states, so an
+		// unrelated recent item can neither cost a lookup nor fail the create.
+		if !strings.Contains(stringField(raw.Fields, "System.Description"), footer) {
+			continue
+		}
 		item, err := p.mapADOWorkItem(ctx, repo, raw)
 		if err != nil {
 			return WorkItem{}, false, err
