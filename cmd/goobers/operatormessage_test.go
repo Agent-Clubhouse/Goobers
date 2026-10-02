@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
+
+	"go.temporal.io/sdk/converter"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -17,6 +22,27 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
+
+type operatorMessageCommitSink struct {
+	mu     sync.Mutex
+	events []journal.CommittedEvent
+}
+
+func (s *operatorMessageCommitSink) Commit(event journal.CommittedEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+}
+
+func (s *operatorMessageCommitSink) bodies() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var bodies []byte
+	for _, event := range s.events {
+		bodies = append(bodies, event.Body...)
+	}
+	return bodies
+}
 
 func TestDaemonOperatorMessageAuthorizesAndAttributesScopes(t *testing.T) {
 	layout := crossRunTestLayout(t)
@@ -77,6 +103,160 @@ func TestDaemonOperatorMessageAuthorizesAndAttributesScopes(t *testing.T) {
 		if !slices.Contains(refs, want) {
 			t.Fatalf("principal refs = %v, missing %s", refs, want)
 		}
+	}
+}
+
+func TestDaemonOperatorMessageContentBoundary(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("e", 36)
+	tests := []struct {
+		name      string
+		configure func(*httpapi.OperatorMessageSubmissionRequest)
+		accepted  bool
+	}{
+		{
+			name: "secret-bearing inline content and metadata",
+			configure: func(request *httpapi.OperatorMessageSubmissionRequest) {
+				request.IdempotencyKey = "key-" + secret
+				request.Principal = httpapi.Principal{Subject: "operator-" + secret, Roles: []httpapi.Role{httpapi.RoleOperate}}
+				request.PrincipalRef = request.Principal.Subject
+				request.TargetAddress = "terminal:" + secret
+				request.Purpose = "review-" + secret
+				request.Content.Text = "Authorization: Bearer " + secret
+				request.DeliveryMode = "terminal-" + secret
+			},
+			accepted: true,
+		},
+		{
+			name: "oversized artifact reference",
+			configure: func(request *httpapi.OperatorMessageSubmissionRequest) {
+				request.Content = apiv1.OperatorMessageContent{Artifact: &apiv1.ArtifactPointer{
+					Path: "artifacts/operator-message.txt", Digest: apiv1.Digest([]byte("content")),
+					Size: apiv1.MaxOperatorMessageContentBytes + 1,
+				}}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			layout := crossRunTestLayout(t)
+			sink := &operatorMessageCommitSink{}
+			unregister, err := journal.RegisterCommittedEventSink(layout.Root, "test-instance", sink)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(unregister)
+			seedOperatorMessageRun(t, layout, crossRunTestGaggle, "boundary-run")
+			service := newDaemonRunJournalService(layout, nil)
+			request := operatorMessageRequest("boundary-run", "boundary-key",
+				httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+			tc.configure(&request)
+
+			response, err := service.SubmitOperatorMessage(context.Background(), request)
+			runDir := filepath.Join(layout.ForGaggle(crossRunTestGaggle).RunsDir(), "boundary-run")
+			if !tc.accepted {
+				if err == nil {
+					t.Fatal("SubmitOperatorMessage accepted unsafe input")
+				}
+				reader, openErr := journal.OpenRead(runDir)
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				records, readErr := reader.OperatorMessages()
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if len(records) != 0 {
+					t.Fatalf("rejected input produced a durable record: %#v", records)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SubmitOperatorMessage: %v", err)
+			}
+			assertOperatorMessageScrubbedSurfaces(t, runDir, sink, response, secret)
+		})
+	}
+}
+
+func assertOperatorMessageScrubbedSurfaces(t *testing.T, runDir string, sink *operatorMessageCommitSink, response httpapi.OperatorMessageSubmissionResponse, secret string) {
+	t.Helper()
+	if !response.Accepted || response.Record.State != apiv1.OperatorMessageAccepted {
+		t.Fatalf("response = %#v", response)
+	}
+	recordJSON, err := json.Marshal(response.Record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOperatorMessageRepresentationScrubbed(t, "service response", recordJSON, secret)
+	if response.Record.Request.RequestID == "" || response.Record.Request.IdempotencyKey == "" ||
+		response.Record.Request.TargetAddress == "" || response.Record.Request.PrincipalRef == "" ||
+		response.Record.Request.Purpose == "" || response.Record.Request.DeliveryMode == "" {
+		t.Fatalf("scrubbing removed lifecycle metadata: %#v", response.Record.Request)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := reader.OperatorMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("operator message records = %d, want 1", len(records))
+	}
+	journalJSON, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOperatorMessageRepresentationScrubbed(t, "journal", journalJSON, secret)
+	assertOperatorMessageRepresentationScrubbed(t, "telemetry commit", sink.bodies(), secret)
+
+	run, _, err := journal.Recover(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcriptRef, err := run.RecordSpan("operator-message", "transcript", recordJSON)
+	if err != nil {
+		_ = run.Close()
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err = journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := reader.SpanBytes(transcriptRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOperatorMessageRepresentationScrubbed(t, "transcript", transcript, secret)
+
+	payload, err := converter.GetDefaultDataConverter().ToPayload(response.Record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOperatorMessageRepresentationScrubbed(t, "Temporal payload", payload.Data, secret)
+	var temporalRecord apiv1.OperatorMessageRecord
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &temporalRecord); err != nil {
+		t.Fatal(err)
+	}
+	if temporalRecord.State != apiv1.OperatorMessageAccepted ||
+		temporalRecord.Request.IdempotencyKey != response.Record.Request.IdempotencyKey {
+		t.Fatalf("Temporal round trip lost lifecycle metadata: %#v", temporalRecord)
+	}
+}
+
+func assertOperatorMessageRepresentationScrubbed(t *testing.T, name string, representation []byte, secret string) {
+	t.Helper()
+	if strings.Contains(string(representation), secret) {
+		t.Fatalf("%s exposed raw secret", name)
+	}
+	if !strings.Contains(string(representation), journal.RedactedToken) &&
+		!strings.Contains(string(representation), journal.Redacted) {
+		t.Fatalf("%s did not retain redaction evidence: %s", name, representation)
 	}
 }
 

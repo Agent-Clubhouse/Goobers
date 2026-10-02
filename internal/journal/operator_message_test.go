@@ -172,6 +172,27 @@ func TestOperatorMessageRejectedRequestRetainsPrincipalAttribution(t *testing.T)
 	}
 }
 
+func TestOperatorMessageRejectedRequestScrubsReturnedOutcome(t *testing.T) {
+	run, _ := newRun(t)
+	defer func() { _ = run.Close() }()
+	secret := "ghp_" + strings.Repeat("d", 36)
+	request := testOperatorMessageRequest("denied-secret", "denied-secret-key")
+
+	record, appended, err := run.RejectOperatorMessage(request, "denied-"+secret, "credential "+secret+" is not authorized")
+	if err != nil {
+		t.Fatalf("RejectOperatorMessage: %v", err)
+	}
+	if !appended || record.Outcome == nil {
+		t.Fatalf("rejected record = %#v, appended = %v", record, appended)
+	}
+	if encoded := record.Outcome.Code + record.Outcome.Detail; strings.Contains(encoded, secret) {
+		t.Fatalf("returned rejection exposed raw secret: %#v", record.Outcome)
+	}
+	if !strings.Contains(record.Outcome.Code+record.Outcome.Detail, Redacted) {
+		t.Fatalf("returned rejection did not preserve redaction evidence: %#v", record.Outcome)
+	}
+}
+
 func TestOperatorMessageRejectedAndArtifactContentReplay(t *testing.T) {
 	run, _ := newRun(t)
 	defer func() { _ = run.Close() }()

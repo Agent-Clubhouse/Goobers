@@ -108,8 +108,12 @@ func (r *Run) RejectOperatorMessage(request apiv1.OperatorMessageRequest, code, 
 		Detail:         detail,
 		Request:        &request,
 	}
-	if err := outcome.Validate(); err != nil {
+	outcome, err = scrubOperatorMessage(r.scrubber, outcome)
+	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
+	}
+	if err := outcome.Validate(); err != nil {
+		return apiv1.OperatorMessageRecord{}, false, fmt.Errorf("operator message: scrubbed rejection is invalid: %w", err)
 	}
 	if err := r.appendOperatorMessageLocked(Event{
 		Type:                   EventOperatorMessageOutcome,
