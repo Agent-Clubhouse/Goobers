@@ -1,27 +1,5 @@
-package main
-
-import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/goobers/goobers/internal/apireadstore"
-	"github.com/goobers/goobers/internal/platform/lock"
-	"github.com/goobers/goobers/internal/providersnapshot"
-	"github.com/goobers/goobers/providers"
-)
-
-// Baseline GitHub API READ-volume reduction (issue #1053).
+// Package apireadcache is the baseline GitHub API READ-volume reduction
+// (issue #1053).
 //
 // The daemon's workflow stages repeatedly consume the same open-PR and backlog
 // lists during one scheduler evaluation. Re-fetching those collections made
@@ -48,6 +26,28 @@ import (
 // entry and incrementally maintain body references. Sharing one store across
 // the list consumers also collapses their redundant independent listings —
 // later stages in the scheduler evaluation reuse the first stage's snapshot.
+package apireadcache
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/goobers/goobers/internal/apireadstore"
+	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/providers"
+)
+
 const (
 	apiReadCacheLockName   = "api-read-cache.lock"
 	apiReadCacheTTL        = 7 * 24 * time.Hour
@@ -130,7 +130,7 @@ type apiReadCache struct {
 // pass-through (standalone/manual invocation with no instance scheduler dir to
 // persist into).
 func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient) *apiReadCache {
-	cleanStaleAPIReadCacheLocks(schedulerDir)
+	CleanStaleLocks(schedulerDir)
 	return &apiReadCache{inner: inner, schedulerDir: schedulerDir, snapshotID: snapshotID}
 }
 
@@ -144,8 +144,8 @@ func newAPIReadCache(schedulerDir, snapshotID string, inner providers.HTTPClient
 // runs anywhere close to this long, so a file this old is safe to remove.
 const apiReadCacheStaleLockAge = 24 * time.Hour
 
-// cleanStaleAPIReadCacheLocks removes apiReadListLockPath lock files older
-// than apiReadCacheStaleLockAge. Before removing one it takes a non-blocking
+// CleanStaleLocks removes apiReadListLockPath lock files under schedulerDir
+// older than apiReadCacheStaleLockAge. Before removing one it takes a non-blocking
 // lock on it, which both confirms no peer currently holds it and closes the
 // TOCTOU window between the age check and the removal — a peer that opens
 // the path afterward simply creates a fresh file and locks that instead.
@@ -164,10 +164,10 @@ const apiReadCacheStaleLockAge = 24 * time.Hour
 // regardless of call frequency: it's one os.ReadDir plus a mod-time compare
 // per entry, and only files already past the 24h cutoff are ever touched, so
 // calling it often costs nothing extra on a directory with nothing stale.
-// runUpContext also drives it from apiReadCacheLockSweepTicker so a daemon
-// whose own construction calls happen to be infrequent (or absent, e.g. no
-// open-PR polling configured) still gets a periodic pass.
-func cleanStaleAPIReadCacheLocks(schedulerDir string) {
+// The daemon (cmd/goobers runUpContext) also drives it from a periodic sweep
+// ticker so a daemon whose own construction calls happen to be infrequent (or
+// absent, e.g. no open-PR polling configured) still gets a periodic pass.
+func CleanStaleLocks(schedulerDir string) {
 	if schedulerDir == "" {
 		return
 	}
@@ -200,30 +200,23 @@ func (c *apiReadCache) SetQuotaRequestGate(gate providers.QuotaRequestGate) {
 	c.quotaGate = gate
 }
 
-// apiReadCacheOption returns a provider option that routes GETs through the
-// shared conditional-GET (ETag) cache under root's instance scheduler dir
-// (#1053), wrapping a default HTTP client with providers' own timeout budget.
-// Provider list consumers apply it so strongly validated unchanged GETs become
-// zero-quota 304s and all stages share one response store.
-func apiReadCacheOption(root string) func(*providers.GitHubProvider) {
-	return apiReadCacheOptionForSnapshot(layoutFor(root).SchedulerDir(), os.Getenv(providersnapshot.EnvVar))
-}
-
-func apiReadCacheOptionForSnapshot(schedulerDir, snapshotID string) func(*providers.GitHubProvider) {
+// Option returns a provider option that routes GETs through the shared
+// conditional-GET (ETag) cache under schedulerDir (#1053), wrapping a default
+// HTTP client with providers' own timeout budget. Provider list consumers apply
+// it so strongly validated unchanged GETs become zero-quota 304s and all stages
+// share one response store. snapshotID coalesces provider list reads started by
+// the same scheduler evaluation; empty disables snapshot coalescing.
+func Option(schedulerDir, snapshotID string) func(*providers.GitHubProvider) {
 	inner := &http.Client{Timeout: apiReadHTTPTimeout}
 	return providers.WithHTTPClient(newAPIReadCache(schedulerDir, snapshotID, inner))
 }
 
-func newCachedGitHubProvider(root, token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
-	return newStageGitHubProvider(token, append(opts, apiReadCacheOption(root))...)
-}
-
-func invalidateCurrentProviderSnapshot(root string) error {
-	snapshotID := os.Getenv(providersnapshot.EnvVar)
+// InvalidateSnapshot drops every cached list response recorded under
+// snapshotID in schedulerDir's store. An empty snapshotID is a no-op.
+func InvalidateSnapshot(schedulerDir, snapshotID string) error {
 	if snapshotID == "" {
 		return nil
 	}
-	schedulerDir := layoutFor(root).SchedulerDir()
 	cache := newAPIReadCache(schedulerDir, snapshotID, nil)
 	return cache.withDisk(func(store *apireadstore.Store) error { return store.InvalidateSnapshot(snapshotID) })
 }

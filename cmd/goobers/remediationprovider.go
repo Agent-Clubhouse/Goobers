@@ -106,7 +106,7 @@ var (
 // instead, as pr-claim and the review-thread stages do.
 // token is the stage's own capability-scoped credential (providerToken);
 // cached selects the conditional-GET read cache on the GitHub arm only —
-// the cache is a GitHub HTTPClient decorator (apireadcache.go) and the
+// the cache is a GitHub HTTPClient decorator (internal/apireadcache) and the
 // Gitea arm stays uncached, exactly like open-pr's and backlog-query's
 // Gitea arms today.
 var remediationStageProvider = buildRemediationStageProvider
@@ -133,7 +133,7 @@ func remediationStageProviderWithRecorder(root string, repo providers.Repository
 			opts = append(opts, withStageProviderMutationRecorder(recorder))
 		}
 		// The conditional-GET read cache is a GitHub HTTPClient decorator
-		// (apireadcache.go); the Gitea arm has never been cached.
+		// (internal/apireadcache); the Gitea arm has never been cached.
 		if cached && repo.Provider == providers.ProviderGitHub {
 			opts = append(opts, withStageProviderCache())
 		}
