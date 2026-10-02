@@ -132,7 +132,17 @@ func journalPlaneUnavailable(service RunJournalService, w http.ResponseWriter) b
 	return false
 }
 
-func journalRunPhaseHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+type journalRoute[T any, R any] struct {
+	operation    string
+	action       string
+	sharedFields func(*T) (runID, gaggle string)
+	validate     func(http.ResponseWriter, *T) bool
+	prepare      func(*T)
+	call         func(context.Context, T) (R, error)
+	normalize    func(*R)
+}
+
+func journalJSONHandler[T any, R any](service RunJournalService, errorLog *log.Logger, route journalRoute[T, R]) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
 		if journalPlaneUnavailable(service, w) {
 			return
@@ -141,174 +151,148 @@ func journalRunPhaseHandler(service RunJournalService, errorLog *log.Logger) htt
 			writeError(w, status, code, message)
 			return
 		}
-		var input journalclient.RunPhaseRequest
+		var input T
 		if err := decodeWriteRequest(request, &input); err != nil {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
-		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
+		runID, gaggle := route.sharedFields(&input)
+		if !validCrossRunRequest(w, runID, gaggle) {
 			return
 		}
-		if !apiv1.ValidRunID(strings.TrimSpace(input.TargetRunID)) {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "targetRunId is required and must be a valid run id")
+		if route.validate != nil && !route.validate(w, &input) {
 			return
 		}
-		if !podBodyRunContained(w, request, input.RunID, "read another run's phase") {
+		if !podBodyRunContained(w, request, runID, route.action) {
 			return
 		}
-		response, err := service.RunPhase(request.Context(), input)
+		if route.prepare != nil {
+			route.prepare(&input)
+		}
+		response, err := route.call(request.Context(), input)
 		if err != nil {
-			writePlaneError(w, errorLog, "read run phase", err)
+			writePlaneError(w, errorLog, route.operation, err)
 			return
+		}
+		if route.normalize != nil {
+			route.normalize(&response)
 		}
 		writeJSON(w, http.StatusOK, response)
 	}
+}
+
+func journalRunPhaseHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
+	return journalJSONHandler(service, errorLog, journalRoute[journalclient.RunPhaseRequest, journalclient.RunPhaseResponse]{
+		operation: "read run phase",
+		action:    "read another run's phase",
+		sharedFields: func(input *journalclient.RunPhaseRequest) (string, string) {
+			return input.RunID, input.Gaggle
+		},
+		validate: func(w http.ResponseWriter, input *journalclient.RunPhaseRequest) bool {
+			if !apiv1.ValidRunID(strings.TrimSpace(input.TargetRunID)) {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "targetRunId is required and must be a valid run id")
+				return false
+			}
+			return true
+		},
+		call: func(ctx context.Context, input journalclient.RunPhaseRequest) (journalclient.RunPhaseResponse, error) {
+			return service.RunPhase(ctx, input)
+		},
+	})
 }
 
 func journalConflictTouchesHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, request *http.Request) {
-		if journalPlaneUnavailable(service, w) {
-			return
-		}
-		if status, code, message := validateMutationTransport(request); status != 0 {
-			writeError(w, status, code, message)
-			return
-		}
-		var input journalclient.ConflictTouchRequest
-		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
-			return
-		}
-		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
-			return
-		}
-		if input.Since.IsZero() {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "since is required; an unbounded conflict-history walk is refused")
-			return
-		}
-		if !podBodyRunContained(w, request, input.RunID, "read its gaggle's conflict history") {
-			return
-		}
-		response, err := service.ConflictTouches(request.Context(), input)
-		if err != nil {
-			writePlaneError(w, errorLog, "read conflict touches", err)
-			return
-		}
-		if response.Touches == nil {
-			response.Touches = []journalclient.ConflictTouch{}
-		}
-		writeJSON(w, http.StatusOK, response)
-	}
+	return journalJSONHandler(service, errorLog, journalRoute[journalclient.ConflictTouchRequest, journalclient.ConflictTouchResponse]{
+		operation: "read conflict touches",
+		action:    "read its gaggle's conflict history",
+		sharedFields: func(input *journalclient.ConflictTouchRequest) (string, string) {
+			return input.RunID, input.Gaggle
+		},
+		validate: func(w http.ResponseWriter, input *journalclient.ConflictTouchRequest) bool {
+			if input.Since.IsZero() {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "since is required; an unbounded conflict-history walk is refused")
+				return false
+			}
+			return true
+		},
+		call: func(ctx context.Context, input journalclient.ConflictTouchRequest) (journalclient.ConflictTouchResponse, error) {
+			return service.ConflictTouches(ctx, input)
+		},
+		normalize: func(response *journalclient.ConflictTouchResponse) {
+			if response.Touches == nil {
+				response.Touches = []journalclient.ConflictTouch{}
+			}
+		},
+	})
 }
 
 func journalUnpushedWorkHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, request *http.Request) {
-		if journalPlaneUnavailable(service, w) {
-			return
-		}
-		if status, code, message := validateMutationTransport(request); status != 0 {
-			writeError(w, status, code, message)
-			return
-		}
-		var input journalclient.UnpushedWorkRequest
-		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
-			return
-		}
-		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
-			return
-		}
-		if input.Since.IsZero() {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "since is required; an unbounded unpushed-work walk is refused")
-			return
-		}
-		if input.MaxInlineDiffBytes < 0 || input.MaxInlineDiffBytes > MaxUnpushedWorkInlineDiffBytes {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "maxInlineDiffBytes is out of range")
-			return
-		}
-		if !podBodyRunContained(w, request, input.RunID, "read prior unpushed work") {
-			return
-		}
-		// The asking run's items are the DAEMON's to decide. Whatever the
-		// caller sent is dropped here rather than in the service, so no
-		// implementation can accidentally honour it.
-		input.ItemIDs = nil
-		response, err := service.UnpushedWork(request.Context(), input)
-		if err != nil {
-			writePlaneError(w, errorLog, "read prior unpushed work", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, response)
-	}
+	return journalJSONHandler(service, errorLog, journalRoute[journalclient.UnpushedWorkRequest, journalclient.UnpushedWorkResponse]{
+		operation: "read prior unpushed work",
+		action:    "read prior unpushed work",
+		sharedFields: func(input *journalclient.UnpushedWorkRequest) (string, string) {
+			return input.RunID, input.Gaggle
+		},
+		validate: func(w http.ResponseWriter, input *journalclient.UnpushedWorkRequest) bool {
+			if input.Since.IsZero() {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "since is required; an unbounded unpushed-work walk is refused")
+				return false
+			}
+			if input.MaxInlineDiffBytes < 0 || input.MaxInlineDiffBytes > MaxUnpushedWorkInlineDiffBytes {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "maxInlineDiffBytes is out of range")
+				return false
+			}
+			return true
+		},
+		prepare: func(input *journalclient.UnpushedWorkRequest) {
+			input.ItemIDs = nil
+		},
+		call: func(ctx context.Context, input journalclient.UnpushedWorkRequest) (journalclient.UnpushedWorkResponse, error) {
+			return service.UnpushedWork(ctx, input)
+		},
+	})
 }
 
 func journalEscalationCandidatesHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, request *http.Request) {
-		if journalPlaneUnavailable(service, w) {
-			return
-		}
-		if status, code, message := validateMutationTransport(request); status != 0 {
-			writeError(w, status, code, message)
-			return
-		}
-		var input journalclient.EscalationCandidatesRequest
-		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
-			return
-		}
-		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
-			return
-		}
-		if !podBodyRunContained(w, request, input.RunID, "read its gaggle's decomposition escalation candidates") {
-			return
-		}
-		response, err := service.EscalationCandidates(request.Context(), input)
-		if err != nil {
-			writePlaneError(w, errorLog, "read decomposition escalation candidates", err)
-			return
-		}
-		if response.Candidates == nil {
-			response.Candidates = []journalclient.EscalationCandidate{}
-		}
-		writeJSON(w, http.StatusOK, response)
-	}
+	return journalJSONHandler(service, errorLog, journalRoute[journalclient.EscalationCandidatesRequest, journalclient.EscalationCandidatesResponse]{
+		operation: "read decomposition escalation candidates",
+		action:    "read its gaggle's decomposition escalation candidates",
+		sharedFields: func(input *journalclient.EscalationCandidatesRequest) (string, string) {
+			return input.RunID, input.Gaggle
+		},
+		call: func(ctx context.Context, input journalclient.EscalationCandidatesRequest) (journalclient.EscalationCandidatesResponse, error) {
+			return service.EscalationCandidates(ctx, input)
+		},
+		normalize: func(response *journalclient.EscalationCandidatesResponse) {
+			if response.Candidates == nil {
+				response.Candidates = []journalclient.EscalationCandidate{}
+			}
+		},
+	})
 }
 
 func journalBranchOwnershipHandler(service RunJournalService, errorLog *log.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, request *http.Request) {
-		if journalPlaneUnavailable(service, w) {
-			return
-		}
-		if status, code, message := validateMutationTransport(request); status != 0 {
-			writeError(w, status, code, message)
-			return
-		}
-		var input journalclient.BranchOwnershipRequest
-		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
-			return
-		}
-		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
-			return
-		}
-		if !apiv1.ValidRunID(strings.TrimSpace(input.TargetRunID)) {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "targetRunId is required and must be a valid run id")
-			return
-		}
-		if strings.TrimSpace(input.Workflow) == "" || strings.TrimSpace(input.Branch) == "" {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow and branch are required")
-			return
-		}
-		if !podBodyRunContained(w, request, input.RunID, "read another run's branch ownership") {
-			return
-		}
-		response, err := service.BranchOwnership(request.Context(), input)
-		if err != nil {
-			writePlaneError(w, errorLog, "read branch ownership", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, response)
-	}
+	return journalJSONHandler(service, errorLog, journalRoute[journalclient.BranchOwnershipRequest, journalclient.BranchOwnershipResponse]{
+		operation: "read branch ownership",
+		action:    "read another run's branch ownership",
+		sharedFields: func(input *journalclient.BranchOwnershipRequest) (string, string) {
+			return input.RunID, input.Gaggle
+		},
+		validate: func(w http.ResponseWriter, input *journalclient.BranchOwnershipRequest) bool {
+			if !apiv1.ValidRunID(strings.TrimSpace(input.TargetRunID)) {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "targetRunId is required and must be a valid run id")
+				return false
+			}
+			if strings.TrimSpace(input.Workflow) == "" || strings.TrimSpace(input.Branch) == "" {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow and branch are required")
+				return false
+			}
+			return true
+		},
+		call: func(ctx context.Context, input journalclient.BranchOwnershipRequest) (journalclient.BranchOwnershipResponse, error) {
+			return service.BranchOwnership(ctx, input)
+		},
+	})
 }
 
 // MaxUnpushedWorkInlineDiffBytes caps how much of a stranded diff one answer
