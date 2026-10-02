@@ -217,7 +217,7 @@ _goobers_completion()
             esac
             ;;
         escalations)
-            flags+=" --api --json"
+            flags+=" --api --json --limit --since"
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --include-verdict" ;;
                 resolve) flags+=" --resolution --gate --decision --rationale --actor" ;;

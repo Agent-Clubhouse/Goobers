@@ -1744,13 +1744,15 @@ $ goobers engine-start default-implement
 list escalated runs newest first
 
 ~~~text
-Usage: goobers escalations [--json] [--api=<url>] [path]
+Usage: goobers escalations [--json] [--limit=<n>] [--since=<time>] [--api=<url>] [path]
        goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
        goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
 escalation cause and the artifacts available before and after each stage,
-and `escalations resolve` to approve, redirect, or deny one.
+and `escalations resolve` to approve, redirect, or deny one. The list is
+bounded to 50 runs by default; use --limit 0 only when an explicit full scan
+is acceptable.
 ~~~
 
 **Examples**

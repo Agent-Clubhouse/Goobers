@@ -352,6 +352,8 @@ complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcomm
 complete -c goobers -n '__fish_seen_subcommand_from e2e; and __fish_seen_subcommand_from kill-inject' -l out -r -d 'Write the injection record here instead of stdout'
 complete -c goobers -n '__fish_seen_subcommand_from escalations' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from escalations' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from escalations' -l limit -r -d 'Maximum escalated runs to show'
+complete -c goobers -n '__fish_seen_subcommand_from escalations' -l since -r -d 'Only include runs started at or after this time'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from show' -l include-verdict -d 'Include review verdict content'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve' -l resolution -r -a 'approve deny redirect' -d 'Escalation resolution'
 complete -c goobers -n '__fish_seen_subcommand_from escalations; and __fish_seen_subcommand_from resolve' -l gate -r -d 'Escalated gate for approve and redirect'
