@@ -23,7 +23,7 @@ func TestValidateCheckDispatchNamespacesReadyEmitsNoWarning(t *testing.T) {
 	dispatchKubeClient = func() (kubernetes.Interface, error) { return nil, nil }
 	t.Cleanup(func() { dispatchKubeClient = previousClient })
 	previousPreflight := preflightGaggleNamespaces
-	preflightGaggleNamespaces = func(context.Context, kubernetes.Interface, map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
+	preflightGaggleNamespaces = func(context.Context, kubernetes.Interface, map[string]string, ...map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
 		return []dispatcher.NamespacePreflightResult{{Namespace: "gaggle-example", Exists: true}}, nil
 	}
 	t.Cleanup(func() { preflightGaggleNamespaces = previousPreflight })
@@ -44,7 +44,7 @@ func TestValidateCheckDispatchNamespacesWarnsWithoutFailingExitCode(t *testing.T
 	dispatchKubeClient = func() (kubernetes.Interface, error) { return nil, nil }
 	t.Cleanup(func() { dispatchKubeClient = previousClient })
 	previousPreflight := preflightGaggleNamespaces
-	preflightGaggleNamespaces = func(context.Context, kubernetes.Interface, map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
+	preflightGaggleNamespaces = func(context.Context, kubernetes.Interface, map[string]string, ...map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
 		result := []dispatcher.NamespacePreflightResult{{Namespace: "gaggle-example", Exists: false}}
 		return result, errNamespacePreflight
 	}

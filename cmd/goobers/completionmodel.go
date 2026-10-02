@@ -240,6 +240,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "psa-namespaces", takesArg: true, desc: "Namespaces for rendered pod admission checks"},
+		{name: "psa-service-account", takesArg: true, desc: "Stage ServiceAccount for rendered pod admission checks"},
 		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
 		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
@@ -268,6 +270,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "baseline", takesArg: true, desc: "Coverage baseline file"},
 		{name: "write-baseline", desc: "Freeze the current per-class coverage into the baseline"},
 		{name: "timeout", takesArg: true, desc: "Per-fetch timeout for provenance checks"},
+		{name: "keep-dns-for-network-none", desc: "Deprecated migration escape: retain DNS for network:none"},
 		{name: "print-blob-endpoint", desc: "Print the blob endpoint (namespace, pod labels, port) as JSON and exit"},
 	},
 	"self-update": {
@@ -312,6 +315,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
+		{name: "blob-endpoint", takesArg: true, desc: "HTTP(S) artifact plane alternative"},
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},

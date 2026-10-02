@@ -599,6 +599,7 @@ const (
 	featureGaggleBacklogLabels                  FeatureID = "gaggle.spec.backlog.labels"
 	featureGaggleBacklogLabelPredicate          FeatureID = "gaggle.spec.backlog.labelPredicate"
 	featureGaggleBacklogFieldPredicate          FeatureID = "gaggle.spec.backlog.fieldPredicate"
+	featureGaggleIsolationServiceAccount        FeatureID = "gaggle.spec.isolation.serviceAccount"
 	featureGaggleIsolationNamespace             FeatureID = "gaggle.spec.isolation.namespace"
 	featureGaggleIsolationIdentityRef           FeatureID = "gaggle.spec.isolation.identityRef"
 	featureGaggleAdditionalRepos                FeatureID = "gaggle.spec.additionalRepos"
@@ -675,6 +676,8 @@ func mustFeatureRegistry(features []Feature) FeatureRegistry {
 	}
 	return registry
 }
+
+var gaggleIsolationFeatureIDs = []FeatureID{featureGaggleIsolationNamespace, featureGaggleIsolationIdentityRef, featureGaggleIsolationServiceAccount}
 
 func currentFeatures(sinceVersion string) []Feature {
 	ids := []FeatureID{
@@ -839,8 +842,6 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleBacklogLabels,
 		featureGaggleBacklogLabelPredicate,
 		featureGaggleBacklogFieldPredicate,
-		featureGaggleIsolationNamespace,
-		featureGaggleIsolationIdentityRef,
 		featureGaggleAdditionalRepos,
 		featureGaggleAdditionalReposProviderGitHub,
 		featureGaggleAdditionalReposProviderADO,
@@ -881,6 +882,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGateRunsOnWindowsAdmin,
 		featureGaggleRunsOnWindowsAdmin,
 	}
+	ids = append(ids, gaggleIsolationFeatureIDs...)
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
 		if promotedVersion, promoted := gaPromotions[id]; promoted {
@@ -1303,6 +1305,9 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	}
 	if spec.Isolation.Namespace != "" {
 		used.add(featureGaggleIsolationNamespace)
+	}
+	if spec.Isolation.ServiceAccount != "" {
+		used.add(featureGaggleIsolationServiceAccount)
 	}
 	if spec.Isolation.IdentityRef != "" {
 		used.add(featureGaggleIsolationIdentityRef)
