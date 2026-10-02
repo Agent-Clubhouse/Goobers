@@ -47,6 +47,8 @@ type ExporterKind string
 // Config controls tracer/meter setup and exporter selection. ExporterOTLP
 // requires a non-empty, explicitly configured OTLPEndpoint.
 type Config struct {
+	// Destinations adds independently bounded named remote transports.
+	Destinations   []NamedDestination
 	ServiceName    string
 	ServiceVersion string
 	BuildCommit    string
@@ -137,20 +139,25 @@ type Config struct {
 // ErrOTLPUnavailable), log the cause loudly (the daemon's convention is
 // instance-journal code telemetry_otlp_unavailable), and keep the returned
 // client rather than discarding it as a construction failure.
+// Named destinations also wrap construction failures with this sentinel so
+// legacy callers retain the usable local client and healthy destinations.
 var ErrOTLPUnavailable = errors.New("otlp exporter unavailable")
 
 // Client owns the OTel tracer and meter providers for a Goobers process.
 type Client struct {
-	tracerProvider     *sdktrace.TracerProvider
-	localSpanProcessor sdktrace.SpanProcessor
-	meterProvider      *metric.MeterProvider
-	instruments        *instruments
-	tracer             trace.Tracer
-	scrubber           journal.Scrubber
-	journalLogs        *journalLogPipeline
-	journalCatchup     *journalCatchup
-	unregisterJournal  func()
-	exporterHealth     *ExporterHealth
+	namedMetricReaders  []metric.Reader
+	destinationName     string
+	journalDestinations []*Client
+	tracerProvider      *sdktrace.TracerProvider
+	localSpanProcessor  sdktrace.SpanProcessor
+	meterProvider       *metric.MeterProvider
+	instruments         *instruments
+	tracer              trace.Tracer
+	scrubber            journal.Scrubber
+	journalLogs         *journalLogPipeline
+	journalCatchup      *journalCatchup
+	unregisterJournal   func()
+	exporterHealth      *ExporterHealth
 }
 
 // InstanceJournalAppendDropped implements journal.InstanceAppendDropObserver.
@@ -294,6 +301,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	// unconditionally; in a daemon that is one line a minute for as long as the
 	// condition lasts (#4159). Replace it before any exporter can report.
 	installExportErrorHandler()
+	if err := validateNamedConfig(cfg); err != nil {
+		return nil, err
+	}
 
 	scrubber := cfg.Scrubber
 	if scrubber == nil {
@@ -320,13 +330,14 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
+	cfg = prepareNamedDestinations(cfg)
 	if cfg.JournalLogsOnly {
 		client := &Client{
 			scrubber:       scrubber,
 			tracer:         tracenoop.NewTracerProvider().Tracer(ScopeName),
 			exporterHealth: cfg.ExporterHealth,
 		}
-		return client, client.configureJournalLogs(ctx, cfg, res)
+		return client, client.configureAllJournalLogs(ctx, cfg, res)
 	}
 
 	// otlpDegraded, not err, carries an ErrOTLPUnavailable across the rest of
@@ -365,6 +376,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		options = append(options, sdktrace.WithSpanProcessor(processor))
 	}
 
+	named, namedErr := namedSpanProcessors(ctx, cfg)
+	if len(named) > 0 {
+		options = append(options, sdktrace.WithSpanProcessor(named))
+	}
+	otlpDegraded = errors.Join(otlpDegraded, namedErr)
 	tracerProvider := sdktrace.NewTracerProvider(options...)
 
 	readers, err := metricReaders(ctx, cfg)
@@ -379,6 +395,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	meterOptions := make([]metric.Option, 0, len(readers)+1)
 	meterOptions = append(meterOptions, metric.WithResource(res))
 	for _, reader := range readers {
+		if len(cfg.Destinations) > 0 {
+			reader = ownedMetricReader{reader}
+		}
 		meterOptions = append(meterOptions, metric.WithReader(reader))
 	}
 	meterProvider := metric.NewMeterProvider(meterOptions...)
@@ -389,6 +408,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		tracer:         tracerProvider.Tracer(ScopeName),
 		scrubber:       scrubber,
 		exporterHealth: cfg.ExporterHealth,
+	}
+	if len(cfg.Destinations) > 0 {
+		client.namedMetricReaders = readers
 	}
 	if len(readers) != 0 {
 		// A meter provider with no reader records nothing, so instruments are
@@ -403,7 +425,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.SpanExporter != nil {
 		client.localSpanProcessor = processors[0]
 	}
-	otlpDegraded = errors.Join(otlpDegraded, client.configureJournalLogs(ctx, cfg, res))
+	otlpDegraded = errors.Join(otlpDegraded, client.configureAllJournalLogs(ctx, cfg, res))
 	return client, otlpDegraded
 }
 
@@ -520,6 +542,10 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 // fail the caller (isCollectorUnreachable, #1124); a local-exporter error still
 // propagates.
 func (c *Client) Flush(ctx context.Context) error {
+	joinDestinations := c.startJournalDestinationCalls(ctx, false)
+	defer joinDestinations()
+	joinMetrics := c.startNamedMetricFlush(ctx)
+	defer joinMetrics()
 	if c.tracerProvider != nil {
 		if err := c.tracerProvider.ForceFlush(ctx); err != nil {
 			if !isCollectorUnreachable(err) {
@@ -534,7 +560,7 @@ func (c *Client) Flush(ctx context.Context) error {
 	// remote-collector condition (unreachable, or a collector configured for
 	// traces only). The SDK still reports it through the global otel error
 	// handler; it must never fail the caller's work.
-	if c.meterProvider != nil {
+	if c.meterProvider != nil && len(c.namedMetricReaders) == 0 {
 		if err := c.meterProvider.ForceFlush(ctx); err == nil && c.exporterHealth != nil && c.exporterHealth.MetricExporterInstalled() {
 			c.exporterHealth.recordMetricProviderSuccess()
 		}
@@ -571,6 +597,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	if c.unregisterJournal != nil {
 		c.unregisterJournal()
 	}
+	joinDestinations := c.startJournalDestinationCalls(ctx, true)
 	if c.journalCatchup != nil {
 		c.journalCatchup.shutdown(ctx)
 	}
@@ -587,6 +614,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	if c.journalLogs != nil {
 		_ = c.journalLogs.shutdown(ctx)
 	}
+	joinDestinations()
 	// Journal shutdown can create the final stopping/shutdown drop counts, so
 	// it must settle them before the meter provider performs its final export.
 	// If the journal consumed the caller's deadline while abandoning a blocked
@@ -603,6 +631,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 			// contract even when the metric destination is also unresponsive.
 			metricCtx, cancel = context.WithTimeout(context.Background(), time.Second)
 		}
+		c.shutdownNamedMetrics(metricCtx)
 		if err := c.meterProvider.Shutdown(metricCtx); err == nil && c.exporterHealth != nil && c.exporterHealth.MetricExporterInstalled() {
 			c.exporterHealth.recordMetricProviderSuccess()
 		}
@@ -624,6 +653,9 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	var exporters []sdktrace.SpanExporter
 	if cfg.SpanExporter != nil {
 		exporters = append(exporters, cfg.SpanExporter)
+	}
+	if cfg.Exporter == "" && len(cfg.Destinations) != 0 {
+		return exporters, nil
 	}
 	if cfg.Exporter == "" && len(exporters) != 0 {
 		if cfg.AzureMonitorConnectionString == "" || !cfg.AzureMonitorTraces {
