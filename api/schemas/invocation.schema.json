@@ -175,6 +175,7 @@
           "ado:pr:status",
           "ado:pr:complete",
           "ado:work-items:write",
+          "ado:packaging:read",
           "telemetry:read",
           "journal:read",
           "agent:model"

@@ -137,8 +137,8 @@ const (
 	WarningUnclaimedRunnerCapability WarningCode = "CAP003"
 	// WarningInertADOCapability (CAP006) identifies a DSL 2.0 task or goober
 	// that declares an ado:* capability no DSL 2.0 stage consumes
-	// (ado:code:read, ado:pr:comment, ado:pr:write, ado:work-items:write
-	// outside open-pr). Under the rebinding rule
+	// (ado:code:read, ado:pr:comment, ado:pr:write, ado:packaging:read,
+	// ado:work-items:write outside open-pr). Under the rebinding rule
 	// (docs/design/ado-parity-dsl-2-0.md §3.1) the github:* capability on a
 	// provider-dispatched stage authorizes the operation on Azure DevOps, and
 	// the warning names it. The ado:* names stay valid: no vocabulary is

@@ -137,6 +137,9 @@ const (
 	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
 	// items. It does not grant repository or pull-request writes.
 	ADOWorkItemsWrite Capability = "ado:work-items:write"
+	// ADOPackagingRead grants read access to Azure Artifacts package feeds. It
+	// does not grant repository, pull-request, or work-item writes.
+	ADOPackagingRead Capability = "ado:packaging:read"
 	// TelemetryRead grants read access to the local telemetry rollup and named,
 	// host-governed external operational telemetry connectors.
 	TelemetryRead Capability = "telemetry:read"
@@ -168,7 +171,7 @@ func All() []Capability {
 		RepoRead, RepoPush, ConfigRepoRead, ConfigRepoWrite,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
-		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
+		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite, ADOPackagingRead,
 		TelemetryRead, JournalRead, AgentModel,
 	}
 }

@@ -29,6 +29,8 @@ func TestCapabilityActsOnRepo(t *testing.T) {
 		{"ado:pr:complete", ado, true},
 		{"ado:pr:complete", github, false},
 		{"ado:work-items:write", ado, false},
+		{"ado:packaging:read", ado, false},
+		{"ado:packaging:read", github, false},
 	} {
 		if got := capabilityActsOnRepo(tc.capability, tc.repo); got != tc.want {
 			t.Errorf("capabilityActsOnRepo(%q, %s) = %t, want %t", tc.capability, tc.repo.Provider, got, tc.want)
