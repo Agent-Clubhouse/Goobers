@@ -567,7 +567,9 @@ type RepoRef struct {
 	Provider string `json:"provider" yaml:"provider"`
 	// BaseURL is the forge root URL (e.g. https://gitea.example.com). Required
 	// when provider=gitea so stage subprocesses can resolve the self-hosted
-	// host from config; omitted for github/ado.
+	// host from config; omitted for ado. It is rejected for github: GitHub
+	// Enterprise Server is unsupported, so a github repo is always github.com
+	// (#6347).
 	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Owner is the GitHub owner or Azure DevOps organization.
 	Owner string `json:"owner" yaml:"owner"`

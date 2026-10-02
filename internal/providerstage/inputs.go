@@ -42,7 +42,14 @@ const (
 // stage. SinceDSL and UntilDSL are optional DSL-version bounds for the
 // configuration surface. RetiredSince is a release or date recording a
 // retirement that applies to every supported DSL version; Replacement must
-// explain how an author should migrate.
+// explain how an author should migrate. UnsetDefault, when non-empty, is the
+// value the command falls back to when the workflow leaves the input unset;
+// it marks a policy default the author should choose explicitly, so
+// configuration validation warns about every unset occurrence instead of
+// letting the default apply invisibly. UnsetDefaultBypassFlags name
+// command-line flags whose presence means the invocation never reads the
+// input (an override, or a mode that skips the evaluation), so validation
+// stays quiet for an unset input on such a command.
 type Input struct {
 	Name         string
 	Type         InputType
@@ -51,6 +58,9 @@ type Input struct {
 	UntilDSL     string
 	RetiredSince string
 	Replacement  string
+	UnsetDefault string
+
+	UnsetDefaultBypassFlags []string
 }
 
 // inputSchemas is the complete contract for workflow-callable built-ins. Map
@@ -198,7 +208,11 @@ var inputSchemas = map[string][]Input{
 	),
 	"remediation-checkpoint": schema(
 		stringsIn("attemptedHeadSha", "base", "conflictLocations", "headPrefix", "policyExcludedReason", "rebaseBaseSha", "remediationCauses", "selectedNumber"),
-		integersIn("conflictBudget", "failingCIBudget", "humanCommentBudget", "siblingOverlapBudget", "substantiveBudget"),
+		// #2737: each per-cause budget defaults to 2 when unset; validate
+		// warns so the remediation allowance stays an explicit choice.
+		// --budget overrides every budget; --escalate parks the PR before
+		// any budget is evaluated.
+		defaultedIntegersIn("2", []string{"--budget", "--escalate"}, "conflictBudget", "failingCIBudget", "humanCommentBudget", "siblingOverlapBudget", "substantiveBudget"),
 		booleansIn("conflict", "policyExcluded", "rebaseInfrastructureFailure"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -264,6 +278,18 @@ func integersIn(names ...string) []Input    { return currentInputs(InputInteger,
 func durationsIn(names ...string) []Input   { return currentInputs(InputDuration, names...) }
 func stringListsIn(names ...string) []Input { return currentInputs(InputStringList, names...) }
 func pathsIn(names ...string) []Input       { return currentInputs(InputPath, names...) }
+
+// defaultedIntegersIn declares integer inputs the command defaults to
+// unsetDefault when the workflow omits them, unless one of bypassFlags is on
+// the command line (see Input.UnsetDefault).
+func defaultedIntegersIn(unsetDefault string, bypassFlags []string, names ...string) []Input {
+	inputs := integersIn(names...)
+	for i := range inputs {
+		inputs[i].UnsetDefault = unsetDefault
+		inputs[i].UnsetDefaultBypassFlags = bypassFlags
+	}
+	return inputs
+}
 
 // InputSchemaForVersion resolves command's declared inputs at one DSL version
 // and reports whether command is a known workflow-callable built-in. Unbounded

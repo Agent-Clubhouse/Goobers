@@ -527,6 +527,9 @@ func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []
 	if r.Project != "" {
 		return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
 	}
+	if r.BaseURL != "" {
+		return fmt.Errorf("repos[%d] (%s/%s): %s", i, r.Owner, r.Name, apiv1.GitHubBaseURLUnsupported)
+	}
 	kind := GitHubAuthPAT
 	if r.Auth != nil {
 		kind = r.Auth.Kind

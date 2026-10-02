@@ -925,6 +925,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	t = namedPublicationTask(ctx, t)
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -1032,8 +1033,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// commits it is handed can never disagree.
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
-			attemptEnv := env
-			attemptEnv.Attempt = int32(attempt)
+			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
 			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 			return result, err
@@ -1060,8 +1060,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	run.Workspace = t.EffectiveWorkspace()
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
-		attemptEnv := env
-		attemptEnv.Attempt = int32(attempt)
+		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
 		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
