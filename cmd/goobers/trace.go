@@ -57,7 +57,11 @@ const traceHelp = "Usage: goobers trace [--api=<url>] [--json] [--follow] [--sum
 	"its trace spans. Use --transcripts to show all recorded agent transcripts,\n" +
 	"or --transcript to select one stage. Use --summary for run metadata and\n" +
 	"review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's\n" +
-	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
+	"events until it finishes; --follow --transcripts streams safely redacted\n" +
+	"checkpoints (up to one minute apart) and the canonical final transcript.\n" +
+	"Use --after-seq=<seq> with transcript follow to resume after a journal record.\n" +
+	"Final records replace their partial capture; --json emits JSON Lines.\n" +
+	"Ordinary --json --follow emits event JSON Lines (default path\n" +
 	"\".\"). Continuation traces include source/continuation links, resume target,\n" +
 	"reused branch, injected input names, and historical repass accounting.\n" +
 	"Remediation escalations include the typed outcome, attempted flag,\n" +
@@ -79,6 +83,7 @@ func runTraceWithFactories(
 	showVerdicts := fs.Bool("verdicts", false, "show review verdict content")
 	showTranscripts := fs.Bool("transcripts", false, "show every recorded agent-stage transcript")
 	transcriptStage := fs.String("transcript", "", "show recorded transcript data for one stage")
+	afterSeq := fs.Uint64("after-seq", 0, "resume transcript follow after this journal sequence")
 	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	fs.Usage = helpUsage(stderr, "trace")
 	if err := fs.Parse(args); err != nil {
@@ -98,8 +103,8 @@ func runTraceWithFactories(
 		pf(stderr, "error: --summary and --verdicts cannot be used together\n")
 		return 2
 	}
-	if *follow && (*showTranscripts || transcriptSelected) {
-		pf(stderr, "error: --follow cannot be used with --transcripts or --transcript\n")
+	if *afterSeq > 0 && (!*follow || (!*showTranscripts && !transcriptSelected)) {
+		pf(stderr, "error: --after-seq requires --follow with --transcripts or --transcript\n")
 		return 2
 	}
 	if *follow && (*summary || *showVerdicts) {
@@ -138,7 +143,9 @@ func runTraceWithFactories(
 		return 2
 	}
 
-	if handled, code := maybePrintTraceTranscripts(ctx, reads, runID, selectedStage, *showTranscripts || transcriptSelected, stdout, stderr); handled {
+	transcriptOptions := traceTranscriptOptions{show: *showTranscripts || transcriptSelected, follow: *follow,
+		afterSeq: *afterSeq, terminal: detail.Terminal, jsonOutput: *jsonOutput}
+	if handled, code := maybeTraceTranscripts(ctx, reads, runID, selectedStage, transcriptOptions, newFollowContext, stdout, stderr); handled {
 		return code
 	}
 
