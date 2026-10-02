@@ -1,0 +1,106 @@
+name: Read-Path Scale Suite
+
+# Runs test/scale's opt-in target-scale measurement (TestMeasureLargeScale,
+# gated on GOOBERS_SCALE_LARGE) at 3x and 10x the measured live instance, off
+# the PR path. The posture is reporting: the test asserts only its own
+# scale-independent plan-shape invariants (indexed page beats the full scan,
+# deep page stays keyset-bounded), never a wall-clock threshold, and the
+# numbers themselves are published as an artifact and job summary (#3176).
+# `make ci` stays the local validation baseline; it runs the fast correctness
+# tests in test/scale and skips this measurement.
+
+on:
+  schedule:
+    - cron: "23 6 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scale-suite
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: read-path scale (${{ matrix.multiplier }}x)
+    runs-on: ubuntu-latest
+    # Generous, uncalibrated ceilings: corpus generation and the O(runs) full
+    # status scan dominate, and the 10x corpus is ~300k runs plus ~1.5M
+    # scheduler events. The first workflow_dispatch run calibrates these; the
+    # go test timeout sits 15 minutes inside each so a hung run still reports.
+    timeout-minutes: ${{ matrix.job-timeout }}
+    strategy:
+      # A slow or failing 10x must not cancel the 3x numbers, and vice versa.
+      fail-fast: false
+      matrix:
+        include:
+          - multiplier: "3"
+            job-timeout: 120
+            test-timeout: 105m
+          - multiplier: "10"
+            job-timeout: 300
+            test-timeout: 285m
+    env:
+      GOOBERS_SCALE_LARGE: ${{ matrix.multiplier }}
+      # Read-path measurement, not a durability fixture: suppressing the
+      # journal's fsync makes generation ~18x faster, and the report's host
+      # line records that it was disabled.
+      GOOBERS_DISABLE_FSYNC: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          # Never write the shared setup-go cache key: setup-go saves once per
+          # key and never overwrites, so a short job here that finishes first
+          # pins a near-empty build cache that CI then restores. Only CI saves.
+          cache: false
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run large-scale measurement
+        shell: bash
+        env:
+          TEST_TIMEOUT: ${{ matrix.test-timeout }}
+        run: |
+          set -o pipefail
+          mkdir -p scale-results
+          log="scale-results/scale-${GOOBERS_SCALE_LARGE}x.log"
+          # The corpus lands in t.TempDir; record headroom so a disk-full
+          # failure is diagnosable from the artifact alone.
+          df -h /tmp . > scale-results/disk-before.txt 2>&1 || true
+          go test -v -count=1 -timeout "${TEST_TIMEOUT}" -run '^TestMeasureLargeScale$' ./test/scale 2>&1 | tee "$log"
+          # The test skips itself when GOOBERS_SCALE_LARGE is unset, and a skip
+          # exits 0: require an actual pass so a broken opt-in cannot publish
+          # an empty report as green.
+          if ! grep -q -- '--- PASS: TestMeasureLargeScale' "$log"; then
+            echo "::error::TestMeasureLargeScale did not run to a pass at ${GOOBERS_SCALE_LARGE}x"
+            exit 1
+          fi
+
+      - name: Publish summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          log="scale-results/scale-${GOOBERS_SCALE_LARGE}x.log"
+          {
+            echo "## Read-path scale at ${GOOBERS_SCALE_LARGE}x"
+            echo
+            echo '```text'
+            if [ -f "$log" ]; then cat "$log"; else echo "no log produced"; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload scale results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: scale-results-${{ matrix.multiplier }}x
+          path: scale-results/
+          if-no-files-found: warn
+          retention-days: 90
