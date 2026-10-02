@@ -42,24 +42,17 @@ func runEscalationResolve(args []string, stdout, stderr io.Writer) int {
 	rationale := fs.String("rationale", "", "audit rationale (required for deny and redirect)")
 	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
 	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		fs.Usage()
+	runID, root, ok := parseRequiredArgOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	input := httpapi.EscalationResolutionRequest{
-		RunID:      fs.Arg(0),
+		RunID:      runID,
 		Resolution: strings.TrimSpace(*resolution),
 		Gate:       strings.TrimSpace(*gate),
 		Decision:   strings.TrimSpace(*decision),
 		Rationale:  *rationale,
 		Actor:      strings.TrimSpace(*actor),
-	}
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 	if code := validateEscalationResolution(input, stderr); code != 0 {
 		return code
