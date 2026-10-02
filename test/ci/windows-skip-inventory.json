@@ -229,6 +229,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/credentialoverride",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#6519), whose Windows steps never selected these validate --check-repos override tests; the probe plan and probe dedupe run on the Linux unit shards only."
+    },
+    {
       "package": "internal/creditgraph",
       "coverage": "none",
       "category": "not-selected",
@@ -617,6 +623,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/pushrejection",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#6519), whose Windows steps never selected these push-rejection classifier tests; pure string classification runs on the Linux unit shards only."
     },
     {
       "package": "internal/readprobe",

@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergeresolve"
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -902,7 +903,7 @@ func forcePushWithLeaseWithAuth(ctx context.Context, dir, branch, expectedSHA st
 		// a workflow-file change the App lacks `workflows` permission for
 		// (#5502) is never a credential problem or a lease race, so it must
 		// never surface as one to a caller deciding whether to retry.
-		return classifyRejectedPush(branch, string(out), err)
+		return pushrejection.Classify(branch, string(out), err)
 	}
 	return nil
 }

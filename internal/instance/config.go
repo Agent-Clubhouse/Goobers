@@ -950,6 +950,21 @@ func (c *Config) ExternalTelemetryConnectorsByName() map[string]externaltelemetr
 	return connectors
 }
 
+// ExternalTelemetryConnectorNames returns c's configured external-telemetry
+// connector names for the authoring-time connector check at workflow compile
+// (#4475). It is never nil for a non-nil c: an instance with no connectors
+// configured must still reject a workflow that references one.
+func (c *Config) ExternalTelemetryConnectorNames() []string {
+	if c == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.ExternalTelemetry.Connectors))
+	for _, connector := range c.ExternalTelemetry.Connectors {
+		names = append(names, connector.Name)
+	}
+	return names
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {

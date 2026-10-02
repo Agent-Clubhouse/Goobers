@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -13,7 +14,7 @@ import (
 // acceptance for the remediation/rebase force-push path: forcePushWithLease
 // -WithAuth (shared by pr-remediation's clean-rebase force-push and
 // rebase-pr's own) must classify a real ADO TF402455 rejection the same way
-// gitPushBranch does — a policyProtectedPushError, never a bare lease/race
+// gitPushBranch does — a pushrejection.PolicyProtectedError, never a bare lease/race
 // error a caller might otherwise route into an auth retry.
 func TestForcePushWithLeaseClassifiesADOPolicyProtectedRejection(t *testing.T) {
 	const prBranch = "goobers/impl/run-n26-force"
@@ -60,8 +61,8 @@ func TestForcePushWithLeaseClassifiesADOPolicyProtectedRejection(t *testing.T) {
 	if err == nil {
 		t.Fatal("forcePushWithLeaseWithAuth: err = nil, want a policy-protected push error from the pre-receive hook's TF402455 rejection")
 	}
-	var policyErr *policyProtectedPushError
+	var policyErr *pushrejection.PolicyProtectedError
 	if !errors.As(err, &policyErr) {
-		t.Fatalf("forcePushWithLeaseWithAuth err = %v, want it to be (or wrap) a policyProtectedPushError", err)
+		t.Fatalf("forcePushWithLeaseWithAuth err = %v, want it to be (or wrap) a pushrejection.PolicyProtectedError", err)
 	}
 }

@@ -1536,28 +1536,9 @@ func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body 
 // onPage with each page's raw JSON body. Gitea emits Link headers exactly like
 // GitHub.
 func (p *GiteaProvider) getAllPages(ctx context.Context, endpoint string, onPage func([]byte) error) error {
-	next, err := withPerPage(endpoint, maxPerPage)
-	if err != nil {
-		return err
-	}
-	for next != "" {
-		resp, err := p.send(ctx, http.MethodGet, next, nil)
-		if err != nil {
-			return err
-		}
-		body, nextLink, err := readPage(resp, http.MethodGet, next)
-		if err != nil {
-			return err
-		}
-		if err := onPage(body); err != nil {
-			if errors.Is(err, errStopPaging) {
-				return nil
-			}
-			return err
-		}
-		next = nextLink
-	}
-	return nil
+	return walkLinkPages(ctx, p.send, endpoint, func(body []byte, _ pageContext) error {
+		return onPage(body)
+	})
 }
 
 func (p *GiteaProvider) rateLimitPlan(resp *http.Response, endpoint string, attempt int) (time.Duration, RateLimitEvent) {

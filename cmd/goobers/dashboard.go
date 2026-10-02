@@ -860,7 +860,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	// live read-model writer behind (#5120).
 	stopReadProjection := func() {}
 	if readStore != nil && readMode == readservice.ReadModeProjected {
-		stopReadProjection = startStandaloneProjection(readStore, layout, errorLog)
+		stopReadProjection = readservice.StartStandaloneProjection(readStore, layout, errorLog)
 	}
 	return dashboardAPI{
 		handler: handler,
