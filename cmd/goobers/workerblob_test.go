@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/podauth"
@@ -44,7 +45,11 @@ func workerBlobDaemon(t *testing.T, root, directory string) (*httptest.Server, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := httpapi.NewHandler(reader, httpapi.RequireRoles(), log.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithBlobService(store))
+	plane, err := dispatcher.NewSurrenderDir(filepath.Join(directory, "surrender"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewHandler(reader, httpapi.RequireRoles(), log.New(io.Discard, "", 0), httpapi.WithAuthenticator(auth), httpapi.WithBlobService(store), httpapi.WithSurrenderService(plane))
 	if err != nil {
 		t.Fatal(err)
 	}

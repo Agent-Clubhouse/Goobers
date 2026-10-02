@@ -298,6 +298,9 @@ func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal,
 	if IsCredentialGrant(token) {
 		return a.authenticateGrant(token)
 	}
+	if strings.HasPrefix(token, workerSurrenderTokenPrefix) {
+		return a.authenticateWorkerSurrender(token)
+	}
 	if strings.HasPrefix(token, workerBlobTokenPrefix) {
 		return a.authenticateWorkerBlob(token)
 	}

@@ -47,13 +47,13 @@ func TestMergeQueues(t *testing.T) {
 // plane, or no loadable instance, refuses with the cause named.
 func TestBuildStageDispatchFailsClosed(t *testing.T) {
 	t.Run("missing instance", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "", t.TempDir(), "goobers-worker-0", nil)
+		_, err := buildStageDispatch(t.TempDir(), "", t.TempDir(), "goobers-worker-0", nil, "")
 		if err == nil || !strings.Contains(err.Error(), "instance config") {
 			t.Fatalf("error = %v, want the instance-load refusal", err)
 		}
 	})
 	t.Run("missing surrender plane", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "", "", "goobers-worker-0", nil)
+		_, err := buildStageDispatch(t.TempDir(), "", "", "goobers-worker-0", nil, "")
 		if err == nil || !strings.Contains(err.Error(), "surrender plane") {
 			t.Fatalf("error = %v, want the surrender-plane requirement named", err)
 		}
@@ -121,7 +121,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root), ""); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	wantInstanceID, err := instance.ReadRootIdentity(layout.Root)
@@ -215,7 +215,7 @@ func TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod(t *testing.
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root), ""); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	if got := built.BotLogins[instance.GitHubBotLoginKey(repo.Owner, repo.Name)]; got != "goobersbot[bot]" {
@@ -282,7 +282,7 @@ func TestBuildStageDispatchRejectsMissingSignedKeyBeforeClusterContact(t *testin
 		return nil, nil
 	}
 	t.Cleanup(func() { dispatchKubeClient = previous })
-	_, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "worker-0", nil)
+	_, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "worker-0", nil, "")
 	if err == nil || !strings.Contains(err.Error(), "api.podTokenKeyFile is required") {
 		t.Fatalf("error = %v, want named missing signing-key refusal", err)
 	}

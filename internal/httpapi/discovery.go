@@ -278,6 +278,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.recovery != nil
 	case apicontract.RouteStageSurrender:
 		available = config.surrenders != nil
+	case apicontract.RouteStageSurrenderGet, apicontract.RouteStageSurrenderSeen:
+		_, available = config.surrenders.(SurrenderReader)
 	case apicontract.RouteGaggleStateGet, apicontract.RouteGaggleStatePut:
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
