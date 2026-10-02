@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/baseline"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
@@ -41,12 +42,12 @@ const baselineCIFailureSummary = "command exited 2"
 func runLocalCIFailure(t *testing.T, runID string, health BaselineHealth) (Result, string) {
 	t.Helper()
 	return runLocalCIFailureWith(t, runID, health, baselineCIFailureSummary,
-		"command exited 2; stderr: agent-instructions-validation.test.ts:42 expected 3 sections")
+		"command exited 2; stderr: agent-instructions-validation.test.ts:42 expected 3 sections", nil)
 }
 
 // runLocalCIFailureWith runs the local-ci fixture with the given failure
-// evidence as the stage's summary and error message.
-func runLocalCIFailureWith(t *testing.T, runID string, health BaselineHealth, summary, message string) (Result, string) {
+// evidence as the stage's summary, error message and result outputs.
+func runLocalCIFailureWith(t *testing.T, runID string, health BaselineHealth, summary, message string, outputs map[string]any) (Result, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -66,6 +67,7 @@ func runLocalCIFailureWith(t *testing.T, runID string, health BaselineHealth, su
 						Message:   message,
 						Retryable: false,
 					},
+					outputs: outputs,
 				},
 			}}, nil
 		},
@@ -182,11 +184,11 @@ func (h *evaluatorHealth) ReleaseReady(context.Context, apiv1.RepoRef, string) (
 	return nil, nil
 }
 
-// transcriptProber answers every baseline probe with one fixed red transcript.
-type transcriptProber string
+// streamsProber answers every baseline probe with one fixed red result.
+type streamsProber struct{ stdout, stderr string }
 
-func (p transcriptProber) Probe(context.Context, baseline.ProbeTarget, []string) (baseline.ProbeResult, error) {
-	return baseline.ProbeResult{Output: string(p)}, nil
+func (p streamsProber) Probe(context.Context, baseline.ProbeTarget, []string) (baseline.ProbeResult, error) {
+	return baseline.ProbeResult{Output: p.stdout, Stderr: p.stderr}, nil
 }
 
 // TestInheritedPlatformDeadcodeFailureParksTheRun is #4477's end-to-end
@@ -201,23 +203,27 @@ func TestInheritedPlatformDeadcodeFailureParksTheRun(t *testing.T) {
 		return root + "/internal/foo/bar_windows.go:12:6: unreviewed dead code: " +
 			"github.com/goobers/goobers/internal/foo.helper [platforms: windows]"
 	}
-	// The executor's message for the run's own failure (stderr window,
-	// failureDigest trailer), and the base's raw combined transcript.
-	message := "command exited 2; failure: " + finding("/work/runs/run-a/repo") +
-		"\nexit status 1\nmake: *** [deadcode] Error 1; 1 distinct failure line(s) recorded in failureDigest"
-	probe := "go run ./test/deadcode -go go\n" + finding("/tmp/baseline-probe-1234567/checkout") +
-		"\nexit status 1\nmake: *** [deadcode] Error 1\n"
+	// make's recipe echo on stdout, the gate's findings on stderr; the stage
+	// result carries exactly what the shell executor derives from them.
+	const stdout = "go run ./test/deadcode -go go\n"
+	stderr := func(root string) string { return finding(root) + "\nexit status 1\nmake: *** [deadcode] Error 1\n" }
+	runStderr := stderr("/work/runs/run-a/repo")
+	message := "command exited 2; failure: " + executor.FailureDiagnostic([]byte(stdout), []byte(runStderr)) +
+		"; 1 distinct failure line(s) recorded in failureDigest"
+	outputs := map[string]any{executor.FailureDigestOutput: executor.FailureDigest([]byte(stdout), []byte(runStderr))}
 
 	store, err := baseline.OpenStore(filepath.Join(t.TempDir(), "baseline.json"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	health := &evaluatorHealth{
-		baseSHA:   "abc123def4567890",
-		evaluator: &baseline.Evaluator{Store: store, Prober: transcriptProber(probe)},
+		baseSHA: "abc123def4567890",
+		evaluator: &baseline.Evaluator{Store: store, Prober: streamsProber{
+			stdout: stdout, stderr: stderr("/tmp/baseline-probe-1234567/checkout"),
+		}},
 	}
 
-	res, runsDir := runLocalCIFailureWith(t, runID, health, message, message)
+	res, runsDir := runLocalCIFailureWith(t, runID, health, message, message, outputs)
 
 	if res.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated: an inherited failure parks as %s instead of repassing",

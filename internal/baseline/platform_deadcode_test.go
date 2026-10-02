@@ -122,24 +122,40 @@ const (
 	deadcodeTrailer    = "exit status 1\nmake: *** [Makefile:202: deadcode] Error 1\n"
 )
 
-// classifyDeadcode classifies a run whose stage message is exactly what the
-// executor derives from runFindings on stderr, against a base whose combined
-// transcript carries probeFindings.
-func classifyDeadcode(t *testing.T, runFindings, probeFindings string) Decision {
+// deadcodePreamble is what `make ci` prints to stdout before the deadcode
+// gate's findings reach stderr: make's recipe echo, the frozen-baseline
+// summary, and the stale issue-state warning test/deadcode adds once its
+// snapshot ages.
+const deadcodePreamble = "go run ./test/deadcode -go go\n" +
+	"deadcode: 325 existing exemption-policy findings retained in frozen rollout baseline (use -policy-details to list)\n" +
+	"deadcode: WARNING: issue-state snapshot is older than 30 days (2026-09-07T00:00:00Z); refresh it before relying on issue state\n"
+
+// classifyStreams classifies a run whose stage result is exactly what the
+// shell executor derives from (runStdout, runStderr) — message and
+// failureDigest — against a base whose probe produced (probeStdout,
+// probeStderr).
+func classifyStreams(t *testing.T, command []string, runStdout, runStderr, probeStdout, probeStderr string) Decision {
 	t.Helper()
-	stderr := []byte(runFindings + deadcodeTrailer)
-	message := fmt.Sprintf("command exited 2; failure: %s; %d distinct failure line(s) recorded in failureDigest",
-		executor.FailureDiagnostic(nil, stderr), executor.FailureLineCount(nil, stderr))
-	probe := "go run ./test/deadcode -go go\n" + probeFindings + deadcodeTrailer
-	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: probe}})
+	message := "command exited 2; failure: " + executor.FailureDiagnostic([]byte(runStdout), []byte(runStderr)) +
+		"; 1 distinct failure line(s) recorded in failureDigest"
+	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: probeStdout, Stderr: probeStderr}})
 	decision, err := e.Classify(context.Background(), Request{
-		Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"make", "ci"},
-		FailureText: message + "\n" + message,
+		Repo: "acme/web", BaseSHA: "abc123def456", Command: command,
+		FailureText:   message + "\n" + message,
+		FailureDigest: executor.FailureDigest([]byte(runStdout), []byte(runStderr)),
 	})
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 	return decision
+}
+
+// classifyDeadcode classifies a `make ci` deadcode failure with runFindings on
+// the run's stderr against a base with probeFindings on its own.
+func classifyDeadcode(t *testing.T, runFindings, probeFindings string) Decision {
+	t.Helper()
+	return classifyStreams(t, []string{"make", "ci"},
+		deadcodePreamble, runFindings+deadcodeTrailer, deadcodePreamble, probeFindings+deadcodeTrailer)
 }
 
 // TestInheritedDeadcodeMatchesAtRealisticPathLengths uses the executor's own
@@ -278,6 +294,46 @@ func TestFindingOutsideTheRecordedWindowIsNotHidden(t *testing.T) {
 		deadcodeFindings("/tmp/p/checkout", "zzOld"))
 	if decision.Class == ClassSharedBaselineFailure || decision.Park {
 		t.Fatalf("class = %q park = %v, want the branch-added finding not hidden behind the base", decision.Class, decision.Park)
+	}
+}
+
+// goTestOutput renders a `make ci` go-test transcript: many passing packages
+// with the named tests failing at intervals among them.
+func goTestOutput(failing ...string) string {
+	var b strings.Builder
+	for i, name := range failing {
+		for j := range 300 {
+			fmt.Fprintf(&b, "ok  \texample.com/x/pkg%d_%d\t0.%03ds\n", i, j, j)
+		}
+		fmt.Fprintf(&b, "--- FAIL: %s (0.01s)\n    %s_test.go:12: want 3 got 4\nFAIL\texample.com/x/%s\t0.2s\n", name, strings.ToLower(name), name)
+	}
+	return b.String()
+}
+
+// TestSwappedFailureOutsideTheWindowIsPRIntroduced: the stage diagnostic is
+// the LAST failing test's window, so a base failing TestA and TestZ and a
+// branch failing TestB and TestZ share it. The full roster tells them apart.
+func TestSwappedFailureOutsideTheWindowIsPRIntroduced(t *testing.T) {
+	decision := classifyStreams(t, []string{"make", "ci"},
+		goTestOutput("TestB", "TestZ"), "make: *** [ci] Error 1\n",
+		goTestOutput("TestA", "TestZ"), "make: *** [ci] Error 1\n")
+	if decision.Class != ClassPRIntroduced {
+		t.Fatalf("class = %q (%s), want %q: the branch broke TestB", decision.Class, decision.Reason, ClassPRIntroduced)
+	}
+}
+
+// TestLongInheritedGoTestFailureStillMatches: an output well past the old
+// 16 KB probe bound, with inherited failures far apart, must still match —
+// the probe keeps the whole output, as the run's own roster does.
+func TestLongInheritedGoTestFailureStillMatches(t *testing.T) {
+	output := goTestOutput("TestA", "TestZ")
+	if len(output) < 16<<10 {
+		t.Fatalf("fixture is %d bytes, want it past 16 KB", len(output))
+	}
+	decision := classifyStreams(t, []string{"make", "ci"},
+		output, "make: *** [ci] Error 1\n", output, "make: *** [ci] Error 1\n")
+	if decision.Class != ClassSharedBaselineFailure {
+		t.Fatalf("class = %q (%s), want %q", decision.Class, decision.Reason, ClassSharedBaselineFailure)
 	}
 }
 

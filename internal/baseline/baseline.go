@@ -60,6 +60,12 @@ type Request struct {
 	// FailureText is the stage's bounded failure evidence (summary, error
 	// message, captured diagnostic) the signature is derived from.
 	FailureText string
+	// FailureDigest is the stage's full failure roster (its failureDigest
+	// output, internal/executor FailureDigest). FailureText carries one
+	// window of the output; the roster carries every failure line, so a
+	// finding outside the window cannot pass as identical. Empty when the
+	// stage recorded none, which leaves the window comparison alone.
+	FailureDigest string
 	// RunID and Waiter identify who is waiting on a shared blocker: the run,
 	// and the durable subject (backlog item or pull request) to release when
 	// the baseline recovers. Both may be empty for a classification-only call.
@@ -99,8 +105,17 @@ type Decision struct {
 type ProbeResult struct {
 	// Green reports that the command succeeded on the untouched base.
 	Green bool
-	// Output is the failure evidence when Green is false.
+	// Output is the failure evidence when Green is false: the command's
+	// stdout, or its whole combined transcript when a prober cannot separate
+	// the streams.
 	Output string
+	// Stderr is the command's stderr, kept apart from Output so the failure
+	// diagnostic and roster are extracted exactly as the shell executor
+	// extracts the run's own (#4477). Empty when the prober combined them.
+	Stderr string
+	// Truncated reports that a stream was cut at the prober's size bound, so
+	// the base's failure roster is incomplete.
+	Truncated bool
 }
 
 // Prober runs a command against the target branch at a pinned base SHA. It is
@@ -202,12 +217,8 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 		return decision, nil
 	}
 
-	// The signature is drawn from one window of the output; the count covers
-	// all of it. A run that recorded a different number of distinct failure
-	// lines than the base produced has a finding the window did not show.
-	if runLines, ok := recordedFailureLines(req.FailureText); ok && runLines != observation.FailureLines {
-		decision.Reason = fmt.Sprintf("the run recorded %d distinct failure line(s) and baseline %s %d, so the failures cannot be shown identical",
-			runLines, short(req.BaseSHA), observation.FailureLines)
+	if class, reason, differs := compareRosters(req, observation); differs {
+		decision.Class, decision.Reason = class, reason
 		return decision, nil
 	}
 
@@ -234,6 +245,29 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 		decision.Reason += "; the shared repair lane is enabled, so this branch may carry the repair"
 	}
 	return decision, nil
+}
+
+// compareRosters checks the full failure rosters behind two matching window
+// signatures. The signature is drawn from one window of the output, so a
+// finding outside it — added by the branch, or swapped for one the base fails
+// — is invisible there; the roster holds every failure line. It reports
+// differs with the class and reason to return when the rosters do not show
+// the failures identical. A run that recorded no roster leaves the window
+// comparison standing.
+func compareRosters(req Request, observation Observation) (Class, string, bool) {
+	if strings.TrimSpace(req.FailureDigest) == "" {
+		return "", "", false
+	}
+	runRoster, complete := failureRoster(req.FailureDigest)
+	switch {
+	case !complete:
+		return ClassUnknown, "the run's failure roster was truncated, so it cannot be shown identical to the baseline", true
+	case observation.Roster == "":
+		return ClassUnknown, fmt.Sprintf("baseline %s has no complete failure roster to compare", short(observation.BaseSHA)), true
+	case runRoster != observation.Roster:
+		return ClassPRIntroduced, fmt.Sprintf("baseline %s fails, but with a different set of failures", short(observation.BaseSHA)), true
+	}
+	return "", "", false
 }
 
 // ReleaseReady un-parks every subject whose park no longer reflects reality:
@@ -283,9 +317,11 @@ func (e *Evaluator) probe(ctx context.Context, req Request) (Observation, error)
 		ObservedAt: e.now(),
 	}
 	if !result.Green {
-		observation.Signature = failureSignature(result.Output)
+		observation.Signature = probeSignature(result)
 		observation.Fingerprint = Fingerprint(req.Command, observation.Signature)
-		observation.FailureLines = executor.FailureLineCount([]byte(result.Output), nil)
+		if !result.Truncated {
+			observation.Roster, _ = failureRoster(executor.FailureDigest([]byte(result.Output), []byte(result.Stderr)))
+		}
 	}
 	if err := e.Store.Record(observation); err != nil {
 		return Observation{}, err

@@ -20,12 +20,12 @@ type Observation struct {
 	Green       bool   `json:"green"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Signature   string `json:"signature,omitempty"`
-	// FailureLines is executor.FailureLineCount over the probe's output: how
-	// many distinct failure lines the base produced, including any outside
-	// the window the signature is drawn from (#4477). Zero on records written
-	// before it existed.
-	FailureLines int       `json:"failureLines,omitempty"`
-	ObservedAt   time.Time `json:"observedAt"`
+	// Roster identifies the base's complete failure roster (failureRoster
+	// over executor.FailureDigest of the probe's output), including findings
+	// outside the window the signature is drawn from (#4477). Empty when the
+	// roster was incomplete, or on records written before it existed.
+	Roster     string    `json:"roster,omitempty"`
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 // Waiter is one subject (backlog item or pull request) parked on a shared

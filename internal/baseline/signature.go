@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/goobers/goobers/internal/executor"
@@ -25,24 +24,6 @@ var executorFailureMessage = regexp.MustCompile(`command exited -?\d+; failure: 
 // never carries any of them, so leaving one in makes a shared failure look
 // branch-introduced (#4477).
 var failureMessageTrailer = regexp.MustCompile(`; (?:hint|warnings): |; \d+ distinct failure line\(s\) recorded in `)
-
-// recordedFailureCount captures N from the failureDigest trailer.
-var recordedFailureCount = regexp.MustCompile(`; (\d+) distinct failure line\(s\) recorded in `)
-
-// recordedFailureLines returns the distinct-failure-line count a stage
-// message recorded (executor.FailureLineCount at run time), and false when the
-// text is not a stage message or carries no count.
-func recordedFailureLines(text string) (int, bool) {
-	if !executorFailureMessage.MatchString(text) {
-		return 0, false
-	}
-	match := recordedFailureCount.FindStringSubmatch(text)
-	if match == nil {
-		return 0, false
-	}
-	count, err := strconv.Atoi(match[1])
-	return count, err == nil
-}
 
 // platformQualifier matches a finding's `[platforms: a,b]` suffix: the form a
 // gate that evaluates several target platforms from one host (test/deadcode,
@@ -67,16 +48,55 @@ var platformQualifier = regexp.MustCompile(`\[platforms: ([^\]]+)\]`)
 // signatures being equal proves nothing, and Classify refuses to call them
 // identical.
 func failureSignature(text string) string {
-	reduced := FailureSignatureText(text)
+	diagnostic, extracted := failureDiagnostic(text)
+	return reducedSignature(FailureSignatureText(text), extracted && executor.DiagnosticTruncated(diagnostic))
+}
+
+// probeSignature is failureSignature for a probe: the diagnostic is extracted
+// from the probe's separate streams exactly as the shell executor extracts the
+// run's own, so both halves see the same window (a combined transcript would
+// lead with stdout chatter the run's stderr window never had). A prober that
+// could not separate the streams falls back to the raw transcript.
+func probeSignature(result ProbeResult) string {
+	if diagnostic := executor.FailureDiagnostic([]byte(result.Output), []byte(result.Stderr)); diagnostic != "" {
+		return reducedSignature(signatureLines(diagnostic), executor.DiagnosticTruncated(diagnostic))
+	}
+	return failureSignature(strings.TrimSpace(result.Output + "\n" + result.Stderr))
+}
+
+func reducedSignature(reduced string, truncated bool) string {
 	signature := flake.NormalizeSignature(reduced)
 	if roster := flake.RosterLines(reduced); len(roster) > 0 {
 		sum := sha256.Sum256([]byte(strings.Join(roster, "\n")))
 		signature = fmt.Sprintf("%s [roster: %d line(s), sha256:%x]", signature, len(roster), sum[:8])
 	}
-	if diagnostic, extracted := failureDiagnostic(text); extracted && executor.DiagnosticTruncated(diagnostic) {
+	if truncated {
 		signature += truncatedSignatureSuffix
 	}
 	return signature
+}
+
+// failureRoster identifies a failure digest by the SET of its failure lines
+// (executor.IsFailureLine), each normalized across checkouts
+// (flake.NormalizeVolatile: run-specific values replaced, file:line kept). The
+// digest also carries context windows; their non-finding lines (module
+// downloads, tool chatter) vary between a warm and a cold checkout and are not
+// part of the failure. complete is false when the digest was cut at its size
+// bound, because then part of the roster is unseen.
+func failureRoster(digest string) (string, bool) {
+	if executor.DigestTruncated(digest) {
+		return "", false
+	}
+	var lines []string
+	for _, line := range strings.Split(digest, "\n") {
+		if executor.IsFailureLine(line) {
+			lines = append(lines, flake.NormalizeVolatile(line))
+		}
+	}
+	slices.Sort(lines)
+	lines = slices.Compact(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return fmt.Sprintf("%d:%x", len(lines), sum[:8]), true
 }
 
 // truncatedSignatureSuffix marks a signature derived from a truncated
