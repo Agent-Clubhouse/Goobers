@@ -96,7 +96,7 @@ func TestPodRecoveryNonWritableWorkspaceNeedsNoCustody(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv(dispatcher.EnvStageWorkspace, mode)
 			t.Setenv(dispatcher.EnvDaemonAPI, "")
-			if err := publishPodRecovery(t.Context(), "missing-workspace"); err != nil {
+			if err := publishPodRecovery(t.Context(), "missing-workspace", nil); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -157,7 +157,7 @@ func TestPodRecoveryMissingClaimPreservesSource(t *testing.T) {
 	if err := os.WriteFile(path, []byte("retain me"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := publishPodRecovery(t.Context(), root); err != nil {
+	if err := publishPodRecovery(t.Context(), root, nil); err != nil {
 		t.Fatalf("missing claim recovery: %v", err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "retain me" {
@@ -191,7 +191,7 @@ func TestPodRecoveryEmptyDiffNeedsNoCustody(t *testing.T) {
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv(executor.BaseBranchEnvVar, "main")
 
-	if err := publishPodRecovery(t.Context(), root); err != nil {
+	if err := publishPodRecovery(t.Context(), root, nil); err != nil {
 		t.Fatalf("empty workspace recovery: %v", err)
 	}
 	if requests != 1 {
