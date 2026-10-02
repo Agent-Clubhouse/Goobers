@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runnersolve"
+	"github.com/goobers/goobers/internal/runtimeplan"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -47,6 +48,8 @@ type runtimePreflightWorkflow struct {
 
 type runtimePreflightExecution struct {
 	IdentityMode string                  `json:"identityMode"`
+	Process      runtimeplan.Process     `json:"process"`
+	Plan         runtimeplan.Inputs      `json:"plan"`
 	Source       runtimePreflightFactSrc `json:"source"`
 }
 
@@ -80,11 +83,14 @@ type runtimePreflightStage struct {
 	CredentialCapabilities []string                    `json:"credentialCapabilities,omitempty"`
 	RunsOn                 *apiv1.RunsOn               `json:"runsOn,omitempty"`
 	Runner                 runtimePreflightStageRunner `json:"runner"`
+	Identity               runtimeplan.Identity        `json:"identity"`
+	Settings               runtimeplan.StageSettings   `json:"settings"`
 	Source                 runtimePreflightFactSrc     `json:"source"`
 }
 
 type runtimePreflightCheck struct {
 	Category string                  `json:"category"`
+	Process  *runtimeplan.Process    `json:"process,omitempty"`
 	Code     string                  `json:"code"`
 	Outcome  string                  `json:"outcome"`
 	Stage    string                  `json:"stage,omitempty"`
@@ -131,6 +137,12 @@ func runRuntimePreflight(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	exitCode := 0
+	for _, stage := range report.Stages {
+		if stage.Identity.Outcome != "supported" {
+			exitCode = 1
+		}
+	}
 	if *asJSON {
 		var out bytes.Buffer
 		encoded, err := json.Marshal(report)
@@ -143,10 +155,10 @@ func runRuntimePreflight(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		pf(stdout, "%s\n", out.String())
-		return 0
+		return exitCode
 	}
 	printRuntimePreflightReport(stdout, report)
-	return 0
+	return exitCode
 }
 
 func buildRuntimePreflightReport(root, workflowName, identityMode string) (runtimePreflightReport, error) {
@@ -183,6 +195,7 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		cfg.Runner.HarnessCommand,
 		true,
 		nil,
+		knownExternalTelemetryConnectorNames(cfg),
 	)
 	if err != nil {
 		return runtimePreflightReport{}, err
@@ -218,8 +231,32 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
+	controls, err := resolveWorkflowRunControls(cfg, gaggle.Project, apiv1.Gaggle{Spec: gaggle}, wf)
+	if err != nil {
+		return runtimePreflightReport{}, err
+	}
+	plan, err := runtimeplan.ResolveInputs(instance.Layout{Root: absRoot}.ForGaggle(wf.Spec.Gaggle).WithConfigDir(absConfig), cfg, gaggle, controls)
+	if err != nil {
+		return runtimePreflightReport{}, err
+	}
 	stages := runtimePreflightStages(wf, resolvedGoobers, placements, runnerFacts)
+	process := runtimeplan.ObserveProcess()
+	settings := runtimeplan.ResolveStages(machine.Def.Spec, resolvedGoobers)
+	for i := range stages {
+		kind := ""
+		if stages[i].Runner.Selected != nil {
+			kind = stages[i].Runner.Selected.Kind
+		}
+		stages[i].Identity = runtimeplan.TargetIdentity(process, kind)
+		stages[i].Settings = settings[stages[i].Name]
+	}
 	checks := runtimePreflightChecks(stages)
+	for _, stage := range stages {
+		checks = append(checks, runtimePreflightCheck{Category: "execution_identity", Code: stage.Identity.Code, Outcome: stage.Identity.Outcome, Stage: stage.Name, Detail: stage.Identity.Detail, Source: runtimePreflightFactSrc(stage.Identity.Source)})
+	}
+	for i := range checks {
+		checks[i].Process = &process
+	}
 	return runtimePreflightReport{
 		SchemaVersion: runtimePreflightSchemaVersion,
 		Instance: runtimePreflightInstance{
@@ -236,9 +273,11 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		},
 		Execution: runtimePreflightExecution{
 			IdentityMode: identityMode,
+			Process:      process,
+			Plan:         plan,
 			Source: runtimePreflightFactSrc{
 				Fidelity: "static",
-				Detail:   "instance.yaml and config/ only; no host, provider, credential, sandbox, or harness probe was executed",
+				Detail:   "static execution inputs and observed reporting-process identity; no provider, credential, sandbox, or harness probe was executed",
 			},
 		},
 		Stages: stages,
@@ -583,6 +622,7 @@ func printRuntimePreflightReport(w io.Writer, report runtimePreflightReport) {
 	pf(w, "  workflow digest: %s\n", report.Workflow.Digest)
 	pf(w, "  goober digest: %s\n", report.Workflow.GooberDigest)
 	pf(w, "  execution identity: %s (%s)\n", report.Execution.IdentityMode, report.Execution.Source.Fidelity)
+	pf(w, "  checked by: pid=%d os=%s uid=%s gid=%s\n", report.Execution.Process.PID, report.Execution.Process.OS, report.Execution.Process.UID, report.Execution.Process.GID)
 	pf(w, "  stages: %d\n", len(report.Stages))
 	for _, stage := range report.Stages {
 		parts := []string{stage.Kind}

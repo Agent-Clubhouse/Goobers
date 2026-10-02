@@ -28,6 +28,22 @@ type SecretRegistrar interface {
 	Register(secret []byte)
 }
 
+// expiringRegistrar mirrors journal.ExpiringRegistrar without importing the
+// journal: a registrar that can retire a value after its stated expiry (#2656).
+type expiringRegistrar interface {
+	RegisterUntil(secret []byte, expiresAt time.Time)
+}
+
+// registerUntil registers secret with its issuer-stated expiry when r supports
+// one, and permanently otherwise.
+func registerUntil(r SecretRegistrar, secret []byte, expiresAt time.Time) {
+	if e, ok := r.(expiringRegistrar); ok {
+		e.RegisterUntil(secret, expiresAt)
+		return
+	}
+	r.Register(secret)
+}
+
 // Grant maps one goober's credential key to the token ref that backs it. Keys
 // are canonical capabilities or invocation-internal named MCP keys. Goober is
 // empty only for runner-owned deterministic work.
@@ -184,7 +200,7 @@ func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error)
 		if err != nil {
 			return nil, fmt.Errorf("credentials: materialize credential key %q: %w", key, err)
 		}
-		i.registrar.Register([]byte(token))
+		registerUntil(i.registrar, []byte(token), expiresAt)
 		s.tokens[key] = token
 		if !expiresAt.IsZero() {
 			s.expiries[key] = expiresAt

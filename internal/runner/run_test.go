@@ -81,7 +81,9 @@ type stubTaskResult struct {
 	artifactData      []byte
 	artifactMediaType string
 	artifactIntegrity apiv1.Integrity
-	outputs           map[string]interface{}
+	// resultIntegrity is the grade the executor stamps on its own envelope.
+	resultIntegrity apiv1.Integrity
+	outputs         map[string]interface{}
 }
 
 // stubDeterministic implements invoke.Deterministic like a real executor
@@ -105,6 +107,7 @@ func (s *stubDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope,
 		Error:             cfg.errorInfo,
 		Outputs:           cfg.outputs,
 		WorkspaceRevision: cfg.workspaceRevision.DeepCopy(),
+		Integrity:         cfg.resultIntegrity,
 	}
 	if cfg.artifactName != "" {
 		var ref journal.Ref

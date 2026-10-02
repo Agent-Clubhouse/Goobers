@@ -819,8 +819,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	resultFile, implicitResultFile := effectiveResultFile(env, command)
 	ExcludeStageArtifacts(ctx, env.Workspace, resultFile)
 
-	registry, scrubber := journal.DefaultScrubber()
-	registerJournalPlane(ctx, registry)
+	registry, scrubber := publicationScrubber(ctx)
+	defer e.publishNamedResult(ctx, env, scrubber, &outcome, &retErr)
 	// Only a stage whose command IS the goobers CLI receives the run's
 	// operational identity (GOOBERS_RUN_ID etc.). A stage that runs the
 	// project's own build/test suite (local-ci's `make ci` → `go test ./...`)
@@ -1416,7 +1416,13 @@ func stringInput(env apiv1.InvocationEnvelope, key string) string {
 // result.Outputs — see InputResultFile's doc comment. Invalid JSON remains
 // legacy-compatible, while a declared workspaceRevision is decoded strictly
 // and validated because it is a control, not a scalar output.
+//
+// A leading UTF-8 byte-order mark is stripped first (#5175). Some writers emit
+// one by default (Windows PowerShell 5.1's `Set-Content -Encoding utf8`), and
+// encoding/json rejects it, so a BOM-prefixed file was silently treated as
+// non-JSON and every output it declared was dropped.
 func MergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
+	data = bytes.TrimPrefix(data, utf8BOM)
 	if first := bytes.TrimSpace(data); len(first) == 0 || first[0] != '{' {
 		return nil
 	}
@@ -1445,6 +1451,9 @@ func MergeResultFileOutputs(result *apiv1.ResultEnvelope, data []byte) error {
 	}
 	return nil
 }
+
+// utf8BOM is the UTF-8 encoding of U+FEFF, the byte-order mark.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 func exitCodeOf(err error) int {
 	if err == nil {

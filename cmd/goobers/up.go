@@ -342,7 +342,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"and preserved by default. --cleanup-spans-only-runs deletes them at\n" +
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
-	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
+	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
+	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
+	"stage needs a harness that fails its startup check is still refused, while\n" +
+	"other workflows keep running.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
@@ -2369,8 +2372,22 @@ func stopReadServiceWorker(stop func() error, name string, stderr io.Writer) {
 	}
 }
 
+// daemonAPIAddressTempFile is the slice of *os.File publishDaemonAPIAddress
+// uses, so tests can inject write and close failures at the durability
+// boundary (#4575).
+type daemonAPIAddressTempFile interface {
+	io.WriteCloser
+	Name() string
+}
+
+// createDaemonAPIAddressTempFile is the temporary-file factory behind
+// publishDaemonAPIAddress; tests replace it to fail a write or close.
+var createDaemonAPIAddressTempFile = func(dir, pattern string) (daemonAPIAddressTempFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
 func publishDaemonAPIAddress(path, address string) error {
-	file, err := os.CreateTemp(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
+	file, err := createDaemonAPIAddressTempFile(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
 	if err != nil {
 		return fmt.Errorf("create daemon API address file: %w", err)
 	}
@@ -2402,9 +2419,14 @@ func removeDaemonAPIAddress(path string) error {
 	return nil
 }
 
+// worktreeRunTerminal answers worktree.ReapOptions.IsRunTerminal. Every call
+// builds a fresh owner index, so callers call it once per Reap pass: the runs
+// directory is listed at most once per pass (#6359) and the next pass still
+// sees runs created since.
 func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
+	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID string) (bool, error) {
-		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, "")
+		phase, found, err := retainedWorktreePhase(owners, worktreeID, "")
 		return found && terminalRunPhase(phase), err
 	}
 }

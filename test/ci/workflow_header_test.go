@@ -73,7 +73,7 @@ func TestContributingRequiredJobTableMatchesWorkflowNames(t *testing.T) {
 		}
 		want = append(want, job.Name)
 	}
-	want = append(want, workflow.Jobs["required-ci"].Name)
+	want = append(want, requiredCIDisplayName(t, workflow))
 	slices.Sort(want)
 
 	data, err := os.ReadFile(filepath.Join(moduleRoot(t), "CONTRIBUTING.md"))

@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -294,10 +297,23 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 			return 2
 		}
 	}
-	result, apiErr, err := callDaemonMutationAPIWithKey[httpapi.CancelRunRequest, httpapi.CancelRunResult](
-		instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
-		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, key,
-	)
+	call := func(ctx context.Context) (httpapi.CancelRunResult, *apicontract.APIError, error) {
+		return callDaemonMutationAPIWithKeyContext[httpapi.CancelRunRequest, httpapi.CancelRunResult](
+			ctx, instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
+			map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, key,
+		)
+	}
+	result, apiErr, err := call(context.Background())
+	if cancelAnswerMayBeLost(err) || cancelInFlight(apiErr) {
+		// #5118: the request may have landed even though its answer did not,
+		// or an earlier delivery of this key is still in flight. Re-ask under
+		// the same key before declaring the outcome unknown.
+		if apiErr != nil {
+			err = fmt.Errorf("%s: %s", apiErr.Code, apiErr.Message)
+		}
+		pf(stderr, "warning: %v; confirming cancellation outcome with request ID %q\n", err, key)
+		result, apiErr, err = reconcileRemoteCancel(call, err)
+	}
 	if err != nil {
 		pf(stderr, "error: %v; cancellation outcome may be unknown; retry run cancel with --request-id=%q and the same target\n", err, key)
 		return 2
@@ -327,4 +343,76 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
 		return 1
 	}
+}
+
+// cancelOutcomeUnknownCode is the daemon's answer to a replayed cancellation
+// key whose first delivery has not finished: the cancel is still in flight.
+// cancelReceiptUnavailableCode means the daemon could not record the outcome
+// it reached and asks for a replay under the same key.
+const (
+	cancelOutcomeUnknownCode     = "cancel_outcome_unknown"
+	cancelReceiptUnavailableCode = "cancel_receipt_unavailable"
+)
+
+// cancelReconcileWindow bounds how long `run cancel` keeps re-asking the daemon
+// under the original request ID after a lost or late response, and
+// cancelReconcileInterval spaces those asks. Vars, not consts, so tests aren't
+// slow.
+var (
+	cancelReconcileWindow   = 30 * time.Second
+	cancelReconcileInterval = 2 * time.Second
+)
+
+// reconcileRemoteCancel (#5118) re-issues a cancellation whose response was
+// lost (client timeout, connection dropped after sending) under the same
+// idempotency key. A daemon with a cancellation receipt store (every `goobers
+// up` daemon) answers a completed key with the original outcome and an
+// in-flight key with cancel_outcome_unknown, so the replay does not cancel
+// twice; it only learns what the first request did. It returns the
+// first definite answer, or lastErr once the window closes without one.
+func reconcileRemoteCancel(
+	call func(context.Context) (httpapi.CancelRunResult, *apicontract.APIError, error),
+	lastErr error,
+) (httpapi.CancelRunResult, *apicontract.APIError, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cancelReconcileWindow)
+	defer cancel()
+	ticker := time.NewTicker(cancelReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return httpapi.CancelRunResult{}, nil, lastErr
+		case <-ticker.C:
+		}
+		result, apiErr, err := call(ctx)
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				lastErr = err
+			}
+		case cancelInFlight(apiErr):
+			lastErr = fmt.Errorf("%s: %s", apiErr.Code, apiErr.Message)
+		default:
+			return result, apiErr, nil
+		}
+	}
+}
+
+// cancelInFlight reports whether the daemon asked for the same key to be
+// replayed because the cancellation's outcome is not yet recorded.
+func cancelInFlight(apiErr *apicontract.APIError) bool {
+	return apiErr != nil && (apiErr.Code == cancelOutcomeUnknownCode || apiErr.Code == cancelReceiptUnavailableCode)
+}
+
+// cancelAnswerMayBeLost reports whether err means the cancel request may have
+// reached the daemon but its answer never came back: a client timeout or a
+// connection dropped after sending. A failed dial never sent the request, and
+// a received-but-malformed answer is not improved by asking again.
+func cancelAnswerMayBeLost(err error) bool {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return false
+	}
+	var opErr *net.OpError
+	return !errors.As(err, &opErr) || opErr.Op != "dial"
 }

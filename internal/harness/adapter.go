@@ -165,6 +165,9 @@ type Outcome struct {
 	// DiagnosticArtifacts are runner-authored pointers recorded while handling
 	// an adapter failure, such as a scrubbed schema-invalid completion.
 	DiagnosticArtifacts []apiv1.ArtifactPointer
+	// uncommitted is set by the Executor (never an adapter) when a success
+	// completion failed the #5182 commit postcondition.
+	uncommitted *uncommittedWork
 	// Metrics contains adapter-observed numeric measures under canonical
 	// telemetry names. An absent measure is omitted; an observed zero is kept.
 	Metrics map[string]float64
@@ -484,11 +487,17 @@ func validateCompletion(req RunRequest, payload []byte, readErr error) error {
 		return nil
 	}
 	if err := req.ValidateCompletion(payload); err != nil {
+		if errors.Is(err, ErrUncommittedChanges) {
+			// A schema-valid completion that failed only the #5182 commit
+			// postcondition is not an invalid completion: it must not be
+			// captured or recorded as one.
+			return err
+		}
 		return fmt.Errorf("%w: %w", ErrInvalidCompletion, err)
 	}
 	return nil
 }
 
 func repairableCompletionError(err error) bool {
-	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion)
+	return errors.Is(err, ErrNoCompletion) || errors.Is(err, ErrInvalidCompletion) || errors.Is(err, ErrUncommittedChanges)
 }

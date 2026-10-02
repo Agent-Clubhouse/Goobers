@@ -168,7 +168,7 @@ func (t *RefreshingToken) refreshLocked(ctx context.Context) error {
 		return errors.New("the credential plane returned an empty value")
 	}
 	if t.registrar != nil {
-		t.registrar.Register([]byte(token))
+		registerUntil(t.registrar, []byte(token), expiresAt)
 	}
 	t.token, t.expiresAt, t.invalid = token, expiresAt, false
 	t.refreshes++

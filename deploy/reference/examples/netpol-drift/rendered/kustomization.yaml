@@ -1,0 +1,10 @@
+# Rendered by `goobers netpol-render` — do NOT hand-edit (decision 016).
+# Compose into each gaggle namespace alongside the gaggle-namespace base
+# (default-deny-all + allow-dns); these per-class grants are the ONLY stage
+# egress grants (delivery decision 004: grants are per-class only).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - netpol-netallow-tmpeph.yaml
+  - netpol-netnone.yaml
+  - netpol-unrestricted.yaml

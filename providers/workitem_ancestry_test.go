@@ -2,9 +2,13 @@ package providers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // fakeParentReader is an in-memory WorkItemParentReader over a parent graph
@@ -251,5 +255,165 @@ func TestAncestryFieldsAreBounded(t *testing.T) {
 	got := traverse(t, reader, AncestryOptions{MaxDepth: 1, MaxItems: 10, MaxFieldBytes: 10}, "1")
 	if field := got.Items[0].Fields[0]; len(field.Value) != 10 || !field.Truncated {
 		t.Fatalf("field = %+v, want cut to 10 bytes and marked", field)
+	}
+}
+
+// erroringParentReader fails every parent read with err.
+type erroringParentReader struct {
+	*fakeParentReader
+	err error
+}
+
+func (r erroringParentReader) ReadWorkItemParents(context.Context, RepositoryRef, []WorkItemNode, []string) ([]WorkItemParentRead, error) {
+	return nil, r.err
+}
+
+// shortParentReader drops the last result of every read, as a provider that
+// returns fewer results than children would.
+type shortParentReader struct{ *fakeParentReader }
+
+func (r shortParentReader) ReadWorkItemParents(ctx context.Context, repo RepositoryRef, children []WorkItemNode, fields []string) ([]WorkItemParentRead, error) {
+	reads, err := r.fakeParentReader.ReadWorkItemParents(ctx, repo, children, fields)
+	return reads[:len(reads)-1], err
+}
+
+func TestUnsupportedWorkItemAncestryIsExplicitAndEmpty(t *testing.T) {
+	got := UnsupportedWorkItemAncestry()
+	if got.Status != AncestryUnsupported || got.Items == nil || got.Omissions == nil || len(got.Items)+len(got.Omissions) != 0 {
+		t.Fatalf("ancestry = %#v, want status unsupported with empty, non-nil lists", got)
+	}
+}
+
+// The reader's one error (the walk's context ending) ends the walk with no
+// partial result.
+func TestAncestryReaderErrorEndsTheWalk(t *testing.T) {
+	reader := erroringParentReader{fakeParentReader: chainReader(), err: context.Canceled}
+	got, err := TraverseWorkItemAncestry(context.Background(), reader, RepositoryRef{}, []WorkItemNode{reader.AncestryRoot(RepositoryRef{}, WorkItem{ID: "1"})}, AncestryOptions{MaxDepth: 5, MaxItems: 10})
+	if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(got, WorkItemAncestry{}) {
+		t.Fatalf("TraverseWorkItemAncestry = %+v, %v; want the cancellation and no result", got, err)
+	}
+}
+
+// A zero item budget reads nothing and records every unread parent.
+func TestAncestryZeroItemBudgetReadsNothing(t *testing.T) {
+	reader := chainReader()
+	got := traverse(t, reader, AncestryOptions{MaxDepth: 5, MaxItems: 0}, "1")
+	if len(reader.calls) != 0 || len(got.Items) != 0 {
+		t.Fatalf("reads = %v items = %v, want no parent read", reader.calls, ancestorKeys(got))
+	}
+	if want := []string{"ado:P:1>2@max-items"}; !reflect.DeepEqual(omissionReasons(got), want) || got.Status != AncestryIncomplete {
+		t.Fatalf("omissions = %v (%s), want %v incomplete", omissionReasons(got), got.Status, want)
+	}
+}
+
+// A child the provider returned no result for is a failed read, never a
+// silent end of its chain.
+func TestAncestryMissingReadResultIsReadFailed(t *testing.T) {
+	inner := chainReader()
+	inner.nodes["ado:P:6"] = node("P", "6", "Task")
+	inner.nodes["ado:P:7"] = node("P", "7", "Feature")
+	inner.parentOf["ado:P:6"] = "ado:P:7"
+	reader := shortParentReader{inner}
+	roots := []WorkItemNode{inner.AncestryRoot(RepositoryRef{}, WorkItem{ID: "1"}), inner.AncestryRoot(RepositoryRef{}, WorkItem{ID: "6"})}
+	got, err := TraverseWorkItemAncestry(context.Background(), reader, RepositoryRef{}, roots, AncestryOptions{MaxDepth: 1, MaxItems: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"ado:P:2"}; !reflect.DeepEqual(ancestorKeys(got), want) {
+		t.Fatalf("items = %v, want %v", ancestorKeys(got), want)
+	}
+	if want := []string{"ado:P:6>7@read-failed", "ado:P:2>3@max-depth"}; !reflect.DeepEqual(omissionReasons(got), want) {
+		t.Fatalf("omissions = %v, want %v", omissionReasons(got), want)
+	}
+	if detail := got.Omissions[0].Detail; detail != "provider returned no result" {
+		t.Fatalf("detail = %q, want the missing result named", detail)
+	}
+	if got.Status != AncestryIncomplete {
+		t.Fatalf("status = %q, want incomplete", got.Status)
+	}
+}
+
+// A chain whose inline parent another chain already included is linked to
+// that ancestor without reading it again.
+func TestAncestryLinksAChainToAnAncestorAnotherChainIncluded(t *testing.T) {
+	reader := chainReader()
+	reader.nodes["ado:P:7"] = node("P", "7", "Task")
+	reader.parentOf["ado:P:7"] = "ado:P:3" // 7 -> 3, beside 1 -> 2 -> 3
+	got := traverse(t, reader, AncestryOptions{MaxDepth: 2, MaxItems: 10}, "1", "7")
+	if want := [][]string{{"ado:P:1", "ado:P:7"}, {"ado:P:3"}}; !reflect.DeepEqual(reader.calls, want) {
+		t.Fatalf("reads = %v, want %v (ado:P:2's parent 3 is not read again)", reader.calls, want)
+	}
+	var epic *WorkItemAncestor
+	for i := range got.Items {
+		if got.Items[i].Key() == "ado:P:3" {
+			epic = &got.Items[i]
+		}
+	}
+	if epic == nil || epic.Depth != 1 || !reflect.DeepEqual(epic.ParentOf, []string{"ado:P:2", "ado:P:7"}) {
+		t.Fatalf("items = %+v, want ado:P:3 at depth 1 parenting both ado:P:2 and ado:P:7", got.Items)
+	}
+}
+
+// Omissions are ordered by depth, then child, then reason, whatever order
+// the roots arrive in or the walk records them.
+func TestAncestryOmissionsAreOrderedByChildThenReason(t *testing.T) {
+	t.Run("by child", func(t *testing.T) {
+		reader := chainReader()
+		reader.nodes["ado:P:6"] = node("P", "6", "Task")
+		reader.parentOf["ado:P:6"] = "ado:P:2"
+		got := traverse(t, reader, AncestryOptions{MaxDepth: 0, MaxItems: 10}, "6", "1")
+		if want := []string{"ado:P:1>2@max-depth", "ado:P:6>2@max-depth"}; !reflect.DeepEqual(omissionReasons(got), want) {
+			t.Fatalf("omissions = %v, want %v", omissionReasons(got), want)
+		}
+	})
+	t.Run("by reason", func(t *testing.T) {
+		// One item referenced twice: the budget leaves the second reference
+		// unread (recorded first), then the first's parent is denied.
+		reader := chainReader()
+		reader.nodes["ado:Other:2"] = node("Other", "2", "Feature")
+		reader.parentOf["ado:P:1"] = "ado:Other:2"
+		got := traverse(t, reader, AncestryOptions{MaxDepth: 5, MaxItems: 1, CrossProject: AncestryCrossProjectDeny}, "1", "1")
+		if want := []string{"ado:P:1>ado:Other:2@cross-project", "ado:P:1>2@max-items"}; !reflect.DeepEqual(omissionReasons(got), want) {
+			t.Fatalf("omissions = %v, want %v", omissionReasons(got), want)
+		}
+	})
+}
+
+func TestAncestryReadOmissionClassifiesFailures(t *testing.T) {
+	long := strings.Repeat("a", ancestryMaxDetailBytes-1) + "€ and more"
+	cases := map[string]struct {
+		err        error
+		wantReason string
+		wantDetail string
+	}{
+		"not found":     {&providerResponseError{statusCode: http.StatusNotFound}, AncestryOmitNotFound, ""},
+		"unauthorized":  {fmt.Errorf("read parent: %w", &providerResponseError{statusCode: http.StatusUnauthorized}), AncestryOmitAccessDenied, ""},
+		"forbidden":     {&providerResponseError{statusCode: http.StatusForbidden}, AncestryOmitAccessDenied, ""},
+		"other failure": {errors.New("connection reset"), AncestryOmitReadFailed, "connection reset"},
+		"long detail":   {errors.New(long), AncestryOmitReadFailed, strings.Repeat("a", ancestryMaxDetailBytes-1)},
+	}
+	for name, tc := range cases {
+		reason, detail := AncestryReadOmission(tc.err)
+		if reason != tc.wantReason || detail != tc.wantDetail {
+			t.Errorf("%s: omission = %q %q, want %q %q", name, reason, detail, tc.wantReason, tc.wantDetail)
+		}
+		if len(detail) > ancestryMaxDetailBytes || !utf8.ValidString(detail) {
+			t.Errorf("%s: detail %q is not a bounded, valid string", name, detail)
+		}
+	}
+}
+
+func TestAncestryContextErrorIsOnlyTheWalksOwnEnd(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	wrapped := fmt.Errorf("batch: %w", context.Canceled)
+	if err := ancestryContextError(cancelled, wrapped); !errors.Is(err, context.Canceled) || err.Error() != context.Canceled.Error() {
+		t.Errorf("ended walk: err = %v, want the context's own (unwrapped) error", err)
+	}
+	if err := ancestryContextError(cancelled, errors.New("status 500")); err != nil {
+		t.Errorf("ended walk, unrelated failure: err = %v, want nil (an omission)", err)
+	}
+	if err := ancestryContextError(context.Background(), wrapped); err != nil {
+		t.Errorf("live walk: err = %v, want nil (an omission)", err)
 	}
 }

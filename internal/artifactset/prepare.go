@@ -33,7 +33,11 @@ type Sanitize func(mediaType string, data []byte) ([]byte, error)
 
 // Prepared is a fully validated, sanitized set. Private fields prevent callers
 // from accidentally publishing an agent-authored pointer or unvalidated entry.
-type Prepared struct{ entries []preparedEntry }
+type Prepared struct {
+	entries     []preparedEntry
+	publication *apiv1.ArtifactPublication
+	attempt     int32
+}
 
 type preparedEntry struct {
 	name      string

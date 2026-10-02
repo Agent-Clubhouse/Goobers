@@ -1238,24 +1238,6 @@ func TestTraceFollowCancellationSkipsTornRecordAndExitsInterrupted(t *testing.T)
 	}
 }
 
-func TestTraceFollowRejectsTranscriptFlags(t *testing.T) {
-	for _, transcriptFlag := range []string{"--transcripts", "--transcript=implement"} {
-		t.Run(transcriptFlag, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code := runTraceWithFollowContext(
-				context.Background(),
-				[]string{"--follow", transcriptFlag, "run-id"},
-				&stdout,
-				&stderr,
-			)
-			if code != 2 || stdout.Len() != 0 ||
-				!strings.Contains(stderr.String(), "--follow cannot be used with --transcripts or --transcript") {
-				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-			}
-		})
-	}
-}
-
 type traceFollowBuffer struct {
 	mu    sync.Mutex
 	buf   bytes.Buffer

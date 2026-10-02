@@ -367,6 +367,15 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// capability backstop so a missing-tool code keeps its own, more specific
 	// classification rather than being absorbed into the operational one.
 	reclassifyOperationalFailureBlock(&result)
+	// #5182: a success that left its work uncommitted goes back through the
+	// stage's retry budget with a typed reason instead of reaching review as
+	// an empty diff. The work is never committed on the agent's behalf.
+	if out.uncommitted != nil && result.Status == apiv1.ResultSuccess {
+		result = uncommittedChangesResult(result, out.uncommitted)
+		if out.uncommitted.diff != nil {
+			out.DiagnosticArtifacts = append(out.DiagnosticArtifacts, *out.uncommitted.diff)
+		}
+	}
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
@@ -462,6 +471,10 @@ func (e *Executor) DeliverOperatorMessage(ctx context.Context, req invoke.Operat
 // Invoke/Review should surface as ResultFailure/VerdictFail, vs. anything
 // else, which callers must propagate as a hard executor error instead.
 func declaredArtifactFailure(err error) (code, summary string, ok bool) {
+	var publication *artifactset.PublicationError
+	if errors.As(err, &publication) {
+		return publication.Code, publication.Error(), true
+	}
 	switch {
 	case errors.Is(err, artifactset.ErrInvalid):
 		return "invalid_declared_artifact_set", "declared artifact set is invalid", true
@@ -594,6 +607,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: validate nested execution: %w", err)
 		}
 	}
+	postcondition := armCommitPostcondition(ctx, mode, env, &req)
 	e.prepareReadinessRequest(&req)
 	if e.sandboxEnforced {
 		// Fail closed BEFORE any harness subprocess can start: an enforced
@@ -640,7 +654,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	if err != nil {
 		return Outcome{}, nil, nil, err
 	}
-	out, runErr = e.runAdapter(ctx, req, nestedAdapter)
+	out, runErr = postcondition.settle(e.runAdapter(ctx, req, nestedAdapter))
 	runErr = errors.Join(runErr, requiredMCPInfrastructureFailure(out.MCPServerFailures))
 	out, runErr = e.recordInvalidCompletion(env.TaskID, out, runErr)
 	if len(out.AgentEvents) > 0 || out.AgentTelemetryFidelity != "" {
@@ -713,42 +727,7 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			))
 		}
 	}
-	if len(out.MCPServerFailures) > 0 {
-		// A registered MCP server the harness reported as not connected
-		// (#3356): every tool it provides was absent from the agent's
-		// session even though the resolved config declared it. Journal it
-		// loudly next to whatever the stage goes on to report, so a
-		// tool-shaped failure (e.g. an agent-authored MISSING_REQUIRED_TOOLS
-		// block) names its actual cause instead of surfacing two layers away
-		// wearing an unrelated costume. Annotation only — the run's own
-		// outcome is untouched, so nothing that worked before changes.
-		servers := make([]map[string]string, 0, len(out.MCPServerFailures))
-		for _, failure := range out.MCPServerFailures {
-			servers = append(servers, map[string]string{
-				"server": failure.Server,
-				"status": failure.Status,
-			})
-		}
-		if appender, ok := e.recorder.(EventAppender); ok {
-			if err := appender.Append(journal.Event{
-				Type:  journal.EventRunnerAnnotation,
-				Stage: env.TaskID,
-				Runner: map[string]any{
-					"kind":    "mcp-server-unavailable",
-					"servers": servers,
-					"detail": "registered MCP servers were not connected at invocation; " +
-						"their tools were unavailable to the agent for this whole session — " +
-						"any missing-tool failure this stage reports is caused here",
-				},
-			}); err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf(
-					"harness: journal MCP server availability for %q: %w",
-					env.TaskID,
-					err,
-				))
-			}
-		}
-	}
+	runErr = errors.Join(runErr, e.journalMCPServerFailures(env.TaskID, out.MCPServerFailures))
 	if out.TranscriptSchema == "" {
 		prompt := out.RenderedPrompt
 		if len(prompt) == 0 {
@@ -814,7 +793,46 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		err := fmt.Errorf("%w: %s", ErrNoCompletion, completionPath)
 		return out, transcript, nil, invoke.InfrastructureFailure(err)
 	}
+	out.uncommitted = postcondition.inspect(ctx, e, env.TaskID, out.Payload)
 	return out, transcript, nil, nil
+}
+
+// journalMCPServerFailures annotates a registered MCP server the harness
+// reported as not connected (#3356): every tool it provides was absent from the
+// agent's session even though the resolved config declared it. Journal it
+// loudly next to whatever the stage goes on to report, so a tool-shaped failure
+// (e.g. an agent-authored MISSING_REQUIRED_TOOLS block) names its actual cause
+// instead of surfacing two layers away wearing an unrelated costume.
+// Annotation only — the run's own outcome is untouched.
+func (e *Executor) journalMCPServerFailures(stage string, failures []MCPServerFailure) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	appender, ok := e.recorder.(EventAppender)
+	if !ok {
+		return nil
+	}
+	servers := make([]map[string]string, 0, len(failures))
+	for _, failure := range failures {
+		servers = append(servers, map[string]string{
+			"server": failure.Server,
+			"status": failure.Status,
+		})
+	}
+	if err := appender.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: stage,
+		Runner: map[string]any{
+			"kind":    "mcp-server-unavailable",
+			"servers": servers,
+			"detail": "registered MCP servers were not connected at invocation; " +
+				"their tools were unavailable to the agent for this whole session — " +
+				"any missing-tool failure this stage reports is caused here",
+		},
+	}); err != nil {
+		return fmt.Errorf("harness: journal MCP server availability for %q: %w", stage, err)
+	}
+	return nil
 }
 
 func (e *Executor) finalizeAdapterFailure(stage string, out Outcome, runErr error) (Outcome, *apiv1.ArtifactPointer, error) {
@@ -865,6 +883,10 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	switch {
 	case errors.Is(runErr, ErrTimeout):
 		return invoke.Timeout(wrapped)
+	case errors.Is(runErr, errRequiredMCPEnterpriseBlocked):
+		// Checked before the generic rejection it wraps (#6358): the lockdown
+		// refuses the server on every attempt, so this is never infra.
+		return executor.StageFailure(ErrorCodeRequiredMCPEnterpriseBlocked, wrapped)
 	case errors.Is(runErr, errRequiredMCPRejected):
 		return executor.StageFailure(ErrorCodeRequiredMCPRejected, wrapped)
 	case errors.Is(runErr, errRequiredMCPUnavailable):

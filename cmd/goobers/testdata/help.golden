@@ -124,6 +124,7 @@ Advanced operator commands:
   approve           approve a paused or escalated gate
   blocked clear     safely remove one blocked-item record, under claims.lock
   blocked list      print the learned blocked-item ledger (scheduler/blocked.json)
+  claims active     print what is actively claimed now: item, workflow, run, holder, and age
   claims list       print current claim leases, optionally only expired leases
   claims release    force-release a claim through the live daemon or claims.lock
   config            inspect, materialize, and compare instance configuration
@@ -574,7 +575,17 @@ daemon. Operations delegate to `goobers up` when it is running.
 
 Commands:
   list       print current claim leases
+  active     print what is actively claimed now
   release    force-release one item by id
+
+### claims active
+Usage: goobers claims active [--json] [--gaggle=name] [--provider=name] [path]
+
+Print what this instance has actively claimed now: item, workflow, run,
+holder, and age, oldest first. Expired, released, and revoked leases are
+omitted (`goobers claims list --stale` shows expired ones). Holder is the owning instance
+for a shared-visibility claim, otherwise "local". The daemon API serves
+the same view at GET /api/v1/claims/active. Default path is ".".
 
 ### claims list
 Usage: goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
@@ -1806,7 +1817,7 @@ solving uses instance.yaml.example and is explicitly advisory. --json
 emits the same versioned findings envelope as
 `goobers validate --json`. --github-annotations writes each finding to
 stderr as a GitHub Actions file annotation (#687), for use as a
-config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
+config-repo PR check. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --check-harness additionally preflights every agent
 harness referenced by a goober (GBO-011). --check-repos resolves each
 target repository's token and verifies authenticated git access. Exit
 codes: 0 = clean, 1 = findings, 2 = usage/IO error.
@@ -2220,6 +2231,9 @@ A push rejected as a ref race (non-fast-forward, "failed to push some
 refs") fetches the remote tip, rebases the local branch onto it, and
 retries up to 2 more times before failing, so a fully-validated diff is
 not discarded because a concurrent writer advanced the branch (#3366).
+A push the remote refuses outright (an ADO branch policy, or a GitHub
+App lacking the `workflows` permission for a .github/workflows change)
+fails immediately without retrying.
 [path] defaults to the current directory (the stage's worktree).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 
@@ -2348,9 +2362,9 @@ the active cause exhausts its DSL-declared budget, on a byte-identical
 repeat, or when every detected cause is external to the PR's own diff
 (sibling sequencing, or CI already red on the base branch), or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
-gather-pr-context's selectedNumber output), remediationCauses, and the
-five per-cause budget inputs (humanCommentBudget defaults to 2 when
-undeclared). --budget overrides every declared cause
+gather-pr-context's selectedNumber output) and remediationCauses. Each of
+the five per-cause budget inputs defaults to 2 when undeclared
+(goobers validate warns). --budget overrides every declared cause
 for standalone diagnostics. --escalation-outcome classifies a forced
 --escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.
 Escalations persist a machine-readable `escalationOutcome`
@@ -3096,7 +3110,11 @@ Show a run's journal events and, if the telemetry rollup has ingested it,
 its trace spans. Use --transcripts to show all recorded agent transcripts,
 or --transcript to select one stage. Use --summary for run metadata and
 review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's
-events until it finishes; --json --follow emits JSON Lines (default path
+events until it finishes; --follow --transcripts streams safely redacted
+checkpoints (up to one minute apart) and the canonical final transcript.
+Use --after-seq=<seq> with transcript follow to resume after a journal record.
+Final records replace their partial capture; --json emits JSON Lines.
+Ordinary --json --follow emits event JSON Lines (default path
 "."). Continuation traces include source/continuation links, resume target,
 reused branch, injected input names, and historical repass accounting.
 Remediation escalations include the typed outcome, attempted flag,
@@ -3128,6 +3146,9 @@ startup after reporting each candidate.
 
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
+It does not skip the harness admission preflight: a workflow whose agentic
+stage needs a harness that fails its startup check is still refused, while
+other workflows keep running.
 
 A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling
@@ -3186,7 +3207,7 @@ stage, and warnings otherwise. --source-tree validates a checked-in
 config source tree and the path itself as config/. With --instance, its
 placement and capability solve uses that real instance document. Without
 --instance, the solve uses instance.yaml.example, is advisory-only
-(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
+(warnings, never errors), and the output states that limitation. --strict promotes config warnings to validation errors except DVL020, REF012, RNR006, WS001, CFG011, CFG012, CAP006, WF027, SAF001, SAF002, SAF003, SAF004, SAF005, SAF006, SAF007. Those strict-neutral compatibility/advisory findings are still printed and emitted by --json, but never change the exit code; automation may rely on this stable code set. --json emits a versioned findings envelope instead of human-readable output. --github-annotations additionally writes each finding to stderr as a
 GitHub Actions ::error/::warning file annotation (#687), so a
 config-repo PR check surfaces failures directly on the PR diff; composes with --json since stdout stays untouched. --check-harness additionally preflights every agent harness
 referenced by a goober (GBO-011) — installed, signed in, actionable
@@ -3197,7 +3218,10 @@ it also reports the identity the credential authenticates as, fails when
 that identity lacks Contribute, Contribute to pull requests or Create
 branch, and warns on a missing Force push, a held policy bypass, a blocking
 Prefix policy over refs/heads/, and backlog.doneStates state names the
-Boards project does not have; these checks only read. --check-dispatch-namespaces additionally verifies, for each gaggle, that
+Boards project does not have; these checks only read. It also probes
+every credentials: capability override that replaces a repository token
+against each gaggle's target repository, since an override applies to
+every gaggle. --check-dispatch-namespaces additionally verifies, for each gaggle, that
 its declared isolation.namespace exists and this kubeconfig's credentials
 hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check
 the worker runs at startup, run here ahead of a rollout; silently skipped

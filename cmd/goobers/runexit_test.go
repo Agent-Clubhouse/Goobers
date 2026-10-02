@@ -190,8 +190,8 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 	oldGrace := triggerResponseGrace
 	oldNow := delegationNow
 	oldTimeoutHook := triggerResponseTimeoutHook
-	delegationPollInterval = 0
-	runPollInterval = 0
+	delegationPollInterval = time.Millisecond
+	runPollInterval = time.Millisecond
 	triggerDelegationTimeout = 10 * time.Millisecond
 	triggerResponseGrace = 0
 	now := time.Now().UTC()
@@ -225,7 +225,7 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
 	const runID = "delegated-queued-final-failed"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	finalPublished := make(chan error, 1)

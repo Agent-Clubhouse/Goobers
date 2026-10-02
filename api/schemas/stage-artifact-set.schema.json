@@ -5,21 +5,114 @@
   "description": "Normalized slot-zero index. Runtime additionally requires sorted unique names, contiguous slots, and exact equality with positional context pointers.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "entries"],
+  "required": [
+    "schemaVersion",
+    "entries"
+  ],
   "properties": {
-    "schemaVersion": {"const": "goobers.dev/stage-artifact-set/v1alpha1", "description": "Artifact-set contract version."},
+    "schemaVersion": {
+      "enum": [
+        "goobers.dev/stage-artifact-set/v1alpha1",
+        "goobers.dev/stage-artifact-set/v1alpha2"
+      ],
+      "description": "v1alpha2 adds runner-authored named slot provenance."
+    },
     "entries": {
-      "type": "array", "maxItems": 64,
+      "type": "array",
+      "maxItems": 64,
       "description": "Payloads ordered by semantic name. The index itself occupies result slot zero.",
       "items": {
-        "type": "object", "additionalProperties": false,
-        "required": ["name", "slot", "artifact"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "slot",
+          "artifact"
+        ],
         "properties": {
-          "name": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$", "description": "Unique semantic lookup key."},
-          "slot": {"type": "integer", "minimum": 1, "maximum": 64, "description": "One-based result slot; all slots must be unique and contiguous."},
-          "artifact": {"$ref": "artifact-pointer.schema.json", "description": "Runner-authored pointer, matching every field of the corresponding context pointer."}
+          "name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$",
+            "description": "Unique semantic lookup key."
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "description": "One-based result slot; all slots must be unique and contiguous."
+          },
+          "artifact": {
+            "$ref": "artifact-pointer.schema.json",
+            "description": "Runner-authored pointer, matching every field of the corresponding context pointer."
+          }
+        }
+      }
+    },
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "description": "Named slot identities, independent of positional aliases.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "visit",
+          "attempt",
+          "slot",
+          "artifact"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Producing task name."
+          },
+          "visit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Runner-stamped stage visit identity."
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Logical attempt within the producing execution."
+          },
+          "slot": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$",
+            "description": "Declared producer-local slot name."
+          },
+          "artifact": {
+            "$ref": "artifact-pointer.schema.json",
+            "description": "Runner-authored contained pointer with digest and recorded byte metadata."
+          }
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": "goobers.dev/stage-artifact-set/v1alpha2"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "bindings"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "bindings"
+          ]
+        }
+      }
+    }
+  ]
 }
