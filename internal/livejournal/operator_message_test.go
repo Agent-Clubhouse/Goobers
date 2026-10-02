@@ -3,6 +3,7 @@ package livejournal
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,7 +12,8 @@ import (
 )
 
 func TestOperatorMessagesShareActiveWriterAndSurviveIdleClose(t *testing.T) {
-	w, dir := testWriter(t)
+	var observed atomic.Uint64
+	w, dir := testWriter(t, WithContextObserver(func(_ context.Context, _ string, seq uint64) { observed.Store(seq) }))
 	const runID = "operator-shared-writer"
 	if _, err := w.Emit(context.Background(), openBatch(runID, time.Now())); err != nil {
 		t.Fatal(err)
@@ -45,6 +47,10 @@ func TestOperatorMessagesShareActiveWriterAndSurviveIdleClose(t *testing.T) {
 	record, err := backend.CompleteOperatorMessage(outcome)
 	if err != nil || record.Outcome == nil {
 		t.Fatalf("after idle close = %+v, %v", record, err)
+	}
+	events := readEvents(t, dir, runID)
+	if got, want := observed.Load(), events[len(events)-1].Seq; got != want {
+		t.Fatalf("recovered operator outcome observation = %d, want %d", got, want)
 	}
 	// A resumed emitter must reacquire cleanly; the bound backend released its
 	// transient handle and reservation after completing the message.

@@ -130,9 +130,10 @@ func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
 }
 
-// WithAppendObserver reports each event after its checkpoint is durable.
-// Observers run outside the writer mutex and may arrive out of order. They
-// maintain derived state and must handle their own failures.
+// WithAppendObserver reports checkpointed event progress synchronously. Some
+// write paths call it under the writer mutex; it must not block or reenter the
+// journal. Calls may arrive out of order, so derived consumers retain the highest
+// sequence and handle their own failures. Use WithAsyncAppendObserver for intake.
 func WithAppendObserver(observer func(runID string, seq uint64)) Option {
 	return func(c *config) { c.appendObserver = observer }
 }

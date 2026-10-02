@@ -1,6 +1,7 @@
 package livejournal
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 
@@ -77,6 +78,9 @@ func (b *OperatorMessageJournal) recoverAndApply(dir string, apply func(*journal
 	}
 	if b.writer.observer != nil {
 		opts = append(opts, journal.WithAppendObserver(b.writer.observer))
+	}
+	if b.writer.contextObserver != nil {
+		opts = append(opts, journal.WithAsyncAppendObserver(context.Background(), b.writer.contextObserver))
 	}
 	run, _, err := journal.Recover(dir, opts...)
 	if err != nil {
