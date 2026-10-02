@@ -147,6 +147,17 @@ export interface GuidedCompleteResult {
   }>;
 }
 
+export interface GuidedSupervisorPreview {
+  installed: boolean;
+  running: boolean;
+  command?: string;
+}
+
+export interface GuidedSupervisionPreview {
+  scheduledTask: GuidedSupervisorPreview;
+  machineService: GuidedSupervisorPreview;
+}
+
 export type RuntimeMode =
   | "foreground"
   | "scheduled-task"
@@ -342,6 +353,10 @@ export class GuidedClient {
 
   complete(mode: RuntimeMode, confirmLocalSystem = false): Promise<GuidedCompleteResult> {
     return this.post("/guided/actions/complete", { mode, confirmLocalSystem });
+  }
+
+  getSupervisionPreview(): Promise<GuidedSupervisionPreview> {
+    return this.request("/guided/supervision");
   }
 
   initInstance(body: InitInstanceRequest = {}): Promise<GuidedInitResult> {

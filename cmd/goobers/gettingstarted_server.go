@@ -170,6 +170,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleState(w, r)
 	case r.URL.Path == "/guided/status":
 		s.handleStatus(w, r)
+	case r.URL.Path == "/guided/supervision":
+		s.handleSupervisionPreview(w, r)
 	case r.URL.Path == "/guided/actions/init-instance":
 		s.handleInitInstance(w, r)
 	case r.URL.Path == "/guided/actions/inspect-repository":
@@ -264,25 +266,45 @@ func (s *guidedServer) handleComplete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *guidedServer) ensureGuidedSupervisor(ctx context.Context, task bool) (daemonservice.Status, error) {
-	statusArgs := []string{"service", "status", "--json", s.instancePath}
-	installArgs := []string{"service", "install", "--acknowledge-local-system", s.instancePath}
-	startArgs := []string{"service", "start", s.instancePath}
-	if task {
-		statusArgs[1] = "task-status"
-		installArgs = []string{"service", "task-install", s.instancePath}
-		startArgs[1] = "task-start"
+func (s *guidedServer) handleSupervisionPreview(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
 	}
+	if s.platform != "windows" {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{Code: "windows_supervision_unsupported", Message: "Windows supervision is only supported on Windows"})
+		return
+	}
+	task, err := s.guidedSupervisorPreview(r.Context(), true)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{Code: "scheduled_task_status_failed", Message: fmt.Sprintf("inspect per-user Scheduled Task: %v", err)})
+		return
+	}
+	service, err := s.guidedSupervisorPreview(r.Context(), false)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{Code: "machine_service_status_failed", Message: fmt.Sprintf("inspect LocalSystem machine service: %v", err)})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedSupervisionPreviewBody{
+		ScheduledTask:  task,
+		MachineService: service,
+	})
+}
+
+func (s *guidedServer) ensureGuidedSupervisor(ctx context.Context, task bool) (daemonservice.Status, error) {
+	statusArgs, installArgs, startArgs := guidedSupervisorArgs(s.instancePath, task)
 	status, err := s.guidedSupervisorStatus(ctx, statusArgs)
 	if err != nil {
 		return daemonservice.Status{}, err
 	}
-	if !status.Installed {
-		if err := s.runGuidedLifecycle(ctx, installArgs); err != nil {
-			return daemonservice.Status{}, err
-		}
-	} else if !status.Running {
-		if err := s.runGuidedLifecycle(ctx, startArgs); err != nil {
+	actionArgs := installArgs
+	if status.Installed {
+		actionArgs = startArgs
+	}
+	if status.Running {
+		actionArgs = nil
+	}
+	if actionArgs != nil {
+		if err := s.runGuidedLifecycle(ctx, actionArgs); err != nil {
 			return daemonservice.Status{}, err
 		}
 	}
@@ -294,6 +316,37 @@ func (s *guidedServer) ensureGuidedSupervisor(ctx context.Context, task bool) (d
 		return daemonservice.Status{}, fmt.Errorf("supervisor reported state %q after installation", status.State)
 	}
 	return status, nil
+}
+
+func (s *guidedServer) guidedSupervisorPreview(ctx context.Context, task bool) (guidedSupervisorPreview, error) {
+	statusArgs, installArgs, startArgs := guidedSupervisorArgs(s.instancePath, task)
+	status, err := s.guidedSupervisorStatus(ctx, statusArgs)
+	if err != nil {
+		return guidedSupervisorPreview{}, err
+	}
+	preview := guidedSupervisorPreview{
+		Installed: status.Installed,
+		Running:   status.Running,
+	}
+	switch {
+	case !status.Installed:
+		preview.Command = guidedCommand(s.executable, installArgs...)
+	case !status.Running:
+		preview.Command = guidedCommand(s.executable, startArgs...)
+	}
+	return preview, nil
+}
+
+func guidedSupervisorArgs(instancePath string, task bool) (status, install, start []string) {
+	statusArgs := []string{"service", "status", "--json", instancePath}
+	installArgs := []string{"service", "install", "--acknowledge-local-system", instancePath}
+	startArgs := []string{"service", "start", instancePath}
+	if task {
+		statusArgs[1] = "task-status"
+		installArgs = []string{"service", "task-install", instancePath}
+		startArgs[1] = "task-start"
+	}
+	return statusArgs, installArgs, startArgs
 }
 
 func (s *guidedServer) runGuidedLifecycle(ctx context.Context, argv []string) error {
@@ -385,6 +438,17 @@ type guidedWorkflowFact struct {
 	Name      string   `json:"name"`
 	Schedules []string `json:"schedules"`
 	Command   string   `json:"command"`
+}
+
+type guidedSupervisionPreviewBody struct {
+	ScheduledTask  guidedSupervisorPreview `json:"scheduledTask"`
+	MachineService guidedSupervisorPreview `json:"machineService"`
+}
+
+type guidedSupervisorPreview struct {
+	Installed bool   `json:"installed"`
+	Running   bool   `json:"running"`
+	Command   string `json:"command,omitempty"`
 }
 
 type guidedErrorBody struct {

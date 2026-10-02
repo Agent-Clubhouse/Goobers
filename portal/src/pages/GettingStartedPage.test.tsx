@@ -148,7 +148,26 @@ type RouteHandler = (init?: RequestInit) => { status?: number; body: unknown };
 
 function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
   const fetchFn = vi.fn(async (input: string, init?: RequestInit) => {
-    const handler = routes[input];
+    const handler =
+      routes[input] ??
+      (input === "/guided/supervision"
+        ? () => ({
+            body: {
+              scheduledTask: {
+                installed: false,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "task-install" "C:\\work\\tutorial-instance"',
+              },
+              machineService: {
+                installed: false,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "install" "--acknowledge-local-system" "C:\\work\\tutorial-instance"',
+              },
+            },
+          })
+        : undefined);
     if (!handler) {
       return new Response(JSON.stringify({ code: "not_found", message: input }), {
         status: 404,
@@ -867,6 +886,54 @@ describe("GettingStartedPage", () => {
       { mode: "scheduled-task", confirmLocalSystem: false },
     ]);
     expect(await screen.findByText(/running under CONTOSO\\alice/)).toBeInTheDocument();
+  });
+
+  it("previews start commands for installed but stopped supervisors", async () => {
+    const user = userEvent.setup();
+    const completeBodies: unknown[] = [];
+    window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(9));
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/supervision": () => ({
+            body: {
+              scheduledTask: {
+                installed: true,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "task-start" "C:\\work\\tutorial-instance"',
+              },
+              machineService: {
+                installed: true,
+                running: false,
+                command:
+                  '"C:\\Program Files\\Goobers\\goobers.exe" "service" "start" "C:\\work\\tutorial-instance"',
+              },
+            },
+          }),
+          "/guided/actions/complete": (init) => {
+            completeBodies.push(parseBody(init));
+            return {
+              body: completeResult({
+                daemonRunning: true,
+                supervisionMode: "scheduled-task",
+              }),
+            };
+          },
+        })}
+      />,
+    );
+
+    await screen.findByText(/"task-start"/);
+    expect(screen.getByText(/"service" "start"/)).toBeInTheDocument();
+    expect(screen.queryByText(/task-install/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /Start automatically for me/ }));
+    await user.click(screen.getByRole("button", { name: "Apply and finish" }));
+    expect(completeBodies).toEqual([
+      { mode: "scheduled-task", confirmLocalSystem: false },
+    ]);
   });
 
   it("requires the LocalSystem warning confirmation and supports Not now", async () => {
