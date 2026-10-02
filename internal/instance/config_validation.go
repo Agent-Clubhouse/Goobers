@@ -141,12 +141,21 @@ func (c SecretStoreConfig) validate(i int, stores map[string]bool) error {
 	if !validSecretStoreName(c.Name) {
 		return fmt.Errorf("secretStores[%d]: name %q must be a lowercase DNS label (letters, digits, and interior hyphens, at most 63 characters)", i, c.Name)
 	}
-	if stores[c.Name] {
+	if _, exists := stores[c.Name]; exists {
 		return fmt.Errorf("secretStores[%d]: name %q is declared more than once", i, c.Name)
 	}
-	stores[c.Name] = true
-	if c.Kind != SecretStoreKindAzureKeyVault {
-		return fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q)", i, c.Name, c.Kind, SecretStoreKindAzureKeyVault)
+	stores[c.Name] = c.Kind == SecretStoreKindAzureKeyVault
+	if c.IsKeyStore() && c.CacheTTLSeconds != 0 {
+		return fmt.Errorf("secretStores[%d] (%s): key stores do not support cacheTTLSeconds", i, c.Name)
+	}
+	if c.Kind == SecretStoreKindFileKey {
+		return c.validateFileKey()
+	}
+	if c.Kind != SecretStoreKindAzureKeyVault && c.Kind != SecretStoreKindKeyVaultKey {
+		return fmt.Errorf("secretStores[%d] (%s): unsupported kind %q (supported: %q, %q, %q)", i, c.Name, c.Kind, SecretStoreKindAzureKeyVault, SecretStoreKindKeyVaultKey, SecretStoreKindFileKey)
+	}
+	if c.Directory != "" {
+		return fmt.Errorf("secretStores[%d] (%s): directory is only valid for file-key", i, c.Name)
 	}
 	if err := validateVaultURI(c.VaultURI); err != nil {
 		return fmt.Errorf("secretStores[%d] (%s): vaultURI: %w", i, c.Name, err)
