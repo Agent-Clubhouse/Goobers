@@ -2,27 +2,71 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
-// TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder pins #5413's
-// parallel build: targets compile concurrently, but archives, skip notices and
-// build lines come back in the requested target order, so SHA256SUMS inputs and
-// the log stay deterministic however the builds finish.
-func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
-	orig := buildPackage
-	buildPackage = "./"
-	defer func() { buildPackage = orig }()
+// fakeTargetBuilds replaces the compile and provenance steps so these tests
+// exercise only the concurrent orchestration. Real cross-compiles of several
+// targets starved a shared CI shard and timed out unrelated tests (#6493); the
+// real build path stays covered by TestRunEndToEnd and the image tests.
+// Earlier targets finish last, so completion order differs from target order.
+// The returned func reports the peak number of builds in flight.
+func fakeTargetBuilds(t *testing.T, unbuildable ...string) func() int32 {
+	t.Helper()
+	origBuild, origVerify := buildTargetBinary, verifyTargetBinary
+	t.Cleanup(func() { buildTargetBinary, verifyTargetBinary = origBuild, origVerify })
+	var inFlight, peak atomic.Int32
+	var mu sync.Mutex
+	order := map[string]int{}
+	buildTargetBinary = func(target Target, _, binPath, _ string) (string, error) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		mu.Lock()
+		idx := len(order)
+		order[target.String()] = idx
+		mu.Unlock()
+		if idx == 0 {
+			// Hold the first build until a second is in flight (bounded), so
+			// the concurrency assertion does not depend on scheduler timing.
+			for deadline := time.Now().Add(10 * time.Second); inFlight.Load() < 2 && time.Now().Before(deadline); {
+				time.Sleep(time.Millisecond)
+			}
+		}
+		time.Sleep(time.Duration(40-10*min(idx, 3)) * time.Millisecond)
+		if slices.Contains(unbuildable, target.String()) {
+			return "unsupported GOOS/GOARCH pair " + target.String(), fmt.Errorf("exit status 2")
+		}
+		return "", os.WriteFile(binPath, []byte("binary "+target.String()), 0o755)
+	}
+	verifyTargetBinary = func(string, string, string, Target) error { return nil }
+	return peak.Load
+}
 
-	// Only targets other release tests already cross-compile (linux/arm64,
-	// windows/amd64), plus one unbuildable target: each extra GOOS/GOARCH
-	// compiles a cold standard library, and on a shared CI shard that starved
-	// unrelated deadline-bound tests (#6493).
-	targets, err := parseTargets("linux/arm64,windows/ppc64,windows/amd64")
+// TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder pins #5413's
+// parallel build: targets build concurrently (bounded by the parallelism
+// setting), but archives, skip notices and build lines come back in the
+// requested target order, so SHA256SUMS inputs and the log stay deterministic
+// however the builds finish.
+func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
+	t.Setenv(releaseBuildParallelismEnv, "3")
+	peak := fakeTargetBuilds(t, "windows/ppc64")
+
+	targets, err := parseTargets("linux/amd64,windows/ppc64,darwin/arm64,windows/amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +84,7 @@ func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
 	for _, archive := range archives {
 		names = append(names, filepath.Base(archive))
 	}
-	want := []string{"goobers_v1.2.3_linux_arm64.tar.gz", "goobers_v1.2.3_windows_amd64.zip"}
+	want := []string{"goobers_v1.2.3_linux_amd64.tar.gz", "goobers_v1.2.3_darwin_arm64.tar.gz", "goobers_v1.2.3_windows_amd64.zip"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("archives = %v, want target order %v", names, want)
 	}
@@ -53,7 +97,7 @@ func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
 			reported = append(reported, fields[1])
 		}
 	}
-	if got := strings.Join(reported, ","); got != "linux/arm64,windows/ppc64,windows/amd64" {
+	if got := strings.Join(reported, ","); got != "linux/amd64,windows/ppc64,darwin/arm64,windows/amd64" {
 		t.Fatalf("report order = %s, want target order:\n%s", got, stdout.String())
 	}
 	entries, err := os.ReadDir(opts.outDir)
@@ -63,16 +107,18 @@ func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
 	if len(entries) != len(want) {
 		t.Fatalf("output holds %d entries, want only the %d archives (binaries removed)", len(entries), len(want))
 	}
+	if got := peak(); got < 2 || got > 3 {
+		t.Fatalf("peak concurrent builds = %d, want between 2 and the configured bound 3", got)
+	}
 }
 
 // Without -skip-unbuildable the first unbuildable target in requested order is
 // the one reported, even when a later target also fails.
 func TestBuildReleaseTargetsReportsFirstFailureInTargetOrder(t *testing.T) {
-	orig := buildPackage
-	buildPackage = "./"
-	defer func() { buildPackage = orig }()
+	t.Setenv(releaseBuildParallelismEnv, "3")
+	fakeTargetBuilds(t, "windows/ppc64", "plan9/riscv64")
 
-	targets, err := parseTargets("linux/arm64,windows/ppc64,plan9/riscv64")
+	targets, err := parseTargets("linux/amd64,windows/ppc64,plan9/riscv64")
 	if err != nil {
 		t.Fatal(err)
 	}

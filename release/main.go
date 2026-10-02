@@ -253,7 +253,7 @@ func buildReleaseTarget(t Target, opts options, ldflags, releaseDocsDir string, 
 			"target to compile (windows is gated on the #633 CI leg going green); "+
 			"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)}
 	}
-	if err := verifyReleaseBinary(binPath, opts.sourceCommit, buildPackage, t); err != nil {
+	if err := verifyTargetBinary(binPath, opts.sourceCommit, buildPackage, t); err != nil {
 		return releaseTargetResult{err: err}
 	}
 	archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
@@ -374,12 +374,20 @@ func parseTargets(csv string) ([]Target, error) {
 // missing windows internal/platform/proc impl) rather than a bare exit code.
 func buildTarget(t Target, ldflags, outDir string) (binPath string, buildOutput string, err error) {
 	binPath = filepath.Join(outDir, t.binaryName()+"."+t.OS+"-"+t.Arch)
-	buildOutput, err = buildReleaseBinary(t, ldflags, binPath, buildPackage)
+	buildOutput, err = buildTargetBinary(t, ldflags, binPath, buildPackage)
 	if err != nil {
 		return "", buildOutput, err
 	}
 	return binPath, "", nil
 }
+
+// buildTargetBinary and verifyTargetBinary are the archive path's compile and
+// provenance steps. They are vars so the concurrent-orchestration tests can
+// replace real cross-compiles, which starve a shared CI runner (#6493).
+var (
+	buildTargetBinary  = buildReleaseBinary
+	verifyTargetBinary = verifyReleaseBinary
+)
 
 // Both archive and image binaries use the same platform and metadata inputs.
 func buildReleaseBinary(t Target, ldflags, binPath, pkg string) (string, error) {
