@@ -119,6 +119,23 @@ func (r *copilotControlledRunner) run(ctx context.Context, req ProcessRequest) (
 	return r.session.RunPrompt(ctx, prompt, req)
 }
 
+func (r *copilotControlledRunner) reopenForRetry(_ context.Context, _ ProcessRequest) error {
+	if !r.ready {
+		return nil
+	}
+	if r.process != nil {
+		r.process.close()
+		r.process = nil
+	}
+	r.session = nil
+	r.ready = false
+	return nil
+}
+
+func (r *copilotControlledRunner) RestartCopilotForRepair(ctx context.Context, req ProcessRequest) error {
+	return r.reopenForRetry(ctx, req)
+}
+
 func (r *copilotControlledRunner) open(ctx context.Context, req ProcessRequest) error {
 	if r.factory == nil {
 		return r.initialize(ctx, req)
