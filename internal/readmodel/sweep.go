@@ -366,39 +366,33 @@ func (s *Store) ProjectedRunIDsBefore(ctx context.Context, before time.Time, lim
 		limit = defaultListLimit
 	}
 
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var out []RunRow
+	err := s.withReadRows(ctx, `
 		SELECT run_id, started_at FROM run
 		WHERE started_at <= ?
 		ORDER BY started_at ASC, run_id ASC
-		LIMIT ?`, formatTime(before), limit)
+		LIMIT ?`,
+		[]any{formatTime(before), limit},
+		"readmodel: read projected runs",
+		"readmodel: projected run rows",
+		func(rows *sql.Rows) error {
+			var (
+				row       RunRow
+				startedAt string
+			)
+			if err := rows.Scan(&row.RunID, &startedAt); err != nil {
+				return fmt.Errorf("readmodel: scan projected run: %w", err)
+			}
+			parsed, err := time.Parse(timeFormat, startedAt)
+			if err != nil {
+				return fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
+			}
+			row.StartedAt = parsed
+			out = append(out, row)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read projected runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunRow
-	for rows.Next() {
-		var (
-			row       RunRow
-			startedAt string
-		)
-		if err := rows.Scan(&row.RunID, &startedAt); err != nil {
-			return nil, fmt.Errorf("readmodel: scan projected run: %w", err)
-		}
-		parsed, err := time.Parse(timeFormat, startedAt)
-		if err != nil {
-			return nil, fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
-		}
-		row.StartedAt = parsed
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: projected run rows: %w", err)
+		return nil, err
 	}
 	return out, nil
 }
@@ -414,47 +408,41 @@ func (s *Store) ProjectedRunIDsAfter(
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var out []RunRow
+	err := s.withReadRows(ctx, `
 		SELECT run_id, started_at FROM run
 		WHERE started_at <= ?
 		  AND (? = '' OR started_at > ? OR (started_at = ? AND run_id > ?))
 		ORDER BY started_at ASC, run_id ASC
 		LIMIT ?`,
-		formatTime(before),
-		afterRunID,
-		formatTime(afterStartedAt),
-		formatTime(afterStartedAt),
-		afterRunID,
-		limit,
-	)
+		[]any{
+			formatTime(before),
+			afterRunID,
+			formatTime(afterStartedAt),
+			formatTime(afterStartedAt),
+			afterRunID,
+			limit,
+		},
+		"readmodel: read projected runs after cursor",
+		"readmodel: projected run rows after cursor",
+		func(rows *sql.Rows) error {
+			var (
+				row       RunRow
+				startedAt string
+			)
+			if err := rows.Scan(&row.RunID, &startedAt); err != nil {
+				return fmt.Errorf("readmodel: scan projected run after cursor: %w", err)
+			}
+			parsed, err := time.Parse(timeFormat, startedAt)
+			if err != nil {
+				return fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
+			}
+			row.StartedAt = parsed
+			out = append(out, row)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read projected runs after cursor: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunRow
-	for rows.Next() {
-		var (
-			row       RunRow
-			startedAt string
-		)
-		if err := rows.Scan(&row.RunID, &startedAt); err != nil {
-			return nil, fmt.Errorf("readmodel: scan projected run after cursor: %w", err)
-		}
-		parsed, err := time.Parse(timeFormat, startedAt)
-		if err != nil {
-			return nil, fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
-		}
-		row.StartedAt = parsed
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: projected run rows after cursor: %w", err)
+		return nil, err
 	}
 	return out, nil
 }
