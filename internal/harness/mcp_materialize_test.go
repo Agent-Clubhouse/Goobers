@@ -74,8 +74,11 @@ func TestMCPHeaderCredentialRenderingAcrossAdapters(t *testing.T) {
 				}
 			}
 
-			if bytes.Contains(raw, []byte(bearerSecret)) || bytes.Contains(raw, []byte(basicSecret)) {
-				t.Fatalf("%s config contains credential bytes: %s", adapter, raw)
+			if bytes.Contains(raw, []byte(bearerSecret)) {
+				t.Fatalf("%s config contains bearer credential bytes", adapter)
+			}
+			if bytes.Contains(raw, []byte(basicSecret)) {
+				t.Fatalf("%s config contains basic credential bytes", adapter)
 			}
 			for _, name := range []string{"GOOBERS_MCP_CREDENTIAL_0_0", "GOOBERS_MCP_CREDENTIAL_0_1"} {
 				if !bytes.Contains(raw, []byte(name)) {
@@ -139,6 +142,33 @@ func TestCodexMCPMaterializationPreservesConflictErrors(t *testing.T) {
 		}}
 		_, _, _, err := prepareCodexMCP(context.Background(), req, t.TempDir(), "", nil, nil, false)
 		const want = `harness: codex: MCP environment variable "HOME" is reserved by the adapter`
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %q, want %q", err, want)
+		}
+	})
+
+	t.Run("local env collision", func(t *testing.T) {
+		req := base
+		req.MCPServers = []apiv1.MCPServer{
+			{
+				Name:    "first-local",
+				Command: "first-server",
+				CredentialRefs: []apiv1.MCPCredentialRef{
+					{Kind: apiv1.MCPCredentialKindBYO, Ref: "first", Env: "TOKEN"},
+					{Kind: apiv1.MCPCredentialKindBYO, Ref: "second", Env: "FIRST_SECOND_TOKEN"},
+				},
+			},
+			{
+				Name:    "second-local",
+				Command: "second-server",
+				CredentialRefs: []apiv1.MCPCredentialRef{
+					{Kind: apiv1.MCPCredentialKindBYO, Ref: "second", Env: "token"},
+					{Kind: apiv1.MCPCredentialKindBYO, Ref: "first", Env: "SECOND_FIRST_TOKEN"},
+				},
+			},
+		}
+		_, _, _, err := prepareCodexMCP(context.Background(), req, t.TempDir(), "", nil, nil, false)
+		const want = `harness: codex: MCP environment variable "token" is bound to both "mcp:first" and "mcp:second"`
 		if err == nil || err.Error() != want {
 			t.Fatalf("error = %q, want %q", err, want)
 		}
