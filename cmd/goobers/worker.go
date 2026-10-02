@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 
+	"go.temporal.io/sdk/converter"
+
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -180,23 +182,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
 	var recurringStageSweeper stageOrphanSweeper
-	if *dispatchNamespace != "" {
-		if *instanceRoot == "" {
-			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
-			return 2
-		}
-		cfg, err := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
-		if err != nil {
-			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
-			return 2
-		}
-		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, stageBlobEndpoint(*blobEndpoint)); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
+	if err := validateWorkerDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobEndpoint); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 
-	engineConfig, err := resolveEngineConfig(*instanceRoot)
+	engineConfig, dc, err := resolveWorkerTemporalConfig(*instanceRoot)
 	if err != nil {
 		pf(stderr, "error: load engine config: %v\n", err)
 		return 2
@@ -353,25 +344,26 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// only a settled attempt's pod is disposed. Never fatal — see
 		// sweepWorkerStageOrphans. The worker-lifetime loop below rechecks pods
 		// that become terminal after this initial sweep.
-		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr)
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr, dc)
 	}
 
 	host, err := newWorkerHost(workerhost.Config{
-		HostPort:     *hostPort,
-		Namespace:    *namespace,
-		TLS:          engineConfig.TLS,
-		TaskQueues:   queues,
-		DrainTimeout: *drain,
-		BuildVersion: version.Get().Version,
-		Versioning:   engineConfig.WorkerVersioning,
-		Deps:         engineRuntime.deps,
+		HostPort:      *hostPort,
+		Namespace:     *namespace,
+		TLS:           engineConfig.TLS,
+		DataConverter: dc,
+		TaskQueues:    queues,
+		DrainTimeout:  *drain,
+		BuildVersion:  version.Get().Version,
+		Versioning:    engineConfig.WorkerVersioning,
+		Deps:          engineRuntime.deps,
 	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
-	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr)
+	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr, dc)
 	defer stop()
 
 	// #4153: the worker's config tree has no live writer, so it can sit
@@ -410,6 +402,23 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// validateWorkerDispatch rejects invalid mode-3 authority before startup opens
+// background resources or prints potentially sensitive endpoints.
+func validateWorkerDispatch(root, dispatchNamespace, daemonAPI, blobEndpoint string) error {
+	if dispatchNamespace == "" {
+		return nil
+	}
+	if root == "" {
+		return fmt.Errorf("--dispatch-namespace requires --instance (the runner inventory names the dispatch queues)")
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return fmt.Errorf("stage dispatch: load instance config: %w", err)
+	}
+	_, err = validateStageDispatchConfig(cfg, daemonAPI, stageBlobEndpoint(blobEndpoint))
+	return err
+}
+
 // onOff renders an opt-in's state for the worker's startup line.
 func onOff(enabled bool) string {
 	if enabled {
@@ -421,9 +430,9 @@ func onOff(enabled bool) string {
 // workerSignalContext joins recurring reconciliation to the worker's signal
 // lifetime. Cleanup cancels an in-flight sweep and waits for its goroutine so
 // no background writer outlives runWorker's output streams.
-func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer) (context.Context, func()) {
+func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer, dc ...converter.DataConverter) (context.Context, func()) {
 	ctx, stop := signals.SetupSignalContext()
-	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, tls, stdout, stderr, workerSweepInterval)
+	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, tls, stdout, stderr, workerSweepInterval, dc...)
 	return ctx, func() {
 		stop()
 		<-done

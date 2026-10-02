@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/internal/temporaldial"
 )
 
@@ -151,7 +152,12 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	}
 	defer release()
 
-	c, err := temporaldial.Dial(ctx, *hostPort, *namespace, engineConfig.TLS)
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		pf(stderr, "error: temporal payload codec: %v\n", err)
+		return 2
+	}
+	c, err := temporaldial.Dial(ctx, *hostPort, *namespace, engineConfig.TLS, dc)
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1

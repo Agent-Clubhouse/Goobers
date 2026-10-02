@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/worker"
 
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -69,6 +70,6 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 // DialTemporal connects to a Temporal frontend. A thin wrapper so the cmd
 // entrypoints don't each reimplement client construction; the options come
 // from temporaldial, so a nil tls is today's plaintext dial (#5289).
-func DialTemporal(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
-	return temporaldial.Dial(context.Background(), hostPort, namespace, tls)
+func DialTemporal(hostPort, namespace string, tls *temporaldial.TLS, dc ...converter.DataConverter) (client.Client, error) {
+	return temporaldial.Dial(context.Background(), hostPort, namespace, tls, dc...)
 }

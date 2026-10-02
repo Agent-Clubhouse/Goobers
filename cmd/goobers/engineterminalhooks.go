@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -123,7 +124,7 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	// the durable identity before invoking any terminal hook: blocked parking
 	// and escalation comments are daemon-authored GitHub writes and must carry
 	// the run that caused them.
-	if attributed, err := attributionContextForRun(ctx, h.layout, out.RunID, out.Result.FinalState); err == nil {
+	if attributed, err := escalationnotify.AttributionContextForRun(ctx, h.layout.RunsDir(), out.RunID, out.Result.FinalState); err == nil {
 		ctx = attributed
 	}
 	h.fireExistingFix(ctx, out)

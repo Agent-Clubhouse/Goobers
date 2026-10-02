@@ -188,6 +188,7 @@ func TestDefaultExcludeAdmitsPackagesExtractedFromCmd(t *testing.T) {
 	exclude := regexp.MustCompile(defaultExclude)
 	for _, line := range []string{
 		"github.com/goobers/goobers/internal/apireadcache/cache.go:10.1,12.2 2 1",
+		"github.com/goobers/goobers/internal/escalationnotify/policy.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/intervention/service.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/nowork/terminal.go:10.1,12.2 2 1",
 	} {

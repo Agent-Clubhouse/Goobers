@@ -37,6 +37,7 @@ const apiURL = "https://goobers-api.goobers-system.svc:8080"
 const temporalHost = "temporal-frontend.goobers-temporal:7233"
 
 type options struct {
+	TemporalCodecKeySecret                                                          string
 	DispatcherCommit, DispatcherVersion                                             string
 	Reference, Instance, Out, Image, StageNamespace                                 string
 	JournalClass, BlobClass, TLSSecret, TokenSecret, CAConfigMap, CredentialsSecret string
@@ -61,6 +62,7 @@ func main() {
 	flag.StringVar(&o.CredentialsSecret, "credentials-secret", "", "optional existing Secret mounted at /run/goobers/credentials")
 	flag.StringVar(&o.APIServerCIDRs, "apiserver-cidrs", "", "comma-separated exact API endpoint /32 or /128 CIDRs, including required Service IP")
 	flag.StringVar(&o.APIServerPorts, "apiserver-ports", "443", "comma-separated API TCP ports required by the CNI, e.g. 443,6443")
+	flag.StringVar(&o.TemporalCodecKeySecret, "temporal-codec-key-secret", "goobers-temporal-codec-key", "existing RSA wrapping-key Secret (active and version.pem files); empty retains existing instance config")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected arguments")
@@ -98,6 +100,9 @@ func prepare(o options) error {
 	}
 	cfg, set, err := loadTopologyConfig(o)
 	if err != nil {
+		return err
+	}
+	if err := configureTemporalCodec(cfg, o.TemporalCodecKeySecret); err != nil {
 		return err
 	}
 	input, err := topologyNetworkInput(cfg, o.DispatcherCommit, o.DispatcherVersion)
@@ -147,6 +152,14 @@ func validateTopologyOptions(o options) error {
 	}
 	if len(kvalidation.IsDNS1123Label(o.StageNamespace)) != 0 || o.StageNamespace == systemNS || o.StageNamespace == "goobers-temporal" || o.StageNamespace == "kube-system" {
 		return fmt.Errorf("stage namespace must be a separate DNS-label namespace")
+	}
+	if o.TemporalCodecKeySecret != "" {
+		if len(kvalidation.IsDNS1123Subdomain(o.TemporalCodecKeySecret)) != 0 {
+			return fmt.Errorf("invalid temporal-codec-key-secret name")
+		}
+		if o.TemporalCodecKeySecret == o.TLSSecret || o.TemporalCodecKeySecret == o.TokenSecret || o.TemporalCodecKeySecret == o.CredentialsSecret {
+			return fmt.Errorf("temporal wrapping key must use a separate Secret")
+		}
 	}
 	if o.CredentialsSecret != "" && len(kvalidation.IsDNS1123Subdomain(o.CredentialsSecret)) != 0 {
 		return fmt.Errorf("invalid credentials-secret name")
@@ -573,6 +586,9 @@ func deployment(o options, bundle, initCommand string, data map[string][]byte, d
 	no := false
 	yes := true
 	p.InitContainers = []corev1.Container{{Name: "prepare-config", Image: o.Image, Command: []string{"sh", "-c"}, Args: []string{initCommand}, SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}}, VolumeMounts: []corev1.VolumeMount{{Name: "prepared-config", MountPath: "/prepared"}, {Name: "config-bundle", MountPath: "/bundle", ReadOnly: true}}}}
+	if o.TemporalCodecKeySecret != "" {
+		mountTemporalCodecKey(p, o.TemporalCodecKeySecret)
+	}
 	c := &p.Containers[0]
 	c.Image = o.Image
 	c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/config", SubPath: "config", ReadOnly: true}, corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/goobers", SubPath: "goobers", ReadOnly: true}, corev1.VolumeMount{Name: "prepared-config", MountPath: "/var/lib/goobers/instance.yaml", SubPath: "instance.yaml", ReadOnly: true}, corev1.VolumeMount{Name: "pod-auth", MountPath: "/run/goobers/pod-auth", ReadOnly: true}, corev1.VolumeMount{Name: "api-ca", MountPath: "/run/goobers/ca", ReadOnly: true})

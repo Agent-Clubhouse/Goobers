@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -497,7 +498,7 @@ func TestEngineInfrastructureTerminalDoesNotChargeFailureStreak(t *testing.T) {
 	wrapped := fmt.Errorf("workflow failed: %w", temporal.NewApplicationError("pod vanished", engine.FailureTypeInfrastructure))
 	converter := temporal.GetDefaultFailureConverter()
 	cause := converter.FailureToError(converter.ErrorToFailure(temporal.NewApplicationErrorWithCause(wrapped.Error(), engine.FailureTypeInfrastructure, wrapped)))
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		hooks.fireFailed(context.Background(), engineTerminalOutcome{RunID: runID, Phase: journal.PhaseFailed, Err: cause})
 	}
 	if len(fake.calls) != 0 {

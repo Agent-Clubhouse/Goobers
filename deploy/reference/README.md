@@ -95,7 +95,10 @@ namespace is a required step, not follow-up hardening; bring the stack up in thi
    and wait for the Job to complete
    (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
    The Job is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
-4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
+4. For the authenticated reference, provision the dedicated [Temporal wrapping
+   key](temporal-codec/README.md) before the daemon and worker. Its generator opts
+   into payload encryption by default; keep the key with history backups.
+5. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
    registered).
 
 `namespace-job.yaml`'s `TEMPORAL_NAMESPACE`/`RETENTION` env vars are the single source for

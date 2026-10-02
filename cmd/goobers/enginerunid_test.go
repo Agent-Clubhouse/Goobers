@@ -349,7 +349,7 @@ func newEngineCLIFixture(t *testing.T, open map[string]string) *engineCLIFixture
 		fixture.engine.workflowIDs[workflowID] = workflowID
 	}
 	previousDial := dialDaemonEngine
-	dialDaemonEngine = func(string, string, *temporaldial.TLS) (client.Client, error) {
+	dialDaemonEngine = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 		return &fakeTemporalClient{workflows: fixture.engine, lister: fixture.lister}, nil
 	}
 	t.Cleanup(func() { dialDaemonEngine = previousDial })

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -75,7 +76,7 @@ func TestFailedHandlerSkipsInfraAndItemJudgmentDispositions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			const runID = "run-infra"
 			h, fake := failedHandlerDispositionFixture(t, runID)
-			for i := 0; i < failureStreakThreshold; i++ {
+			for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 				if err := h(context.Background(), runner.FailedOutcome{
 					RunID:   runID,
 					RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
@@ -138,7 +139,7 @@ func TestFailedHandlerHonorsExplicitInfraFaultClass(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			const runID = "run-infra-class"
 			h, fake := failedHandlerDispositionFixture(t, runID)
-			for i := 0; i < failureStreakThreshold; i++ {
+			for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 				if err := h(context.Background(), runner.FailedOutcome{
 					RunID:      runID,
 					RepoRef:    apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},

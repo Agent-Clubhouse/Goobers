@@ -19,6 +19,7 @@ import (
 	"os"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 )
 
 // TLS is the client transport security for the Temporal frontend connection:
@@ -97,10 +98,14 @@ func (t *TLS) Config() (*tls.Config, error) {
 	return cfg, nil
 }
 
-// Options builds the client options for one Temporal dial. With t nil the
-// result is exactly client.Options{HostPort, Namespace}.
-func Options(hostPort, namespace string, t *TLS) (client.Options, error) {
+// Options builds one Temporal dial. The optional converter is explicitly owned
+// by the instance. Without TLS or a converter, the result remains exactly
+// client.Options{HostPort, Namespace}.
+func Options(hostPort, namespace string, t *TLS, dc ...converter.DataConverter) (client.Options, error) {
 	opts := client.Options{HostPort: hostPort, Namespace: namespace}
+	if len(dc) > 0 {
+		opts.DataConverter = dc[0]
+	}
 	cfg, err := t.Config()
 	if err != nil {
 		return client.Options{}, err
@@ -114,8 +119,8 @@ func Options(hostPort, namespace string, t *TLS) (client.Options, error) {
 // Dial connects to the frontend with the options Options builds. A failed
 // TLS dial names the transport, so a frontend that only speaks plaintext is
 // reported as a TLS failure rather than a bare connection error.
-func Dial(ctx context.Context, hostPort, namespace string, t *TLS) (client.Client, error) {
-	opts, err := Options(hostPort, namespace, t)
+func Dial(ctx context.Context, hostPort, namespace string, t *TLS, dc ...converter.DataConverter) (client.Client, error) {
+	opts, err := Options(hostPort, namespace, t, dc...)
 	if err != nil {
 		return nil, err
 	}

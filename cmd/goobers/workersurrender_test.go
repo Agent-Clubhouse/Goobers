@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -26,7 +27,9 @@ func TestRunWorkerEndpointDispatchReadsSurrenderWithoutMount(t *testing.T) {
 	oldKube, oldPreflight, oldDial := dispatchKubeClient, preflightGaggleNamespaces, dialWorkerSweepTemporal
 	dispatchKubeClient = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
 	preflightGaggleNamespaces = fakeClusterHasNoRealRBACSoSkipPreflight
-	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS) (client.Client, error) { return nil, context.DeadlineExceeded }
+	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
+		return nil, context.DeadlineExceeded
+	}
 	t.Cleanup(func() {
 		dispatchKubeClient, preflightGaggleNamespaces, dialWorkerSweepTemporal = oldKube, oldPreflight, oldDial
 	})
