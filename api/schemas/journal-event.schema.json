@@ -135,6 +135,7 @@
         "claims_lock_timeout",
         "config.reloaded",
         "config.reload.rejected",
+        "runner.cluster_check.completed",
         "runner.config_divergence",
         "daemon.started",
         "daemon.clean_shutdown",

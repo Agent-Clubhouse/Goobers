@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/clustercheck"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -48,6 +49,10 @@ type StatusFleetFact struct {
 // SchedulerStatus is scheduler state projected from the instance journal for
 // local status adapters.
 type SchedulerStatus struct {
+	// ClusterChecks are externally recorded Kubernetes checks; freshness is
+	// computed on every read, without scheduling probes in the daemon.
+	ClusterChecks []clustercheck.Result
+
 	// StageServiceAccounts reports each gaggle's effective pod account.
 	StageServiceAccounts map[string]string
 	// IsolationMandates is the effective, operator-owned class floor loaded
@@ -706,7 +711,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 			return SchedulerStatus{}, err
 		}
 	}
-	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
+	status := SchedulerStatus{ClusterChecks: clustercheck.Snapshot(projected.clusterChecks, s.now()), ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
 	if s.sources.InstanceLogStats != nil {
 		stats := s.sources.InstanceLogStats()
 		status.JournalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}

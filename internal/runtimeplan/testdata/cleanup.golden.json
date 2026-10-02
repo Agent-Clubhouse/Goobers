@@ -1,0 +1,38 @@
+[
+  {
+    "ownership": "owned",
+    "owner": "fixture worker",
+    "code": "owned_cleanup_observed",
+    "outcome": "passed",
+    "requiredGuaranteeSatisfied": true,
+    "authorizesWriter": false,
+    "detail": "forced stop observed for the owned fixture descendants only; target daemon/worker and remote work remain unobservable"
+  },
+  {
+    "ownership": "host-owned",
+    "owner": "fixture worker",
+    "code": "cleanup_host_owned",
+    "outcome": "unobservable",
+    "requiredGuaranteeSatisfied": false,
+    "authorizesWriter": false,
+    "detail": "cleanup belongs to the execution host; reporting-process evidence cannot prove host cleanup"
+  },
+  {
+    "ownership": "unsupported",
+    "owner": "fixture worker",
+    "code": "cleanup_guarantee_unavailable",
+    "outcome": "unsupported",
+    "requiredGuaranteeSatisfied": false,
+    "authorizesWriter": false,
+    "detail": "no supported cleanup guarantee is available for this scope"
+  },
+  {
+    "ownership": "unobservable",
+    "owner": "fixture worker",
+    "code": "remote_cleanup_unobservable",
+    "outcome": "unobservable",
+    "requiredGuaranteeSatisfied": false,
+    "authorizesWriter": false,
+    "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+  }
+]

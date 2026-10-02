@@ -1271,6 +1271,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
                           [--image-pull-policy always|never]
+                          [--record-instance <root>] [--result-max-age <duration>]
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--psa-namespaces <namespace,...>] [--psa-service-account <name>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
@@ -1309,6 +1310,10 @@ unconfigured they report a skipped warn. Checks persist no cluster resources.
 Required checks that cannot run report fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+--record-instance persists check outcomes in the instance journal for status.
+--result-max-age sets their freshness window (default 2h); the cluster monitoring
+CronJob owns scheduling. No recording occurs unless --record-instance is set.
 
 --checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.
 For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.
@@ -3250,12 +3255,18 @@ $ goobers pr-select
 check WSL full-isolation readiness and optionally hand off a command
 
 ~~~text
-Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--json]]
+Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--check-readiness] [--json]]
        goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
 
 With --instance and --workflow, emit the versioned runtime preflight report for
 one workflow without provider mutation, package installation, repository writes,
-model execution, or external credential/harness probes.
+or model execution. Source metadata is inspected without resolving secrets.
+With --check-readiness, also run bounded read-only harness version/authentication
+probes in the reporting process. Source presence is not authentication; local
+observations do not prove daemon or worker readiness. Unsupported probes remain
+explicitly unobservable. No configured model credential is resolved.
+Supported MCP control sessions inspect server/tool inventory and execute only
+the built-in goobers-io get_run_info; external tool authorization is unobservable.
 
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux

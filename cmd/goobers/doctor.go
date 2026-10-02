@@ -27,6 +27,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]\n" +
 	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
 	"                          [--image-pull-policy always|never]\n" +
+	"                          [--record-instance <root>] [--result-max-age <duration>]\n" +
 	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
 	"                          [--psa-namespaces <namespace,...>] [--psa-service-account <name>]\n" +
 	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
@@ -60,6 +61,9 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"Required checks that cannot run report fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"--record-instance persists check outcomes in the instance journal for status.\n" +
+	"--result-max-age sets their freshness window (default 2h); the cluster monitoring\n" +
+	"CronJob owns scheduling. No recording occurs unless --record-instance is set.\n\n" +
 	"--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.\n" +
 	"For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.\n" +
 	"That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.\n" +
@@ -173,6 +177,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace to check for (default \"default\")")
 	apiServerEndpoint := fs.String("apiserver-endpoint", "", "API-server comparison URL for egress-policy drift (default: kubeconfig server)")
 	checks := fs.String("checks", "", "comma-separated Kubernetes check IDs (omitted: all checks)")
+	recordRoot := fs.String("record-instance", "", "instance root receiving Kubernetes check results")
+	resultMaxAge := fs.Duration("result-max-age", 2*time.Hour, "recorded Kubernetes result freshness window")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
 	if !parseFlagsBeforePath(fs, args, stderr) {
@@ -191,6 +197,10 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if modes != 1 {
 		pf(stderr, "goobers doctor: exactly one of --k8s, --repo, --harness-auth or --av-exclusions is required\n\n")
 		fs.Usage()
+		return 2
+	}
+	if err := k8spreflight.ValidateRecordingFlags(fs, *k8sMode, *recordRoot, *resultMaxAge); err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
 		return 2
 	}
 	checkIDs, err := validateDoctorCheckFlags(fs, *k8sMode, *checks, *apiServerEndpoint)
@@ -238,6 +248,9 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	client, host, err := doctorKubeClient(*kubeconfig, *kubeContext, *timeout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		if recordErr := k8spreflight.RecordUnavailable(*recordRoot, checkIDs, *resultMaxAge); recordErr != nil {
+			pf(stderr, "error: record check: %v\n", recordErr)
+		}
 		return 2
 	}
 
@@ -259,8 +272,16 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		Timeout:           *timeout,
 	})
 	report.Target = host
+	if err := k8spreflight.RecordResults(*recordRoot, report, *resultMaxAge); err != nil {
+		pf(stderr, "error: record check: %v\n", err)
+		return 2
+	}
 
-	if *reportFormat == "json" {
+	return writeDoctorKubernetesReport(*reportFormat, report, stdout, stderr)
+}
+
+func writeDoctorKubernetesReport(format string, report k8spreflight.Report, stdout, stderr io.Writer) int {
+	if format == "json" {
 		if err := k8spreflight.WriteJSON(stdout, report); err != nil {
 			pf(stderr, "error: encode report: %v\n", err)
 			return 2

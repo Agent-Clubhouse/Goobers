@@ -33,7 +33,7 @@ _goobers_completion()
             flags+=" --token-env --seed --replace --json"
             ;;
         preflight)
-            flags+=" --distro --launch-wsl"
+            flags+=" --instance --workflow --execution-identity --check-readiness --json --distro --launch-wsl"
             ;;
         onboarding)
             case "${COMP_WORDS[2]:-}" in
@@ -83,7 +83,7 @@ _goobers_completion()
             flags+=" --to --instance-schema --write"
             ;;
         doctor)
-            flags+=" --psa-namespaces --psa-service-account --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
+            flags+=" --record-instance --result-max-age --psa-namespaces --psa-service-account --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
             ;;
         netpol-render)
             flags+=" --out --check --baseline --write-baseline --timeout --keep-dns-for-network-none --print-blob-endpoint"
