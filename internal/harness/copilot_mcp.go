@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/safepath"
 )
 
@@ -58,8 +57,11 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	if len(req.MCPServers) == 0 {
 		return env, nil
 	}
-	if err := mcpconfig.ValidateForHarness(apiv1.HarnessCopilot, req.MCPServers, req.Envelope.Capabilities, req.Tools); err != nil {
-		return nil, fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
+	opts := mcpMaterializeOptions{
+		harness: apiv1.HarnessCopilot,
+	}
+	if err := validateDeclaredMCP("copilot-cli", req, opts); err != nil {
+		return nil, err
 	}
 
 	runtimeSubdir := filepath.FromSlash(copilotMCPRuntimeSubdir)
@@ -83,46 +85,29 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	}
 	// Ambient config.json may contain OAuth or BYOK credentials that were not
 	// resolver-registered, so the scoped home must start empty.
-	config := copilotMCPConfig{MCPServers: make(map[string]copilotMCPServer, len(req.MCPServers))}
-	for serverIndex, server := range req.MCPServers {
-		materialized := copilotMCPServer{
-			Tools: append([]string{}, req.Tools...),
+	servers, assignments, err := materializeDeclaredMCP(ctx, "copilot-cli", req, opts)
+	if err != nil {
+		return nil, err
+	}
+	config := copilotMCPConfig{MCPServers: make(map[string]copilotMCPServer, len(servers))}
+	for _, server := range servers {
+		rendered := copilotMCPServer{
+			Tools:   append([]string{}, req.Tools...),
+			Env:     server.Env,
+			Headers: server.Headers,
 		}
 		if server.Command != "" {
-			materialized.Type = "local"
-			materialized.Command = server.Command
-			materialized.Args = append([]string(nil), server.Args...)
+			rendered.Type = "local"
+			rendered.Command = server.Command
+			rendered.Args = server.Args
 		} else {
-			materialized.Type = "http"
-			materialized.URL = server.URL
+			rendered.Type = "http"
+			rendered.URL = server.URL
 		}
-		for refIndex, ref := range server.CredentialRefs {
-			_, token, err := resolveMCPCredential(ctx, "copilot-cli", req, server.Name, ref)
-			if err != nil {
-				return nil, err
-			}
-			envName := fmt.Sprintf("GOOBERS_MCP_CREDENTIAL_%d_%d", serverIndex, refIndex)
-			env = overrideEnv(env, envName, token)
-			expansion := "${" + envName + "}"
-			if ref.Env != "" {
-				if materialized.Env == nil {
-					materialized.Env = make(map[string]string)
-				}
-				materialized.Env[ref.Env] = expansion
-				continue
-			}
-			if materialized.Headers == nil {
-				materialized.Headers = make(map[string]string)
-			}
-			switch ref.Scheme {
-			case apiv1.MCPHeaderSchemeBearer:
-				expansion = "Bearer " + expansion
-			case apiv1.MCPHeaderSchemeBasic:
-				expansion = "Basic " + expansion
-			}
-			materialized.Headers[ref.Header] = expansion
-		}
-		config.MCPServers[server.Name] = materialized
+		config.MCPServers[server.Name] = rendered
+	}
+	for _, assignment := range assignments {
+		env = overrideEnv(env, assignment.Name, assignment.Value)
 	}
 
 	data, err := json.Marshal(config)
