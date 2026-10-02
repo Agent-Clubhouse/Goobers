@@ -138,46 +138,34 @@ target-scale latency measurement is opt-in: set `GOOBERS_SCALE_LARGE=<mult>`
 (e.g. `1`, `10`, `100`) to run `TestMeasureLargeScale`. See the `test/scale`
 package doc for the full flag reference.
 
-## OTLP collector to ADX
+## OTLP collector
 
-Production instances send OTLP traces to an OpenTelemetry Collector running in
-the cluster. The collector uses the contrib `azuredataexplorer` exporter to
-write the goober-run store provisioned by `infra/bicep/modules/adx.bicep`.
+Production instances send OTLP **traces and metrics** to an OpenTelemetry
+Collector running in the cluster. The maintained reference configuration is
+[`deploy/monitoring/otel-collector.yaml`](../../deploy/monitoring/otel-collector.yaml):
+an `otlp` receiver, a `batch` processor, and one pipeline per signal.
 
 ```yaml
-receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-
-processors:
-  batch: {}
-
-exporters:
-  azuredataexplorer:
-    cluster_uri: "${env:GOOBERS_ADX_CLUSTER_URI}"
-    db_name: "gooberrun"
-    managed_identity_id: "system"
-    traces_table_name: "OTELTraces"
-    ingestion_type: "queued"
-
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [azuredataexplorer]
+      exporters: [debug]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [azuredataexplorer]
+      exporters: [prometheus]
 ```
 
-The metrics pipeline is the follow-up Goobernetes-Infra change; the instruments
-it carries are the ones in the metric catalog above.
+The metrics pipeline is required, not optional. The daemon exports every
+instrument in the metric catalog above; a collector with no `metrics` pipeline
+answers each export with `Unimplemented`, which the daemon reports as an
+export-error log line and nothing more (export stays best-effort and never fails
+a run). The example publishes metrics for Prometheus to scrape; swap the `debug`
+trace exporter and the `prometheus` metrics exporter for whatever stores you
+run. Any contrib exporter works, for example `azuredataexplorer`, whose target
+database and tables must exist before ingest.
 
-The ADX exporter expects the target database and tables to exist before ingest.
-Use the provisioned ADX database output (`gooberrun` by default) rather than any
-project telemetry database. For v1, partition queries by
-`TraceAttributes.goobers.gaggle` to preserve gaggle isolation.
+For gaggle isolation in v1, partition trace queries by
+`TraceAttributes.goobers.gaggle`.
