@@ -137,3 +137,73 @@ func TestShellExecutor_AFailedGrantMintIsNotAStageFailure(t *testing.T) {
 		t.Fatalf("stdout = %q, want no grant", got)
 	}
 }
+
+func TestCredentialGrantTTLOutlivesTheStage(t *testing.T) {
+	for timeout, want := range map[time.Duration]time.Duration{
+		0:                DefaultTimeout + 10*time.Minute,
+		-time.Minute:     DefaultTimeout + 10*time.Minute,
+		30 * time.Minute: 40 * time.Minute,
+	} {
+		if got := CredentialGrantTTL(timeout); got != want {
+			t.Errorf("CredentialGrantTTL(%s) = %s, want %s", timeout, got, want)
+		}
+	}
+}
+
+// fixedGrantMinter mints grant on every call.
+type fixedGrantMinter struct {
+	grant StageCredentialGrant
+	calls int
+}
+
+func (f *fixedGrantMinter) MintStageGrant(apiv1.InvocationEnvelope, []string, time.Duration) (StageCredentialGrant, error) {
+	f.calls++
+	return f.grant, nil
+}
+
+// TestAppendCredentialGrantDeliversOnlyAUsableGrant: a grant missing its
+// token or endpoint is not delivered (nor its token registered), a stage
+// without run context asks for none, and a grant minted without a Revoke
+// still yields a callable revoke.
+func TestAppendCredentialGrantDeliversOnlyAUsableGrant(t *testing.T) {
+	stageEnv := []string{
+		"PATH=/usr/bin",
+		CredentialEnvVar("repo:push") + "=expiring-app-value",
+		CredentialExpiryEnvVar("repo:push") + "=2026-01-01T00:00:00Z",
+	}
+	env := apiv1.InvocationEnvelope{Capabilities: []string{"repo:push"}}
+	usable := StageCredentialGrant{Endpoint: "http://127.0.0.1:1", Token: "goobers-grant.usable"}
+	cases := map[string]struct {
+		grant       StageCredentialGrant
+		runContext  bool
+		wantDeliver bool
+		wantMints   int
+	}{
+		"usable grant without revoke": {usable, true, true, 1},
+		"no token":                    {StageCredentialGrant{Endpoint: "http://127.0.0.1:1"}, true, false, 1},
+		"no endpoint":                 {StageCredentialGrant{Token: "goobers-grant.orphan"}, true, false, 1},
+		"no run context":              {usable, false, false, 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			minter := &fixedGrantMinter{grant: tc.grant}
+			registrar := &recordingRegistrar{}
+			exec := &ShellExecutor{CredentialGrants: minter}
+			got, revoke := exec.appendCredentialGrant(append([]string(nil), stageEnv...), env, tc.runContext, time.Minute, registrar)
+			revoke() // must be safe whatever was minted
+			if minter.calls != tc.wantMints {
+				t.Fatalf("mint calls = %d, want %d", minter.calls, tc.wantMints)
+			}
+			if !tc.wantDeliver {
+				if strings.Join(got, "\n") != strings.Join(stageEnv, "\n") || len(registrar.seen) != 0 {
+					t.Fatalf("env = %q, registered %q; want the stage env unchanged and nothing registered", got, registrar.seen)
+				}
+				return
+			}
+			want := append(append([]string(nil), stageEnv...), CredentialEndpointEnvVar+"="+usable.Endpoint, CredentialGrantEnvVar+"="+usable.Token)
+			if strings.Join(got, "\n") != strings.Join(want, "\n") || !registrar.sawToken(usable.Token) {
+				t.Fatalf("env = %q, registered %q; want the grant delivered and registered", got, registrar.seen)
+			}
+		})
+	}
+}
