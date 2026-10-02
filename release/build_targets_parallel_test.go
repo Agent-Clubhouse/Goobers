@@ -18,7 +18,11 @@ func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
 	buildPackage = "./"
 	defer func() { buildPackage = orig }()
 
-	targets, err := parseTargets("linux/amd64,windows/ppc64,darwin/arm64,windows/amd64")
+	// Only targets other release tests already cross-compile (linux/arm64,
+	// windows/amd64), plus one unbuildable target: each extra GOOS/GOARCH
+	// compiles a cold standard library, and on a shared CI shard that starved
+	// unrelated deadline-bound tests (#6493).
+	targets, err := parseTargets("linux/arm64,windows/ppc64,windows/amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +40,7 @@ func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
 	for _, archive := range archives {
 		names = append(names, filepath.Base(archive))
 	}
-	want := []string{"goobers_v1.2.3_linux_amd64.tar.gz", "goobers_v1.2.3_darwin_arm64.tar.gz", "goobers_v1.2.3_windows_amd64.zip"}
+	want := []string{"goobers_v1.2.3_linux_arm64.tar.gz", "goobers_v1.2.3_windows_amd64.zip"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("archives = %v, want target order %v", names, want)
 	}
@@ -49,7 +53,7 @@ func TestBuildReleaseTargetsConcurrentResultsKeepTargetOrder(t *testing.T) {
 			reported = append(reported, fields[1])
 		}
 	}
-	if got := strings.Join(reported, ","); got != "linux/amd64,windows/ppc64,darwin/arm64,windows/amd64" {
+	if got := strings.Join(reported, ","); got != "linux/arm64,windows/ppc64,windows/amd64" {
 		t.Fatalf("report order = %s, want target order:\n%s", got, stdout.String())
 	}
 	entries, err := os.ReadDir(opts.outDir)
@@ -68,7 +72,7 @@ func TestBuildReleaseTargetsReportsFirstFailureInTargetOrder(t *testing.T) {
 	buildPackage = "./"
 	defer func() { buildPackage = orig }()
 
-	targets, err := parseTargets("linux/amd64,windows/ppc64,plan9/riscv64")
+	targets, err := parseTargets("linux/arm64,windows/ppc64,plan9/riscv64")
 	if err != nil {
 		t.Fatal(err)
 	}
