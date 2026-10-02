@@ -3,11 +3,13 @@ package k8spreflight
 import (
 	"context"
 	"fmt"
-	"github.com/goobers/goobers/internal/runnercap"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"slices"
 	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 // checkNetworkNoneDNS inspects rendered policy intent, never dataplane proof.

@@ -2,12 +2,14 @@ package k8spreflight
 
 import (
 	"context"
-	"github.com/goobers/goobers/internal/netpolrender"
+	"strings"
+	"testing"
+
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/fake"
-	"strings"
-	"testing"
+
+	"github.com/goobers/goobers/internal/netpolrender"
 )
 
 func TestNetworkNoneDNSNeverClaimsDataplaneProof(t *testing.T) {
