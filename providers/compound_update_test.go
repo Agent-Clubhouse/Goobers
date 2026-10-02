@@ -389,3 +389,34 @@ func TestPartialUpdateRecordsCommittedEffects(t *testing.T) {
 		t.Fatalf("recorded fields %v claim the comment that failed", ref.Fields)
 	}
 }
+
+// TestUnkeyedUpdateKeepsCommentBeforeLabels: an update without an
+// IdempotencyKey cannot dedupe its comment, so it keeps the established
+// comment-then-labels order — a failed comment leaves the labels unapplied
+// rather than a label standing with no explanation.
+func TestUnkeyedUpdateKeepsCommentBeforeLabels(t *testing.T) {
+	for backendName, newBackend := range newCompoundBackends(t, &recordingRecorder{}) {
+		t.Run(backendName, func(t *testing.T) {
+			b := newBackend()
+			repo := RepositoryRef{Owner: "acme", Name: "app"}
+			b.injector.arm(http.MethodPost, b.prefix+"/comments", 0, false)
+			_, err := b.provider.UpdateWorkItem(context.Background(), UpdateWorkItemRequest{
+				Repository: repo, ID: "7", State: "closed", AddLabels: []string{LabelNeedsHuman}, Comment: "parked",
+			})
+			var partial *PartialUpdateError
+			if !errors.As(err, &partial) {
+				t.Fatalf("err = %v, want *PartialUpdateError", err)
+			}
+			if want := []string{"comment", "labels"}; !reflect.DeepEqual(partial.Pending, want) {
+				t.Fatalf("pending = %v, want %v (comment before labels)", partial.Pending, want)
+			}
+			item, err := b.provider.GetWorkItem(context.Background(), repo, "7")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if item.HasLabel(LabelNeedsHuman) {
+				t.Fatalf("label applied although its comment failed: %v", item.Labels)
+			}
+		})
+	}
+}
