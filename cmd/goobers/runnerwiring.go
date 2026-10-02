@@ -286,7 +286,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		return runner.Config{}, nil, err
 	}
 
-	rc := runner.Config{
+	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
 		RunControls:      cfg.RunConditions.RunControls(),
@@ -321,12 +321,10 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// runners: inventory (or supplies GOOBERS_RUNNER_* identity env) —
 		// zero-declaration installs keep byte-identical journals
 		// (goobernetes-architecture.md §11 item 1).
-		RunnersDeclared:       len(cfg.Runners) > 0,
-		SelfExecutionDenied:   cfg.SelfExecutionDenied(),
-		SelfExecutionObserved: selfExecutionObserver(cfg, tel),
-		Worktrees:             wtMgr,
-		PinnedWorkspace:       pinned,
-		PinnedCleanPolicy:     configuredProject.WorkspaceCleanPolicy(),
+		RunnersDeclared:   len(cfg.Runners) > 0,
+		Worktrees:         wtMgr,
+		PinnedWorkspace:   pinned,
+		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),
 		// Resolve each run's branch namespace from its gaggle (StartInput.Gaggle),
 		// so the run branch, the mirror-fetch exclusion above, and the stage
 		// env's GOOBERS_BRANCH_NAMESPACE all agree (#965/#1010). Absent/empty
@@ -371,7 +369,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
-	}
+	}, cfg, tel)
 	if tel != nil {
 		rc.Telemetry = tel
 	}
