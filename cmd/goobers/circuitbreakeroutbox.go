@@ -207,13 +207,13 @@ func clearCircuitBreakerMutations(l instance.Layout, repo providers.RepositoryRe
 // reconcileCircuitBreakerOutbox retries every park a previous terminal could
 // not apply. It runs at the head of the escalationnotify circuit breaker, so
 // the retry cadence is "the next terminal that exercises the breaker" — the
-// same cadence that would have re-parked the item anyway, except the protection is no longer
-// lost when the item never fails again but is still unhealthy. A retry that
-// fails again stays pending with an updated attempt count and diagnostic;
-// success drops the entry. Every pending entry is retried with the poster the
-// caller built for cfg.Repos[0]; that is correct while only that repo can
-// enqueue an entry, but a future multi-repo breaker would have to key the
-// poster per entry rather than reuse one credential.
+// same cadence that would have re-parked the item anyway, except the
+// protection is no longer lost when the item never fails again but is still
+// unhealthy. A retry that fails again stays pending with an updated attempt
+// count and diagnostic; success drops the entry. Every pending entry is
+// retried with the poster the caller built for cfg.Repos[0]; that is correct
+// while only that repo can enqueue an entry, but a future multi-repo breaker
+// would have to key the poster per entry rather than reuse one credential.
 func reconcileCircuitBreakerOutbox(ctx context.Context, poster gate.Commenter, l instance.Layout) error {
 	pending, err := snapshotCircuitBreakerOutbox(l)
 	if err != nil {

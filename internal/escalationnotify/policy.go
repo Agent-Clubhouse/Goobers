@@ -96,7 +96,8 @@ type Policy struct {
 // The park label depends on whether the stage named a blocker (#2028): a
 // named, non-cyclic blocker is goobers:blocked-on-sibling — a self-healing
 // dependency park, not a decision only a human can make; the record below is
-// what actually self-heals it, the label just needs to say so. An
+// what actually self-heals it (backlog selection's blocked-eligibility filter
+// over State.RecordBlock's records), the label just needs to say so. An
 // unattributed block (no blocker named) or a detected circular dependency is
 // goobers:needs-human — the runner can't resolve either on its own, so it
 // genuinely is a human decision.

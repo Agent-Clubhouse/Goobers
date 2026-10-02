@@ -16,9 +16,9 @@ import (
 
 // noWorkStreakThreshold is how many no-work terminals on the SAME item park it
 // for a human. Three mirrors escalationnotify.FailureStreakThreshold: the
-// point is not to be clever about the number but to make an unactionable
-// item stop occupying a lane long before a human would otherwise notice. #5379's incident ran to 28
-// claims over two days.
+// point is not to be clever about the number but to make an unactionable item
+// stop occupying a lane long before a human would otherwise notice. #5379's
+// incident ran to 28 claims over two days.
 //
 // Precisely, the streak counts no-work COMPLETIONS with no productive
 // completion in between. Only a completed terminal settles this counter, so an
@@ -190,11 +190,11 @@ func settleNoWorkStreak(
 // completed run held, and parks the item once it reaches the threshold.
 //
 // Ordering mirrors the escalationnotify circuit breaker deliberately: the
-// authoritative state update happens FIRST and the provider mutation second, so a park that cannot
-// reach the provider still leaves a durable record that the protection was
-// owed. #5379's scope decision requires "idempotent finalization" — re-running
-// this for an already-parked item is safe because the provider mutation is a
-// label swap that converges, and because a terminal notification that is
+// authoritative state update happens FIRST and the provider mutation second,
+// so a park that cannot reach the provider still leaves a durable record that
+// the protection was owed. #5379's scope decision requires "idempotent
+// finalization" — re-running this for an already-parked item is safe because
+// the provider mutation is a label swap that converges, and because a terminal notification that is
 // retried after a partial failure re-reads the persisted count rather than
 // recomputing it from provider state.
 // Only a run holding EXACTLY ONE claimed item is counted. A no-work verdict
@@ -211,9 +211,10 @@ func settleNoWorkStreak(
 // pure damage. Worse, that workflow's own selection filters on park labels, so
 // the items would be permanently excluded from curation thereafter.
 //
-// The escalationnotify circuit breaker fans out across every claimed item,
-// but it is only reached from failure and escalation terminals where
-// "everything this run held is implicated" is defensible. On a completed terminal it is not.
+// The escalationnotify circuit breaker fans out across every claimed item, but
+// it is only reached from failure and escalation terminals where "everything
+// this run held is implicated" is defensible. On a completed terminal it is
+// not.
 //
 // #5379's own loop is a single-item implementation run, so the narrow rule
 // covers the reported defect exactly.
