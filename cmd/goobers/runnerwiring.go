@@ -288,7 +288,6 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
-
 	decisionObserver := newDecisionShadowObserver(cfg, nil)
 	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
@@ -313,8 +312,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
-				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg),
-				Observer:               decisionObserver,
+				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
 			})
 			if err != nil {
 				return nil, err
