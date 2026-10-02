@@ -182,12 +182,25 @@ func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	if !journal.Recorded(filepath.Join(layout.ForGaggle("web").RunsDir(), "live-wired-run")) {
 		t.Fatal("live journal was not created under the gaggle's runs directory")
 	}
-	marker, ok, err := watermarks.Get(context.Background(), "live-wired-run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || marker.SourceSeq == 0 {
-		t.Fatalf("read-model intake never observed the mid-run append: marker = %+v, ok = %t", marker, ok)
+	// Intake is coalesced asynchronously. Keep the writer open and require
+	// the durable watermark to appear mid-run, rather than racing its worker.
+	observeCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		marker, ok, err := watermarks.Get(observeCtx, "live-wired-run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && marker.SourceSeq > 0 {
+			break
+		}
+		select {
+		case <-observeCtx.Done():
+			t.Fatalf("read-model intake never observed the mid-run append: marker = %+v, ok = %t", marker, ok)
+		case <-tick.C:
+		}
 	}
 	if _, err := writer.Emit(context.Background(), liveOpenBatch("stray-run", "unknown", at)); err == nil {
 		t.Fatal("emit into an unconfigured gaggle was accepted")
