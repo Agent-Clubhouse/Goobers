@@ -27,12 +27,13 @@ const (
 // infrastructure error (eligible for the gate's infrastructure retry policy).
 var ErrInvalid = errors.New("invalid artifact set")
 
-var semanticName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+var semanticName = regexp.MustCompile(`^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,127}$`)
 
 // Index is authored by the runner, never accepted from a completion envelope.
 type Index struct {
-	SchemaVersion string  `json:"schemaVersion"`
-	Entries       []Entry `json:"entries"`
+	SchemaVersion string        `json:"schemaVersion"`
+	Entries       []Entry       `json:"entries"`
+	Bindings      []SlotBinding `json:"bindings,omitempty"`
 }
 
 // Entry binds a semantic name to its exact one-based positional pointer.
@@ -101,7 +102,7 @@ func Resolve(ctx context.Context, reader Reader, pointers []apiv1.ContextPointer
 }
 
 func validateIndex(index Index, pointers []apiv1.ContextPointer, producer string) error {
-	if index.SchemaVersion != SchemaVersion || index.Entries == nil || len(index.Entries) > MaxEntries {
+	if (index.SchemaVersion != SchemaVersion && index.SchemaVersion != NamedSchemaVersion) || index.Entries == nil || len(index.Entries) > MaxEntries {
 		return fmt.Errorf("%w: schema or entry count", ErrInvalid)
 	}
 	previous := ""
@@ -126,7 +127,7 @@ func validateIndex(index Index, pointers []apiv1.ContextPointer, producer string
 			return fmt.Errorf("%w: set exceeds byte limit", ErrInvalid)
 		}
 	}
-	return nil
+	return validateBindings(index, producer)
 }
 
 func positional(pointers []apiv1.ContextPointer, producer string, slot int) (apiv1.ArtifactPointer, error) {

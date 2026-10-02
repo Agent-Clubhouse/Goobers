@@ -93,8 +93,16 @@ list-open-work-items and get-work-item provider paths, including ADO's WIQL,
 The workflow remains `workflow_dispatch`-only and is not part of required CI.
 It reuses `ADO_ORG_URL`, `ADO_PROJECT`, and the `ADO_PAT` secret. Configure the
 `ADO_PROVIDER_FIXTURE_WORK_ITEM` repository variable with the positive numeric
-ID of a stable, open seeded work item in that project. The PAT is sent using
-ADO Basic authentication and is never serialized.
+ID of a stable, open seeded work item in that project, tagged
+`goobers-fixture`. The recorded listing is filtered to that tag: the listing
+returns the oldest open items first up to a limit, so in a busy project an
+unfiltered one never reaches a recently seeded item, and it would churn with
+every unrelated item anyway. The PAT is sent using ADO Basic authentication and
+is never serialized.
+
+The checked-in baseline is a synthetic placeholder until the first live
+candidate is reviewed, so the drift step reports drift on the first live run.
+Review the uploaded candidate artifact, then replace the baseline with it.
 
 Refresh the ADO candidate locally with:
 
@@ -144,12 +152,33 @@ The tool:
 - exits non-zero if any blocking policy covers `refs/heads/goobers-live/`,
   because such a policy would refuse every push the live leg makes. It never
   creates a prefix-scoped policy itself;
+- creates a blocking "Require a merge strategy" policy scoped the same way, so
+  the write leg can check how the provider classifies its evaluation (#6106).
+  The leg never completes a pull request, so the policy never decides anything;
 - finds or creates an open work item titled `goobers provider fixture (do not
   close)` and tagged `goobers-fixture` (`-fixture-type` picks the type; the
-  default is `Issue`).
+  default is `Issue`);
+- finds or creates the spec fixture pair the read-only conformance leg
+  (`ado-live-conformance.yml`) reads, both tagged `goobers-live-fixture`: an
+  ancestry parent (`-parent-type`, default `Feature`) with a description, and
+  a child of the project's requirement type (`-spec-type` overrides it) with
+  an empty description, acceptance criteria, and a Hierarchy link to the
+  parent. If the child exists without that link, the tool adds it, which is
+  its only write to an existing object. It refuses to replace a link to a
+  different parent;
+- with `-ci-pipeline` only, finds or creates the `goobers-live-ci-failure`
+  YAML build definition on the scratch repository. The write leg's CI failure
+  evidence scenario (#5652) commits the definition's YAML, one step that fails
+  on purpose, to its own `goobers-live/` branch and queues the build there, so
+  nothing lands on `main`. It needs Azure Pipelines hosted parallelism in the
+  organization and a PAT with Build (Read & execute). Without both, leave the
+  flag off and that scenario stays skipped.
 
 It ends by printing the repository variables to set:
-`ADO_WRITE_REPOSITORY` for the live write leg, and
-`ADO_PROVIDER_FIXTURE_WORK_ITEM` for this workflow. A repository admin sets
-them; the tool cannot. The scratch repository must already exist, and it must
+`ADO_WRITE_REPOSITORY` for the live write leg,
+`ADO_PROVIDER_FIXTURE_WORK_ITEM` for this workflow, `ADO_LIVE_SPEC_WORK_ITEM`
+for the conformance leg's spec-fixture test, and, with `-ci-pipeline`,
+`ADO_LIVE_CI_FAILURE_PIPELINE` for the write leg's CI failure scenario. A
+repository admin sets them; the tool cannot. Until the last two are set, the
+tests that need them skip with a notice rather than fail. The scratch repository must already exist, and it must
 be a different repository from the testbed repository.

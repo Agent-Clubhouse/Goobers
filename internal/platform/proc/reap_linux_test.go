@@ -220,3 +220,65 @@ func TestChildRegistryPruneDropsReapedChildren(t *testing.T) {
 		t.Errorf("prune kept the entry for reaped pid %d; the registry would grow without bound", pid)
 	}
 }
+
+// TestSweepReapsSameSessionZombieOnlyAfterGrace is the #5421 regression. A git
+// grandchild whose git parent exits without waiting for it reparents onto the
+// daemon (pid 1) still carrying the daemon's session, so the instant session
+// test spares it forever and the daemon accumulates defunct git processes for
+// its whole uptime. The backstop must leave such a zombie alone while a Wait
+// could still be coming (the first sightings) and collect it once it has sat
+// in state Z for the grace period.
+func TestSweepReapsSameSessionZombieOnlyAfterGrace(t *testing.T) {
+	abandoned := startZombieChild(t, false)
+
+	clock := time.Unix(1_000_000, 0)
+	reaper := selfReaper(t)
+	reaper.now = func() time.Time { return clock }
+
+	reaper.sweep()
+	if !zombie(abandoned) {
+		t.Fatalf("first sweep reaped same-session zombie %d with no grace; that could steal an exec.Cmd's exit status", abandoned)
+	}
+
+	clock = clock.Add(sameSessionZombieGrace - time.Second)
+	reaper.sweep()
+	if !zombie(abandoned) {
+		t.Fatalf("sweep reaped same-session zombie %d before the grace elapsed", abandoned)
+	}
+
+	clock = clock.Add(time.Second)
+	reaper.sweep()
+	if !waitUntil(t, 5*time.Second, func() bool { return gone(abandoned) }) {
+		t.Errorf("same-session zombie %d still present after %s in state Z; the #5421 leak is not fixed", abandoned, sameSessionZombieGrace)
+	}
+	if _, kept := reaper.lingering[abandoned]; kept {
+		t.Errorf("lingering still holds reaped pid %d; the map must be bounded by present zombies", abandoned)
+	}
+}
+
+// TestAbandonedSameSessionZombiesRestartsClockForRecycledPID: the grace is
+// measured per process, not per pid number. A record whose start time no
+// longer matches belongs to a process that is already gone, so the zombie now
+// holding that pid must start its own grace period rather than inherit an age
+// that would get it reaped while its Wait may still be coming.
+func TestAbandonedSameSessionZombiesRestartsClockForRecycledPID(t *testing.T) {
+	pid := startZombieChild(t, false)
+	stat, ok := readProcStat(pid)
+	if !ok {
+		t.Fatalf("readProcStat(%d) failed", pid)
+	}
+
+	clock := time.Unix(1_000_000, 0)
+	reaper := selfReaper(t)
+	reaper.now = func() time.Time { return clock }
+	reaper.lingering = map[int]lingeringZombie{
+		pid: {startTicks: stat.startTicks + 1, firstSeen: clock.Add(-10 * sameSessionZombieGrace)},
+	}
+
+	if got := reaper.abandonedSameSessionZombies(); slices.Contains(got, pid) {
+		t.Fatalf("abandonedSameSessionZombies() = %v, inherited a recycled pid's age for %d", got, pid)
+	}
+	if record := reaper.lingering[pid]; !record.firstSeen.Equal(clock) || record.startTicks != stat.startTicks {
+		t.Errorf("lingering[%d] = %+v, want a fresh record first seen at %v", pid, record, clock)
+	}
+}

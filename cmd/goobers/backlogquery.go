@@ -1047,6 +1047,9 @@ func writeClaimedBacklogResult(
 		pf(env.stderr, "error: marshal claimed item(s): %v\n", err)
 		return 1
 	}
+	if !opts.curationRun && opts.maxItems == 1 && len(claimed) > 0 {
+		data = withPriorNoWorkVerdict(ctx, env.layout, env.issueRepo(), claimed[0].ID, data, env.stderr)
+	}
 	resultFile := providerInput("resultFile", "claimed-item.json")
 	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
 		pf(env.stderr, "error: write %s: %v\n", resultFile, err)

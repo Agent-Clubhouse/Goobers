@@ -1350,9 +1350,9 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"repeat, or when every detected cause is external to the PR's own diff\n" +
 	"(sibling sequencing, or CI already red on the base branch), or record the advanced\n" +
 	"state as a new sticky comment. Requires selectedNumber (inputsFrom\n" +
-	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
-	"five per-cause budget inputs (humanCommentBudget defaults to 2 when\n" +
-	"undeclared). --budget overrides every declared cause\n" +
+	"gather-pr-context's selectedNumber output) and remediationCauses. Each of\n" +
+	"the five per-cause budget inputs defaults to 2 when undeclared\n" +
+	"(goobers validate warns). --budget overrides every declared cause\n" +
 	"for standalone diagnostics. --escalation-outcome classifies a forced\n" +
 	"--escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.\n" +
 	"Escalations persist a machine-readable `escalationOutcome`\n" +
@@ -2226,12 +2226,15 @@ func parseRemediationCauses(raw string) ([]remediationCause, error) {
 	return causes, nil
 }
 
-// defaultHumanCommentBudget is the per-cycle allowance for the human-comment
-// cause when humanCommentBudget is undeclared. It is a DEFAULT rather than a
-// required input (unlike the four legacy budgets): declaredRemediationBudgets
-// runs whenever any cause fires, so requiring it would fail every already-
-// deployed workflow the moment it upgraded to a binary that reads it.
-const defaultHumanCommentBudget = 2
+// defaultRemediationCauseBudget is the per-cause allowance a remediation
+// cause gets when the workflow leaves its budget input unset (#2737). Every
+// per-cause budget is a DEFAULT rather than a required input:
+// declaredRemediationBudgets runs only once a cause fires, so a required input
+// let a config validate, deploy and run clean for days and then fail a live PR
+// the first time that cause appeared. `goobers validate` warns about each
+// unset budget instead (providerstage.Input.UnsetDefault), so the policy
+// choice stays visible to the author without breaking the stage.
+const defaultRemediationCauseBudget = 2
 
 func declaredRemediationBudgets(override int) (remediationBudgets, error) {
 	if override > 0 {
@@ -2251,26 +2254,21 @@ func declaredRemediationBudgets(override int) (remediationBudgets, error) {
 		{"substantiveBudget", providerInput("substantiveBudget", ""), &budgets.Substantive},
 		{"failingCIBudget", providerInput("failingCIBudget", ""), &budgets.FailingCI},
 		{"siblingOverlapBudget", providerInput("siblingOverlapBudget", ""), &budgets.SiblingOverlap},
+		{"humanCommentBudget", providerInput("humanCommentBudget", ""), &budgets.HumanComment},
 	}
 	for _, value := range values {
+		// An empty input falls back to the default, while a non-empty but
+		// invalid value is still a hard error: a typo must not silently pick
+		// up the default.
+		if value.raw == "" {
+			*value.target = defaultRemediationCauseBudget
+			continue
+		}
 		budget, err := strconv.Atoi(value.raw)
 		if err != nil || budget <= 0 {
 			return remediationBudgets{}, fmt.Errorf("%s must be a positive integer, got %q", value.input, value.raw)
 		}
 		*value.target = budget
-	}
-	// humanCommentBudget is optional for backward compatibility: an empty input
-	// falls back to defaultHumanCommentBudget so a legacy workflow that predates
-	// the cause keeps working, while a non-empty but invalid value is still a
-	// hard error (a typo must not silently pick up the default).
-	if raw := providerInput("humanCommentBudget", ""); raw == "" {
-		budgets.HumanComment = defaultHumanCommentBudget
-	} else {
-		budget, err := strconv.Atoi(raw)
-		if err != nil || budget <= 0 {
-			return remediationBudgets{}, fmt.Errorf("humanCommentBudget must be a positive integer, got %q", raw)
-		}
-		budgets.HumanComment = budget
 	}
 	return budgets, nil
 }
