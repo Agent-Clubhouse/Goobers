@@ -13,8 +13,10 @@ import type {
   Goober,
   Health,
   Instance,
+  InstanceReadiness,
   ModelInvalidation,
   RepositoryConnection,
+  RequestOptions,
   RunPhase,
   RunSummary,
   UpdateModel,
@@ -1108,8 +1110,16 @@ export async function loadOperationalOverview(
     throw settledError(health) ?? new Error("Overview load was aborted.");
   }
 
-  const resolvedHealth = settledValue(health) ?? previous?.health;
-  const resolvedInstance = settledValue(instance) ?? previous?.instance;
+  let resolvedHealth = settledValue(health) ?? previous?.health;
+  let resolvedInstance = settledValue(instance) ?? previous?.instance;
+  let recoveryReadiness: InstanceReadiness | undefined;
+  if (resolvedHealth !== undefined && settledValue(instance) === undefined && previous?.instance === undefined) {
+    recoveryReadiness = await recoverInstanceReadiness(client, requestOptions);
+    if (recoveryReadiness) {
+      resolvedInstance = instanceFromReadiness(resolvedHealth, recoveryReadiness);
+      resolvedHealth = { ...resolvedHealth, ready: recoveryReadiness.ready, startup: recoveryReadiness.recovery };
+    }
+  }
   if (resolvedHealth === undefined || resolvedInstance === undefined) {
     throw (
       settledError(health) ??
@@ -1127,7 +1137,7 @@ export async function loadOperationalOverview(
   if (healthError) {
     initialSectionErrors.health = healthError;
   }
-  if (instanceError) {
+  if (instanceError && !recoveryReadiness) {
     initialSectionErrors.instance = instanceError;
   }
 
@@ -1200,6 +1210,37 @@ export async function loadOperationalOverview(
     workflowNames: resolvedInventory.workflowNames,
     groups: resolvedGroups,
     ...(healthError || instanceError || inventoryError || runsError ? { sectionErrors } : {}),
+  };
+}
+
+async function recoverInstanceReadiness(
+  client: DaemonClient,
+  options: RequestOptions,
+): Promise<InstanceReadiness | undefined> {
+  try {
+    return await client.getInstanceReadiness(options);
+  } catch {
+    return undefined;
+  }
+}
+
+function instanceFromReadiness(health: Health, readiness: InstanceReadiness): Instance {
+  return {
+    apiVersion: readiness.apiVersion,
+    schemaVersion: readiness.schemaVersion,
+    name: health.instance.name,
+    environment: health.instance.environment,
+    computerName: readiness.computerName,
+    instanceRoot: readiness.instanceRoot,
+    rootIdentity: readiness.rootIdentity,
+    ready: readiness.ready,
+    status: readiness.ready ? "ready" : "starting",
+    concurrency: { activeRuns: 0, maxConcurrentRuns: 0 },
+    counts: { gaggles: 0, goobers: 0, workflows: 0, activeRuns: 0 },
+    warnings: [],
+    memoryGateEnabled: true,
+    fsyncDisabled: false,
+    fleetEnrolled: false,
   };
 }
 

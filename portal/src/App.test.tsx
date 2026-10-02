@@ -48,6 +48,51 @@ describe("portal foundation", () => {
     expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
   });
 
+  it("shows crash-resume recovery when scheduler-backed routes are gated", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.ready = false;
+    fixtures.health.startup = {
+      phase: "crash-resume",
+      target: "candidates=6",
+      since: "2026-10-02T16:00:00Z",
+      elapsedSeconds: 120,
+      budgetSeconds: 60,
+      budgetState: "exceeded",
+      blockingCandidate: {
+        progress: { total: 6, examined: 6, resumed: 5, reattached: 0, terminal: 0, skipped: 0 },
+        runId: "c423d482",
+        gaggle: "goobers",
+        workflow: "implement",
+        disposition: "resolving-generation",
+        operation: "resolve execution generation",
+        lastProgressAt: "2026-10-02T16:01:50Z",
+      },
+    };
+    fixtures.readiness = {
+      apiVersion: fixtures.instance.apiVersion,
+      schemaVersion: fixtures.instance.schemaVersion,
+      computerName: fixtures.instance.computerName,
+      instanceRoot: fixtures.instance.instanceRoot,
+      rootIdentity: fixtures.instance.rootIdentity,
+      ready: false,
+      recovery: fixtures.health.startup,
+    };
+    class RecoveryClient extends FixtureDaemonClient {
+      getInstance(): Promise<never> {
+        return Promise.reject(new Error("scheduler not ready"));
+      }
+    }
+
+    render(<App client={new RecoveryClient(fixtures)} />);
+
+    expect(await screen.findByText("Startup recovery")).toBeInTheDocument();
+    expect(screen.getByText("6/6 candidates examined")).toBeInTheDocument();
+    expect(screen.getByText(/Blocking run c423d482/)).toHaveTextContent(
+      "goobers/implement",
+    );
+    expect(screen.queryByText("Couldn't load Goobers data")).not.toBeInTheDocument();
+  });
+
   it("renders compact instance identity in the masthead", async () => {
     const fixtures = populatedDaemonFixtures();
     fixtures.instance.computerName = "CPC-JEFFS-7VMWT";

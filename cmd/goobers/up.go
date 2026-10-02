@@ -964,18 +964,7 @@ func (u *upSession) startServices() int {
 		return 1
 	}
 	u.reads.AttachStartupStatus(func() *readservice.StartupStatus {
-		if u.ready.Load() {
-			return nil
-		}
-		phase, target, since := u.tracker.snapshot()
-		if phase == "" {
-			return nil
-		}
-		return &readservice.StartupStatus{
-			Phase:  phase,
-			Target: target,
-			Since:  since,
-		}
+		return readserviceStartupStatus(u.tracker, u.ready.Load())
 	})
 	attachFreshnessSignals(u.reads, u.setup)
 	if *u.disableReadModelReads {

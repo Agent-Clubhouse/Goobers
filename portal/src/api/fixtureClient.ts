@@ -16,6 +16,7 @@ import type {
   GooberPage,
   Health,
   Instance,
+  InstanceReadiness,
   PageRequest,
   PortalConfig,
   RequestOptions,
@@ -47,6 +48,7 @@ import type {
 export interface DaemonFixtures {
   health: Health;
   instance: Instance;
+  readiness?: InstanceReadiness;
   gaggles: GagglePage;
   goobers?: Record<string, GooberPage>;
   workflows?: Record<string, WorkflowPage>;
@@ -110,6 +112,21 @@ interface FixtureRunCursor {
   id: string;
 }
 
+function fixtureReadiness(fixtures: DaemonFixtures): InstanceReadiness {
+  return {
+    apiVersion: fixtures.instance.apiVersion,
+    schemaVersion: fixtures.instance.schemaVersion,
+    computerName: fixtures.instance.computerName,
+    instanceRoot: fixtures.instance.instanceRoot,
+    rootIdentity: fixtures.instance.rootIdentity,
+    ready: fixtures.instance.ready,
+    recovery: fixtures.health.startup ?? {
+      phase: fixtures.instance.ready ? "" : "starting",
+      since: fixtures.health.freshness.observedAt,
+    },
+  };
+}
+
 export class FixtureDaemonClient implements DaemonClient {
   constructor(private readonly fixtures: DaemonFixtures) {
     assertSupportedContractVersion(fixtures.health);
@@ -130,6 +147,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   getInstance(options?: RequestOptions): Promise<Instance> {
     return fixture(this.fixtures.instance, options);
+  }
+
+  getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness> {
+    return fixture(this.fixtures.readiness ?? fixtureReadiness(this.fixtures), options);
   }
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {

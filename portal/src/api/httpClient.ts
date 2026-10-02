@@ -31,6 +31,7 @@ import type {
   GooberPage,
   Health,
   Instance,
+  InstanceReadiness,
   PageRequest,
   PortalConfig,
   RequestOptions,
@@ -206,6 +207,12 @@ export class HttpDaemonClient implements DaemonClient {
     const instance = await this.getJSON<Instance>(clientRoutes.instance, undefined, options);
     assertSupportedContractVersion(instance);
     return instance;
+  }
+
+  async getInstanceReadiness(options?: RequestOptions): Promise<InstanceReadiness> {
+    const readiness = await this.getJSON<InstanceReadiness>(clientRoutes.readiness, undefined, options);
+    assertSupportedContractVersion(readiness);
+    return readiness;
   }
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
