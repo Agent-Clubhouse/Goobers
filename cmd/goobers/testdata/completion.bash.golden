@@ -198,6 +198,7 @@ _goobers_completion()
         claims)
             case "${COMP_WORDS[2]:-}" in
                 list) flags+=" --json --stale --gaggle --provider" ;;
+                active) flags+=" --json --gaggle --provider" ;;
                 release) flags+=" --gaggle --provider --force" ;;
             esac
             ;;
@@ -403,7 +404,7 @@ _goobers_completion()
             ;;
         claims)
             if (( COMP_CWORD == 2 )); then
-                candidates="list release"
+                candidates="list active release"
             fi
             ;;
         trace)

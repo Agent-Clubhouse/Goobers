@@ -46,6 +46,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers blocked clear`](#goobers-blocked-clear) | safely remove one blocked-item record, under claims.lock |
 | [`goobers blocked list`](#goobers-blocked-list) | print the learned blocked-item ledger (scheduler/blocked.json) |
 | [`goobers claims`](#goobers-claims) | inspect and force-release claim leases |
+| [`goobers claims active`](#goobers-claims-active) | print what is actively claimed now: item, workflow, run, holder, and age |
 | [`goobers claims list`](#goobers-claims-list) | print current claim leases, optionally only expired leases |
 | [`goobers claims release`](#goobers-claims-release) | force-release a claim through the live daemon or claims.lock |
 | [`goobers completion bash`](#goobers-completion-bash) | generate a bash completion script |
@@ -688,7 +689,29 @@ daemon. Operations delegate to `goobers up` when it is running.
 
 Commands:
   list       print current claim leases
+  active     print what is actively claimed now
   release    force-release one item by id
+~~~
+
+## `goobers claims active`
+
+print what is actively claimed now: item, workflow, run, holder, and age
+
+~~~text
+Usage: goobers claims active [--json] [--gaggle=name] [--provider=name] [path]
+
+Print what this instance has actively claimed now: item, workflow, run,
+holder, and age, oldest first. Expired, released, and revoked leases are
+omitted (`goobers claims list --stale` shows expired ones). Holder is the owning instance
+for a shared-visibility claim, otherwise "local". The daemon API serves
+the same view at GET /api/v1/claims/active. Default path is ".".
+~~~
+
+**Examples**
+
+~~~console
+$ goobers claims active
+$ goobers claims active --json
 ~~~
 
 ## `goobers claims list`

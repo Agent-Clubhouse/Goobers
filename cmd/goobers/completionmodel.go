@@ -459,6 +459,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
 		{name: "provider", takesArg: true, desc: "Filter by provider"},
 	},
+	"claims active": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "gaggle", takesArg: true, desc: "Filter by gaggle"},
+		{name: "provider", takesArg: true, desc: "Filter by provider"},
+	},
 	"claims release": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the claim"},
 		{name: "provider", takesArg: true, desc: "Provider owning the claim"},
