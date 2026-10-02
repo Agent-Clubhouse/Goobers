@@ -1035,7 +1035,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			attemptEnv := env
 			attemptEnv.Attempt = int32(attempt)
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
-			result.Integrity = produced
+			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 			return result, err
 		}, deltaOut)
 	}
@@ -1063,7 +1063,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
-		result.Integrity = produced
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }

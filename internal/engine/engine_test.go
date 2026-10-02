@@ -430,3 +430,55 @@ func TestAgenticTaskNotConfiguredErrors(t *testing.T) {
 		t.Fatal("expected a workflow error when the invoker is not configured")
 	}
 }
+
+// #2979: the engine keeps a grade the executor stamped on its own envelope
+// rather than overwriting it with the input-derived grade, so an ungraded
+// deterministic stage stamped unapproved finishes unapproved and a consumer
+// requiring derived is never dispatched with its output.
+func TestRunKeepsExecutorStampedStageIntegrity(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "query",
+		Tasks: []apiv1.Task{
+			{
+				Name: "query", Type: apiv1.TaskDeterministic, Goal: "query",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: "consume",
+			},
+			{
+				Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume",
+				MinimumIntegrity: apiv1.IntegrityDerived,
+				InputsFrom:       map[string]string{"value": "query.value"},
+				Run:              &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			},
+		},
+	}
+	consumed := false
+	runner := &fakeRunner{run: func(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+		_, stage, _ := strings.Cut(env.TaskID, ":")
+		if stage == "consume" {
+			consumed = true
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+		}
+		return apiv1.ResultEnvelope{
+			Status:    apiv1.ResultSuccess,
+			Outputs:   map[string]interface{}{"value": "42"},
+			Integrity: apiv1.IntegrityUnapproved,
+		}, nil
+	}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: runner, Workspaces: testWorkspaces(t)})
+	env.ExecuteWorkflow(Run, runInput("executor-grade", spec))
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	if consumed {
+		t.Fatal("consumer requiring derived was dispatched with an unapproved input")
+	}
+	if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("workflow error = %v, want an integrity refusal of the consumer", err)
+	}
+}

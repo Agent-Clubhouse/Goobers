@@ -4825,9 +4825,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
-		// bare scalars that cannot carry a label of their own (TBH-4).
-		result.Integrity = producedIntegrity(t, in.Item, upstream,
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
+		// bare scalars that cannot carry a label of their own (TBH-4). A grade
+		// the executor stamped itself is kept when it is weaker (#2979).
+		result.Integrity = StageResultIntegrity(result.Integrity, producedIntegrity(t, in.Item, upstream,
+			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn)))
 		outputs := stageFinishedOutputs(result, t.ContinueOnError)
 		var eventWorkspaceRevision *apiv1.WorkspaceRevision
 		if t.Type == apiv1.TaskDeterministic &&
