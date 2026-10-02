@@ -22,6 +22,14 @@
 // .bak copy beside the runs root, then advances schema.json only after a
 // migration succeeds; unsupported newer versions fail closed.
 //
+// Attempt identity is anchored by run, branch, stage, and the durable start
+// sequence (StageAttemptID). Tasks retain stage.started/finished. Reviewer
+// dispatches use runner.reviewer.started/finished so their outcomes cannot be
+// mistaken for workflow task completion during recovery. Both feed the same
+// read-service visit/attempt projection. gate.started/evaluated still delimit
+// a whole gate evaluation, which may retry a reviewer or synthesize a verdict
+// without invoking one. These lifecycle markers are not launch attestations.
+//
 // Two rules are load-bearing and enforced here:
 //
 //   - Append-only events, immutable snapshots. Nothing is edited after the fact;

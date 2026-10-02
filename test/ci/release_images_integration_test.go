@@ -81,7 +81,7 @@ func TestIntegrationReleaseImageEvidenceRetention(t *testing.T) {
 
 func writeReleaseImageEvidenceFixture(t *testing.T, root string) {
 	t.Helper()
-	files := []string{"native-image-evidence/release-source.json", "native-image-evidence/final-archive-SHA256SUMS", "native-image-evidence/release-image-verification.txt", "verified-image-contexts/image-evidence.json", "verified-image-contexts/linux-arm64/artifact-import.json"}
+	files := []string{"native-image-evidence/release-source.json", "native-image-evidence/release-archive-SHA256SUMS", "native-image-evidence/release-image-verification.txt", "verified-image-contexts/image-evidence.json", "verified-image-contexts/linux-arm64/artifact-import.json"}
 	for _, directory := range []string{"original-image-inputs/linux-arm64", "verified-image-contexts/linux-arm64"} {
 		files = append(files, directory+"/SHA256SUMS", directory+"/release.json")
 	}

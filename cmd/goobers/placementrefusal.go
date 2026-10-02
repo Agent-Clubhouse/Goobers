@@ -131,7 +131,7 @@ func placementRefusals(
 		Refusals:       make(map[localscheduler.WorkflowIdentity]string),
 		EngineDeferred: make(map[localscheduler.WorkflowIdentity]string),
 	}
-	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates()) {
+	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates() && !cfg.SelfExecutionDenied()) {
 		return decisions, nil
 	}
 	inventory := cfg.PlacementInventory(runnersolve.HostOS())
@@ -140,7 +140,7 @@ func placementRefusals(
 		gaggleSpecs[set.Gaggles[i].Name] = set.Gaggles[i].Spec
 	}
 	for identity, machine := range machines {
-		requirements, err := workflow.IsolationStagePlacements(machine.Def, gaggleSpecs[identity.Gaggle], goobers, inventory.ClassMandates)
+		requirements, err := workflow.IsolationStagePlacements(machine.Def, gaggleSpecs[identity.Gaggle], goobers, inventory.ClassMandates, inventory.SelfExecutionDenied)
 		if err != nil {
 			// The machine compiled, so its interpreter resolves; surface the
 			// impossible rather than silently skipping the solve.

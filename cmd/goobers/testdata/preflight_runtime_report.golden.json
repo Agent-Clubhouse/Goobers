@@ -115,7 +115,7 @@
     },
     "source": {
       "fidelity": "static",
-      "detail": "static execution inputs and observed reporting-process identity; no provider, credential, sandbox, or harness probe was executed"
+      "detail": "static execution inputs and reporting-process identity; credential metadata and optional harness probes do not attest target identity"
     }
   },
   "stages": [
@@ -270,7 +270,7 @@
       },
       "code": "authentication_unobservable",
       "outcome": "unobservable",
-      "detail": "credential presence and sign-in state require an external auth probe, which this report intentionally does not run",
+      "detail": "target authentication remains unobservable; reporting-process credential and harness observations are listed separately",
       "source": {
         "fidelity": "unobservable",
         "detail": "contract boundary"
@@ -290,7 +290,7 @@
       },
       "code": "transport_unobservable",
       "outcome": "unobservable",
-      "detail": "provider and harness transport reachability require external network probes, which this report intentionally does not run",
+      "detail": "target provider transport remains unobservable; bounded local harness failures are listed separately",
       "source": {
         "fidelity": "unobservable",
         "detail": "contract boundary"
@@ -330,7 +330,7 @@
       },
       "code": "tool_unobservable",
       "outcome": "unobservable",
-      "detail": "tool availability requires host or harness execution, which this report intentionally does not run",
+      "detail": "target tool availability remains unobservable; reporting-process harness observations are listed separately",
       "source": {
         "fidelity": "unobservable",
         "detail": "contract boundary"
@@ -397,26 +397,6 @@
       }
     },
     {
-      "category": "cleanup_guarantee",
-      "process": {
-        "pid": 1,
-        "os": "\u003chost-os\u003e",
-        "uid": "\u003ceffective-user\u003e",
-        "gid": "\u003ceffective-group\u003e",
-        "source": {
-          "fidelity": "observed",
-          "detail": "current process OS and effective identity"
-        }
-      },
-      "code": "cleanup_guarantee_unsupported",
-      "outcome": "unsupported",
-      "detail": "cleanup guarantees are not proven by this report contract slice",
-      "source": {
-        "fidelity": "unsupported",
-        "detail": "contract boundary"
-      }
-    },
-    {
       "category": "unsupported",
       "process": {
         "pid": 1,
@@ -430,7 +410,7 @@
       },
       "code": "external_probe_unsupported",
       "outcome": "unsupported",
-      "detail": "external credential, harness, MCP, sandbox, lifecycle, and provider probes are outside this report contract slice",
+      "detail": "target sandbox and provider probes are outside this report contract slice",
       "source": {
         "fidelity": "unsupported",
         "detail": "contract boundary"
@@ -499,6 +479,68 @@
       }
     },
     {
+      "category": "cleanup_guarantee",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "cleanup_probe_not_requested",
+      "outcome": "unobservable",
+      "detail": "metadata only; use --check-readiness for a controlled local force-stop fixture",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "controlled reporting-process fixture only"
+      }
+    },
+    {
+      "category": "remote_cleanup",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "remote_cleanup_unobservable",
+      "outcome": "unobservable",
+      "stage": "claim",
+      "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "no target cleanup observation or provider mutation"
+      }
+    },
+    {
+      "category": "remote_cleanup",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "remote_cleanup_unobservable",
+      "outcome": "unobservable",
+      "stage": "implement",
+      "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "no target cleanup observation or provider mutation"
+      }
+    },
+    {
       "category": "execution_identity",
       "process": {
         "pid": 1,
@@ -541,10 +583,154 @@
       }
     }
   ],
+  "credentials": [
+    {
+      "stage": "claim",
+      "capability": "github:issues:write",
+      "kind": "env",
+      "name": "GOOBERS_GITHUB_TOKEN",
+      "code": "credential_source_present",
+      "outcome": "present",
+      "detail": "source metadata present; value, readability, expiry and authentication unverified",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "source": {
+        "fidelity": "observed",
+        "detail": "reporting-process source metadata only; target daemon/worker availability unobservable"
+      }
+    },
+    {
+      "stage": "implement",
+      "capability": "agent:model",
+      "kind": "env",
+      "name": "GOOBERS_COPILOT_TOKEN",
+      "code": "credential_source_present",
+      "outcome": "present",
+      "detail": "source metadata present; value, readability, expiry and authentication unverified",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "source": {
+        "fidelity": "observed",
+        "detail": "reporting-process source metadata only; target daemon/worker availability unobservable"
+      }
+    }
+  ],
+  "lifecycle": {
+    "process": {
+      "pid": 1,
+      "os": "\u003chost-os\u003e",
+      "uid": "\u003ceffective-user\u003e",
+      "gid": "\u003ceffective-group\u003e",
+      "source": {
+        "fidelity": "observed",
+        "detail": "current process OS and effective identity"
+      }
+    },
+    "cancellationOwner": "attempt runner and its proc.Tree supervisor; remote execution host owns remote processes",
+    "cancellation": "graceful daemon drain preserves in-flight attempts; hard stop cancels owned attempts; harness timeout/cancellation kills its proc.Tree; configured timeout inputs are in execution.plan.timeouts and stages[].settings; effective live deadlines remain unobservable",
+    "drain": "daemon --drain-timeout defaults to unbounded; repeated shutdown signal or configured drain expiry requests hard stop; actual daemon/worker launch flags are unobservable; checkpoint recovery is unchanged",
+    "workerDrainDefault": "30s",
+    "disposalTimeout": "30s",
+    "fixture": {
+      "ownership": "owned",
+      "owner": "reporting process proc.Tree supervisor",
+      "code": "owned_cleanup_unobservable",
+      "outcome": "unobservable",
+      "requiredGuaranteeSatisfied": false,
+      "authorizesWriter": false,
+      "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+    },
+    "probe": {
+      "code": "cleanup_probe_not_requested",
+      "outcome": "unobservable",
+      "detail": "metadata only; use --check-readiness for a controlled local force-stop fixture"
+    },
+    "targets": [
+      {
+        "stage": "claim",
+        "cleanup": {
+          "ownership": "unobservable",
+          "owner": "dispatcher disposal and remote worker host; remote completion unobserved",
+          "code": "remote_cleanup_unobservable",
+          "outcome": "unobservable",
+          "requiredGuaranteeSatisfied": false,
+          "authorizesWriter": false,
+          "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+        }
+      },
+      {
+        "stage": "implement",
+        "cleanup": {
+          "ownership": "unobservable",
+          "owner": "dispatcher disposal and remote worker host; remote completion unobserved",
+          "code": "remote_cleanup_unobservable",
+          "outcome": "unobservable",
+          "requiredGuaranteeSatisfied": false,
+          "authorizesWriter": false,
+          "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+        }
+      }
+    ],
+    "source": {
+      "fidelity": "static",
+      "detail": "supervisor contracts and defaults; local fixture evidence cannot attest daemon/worker identity, remote cleanup or authorize another writer"
+    }
+  },
+  "harnesses": [
+    {
+      "stage": "implement",
+      "harness": "copilot",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "harness subprocess probes disabled; use --check-readiness; target daemon/worker remains unobservable"
+      },
+      "checks": [
+        {
+          "category": "capability_mismatch",
+          "code": "harness_model_unobservable",
+          "outcome": "unobservable",
+          "detail": "option shape accepted; model availability and model-dependent options require live catalogue evidence"
+        },
+        {
+          "category": "unobservable",
+          "code": "harness_probe_unobservable",
+          "outcome": "unobservable",
+          "detail": "bounded read-only probes not requested"
+        }
+      ]
+    }
+  ],
   "mutationBoundary": [
     "loaded instance.yaml",
     "loaded config directory",
     "compiled workflow",
+    "credential source metadata only; no external credential or harness subprocess probes",
     "computed workflow and goober digests",
     "no provider mutation",
     "no package installation",

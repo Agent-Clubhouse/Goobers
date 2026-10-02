@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/goobers/goobers/providers"
 )
@@ -79,9 +80,13 @@ const (
 //   - Over threshold and not acked, not yet labeled: apply the label + an
 //     explanatory comment. This is a BLOCKING park (unlike scope-drift's pure
 //     advisory), so the comment says so explicitly.
-//   - No longer parked (shrunk back under both thresholds, OR an operator
-//     added the ack label) but still labeled: clear the label + a release
-//     comment naming which of the two happened.
+//   - Shrunk back under both thresholds but still labeled: clear the label +
+//     a release comment.
+//   - Released by an operator ack while still labeled: leave the label in
+//     place. pr-select's needs-remediation bypass requires BOTH scope-gate
+//     labels, so clearing here would strand the PR if the run died before a
+//     replacement verdict published (#1869). apply-verdict clears it via
+//     releaseAcknowledgedScopeGate once that verdict is durable.
 //   - Otherwise: no-op (idempotent — never re-comments while parked, never
 //     comments on a PR that was never parked).
 //
@@ -118,20 +123,41 @@ func reconcileScopeGate(ctx context.Context, provider scopeDriftProvider, repo p
 			return parked, false, fmt.Errorf("apply %s to pr #%d: %w", scopeGateLabel, prNumber, uerr)
 		}
 		return parked, true, nil
-	case !parked && labeled:
-		reason := "an operator added " + scopeGateAckLabel
-		if !acked {
-			reason = "the diff shrunk back under both thresholds"
-		}
-		comment := fmt.Sprintf("✅ **Scope gate cleared** (#1313): %s — autonomous merge is eligible again.", reason)
-		if _, uerr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo, ID: fmt.Sprintf("%d", prNumber), RemoveLabels: []string{scopeGateLabel}, Comment: comment,
-		}); uerr != nil {
-			return parked, false, fmt.Errorf("clear %s from pr #%d: %w", scopeGateLabel, prNumber, uerr)
+	case !parked && labeled && !acked:
+		if err := clearScopeGate(ctx, provider, repo, prNumber, "the diff shrunk back under both thresholds"); err != nil {
+			return parked, false, err
 		}
 		return parked, true, nil
 	}
 	return parked, false, nil
+}
+
+// releaseAcknowledgedScopeGate performs the ack-driven clear reconcileScopeGate
+// defers (#1869). apply-verdict calls it only after the replacement verdict is
+// published, so a run that dies earlier leaves both scope-gate labels on the
+// PR and pr-select can still select it at an unchanged head/base. parked is
+// the gate decision the verdict was published under: a PR parked at gather
+// time (the ack arrived mid-run) keeps its label for the next cycle to
+// re-evaluate. Best-effort like the rest of this file: a failed clear leaves
+// the PR in the still-selectable both-labels state.
+func releaseAcknowledgedScopeGate(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, parked bool) (bool, error) {
+	if parked || !hasAnyLabel(prLabels, []string{scopeGateLabel}) || !hasAnyLabel(prLabels, []string{scopeGateAckLabel}) {
+		return false, nil
+	}
+	if err := clearScopeGate(ctx, provider, repo, prNumber, "an operator added "+scopeGateAckLabel); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func clearScopeGate(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, reason string) error {
+	comment := fmt.Sprintf("✅ **Scope gate cleared** (#1313): %s — autonomous merge is eligible again.", reason)
+	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo, ID: fmt.Sprintf("%d", prNumber), RemoveLabels: []string{scopeGateLabel}, Comment: comment,
+	}); err != nil {
+		return fmt.Errorf("clear %s from pr #%d: %w", scopeGateLabel, prNumber, err)
+	}
+	return nil
 }
 
 // scopeGateSizeDescription names whichever dimension(s) actually tripped, so
@@ -147,5 +173,18 @@ func scopeGateSizeDescription(changedFiles, changedLines, filesThreshold, linesT
 		return fmt.Sprintf("changes **%d files** (threshold: %d)", changedFiles, filesThreshold)
 	default:
 		return fmt.Sprintf("changes **%d lines** (threshold: %d)", changedLines, linesThreshold)
+	}
+}
+
+// releaseAcknowledgedScopeGateAfterVerdict is apply-verdict's call site for
+// releaseAcknowledgedScopeGate: parked is the gate decision the verdict was
+// published under (apply-verdict's scopeGateParked input); it reports the
+// outcome without failing the stage.
+func releaseAcknowledgedScopeGateAfterVerdict(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, parked bool, stdout, stderr io.Writer) {
+	released, err := releaseAcknowledgedScopeGate(ctx, provider, repo, prNumber, prLabels, parked)
+	if err != nil {
+		pf(stderr, "warning: scope gate: %v\n", err)
+	} else if released {
+		pf(stdout, "scope-gate: PR #%d released by %s — cleared %s\n", prNumber, scopeGateAckLabel, scopeGateLabel)
 	}
 }

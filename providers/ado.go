@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 const (
@@ -671,91 +669,48 @@ func (p *ADOProvider) doPatch(ctx context.Context, method, endpoint string, body
 }
 
 func (p *ADOProvider) send(ctx context.Context, method, endpoint string, body interface{}, contentType string) (*http.Response, error) {
-	maxWait := p.maxRateLimitWait
-	if maxWait <= 0 {
-		maxWait = defaultRateLimitMaxWait
-	}
-	var waited time.Duration
-	rateAttempt := 0
-	transientAttempt := 0
-	authRetried := false
-	for {
-		req, err := newJSONRequest(ctx, method, endpoint, body)
-		if err != nil {
-			return nil, err
-		}
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-		header, bearer, err := p.authorizationHeader(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if header != "" {
-			req.Header.Set("Authorization", header)
-		}
-		if bearer {
-			req.Header.Set(adoForceMsaPassThroughHeader, adoForceMsaPassThroughValue)
-		}
-		featureusage.RecordProviderHTTP("ado")
-		resp, err := httpClientOrDefault(p.Client).Do(req)
-		if err != nil {
-			// A transport failure (connection reset, DNS blip, timeout) is only
-			// safe to retry automatically for an idempotent method (#2026), or
-			// for a POST to a read-only endpoint (workitemsbatch, WIQL; see
-			// adoRetryableRequest): any other POST/PATCH may have already
-			// committed server-side before its response was lost, and ADO has
-			// no transport-level dedup marker (unlike GitHub issue creation's
-			// footer check, #140) to make a blind retry safe for those.
-			if adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
-				if serr := p.sleep(ctx, backoffDuration(transientAttempt)); serr != nil {
-					return nil, serr
-				}
-				transientAttempt++
-				continue
+	return sendJSONWithPolicy(ctx, restSendPolicy{
+		client:              p.Client,
+		providerHTTPName:    "ado",
+		maxTransientRetries: p.maxRetries,
+		maxRateLimitRetries: p.maxRetries,
+		maxRateLimitWait:    p.maxRateLimitWait,
+		retryable:           adoRetryableRequest(method, endpoint),
+		sleep:               p.sleep,
+		decorate: func(ctx context.Context, req *http.Request) error {
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
 			}
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		normalizeADOSignInResponse(resp)
-		p.observeQuota(ctx, resp)
-		p.observeRateLimitDelay(ctx, resp, endpoint)
-		if resp.StatusCode == http.StatusUnauthorized && !authRetried && p.invalidateCredential() {
-			_ = resp.Body.Close()
-			authRetried = true
-			continue
-		}
-		if err := p.deliveredCredentialRejected(resp, method, endpoint, authRetried); err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 500 && adoRetryableRequest(method, endpoint) && transientAttempt < p.maxRetries {
-			_ = resp.Body.Close()
-			if err := p.sleep(ctx, backoffDuration(transientAttempt)); err != nil {
-				return nil, err
+			header, bearer, err := p.authorizationHeader(ctx)
+			if err != nil {
+				return err
 			}
-			transientAttempt++
-			continue
-		}
-		if resp.StatusCode != http.StatusTooManyRequests {
+			if header != "" {
+				req.Header.Set("Authorization", header)
+			}
+			if bearer {
+				req.Header.Set(adoForceMsaPassThroughHeader, adoForceMsaPassThroughValue)
+			}
+			return nil
+		},
+		normalizeResponse: normalizeADOSignInResponse,
+		observeResponse: func(ctx context.Context, resp *http.Response) {
+			p.observeQuota(ctx, resp)
+			p.observeRateLimitDelay(ctx, resp, endpoint)
+		},
+		refreshRejectedAuth: p.invalidateCredential,
+		validateResponse: func(resp *http.Response, authRetried bool) error {
+			return p.deliveredCredentialRejected(resp, method, endpoint, authRetried)
+		},
+		isRateLimited: func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusTooManyRequests
+		},
+		planRateLimit:    p.rateLimitPlan,
+		observeRateLimit: p.observeRateLimit,
+		handleExhaustedRateLimit: func(resp *http.Response, _ RateLimitEvent) (*http.Response, error) {
 			return resp, nil
-		}
-
-		wait, ev := p.rateLimitPlan(resp, endpoint, rateAttempt)
-		if rateAttempt >= p.maxRetries || wait > maxWait-waited {
-			ev.Outcome = RateLimitOutcomeExhausted
-			p.observeRateLimit(ctx, ev)
-			return resp, nil
-		}
-		_ = resp.Body.Close()
-		if err := p.sleep(ctx, wait); err != nil {
-			ev.Outcome = RateLimitOutcomeCanceled
-			p.observeRateLimit(ctx, ev)
-			return nil, err
-		}
-		ev.Outcome = RateLimitOutcomeRetry
-		p.observeRateLimit(ctx, ev)
-		waited += wait
-		rateAttempt++
-	}
+		},
+	}, method, endpoint, body)
 }
 
 // authorizationHeader resolves the current credential's Authorization header.

@@ -11,6 +11,8 @@ Direct export includes bounded on-disk replay. Windows, macOS, Linux, and
 Kubernetes use the same configuration; the Kubernetes instance root must be on
 a persistent volume if pending records must survive pod replacement.
 
+For multiple destinations, see [named telemetry destinations](telemetry-destinations.md).
+
 ## Configure the destination
 
 Copy the connection string from the Application Insights resource's Overview

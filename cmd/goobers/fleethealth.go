@@ -63,7 +63,8 @@ func newFleetHealthSampler(root string, identity *daemonIdentity, config *instan
 	if identity != nil && !identity.StartedAt.IsZero() {
 		started = identity.StartedAt.UTC()
 	}
-	observer := &fleetHealthObserver{workers: workers, reader: reader, config: config, instanceID: id, bootID: rand.Text(), startedAt: started, eligibleSince: make(map[string]time.Time), lastGaggleEmission: make(map[string]fleetGaggleEmission)}
+	// Keep this nonsecret identity outside credential-shaped uppercase patterns.
+	observer := &fleetHealthObserver{workers: workers, reader: reader, config: config, instanceID: id, bootID: strings.ToLower(rand.Text()), startedAt: started, eligibleSince: make(map[string]time.Time), lastGaggleEmission: make(map[string]fleetGaggleEmission)}
 	if len(readiness) > 0 {
 		observer.ready = readiness[0]
 	}

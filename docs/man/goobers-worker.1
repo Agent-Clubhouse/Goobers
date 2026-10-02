@@ -25,9 +25,12 @@ Flags:
                              deterministic executors (default
                              $GOOBERS_INSTANCE_ROOT)
   --blob-store <dir>         directory backing the fleet-wide
-                             content-addressed artifact store; required
-                             for a run whose stages are served by more
-                             than one worker (default $GOOBERS_BLOB_STORE)
+                             content-addressed artifact store (default
+                             $GOOBERS_BLOB_STORE)
+  --blob-endpoint <url>      HTTP(S) blob plane; alternative to --blob-store
+                             (default $GOOBERS_BLOB_ENDPOINT only when no
+                             directory is selected). Instance-backed workers
+                             require exactly one store mode.
   --task-queue <queue>       task queue to serve; repeatable (default
                              engine.taskQueue, with env override)
   --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,
@@ -70,8 +73,9 @@ Flags:
                              exists and that this worker's credentials
                              hold the RBAC grants dispatch needs there,
                              failing startup by name otherwise. Requires
-                             --instance and --blob-store (the surrender
-                             plane rides the same volume); cluster access
+                             --instance and one artifact store mode. In
+                             endpoint mode the worker reads surrendered
+                             results through --daemon-api; cluster access
                              uses in-cluster credentials or the standard
                              kubeconfig rules (default
                              $GOOBERS_DISPATCH_NAMESPACE)

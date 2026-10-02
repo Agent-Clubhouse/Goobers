@@ -953,6 +953,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
+		releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 	}
@@ -972,6 +973,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
+	releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
 	if posted.Decision == apiv1.VerdictFail && hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
 		if err := refreshEscalationSnapshotAfterRepeatFail(ctx, prProvider, repo, current, statusComments); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("refresh merge-escalation snapshot for PR #%d", selectedNumber), err, resultFile)
@@ -1937,7 +1939,21 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
 }
 
-const scopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+// scopeGateParkedCommentMarker records, in the verdict comment, that the
+// verdict was published while the scope gate parked the PR (#4219: namespaced
+// under goobers: like every other durable comment marker).
+// legacyScopeGateParkedCommentMarker is the pre-#4219 spelling, still
+// recognized on read so PRs parked before the rename are not silently
+// un-parked.
+const (
+	scopeGateParkedCommentMarker       = "<!-- goobers:scope-gate-parked -->"
+	legacyScopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+)
+
+func hasScopeGateParkedMarker(body string) bool {
+	return strings.Contains(body, scopeGateParkedCommentMarker) ||
+		strings.Contains(body, legacyScopeGateParkedCommentMarker)
+}
 
 func renderScopeGateStateComment(comment string, parked bool) string {
 	if !parked {

@@ -55,29 +55,38 @@ func TestReleasePublisherNeverExecutesReleaseContent(t *testing.T) {
 
 func TestReleasePublisherUsesImmutableSignerAndNotesArtifactIDs(t *testing.T) {
 	workflow := loadReleaseAuthorizationWorkflow(t)
-	signer := workflow.Jobs["sign-windows"]
-	if signer.Outputs["signed-artifact-id"] != "${{ steps.final-signed-artifacts.outputs.artifact-id }}" {
-		t.Fatal("signer must expose its final replacement artifact identity")
+	assemble := workflow.Jobs["assemble"]
+	if assemble.Outputs["signed-artifact-id"] != "${{ steps.final-signed-artifacts.outputs.artifact-id }}" {
+		t.Fatal("assemble must expose the final signed artifact identity")
 	}
 	found := false
-	for _, step := range signer.Steps {
+	for _, step := range assemble.Steps {
 		if step.ID == "final-signed-artifacts" {
-			found = step.With["overwrite"] == "true" && step.With["name"] == "dist-signed"
+			found = step.With["name"] == "dist-signed" && step.With["path"] == "dist/" && step.With["overwrite"] == ""
 		}
 	}
 	if !found {
-		t.Fatal("signed artifact identity must come from the final overwrite upload")
+		t.Fatal("signed artifact identity must come from assemble's single final upload")
+	}
+	// Signing-independent gates start right after build on its exact upload
+	// (#5413); everything that needs signed bytes, and publication, pins the
+	// assembled set.
+	const unsigned = "${{ needs.build.outputs.unsigned-artifact-id }}"
+	const final = "${{ needs.assemble.outputs.signed-artifact-id }}"
+	distSource := map[string]string{
+		"assemble": unsigned, "native-linux-images": unsigned, "validate-release": unsigned,
+		"native-smoke": final, "native-windows-image": final, "verify-and-publish": final,
 	}
 	validation := workflow.Jobs["validate-release"]
 	if validation.Outputs["notes-artifact-id"] != "${{ steps.release-notes-upload.outputs.artifact-id }}" {
 		t.Fatal("validation must expose a separate notes artifact identity")
 	}
-	for _, jobName := range []string{"native-smoke", "native-linux-images", "native-windows-image", "validate-release", "verify-and-publish"} {
+	for jobName, source := range distSource {
 		for _, step := range workflow.Jobs[jobName].Steps {
 			switch step.With["path"] {
 			case "dist":
-				if step.With["artifact-ids"] != "${{ needs.sign-windows.outputs.signed-artifact-id }}" || step.With["name"] != "" || step.With["merge-multiple"] != "true" {
-					t.Fatalf("%s must independently download immutable signer output", jobName)
+				if step.With["artifact-ids"] != source || step.With["name"] != "" || step.With["merge-multiple"] != "true" {
+					t.Fatalf("%s must independently download %s", jobName, source)
 				}
 			case "release-notes":
 				if step.With["artifact-ids"] != "${{ needs.validate-release.outputs.notes-artifact-id }}" || step.With["name"] != "" || step.With["merge-multiple"] != "true" {
@@ -117,7 +126,7 @@ func TestReleaseArtifactIDDownloadsCannotFallBackToAllArtifacts(t *testing.T) {
 			}
 		}
 	}
-	if downloads != 6 {
-		t.Fatalf("expected six guarded immutable downloads, got %d", downloads)
+	if downloads != 9 {
+		t.Fatalf("expected nine guarded immutable downloads, got %d", downloads)
 	}
 }

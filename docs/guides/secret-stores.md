@@ -99,7 +99,8 @@ TTL without restarting the daemon. Errors are never cached.
 
 `keyvault-key` and `file-key` declarations provide a separate `KeyStore` library
 surface using RSA-OAEP-256. Declaring them does not enable run encryption or
-change any runtime default. The secret resolver skips these entries, and token
+change any runtime default. Set `temporal.payloadCodec.keyRef` to opt into
+[Temporal history encryption](temporal-payload-codec.md). The secret resolver skips these entries, and token
 refs cannot address them. A typed `instance.KeyRef{Store, Name, Version}` cannot
 address an `azure-key-vault` secret store.
 

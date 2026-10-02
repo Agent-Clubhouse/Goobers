@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -102,11 +101,9 @@ var dispatchKubeClient = func() (kubernetes.Interface, error) {
 var newStageDispatcher = dispatcher.New
 
 // buildStageDispatch loads the instance's runner inventory and constructs the
-// dispatcher-backed seam. blobRoot is the worker's --blob-store directory;
-// the surrender plane lives beside the content-addressed tree under
-// <blobRoot>/surrender (identity-keyed, so it cannot ride the digest-verified
-// store — see dispatcher/surrender.go), which keeps one operator-provided
-// volume backing both planes.
+// dispatcher-backed seam. Directory mode reads surrenders under blobRoot;
+// endpoint mode reads the identity-keyed surrender plane through daemonAPI
+// with a dedicated worker credential, requiring no shared artifact volume.
 // owner is this worker's dispatcher identity (its hostname; in-cluster, its
 // pod name), stamped on every pod as rollout-scoped diagnostic provenance.
 // The durable identity read from instanceRoot scopes orphan sweeps.
@@ -117,9 +114,9 @@ var newStageDispatcher = dispatcher.New
 // explicitly rather than create a pod that would find no kit — and, crucially,
 // rather than fall back to reading whatever config tree is mounted, which is
 // the substitution the pin exists to prevent.
-func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *workerSeams) (stageDispatch, error) {
-	if blobRoot == "" {
-		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
+func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *workerSeams, workerBlobEndpoint string) (stageDispatch, error) {
+	if blobRoot == "" && workerBlobEndpoint == "" {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store or --blob-endpoint")
 	}
 	if strings.TrimSpace(owner) == "" {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required for pod provenance")
@@ -133,7 +130,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: read instance identity: %w", err)
 	}
-	blobEndpoint := os.Getenv("GOOBERS_BLOB_ENDPOINT")
+	blobEndpoint := stageBlobEndpoint(workerBlobEndpoint)
 	signed, err := validateStageDispatchConfig(cfg, daemonAPI, blobEndpoint)
 	if err != nil {
 		return stageDispatch{}, err
@@ -147,7 +144,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		return stageDispatch{}, fmt.Errorf("stage dispatch: load config directory: %w", err)
 	}
 
-	surrenders, err := dispatcher.NewSurrenderDir(filepath.Join(blobRoot, "surrender"))
+	surrenders, err := workerSurrenderPlane(blobRoot, daemonAPI, owner, signed)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
@@ -183,7 +180,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	// depends on — never discover a Forbidden after a stage was already
 	// claimed from the backlog.
 	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), dispatchNamespacePreflightTimeout)
-	_, preflightErr := preflightGaggleNamespaces(preflightCtx, client, gaggleNamespaces)
+	_, preflightErr := preflightGaggleNamespaces(preflightCtx, client, gaggleNamespaces, dispatcher.ServiceAccounts(set.Gaggles))
 	cancelPreflight()
 	if preflightErr != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: gaggle namespace preflight: %w", preflightErr)
@@ -195,14 +192,15 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		// The kit writer uses the same key and the worker's pinned config
 		// snapshots. A test constructor without seams still refuses agentic
 		// dispatch explicitly instead of creating a pod that would find no kit.
-		KitWriter:        agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
-		GaggleNamespaces: gaggleNamespaces,
-		InstanceID:       instanceID,
-		Owner:            owner,
-		EmbeddedCommit:   build.Commit,
-		EmbeddedVersion:  build.Version,
-		BlobEndpoint:     blobEndpoint,
-		WriteAPIBase:     daemonAPI,
+		KitWriter:             agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
+		GaggleNamespaces:      gaggleNamespaces,
+		GaggleServiceAccounts: dispatcher.ServiceAccounts(set.Gaggles),
+		InstanceID:            instanceID,
+		Owner:                 owner,
+		EmbeddedCommit:        build.Commit,
+		EmbeddedVersion:       build.Version,
+		BlobEndpoint:          blobEndpoint,
+		WriteAPIBase:          daemonAPI,
 		// The same operator-declared passthrough list the local executor gets
 		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
 		// runner class enforcing env:default-deny keeps the vars an operator

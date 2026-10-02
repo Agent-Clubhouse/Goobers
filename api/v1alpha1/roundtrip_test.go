@@ -68,7 +68,7 @@ func TestGaggleRoundTrip(t *testing.T) {
 				FieldPredicate: `fields["milestone.title"] == "V1"`,
 				ConnectionRef:  "github-backlog",
 			},
-			Isolation: GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity"},
+			Isolation: GaggleIsolation{Namespace: "gaggle-acme-web", IdentityRef: "acme-web-identity", ServiceAccount: "custom-stage"},
 			Sandbox:   &GaggleSandbox{Agentic: "enforced"},
 		},
 	}

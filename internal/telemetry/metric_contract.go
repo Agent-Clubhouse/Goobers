@@ -250,6 +250,9 @@ var firstClassMetricRegistry = []metricContract{
 		AllowedDimensions: []string{MetricAttrRecoveryReason},
 		Lifecycle:         stableContractLifecycle(),
 	},
+	{Name: MetricSelfPlacements, Kind: metricKindCounter, NumberType: metricNumberTypeInt64, Unit: "{placement}", Description: "Workflow work placements executed on the local self runner.", Lifecycle: stableContractLifecycle()},
+	{Name: MetricSelfRefusals, Kind: metricKindCounter, NumberType: metricNumberTypeInt64, Unit: "{refusal}", Description: "Workflow work refused because instance policy denies self execution.", Lifecycle: stableContractLifecycle()},
+	{Name: MetricSelfDenied, Kind: metricKindGauge, NumberType: metricNumberTypeInt64, Unit: "1", Description: "Effective instance self execution policy: one means deny, zero means allow.", Lifecycle: stableContractLifecycle()},
 	{
 		Name:        MetricStorageFreeBytes,
 		Kind:        metricKindGauge,

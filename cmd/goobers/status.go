@@ -19,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/avexclusion"
+	"github.com/goobers/goobers/internal/clustercheck"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
@@ -194,8 +195,10 @@ func renderSchedulerStatusSignals(
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
 	text.WriteString(telemetryIngestStatusLine(status, now))
+	text.WriteString(telemetryDestinationStatusLines(status.TelemetryExporterHealth))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
+	clustercheck.WriteStatus(text, status.ClusterChecks)
 	text.WriteString(configReloadRejectionStatusLine(status))
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
@@ -396,18 +399,22 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	Root                   *statusRootIdentity                        `json:"root,omitempty"`
-	QueueEligibility       *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
-	EngineFallbacks        []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
-	Warnings               []validate.CodedWarning                    `json:"warnings"`
-	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
-	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
-	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
-	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
-	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
-	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
-	JournalHealth          *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
-	StorageHealth          *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
+	TelemetryExporterHealth *readservice.TelemetryExporterHealthStatus `json:"telemetryExporterHealth,omitempty"`
+	SelfExecution           instance.SelfExecutionStats                `json:"selfExecution"`
+	ClusterChecks           []clustercheck.Result                      `json:"clusterChecks,omitempty"`
+	Root                    *statusRootIdentity                        `json:"root,omitempty"`
+	QueueEligibility        *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
+	EngineFallbacks         []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
+	Warnings                []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR           *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart           *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	StageServiceAccounts    map[string]string                          `json:"stageServiceAccounts,omitempty"`
+	IsolationMandates       map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance             *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence  []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention      *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
+	JournalHealth           *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
+	StorageHealth           *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -1231,7 +1238,7 @@ func statusCompiledHarnessWarnings(
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		false, modelCredential, knownExternalTelemetryConnectorNames(cfg),
+		false, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
 		printValidationWarnings(stderr, cliWarnings)
@@ -1545,13 +1552,17 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
+		var telemetryExporterHealth *readservice.TelemetryExporterHealthStatus
 		var telemetryRetention *readservice.TelemetryRetentionStatus
 		var journalHealth *readservice.JournalHealthStatus
 		var storageHealth *readservice.StorageHealthStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
+		selfExecution := cfg.SelfExecutionStats()
+		var stageServiceAccounts map[string]string
 		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
+		var clusterChecks []clustercheck.Result
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -1561,13 +1572,17 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
+				telemetryExporterHealth = status.TelemetryExporterHealth
 				telemetryRetention = status.TelemetryRetention
 				journalHealth = status.JournalHealth
 				storageHealth = status.StorageHealth
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
+				selfExecution = status.SelfExecution
+				stageServiceAccounts = status.StageServiceAccounts
 				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
+				clusterChecks = status.ClusterChecks
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
@@ -1575,30 +1590,30 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		baselineBlockers := optionalStatusBaselineBlockers(l)
 		output := statusJSONOutput{
-			Root:                   optionalStatusRoot(supportsWatch, l, now),
-			QueueEligibility:       optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
-			EngineFallbacks:        engineFallbacks,
-			WorkerConfigDivergence: workerConfigDivergence,
-			Warnings:               warnings,
-			TimeToFirstPR:          timeToFirstPR,
-			DaemonRestart:          daemonRestart,
-			Maintenance:            maintenance,
-			TelemetryRetention:     telemetryRetention,
-			JournalHealth:          journalHealth,
-			StorageHealth:          storageHealth,
-			RefusedWorkflows:       refusedWorkflows,
-			IsolationMandates:      isolationMandates,
-			Summary:                fleetSummary,
-			ParkedBacklog:          parked,
-			BaselineBlockers:       baselineBlockers,
-			Collection:             runLoader.collectionStatus(),
-			Runs:                   statusRecoverySummaries(l, runs, now),
+			TelemetryExporterHealth: telemetryExporterHealth,
+			ClusterChecks:           clusterChecks,
+			Root:                    optionalStatusRoot(supportsWatch, l, now),
+			QueueEligibility:        optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
+			EngineFallbacks:         engineFallbacks,
+			WorkerConfigDivergence:  workerConfigDivergence,
+			Warnings:                warnings,
+			TimeToFirstPR:           timeToFirstPR,
+			DaemonRestart:           daemonRestart,
+			Maintenance:             maintenance,
+			TelemetryRetention:      telemetryRetention,
+			JournalHealth:           journalHealth,
+			StorageHealth:           storageHealth,
+			RefusedWorkflows:        refusedWorkflows,
+			IsolationMandates:       isolationMandates,
+			SelfExecution:           selfExecution,
+			StageServiceAccounts:    stageServiceAccounts,
+			Summary:                 fleetSummary,
+			ParkedBacklog:           parked,
+			BaselineBlockers:        baselineBlockers,
+			Collection:              runLoader.collectionStatus(),
+			Runs:                    statusRecoverySummaries(l, runs, now),
 		}
-		if err := json.NewEncoder(stdout).Encode(output); err != nil {
-			pf(stderr, "error: encode status: %v\n", err)
-			return 2
-		}
-		return 0
+		return writeStatusJSON(stdout, stderr, output)
 	}
 
 	// Skipped in --json mode since the structured summary has no plain-text
@@ -1613,6 +1628,15 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	renderStatus(stdout, runs, now)
 	printStatusRecovery(stdout, l, runs, now)
 	renderOlderRunsHint(stdout, olderRuns)
+	return 0
+}
+
+// writeStatusJSON keeps CLI encoding and exit-code handling at one boundary.
+func writeStatusJSON(stdout, stderr io.Writer, output statusJSONOutput) int {
+	if err := json.NewEncoder(stdout).Encode(output); err != nil {
+		pf(stderr, "error: encode status: %v\n", err)
+		return 2
+	}
 	return 0
 }
 

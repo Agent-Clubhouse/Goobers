@@ -2,7 +2,9 @@ package readservice
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 	"time"
@@ -102,6 +104,49 @@ func (s *Local) ActiveClaims(context.Context) (ActiveClaimList, error) {
 	if err != nil {
 		return ActiveClaimList{}, fmt.Errorf("read claim ledger: %w", err)
 	}
-	now := s.now().UTC()
-	return ActiveClaimList{ObservedAt: now, Claims: ActiveClaimsFromEntries(ledger.Snapshot(), now)}, nil
+	return ActiveClaimListAt(ledger.Snapshot(), s.now().UTC()), nil
+}
+
+// ActiveClaimListAt is the active-claims view of entries observed at now: the
+// one shape both `goobers claims active` and GET /api/v1/claims/active return.
+func ActiveClaimListAt(entries []localscheduler.ClaimEntry, now time.Time) ActiveClaimList {
+	return ActiveClaimList{ObservedAt: now, Claims: ActiveClaimsFromEntries(entries, now)}
+}
+
+// WriteActiveClaims renders view the way `goobers claims active` prints it:
+// indented JSON when asJSON is set, otherwise a tab-separated table, or
+// "no active claims" when nothing is held. Only a JSON encoding failure is
+// returned; table writes are best-effort, like the CLI's other listings.
+func WriteActiveClaims(w io.Writer, view ActiveClaimList, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(view)
+	}
+	if len(view.Claims) == 0 {
+		_, _ = fmt.Fprintln(w, "no active claims")
+		return nil
+	}
+	_, _ = fmt.Fprintln(w, "ITEM ID\tGAGGLE\tPROVIDER\tWORKFLOW\tRUN ID\tHOLDER\tAGE")
+	for _, claim := range view.Claims {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			claim.ItemID,
+			activeClaimScopeValue(claim.Gaggle),
+			activeClaimScopeValue(claim.Provider),
+			claim.Workflow,
+			claim.RunID,
+			claim.Holder,
+			(time.Duration(claim.AgeSeconds) * time.Second).String(),
+		)
+	}
+	return nil
+}
+
+// activeClaimScopeValue prints an unscoped (empty) gaggle or provider as "-",
+// as `goobers claims list` does.
+func activeClaimScopeValue(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }

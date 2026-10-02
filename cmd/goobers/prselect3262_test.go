@@ -15,7 +15,7 @@ import (
 
 // TestPRSelectAlwaysExcludesNeedsHumanLabel is #3262's fix: a PR labeled
 // goobers:needs-human — the label the #2947 failure-streak circuit breaker
-// applies to a claimed item's driving PR after failureStreakThreshold
+// applies to a claimed item's driving PR after escalationnotify.FailureStreakThreshold
 // consecutive terminal failures — must never be eligible for merge-review
 // reselection, even if a caller's excludeLabels input omits it, same
 // always-on treatment as noMergeReviewLabel and abortedRunLabel (#2238).

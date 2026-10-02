@@ -155,7 +155,12 @@ func TestDaemonIngressAdmitsRealWorkerAndStagePods(t *testing.T) {
 	// hand-copied (matches ../authenticated/main_test.go's
 	// TestPreparedTopologyNetworkPoliciesMatchRealStageLabels pattern).
 	pod, err := dispatcher.RenderPod(
-		dispatcher.Config{GaggleNamespaces: map[string]string{"change-me": "change-me-gaggle"}},
+		dispatcher.Config{
+			GaggleNamespaces:       map[string]string{"change-me": "change-me-gaggle"},
+			WriteAPIBase:           "https://goobers-api.goobers-system.svc:8080",
+			BlobEndpoint:           "https://goobers-api.goobers-system.svc:8080",
+			NetworkNoneHostAliases: []corev1.HostAlias{{IP: "10.0.0.2", Hostnames: []string{"goobers-api.goobers-system.svc"}}},
+		},
 		dispatcher.Attempt{RunID: "run-4828", Gaggle: "change-me", Stage: "probe", Number: 1},
 		dispatcher.RunnerSpec{
 			Name: "linux-pod", OS: "linux", HostKind: instance.RunnerHostImage,

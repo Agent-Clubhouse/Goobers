@@ -25,7 +25,7 @@ import (
 // SelfSubjectAccessReview reactor answers "not allowed" for everything, which
 // would fail these tests on a check unrelated to what they assert. Tests of
 // the preflight itself exercise dispatcher.PreflightNamespaces directly.
-func fakeClusterHasNoRealRBACSoSkipPreflight(context.Context, kubernetes.Interface, map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
+func fakeClusterHasNoRealRBACSoSkipPreflight(context.Context, kubernetes.Interface, map[string]string, ...map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
 	return nil, nil
 }
 
@@ -47,13 +47,13 @@ func TestMergeQueues(t *testing.T) {
 // plane, or no loadable instance, refuses with the cause named.
 func TestBuildStageDispatchFailsClosed(t *testing.T) {
 	t.Run("missing instance", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "", t.TempDir(), "goobers-worker-0", nil)
+		_, err := buildStageDispatch(t.TempDir(), "", t.TempDir(), "goobers-worker-0", nil, "")
 		if err == nil || !strings.Contains(err.Error(), "instance config") {
 			t.Fatalf("error = %v, want the instance-load refusal", err)
 		}
 	})
 	t.Run("missing surrender plane", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "", "", "goobers-worker-0", nil)
+		_, err := buildStageDispatch(t.TempDir(), "", "", "goobers-worker-0", nil, "")
 		if err == nil || !strings.Contains(err.Error(), "surrender plane") {
 			t.Fatalf("error = %v, want the surrender-plane requirement named", err)
 		}
@@ -77,6 +77,7 @@ func TestBuildStageDispatchFailsClosed(t *testing.T) {
 func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing.T) {
 	root := initDemo(t)
 	configureDispatchAuthority(t, root)
+	replaceInFile(t, filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml"), "namespace: gaggle-example", "namespace: gaggle-example\n    serviceAccount: custom-stage")
 	layout := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
 	if err != nil {
@@ -104,7 +105,12 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	dispatchKubeClient = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
 	t.Cleanup(func() { dispatchKubeClient = previousClient })
 	previousPreflight := preflightGaggleNamespaces
-	preflightGaggleNamespaces = fakeClusterHasNoRealRBACSoSkipPreflight
+	preflightGaggleNamespaces = func(_ context.Context, _ kubernetes.Interface, _ map[string]string, accounts ...map[string]string) ([]dispatcher.NamespacePreflightResult, error) {
+		if len(accounts) != 1 || accounts[0]["example"] != "custom-stage" {
+			t.Fatalf("preflight accounts=%v", accounts)
+		}
+		return nil, nil
+	}
 	t.Cleanup(func() { preflightGaggleNamespaces = previousPreflight })
 
 	var built dispatcher.Config
@@ -115,7 +121,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root), ""); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	wantInstanceID, err := instance.ReadRootIdentity(layout.Root)
@@ -143,6 +149,9 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	})
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
+	}
+	if pod.Spec.ServiceAccountName != "custom-stage" {
+		t.Fatalf("account=%q", pod.Spec.ServiceAccountName)
 	}
 	var allow []string
 	for _, e := range pod.Spec.Containers[0].Env {
@@ -206,7 +215,7 @@ func TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod(t *testing.
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root), ""); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	if got := built.BotLogins[instance.GitHubBotLoginKey(repo.Owner, repo.Name)]; got != "goobersbot[bot]" {
@@ -273,7 +282,7 @@ func TestBuildStageDispatchRejectsMissingSignedKeyBeforeClusterContact(t *testin
 		return nil, nil
 	}
 	t.Cleanup(func() { dispatchKubeClient = previous })
-	_, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "worker-0", nil)
+	_, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "worker-0", nil, "")
 	if err == nil || !strings.Contains(err.Error(), "api.podTokenKeyFile is required") {
 		t.Fatalf("error = %v, want named missing signing-key refusal", err)
 	}

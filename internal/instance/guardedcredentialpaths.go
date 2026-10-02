@@ -3,9 +3,10 @@ package instance
 import (
 	"reflect"
 	"sort"
+	"strings"
 )
 
-// tokenRefType is the one struct shape a guarded path can live in. Comparing
+// tokenRefType identifies file-backed credential references. Comparing
 // against it by type — rather than by field name — is what lets the walk below
 // find a file-backed ref wherever a future Config field puts one.
 var tokenRefType = reflect.TypeOf(TokenRef{})
@@ -17,11 +18,12 @@ var tokenRefType = reflect.TypeOf(TokenRef{})
 const maxGuardedWalkDepth = 24
 
 // GuardedCredentialPaths enumerates every on-disk path a loaded Config
-// references via a file-backed TokenRef — a repo's PAT or GitHub App private
+// references via a file-backed TokenRef or a tagged private-key path — a repo's PAT or GitHub App private
 // key, the workflow source's token/private key, the daemon identity's
 // token/private key, a credential grant's token file, the GitHub webhook
 // secret, an OTLP collector's auth header values, and anything a future
-// TokenRef-carrying field adds (#4273).
+// TokenRef-carrying field adds (#4273). Controller bearer-signing keys, private
+// TLS keys, and local wrapping-key directories are included as well (#6524).
 //
 // It is the input to the deterministic executor's narrow stage-command
 // refusal (internal/executor.ShellExecutor.GuardedCredentialPaths): a set of
@@ -30,7 +32,7 @@ const maxGuardedWalkDepth = 24
 // this set to refuse construction while credential reads cannot be confined.
 //
 // The enumeration is a REFLECTIVE walk of the Config graph collecting every
-// TokenRef.File it reaches, not a hand-written list of the fields that carry
+// TokenRef.File and credentialPath-tagged string it reaches, not a list of the fields that carry
 // one today. That difference is the point: a hand-written list is only correct
 // until the next TokenRef field lands, and the failure mode of missing one is
 // silent — the new credential file simply is not guarded, with nothing in the
@@ -63,7 +65,7 @@ func GuardedCredentialPaths(cfg *Config) []string {
 	return paths
 }
 
-// collectGuardedPaths descends v, adding every non-empty TokenRef.File it
+// collectGuardedPaths descends v, adding every non-empty credential path it
 // reaches to seen. Unexported fields are skipped: Config's credential-carrying
 // surface is its exported, YAML/JSON-decoded shape, and reading an unexported
 // field reflectively is both unnecessary here and a panic risk.
@@ -87,6 +89,16 @@ func collectGuardedPaths(v reflect.Value, seen map[string]struct{}, depth int) {
 		for i := range v.NumField() {
 			if v.Type().Field(i).PkgPath != "" {
 				continue
+			}
+			field := v.Type().Field(i)
+			if kind := field.Tag.Get("credentialPath"); kind != "" && v.Field(i).Kind() == reflect.String {
+				path := v.Field(i).String()
+				if kind == "trimmed" {
+					path = strings.TrimSpace(path)
+				}
+				if path != "" {
+					seen[path] = struct{}{}
+				}
 			}
 			collectGuardedPaths(v.Field(i), seen, depth+1)
 		}

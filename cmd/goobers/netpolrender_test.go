@@ -310,3 +310,12 @@ func TestNetpolRenderPrintBlobEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestNetpolRenderDeprecatedDNSEscape(t *testing.T) {
+	root := writeNetpolInstance(t, "")
+	var stdout, stderr bytes.Buffer
+	code := runNetpolRender([]string{"--keep-dns-for-network-none", root}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stderr.String(), "deprecated") || !strings.Contains(stdout.String(), "port: 53") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}

@@ -306,7 +306,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
 	}
-	fingerprint, err := gaggleConfigFingerprint(cfg, set, gaggle, goobers, instructions)
+	fingerprint, err := gaggleConfigFingerprint(cfg, set, gaggle, goobers, instructions, snapshot.skillPackages[gaggle])
 	if err != nil {
 		return nil, fmt.Errorf("worker: fingerprint gaggle %q config: %w", gaggle, err)
 	}
@@ -336,6 +336,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		Config:               cfg,
 		Goobers:              goobers,
 		InstructionsByGoober: instructions,
+		SkillPackages:        snapshot.skillPackages[gaggle],
 		// The worker's spans come from the engine, not this client.
 		Telemetry: nil,
 		// nil manager ON PURPOSE. buildRunnerConfig builds its own only when

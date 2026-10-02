@@ -211,22 +211,6 @@ func retainOptionalExecutionGeneration(layout instance.Layout, retainers []*conf
 	return retainExecutionGeneration(context.Background(), layout, retainer)
 }
 
-func (s *runInterventionService) interventionExecution(identity journal.RunIdentity, definitions interventionDefinitionSet, fallback *runner.Runner) (executionGenerationRuntime, error) {
-	if identity.ConfigGeneration != "" {
-		pinned, err := s.runnerRegistry.executionGeneration(context.Background(), identity)
-		if err != nil {
-			return executionGenerationRuntime{}, interventionConflict("config_generation_unavailable", err.Error())
-		}
-		return pinned, nil
-	}
-	key := localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}
-	machine := definitions.machines[key]
-	if machine == nil {
-		return executionGenerationRuntime{}, interventionConflict("workflow_unavailable", fmt.Sprintf("workflow %q for run %q is no longer available", identity.Workflow, identity.RunID))
-	}
-	return executionGenerationRuntime{runner: fallback, machine: machine, gooberDigest: definitions.gooberDigests[key], repoRef: definitions.repoRefs[key]}, nil
-}
-
 func pinnedDirectEngineInput(ctx context.Context, layout instance.Layout, cfg *instance.Config, gaggle, workflowName, dedupe string, liveJournal bool) (engine.RunInput, func(), error) {
 	owner, err := layout.EnsureIdentity(ctx)
 	if err != nil {

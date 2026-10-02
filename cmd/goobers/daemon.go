@@ -155,6 +155,9 @@ func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth 
 	if cfg == nil || !cfg.TelemetryEnabled() {
 		return telemetry.NewExporterHealth(false, "disabled", "")
 	}
+	if len(cfg.Telemetry.Exporters) > 0 {
+		return telemetry.NewExporterHealth(true, "custom", "")
+	}
 	mode := "local"
 	endpoint := ""
 	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.Enabled()
@@ -1165,7 +1168,7 @@ func compileSchedulerMachinesWithProgress(
 	reportStartupProgress(startupProgress, "compiling workflow machines")
 	return compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		true, modelCredential, knownExternalTelemetryConnectorNames(cfg),
+		true, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 }
 
@@ -1458,18 +1461,19 @@ func buildRuntimeRunner(
 	// consequences as the same run ending on the runner — which is the whole
 	// claim D1's parity rests on.
 	hooks := &engineTerminalHooks{
-		layout:       l,
-		log:          instanceLog,
-		repoRef:      gaggleProject,
-		existingFix:  runnerCfg.ExistingFix,
-		blocked:      runnerCfg.Blocked,
-		failed:       runnerCfg.Failed,
-		escalation:   runnerCfg.Escalation,
-		claimedItems: runnerCfg.ClaimedItems,
-		prepare:      prepareTerminal,
-		notify:       runnerCfg.NotifyTerminal,
-		finalize:     runnerCfg.FinalizeTerminal,
-		attribute:    creditgraph.WriteRunRecord,
+		selfExecutionObserved: runnerCfg.SelfExecutionObserved,
+		layout:                l,
+		log:                   instanceLog,
+		repoRef:               gaggleProject,
+		existingFix:           runnerCfg.ExistingFix,
+		blocked:               runnerCfg.Blocked,
+		failed:                runnerCfg.Failed,
+		escalation:            runnerCfg.Escalation,
+		claimedItems:          runnerCfg.ClaimedItems,
+		prepare:               prepareTerminal,
+		notify:                runnerCfg.NotifyTerminal,
+		finalize:              runnerCfg.FinalizeTerminal,
+		attribute:             creditgraph.WriteRunRecord,
 	}
 	return rn, manager, hooks, nil
 }

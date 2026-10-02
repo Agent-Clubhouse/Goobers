@@ -104,7 +104,9 @@ func startTLSOTLPCollector(t *testing.T, serverCert otlpTestCertificate, clientC
 	requests = make(chan *collectortrace.ExportTraceServiceRequest, 1)
 	collectortrace.RegisterTraceServiceServer(server, &recordingOTLPCollector{
 		requests: requests,
-		headers:  make(chan metadata.MD, 1),
+		// Rotation tests reconnect to the same collector; keep its unused
+		// metadata channel from blocking the second export.
+		headers: make(chan metadata.MD, 16),
 	})
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {

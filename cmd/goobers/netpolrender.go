@@ -28,13 +28,16 @@ const netpolRenderHelp = "Usage: goobers netpol-render [--out <dir>] [--check] [
 	"construction. Each policy also carries the goobers.dev/runner-class-restrictions\n" +
 	"ANNOTATION — the human-readable restriction set behind the (possibly opaque)\n" +
 	"class value, so `kubectl get netpol -o yaml` answers \"which class is this\".\n\n" +
-	"Per class: a network:none class gets only DNS and the blob-endpoint data path;\n" +
+	"Per class: a network:none class gets only the blob-endpoint data path;\n" +
 	"every other class additionally gets the instance-configured egress.allowlist\n" +
 	"CIDR groups (instance.yaml egress: — operator-supplied; the render REFUSES\n" +
 	"CHANGE-ME documentation placeholders rather than emitting a stub). Every class,\n" +
 	"restricted included, carries the blob-endpoint egress row: it is the class's\n" +
 	"own artifact data path, and each cross-namespace grant is composed as\n" +
 	"namespaceSelector AND podSelector in a single peer element.\n\n" +
+	"--keep-dns-for-network-none temporarily retains DNS for migration. Deprecated at\n" +
+	"introduction; removed in the next minor. Upgrade the dispatcher to stamp Service\n" +
+	"host aliases before applying policies without DNS.\n\n" +
 	"--out writes one file per class plus a kustomization.yaml; without it the\n" +
 	"manifests stream to stdout.\n\n" +
 	"--check validates instead of writing:\n" +
@@ -88,6 +91,7 @@ func runNetpolRender(args []string, stdout, stderr io.Writer) int {
 	baselinePath := fs.String("baseline", "", "coverage baseline file (default: <out>/coverage-baseline.json)")
 	writeBaseline := fs.Bool("write-baseline", false, "freeze the current per-class model-endpoint coverage into the baseline file")
 	timeout := fs.Duration("timeout", 30*time.Second, "per-fetch timeout for provenance --check")
+	keepDNS := fs.Bool("keep-dns-for-network-none", false, "DEPRECATED: retain DNS for network:none during migration; removed in the next minor")
 	printBlobEndpoint := fs.Bool("print-blob-endpoint", false, "print the blob endpoint (namespace, pod labels, container port) as JSON and exit; a downstream goobers-system base renders its ingress half (#3585) FROM this value instead of restating it — so a change to the endpoint propagates rather than drifting")
 	fs.Usage = helpUsage(stderr, "netpol-render")
 	if err := fs.Parse(args); err != nil {
@@ -128,6 +132,10 @@ func runNetpolRender(args []string, stdout, stderr io.Writer) int {
 	}
 
 	input := netpolRenderInput(cfg)
+	input.KeepDNSForNetworkNone = *keepDNS
+	if *keepDNS {
+		pln(stderr, "warning: --keep-dns-for-network-none is deprecated and will be removed in the next minor; network:none still permits DNS")
+	}
 	if len(input.Runners) == 0 {
 		pln(stdout, "netpol-render: no pod-hosted runners declared; nothing to render (zero-declaration invariance)")
 		return 0

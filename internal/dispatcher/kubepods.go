@@ -71,3 +71,8 @@ func (k *kubePodAPI) GetDeployment(ctx context.Context, namespace, name string) 
 func (k *kubePodAPI) GetPersistentVolumeClaim(ctx context.Context, namespace, name string) (*corev1.PersistentVolumeClaim, error) {
 	return k.client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
 }
+
+// GetService resolves stable ClusterIPs for network:none host aliases.
+func (k *kubePodAPI) GetService(ctx context.Context, namespace, name string) (*corev1.Service, error) {
+	return k.client.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+}

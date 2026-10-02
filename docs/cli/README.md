@@ -149,6 +149,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry test`](#goobers-telemetry-test) | send one secret-safe Application Insights connectivity probe |
+| [`goobers temporal`](#goobers-temporal) | operate Temporal payload services |
+| [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
@@ -1270,13 +1272,16 @@ $ goobers docs-churn --format churn-digest
 preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 
 ~~~text
-Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
+Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
                           [--image-pull-policy always|never]
+                          [--record-instance <root>] [--result-max-age <duration>]
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
+                          [--psa-namespaces <namespace,...>] [--psa-service-account <name>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
+       goobers doctor --temporal-codec [--report text|json] [instance-root]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --harness-auth [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
@@ -1287,7 +1292,9 @@ Goobers on it — the install-time enforcement of that document (#668).
 
 The --k8s check set, each row citing the shape-doc section it enforces:
 
+  pod-security-admission optional #5284 rendered Linux/Windows stage pods (server dry-run)
   cluster-version    required  §1     cluster reachable, supported version
+  network-none-dns    optional  D12    class DNS grants; dataplane UNVERIFIED
   networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)
   rbac-install       required  §1/§3  permissions to install goobers-system
   rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
@@ -1306,10 +1313,14 @@ The --k8s check set, each row citing the shape-doc section it enforces:
   overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks
 
 Checks marked required* apply when their probe target is configured; left
-unconfigured they report a skipped warn. Cluster checks are read-only: nothing is
-created on the cluster, and a check that cannot run reports fail with the
+unconfigured they report a skipped warn. Checks persist no cluster resources.
+Required checks that cannot run report fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+--record-instance persists check outcomes in the instance journal for status.
+--result-max-age sets their freshness window (default 2h); the cluster monitoring
+CronJob owns scheduling. No recording occurs unless --record-instance is set.
 
 --checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.
 For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.
@@ -1317,6 +1328,12 @@ That check inspects only egress policies labeled goobers.dev/apiserver-egress=tr
 --apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs
 differ from the actual control-plane endpoint used by the network policy. It does
 not change the authenticated Kubernetes client address.
+
+pod-security-admission is informational: --psa-namespaces selects targets (default:
+namespaces labeled goobers.dev/gaggle); --psa-service-account defaults to goobers-stage.
+Each Linux/Windows dispatcher image pod is submitted with dryRun=All. The report
+names current enforcement and admission errors. Baseline acceptance does not prove
+restricted compatibility; custom templates need a separate dry-run.
 
 --overlay-dir additionally renders the consumer overlay with kubectl and pulls
 its pinned images using --image-runtime (default docker). Image checks run
@@ -1333,6 +1350,9 @@ correlate of enforcement — a CNI can serve it and still ignore policies
 silently. This check is API-discovery only; enforcement can only be proven
 by a denied attempt from an in-cluster negative control, never by doctor
 --k8s alone.
+
+--temporal-codec reports per-instance opt-in and strict mode without probing keys.
+--k8s --instance <root> applies the instance Temporal TLS and payload codec.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -2809,13 +2829,17 @@ construction. Each policy also carries the goobers.dev/runner-class-restrictions
 ANNOTATION — the human-readable restriction set behind the (possibly opaque)
 class value, so `kubectl get netpol -o yaml` answers "which class is this".
 
-Per class: a network:none class gets only DNS and the blob-endpoint data path;
+Per class: a network:none class gets only the blob-endpoint data path;
 every other class additionally gets the instance-configured egress.allowlist
 CIDR groups (instance.yaml egress: — operator-supplied; the render REFUSES
 CHANGE-ME documentation placeholders rather than emitting a stub). Every class,
 restricted included, carries the blob-endpoint egress row: it is the class's
 own artifact data path, and each cross-namespace grant is composed as
 namespaceSelector AND podSelector in a single peer element.
+
+--keep-dns-for-network-none temporarily retains DNS for migration. Deprecated at
+introduction; removed in the next minor. Upgrade the dispatcher to stamp Service
+host aliases before applying policies without DNS.
 
 --out writes one file per class plus a kustomization.yaml; without it the
 manifests stream to stdout.
@@ -3241,12 +3265,18 @@ $ goobers pr-select
 check WSL full-isolation readiness and optionally hand off a command
 
 ~~~text
-Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--json]]
+Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--check-readiness] [--json]]
        goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
 
 With --instance and --workflow, emit the versioned runtime preflight report for
 one workflow without provider mutation, package installation, repository writes,
-model execution, or external credential/harness probes.
+or model execution. Source metadata is inspected without resolving secrets.
+With --check-readiness, also run bounded read-only harness version/authentication
+probes in the reporting process. Source presence is not authentication; local
+observations do not prove daemon or worker readiness. Unsupported probes remain
+explicitly unobservable. No configured model credential is resolved.
+Supported MCP control sessions inspect server/tool inventory and execute only
+the built-in goobers-io get_run_info; external tool authorization is unobservable.
 
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
@@ -4846,7 +4876,7 @@ $ goobers telemetry stats --json
 send one secret-safe Application Insights connectivity probe
 
 ~~~text
-Usage: goobers telemetry test [--json] [--timeout DURATION] [path]
+Usage: goobers telemetry test [--destination NAME] [--json] [--timeout DURATION] [path]
 
 Resolve the configured connection-string reference and send one fixed,
 identity-free connectivity record directly to Application Insights. The probe
@@ -4907,6 +4937,38 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 
 ~~~console
 $ goobers telemetry-query --window 24h --format candidate-findings
+~~~
+
+## `goobers temporal`
+
+operate Temporal payload services
+
+~~~text
+Usage: goobers temporal codec-server [flags] [path]
+
+Serve Temporal Web UI payload decoding over TLS with the instance OIDC view role.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem
+~~~
+
+## `goobers temporal codec-server`
+
+serve authenticated Temporal payload decoding over TLS
+
+~~~text
+Usage: goobers temporal codec-server --tls-cert <pem> --tls-key <pem> [--listen 127.0.0.1:8444] [--allow-origin https://temporal.example.com] [path]
+
+Requires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POST requires an OIDC bearer token with view permission. Repeat --allow-origin for each exact Web UI origin. No anonymous mode.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem
 ~~~
 
 ## `goobers trace`
@@ -5212,9 +5274,12 @@ Flags:
                              deterministic executors (default
                              $GOOBERS_INSTANCE_ROOT)
   --blob-store <dir>         directory backing the fleet-wide
-                             content-addressed artifact store; required
-                             for a run whose stages are served by more
-                             than one worker (default $GOOBERS_BLOB_STORE)
+                             content-addressed artifact store (default
+                             $GOOBERS_BLOB_STORE)
+  --blob-endpoint <url>      HTTP(S) blob plane; alternative to --blob-store
+                             (default $GOOBERS_BLOB_ENDPOINT only when no
+                             directory is selected). Instance-backed workers
+                             require exactly one store mode.
   --task-queue <queue>       task queue to serve; repeatable (default
                              engine.taskQueue, with env override)
   --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,
@@ -5257,8 +5322,9 @@ Flags:
                              exists and that this worker's credentials
                              hold the RBAC grants dispatch needs there,
                              failing startup by name otherwise. Requires
-                             --instance and --blob-store (the surrender
-                             plane rides the same volume); cluster access
+                             --instance and one artifact store mode. In
+                             endpoint mode the worker reads surrendered
+                             results through --daemon-api; cluster access
                              uses in-cluster credentials or the standard
                              kubeconfig rules (default
                              $GOOBERS_DISPATCH_NAMESPACE)
