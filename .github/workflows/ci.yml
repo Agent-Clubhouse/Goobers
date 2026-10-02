@@ -68,12 +68,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # No `edited`: a PR title/body edit changes no code, and re-running this
-    # workflow for it used to cancel the in-flight run on the same SHA
-    # (51 of 61 edit-triggered runs, Sep 2026). The only body-dependent check,
-    # design delivery against closingIssuesReferences, re-evaluates on edits
-    # in design-delivery.yml instead.
-    types: [opened, synchronize, reopened]
+    # `edited` is here ONLY for base-branch retargets (#6360): the merge ref
+    # changes, so the old-base result must not stand. A title/body edit
+    # (`edited` without `changes.base`) changes no code and must neither cancel
+    # nor shadow the in-flight run on the same SHA (#5491: 51 of 61 edit runs
+    # did, Sep 2026). Such a run therefore takes its own concurrency group,
+    # skips the two root jobs (preflight, unit) so every dependent skips, and
+    # renames required-ci so its skipped check cannot stand in for the pinned
+    # required `make ci` context. Design delivery re-evaluates body edits in
+    # design-delivery.yml. Pinned by TestCIRunsOnBaseRetargetNotMetadataEdits.
+    types: [opened, synchronize, reopened, edited]
   merge_group:
     branches: [main]
 
@@ -83,9 +87,10 @@ permissions:
   contents: read
   pull-requests: read
 
-# One in-flight run per ref; newer pushes cancel stale runs.
+# One in-flight run per ref; newer pushes (and base retargets) cancel stale
+# runs. A title/body-edit run is isolated so it cancels nothing.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'edited' && !github.event.changes.base) && format('-metadata-edit-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:
@@ -137,6 +142,7 @@ jobs:
   # short Linux job would let it win and pin a near-empty cache.
   preflight:
     name: preflight (lint · format · policy · vet · build)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -509,6 +515,7 @@ jobs:
   # latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
     # failure cancels the run instead (cancel-on-preflight-failure).
@@ -1616,8 +1623,8 @@ jobs:
         run: make vulncheck
 
   required-ci:
-    name: make ci (fmt-check · vet · build · test · lint)
-    if: ${{ always() && github.event_name != 'push' }}
+    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (not re-run for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}
+    if: ${{ always() && github.event_name != 'push' && !(github.event.action == 'edited' && !github.event.changes.base) }}
     # unit-gate — the pre-parallelization `make ci` monolith — was retired once
     # every check it ran had a dedicated job; it duplicated the
     # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
