@@ -94,6 +94,7 @@ type runnerCompositionInput struct {
 	Config               *instance.Config
 	Goobers              map[string]apiv1.GooberSpec
 	InstructionsByGoober map[string]string
+	SkillPackages        map[string][]workflow.SkillFile
 	Telemetry            *telemetry.Client
 	SharedRegistry       *journal.RegistryScrubber
 	WorktreeManager      *worktree.Manager
@@ -114,9 +115,12 @@ var runnerLookPath = exec.LookPath
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
 	executionFence := runnerExecutionFence(input)
-	cfg := input.Config
-	goobers := input.Goobers
+	cfg, goobers := input.Config, input.Goobers
 	instructionsByGoober := input.InstructionsByGoober
+	skillPackages, skillErr := input.resolvedSkillFiles()
+	if skillErr != nil {
+		return runner.Config{}, nil, skillErr
+	}
 	tel := input.Telemetry
 	sharedReg := input.SharedRegistry
 	wtMgr := input.WorktreeManager
@@ -305,7 +309,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober,
+				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
@@ -909,4 +913,11 @@ func backlogLabelPredicatesByGaggle(set *instance.ConfigSet) map[string]string {
 		out[g.Name] = g.Spec.Backlog.LabelPredicate
 	}
 	return out
+}
+
+func (input runnerCompositionInput) resolvedSkillFiles() (map[string][]workflow.SkillFile, error) {
+	if input.SkillPackages != nil {
+		return input.SkillPackages, nil
+	}
+	return loadGooberSkillPackages(input.Layout.ConfigDir(), input.Layout.Gaggle(), input.Goobers)
 }
