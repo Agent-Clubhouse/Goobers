@@ -73,10 +73,10 @@ type Decision struct {
 	BaseSHA     string
 	Fingerprint string
 	Signature   string
-	// Platforms names the target platforms the failure's findings are
+	// Platforms names the target platforms the run's failure findings are
 	// qualified to (FailurePlatforms), nil when it is not platform-specific.
-	// It is structured context for whoever reads the classification: a
-	// shared failure with Platforms set is an inherited platform-specific one.
+	// It is recorded for every class as structured context; on a shared
+	// baseline failure it marks an inherited platform-specific one.
 	Platforms []string
 	// BlockerKey names the durable shared blocker this failure belongs to,
 	// set only for ClassSharedBaselineFailure.
@@ -152,7 +152,7 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	if e == nil || e.Store == nil {
 		return Decision{}, ErrNoStore
 	}
-	signature := flake.NormalizeSignature(FailureSignatureText(req.FailureText))
+	signature := failureSignature(req.FailureText)
 	fingerprint := Fingerprint(req.Command, signature)
 	decision := Decision{
 		Class: ClassUnknown, BaseSHA: req.BaseSHA, Fingerprint: fingerprint, Signature: signature,
@@ -259,7 +259,7 @@ func (e *Evaluator) probe(ctx context.Context, req Request) (Observation, error)
 		ObservedAt: e.now(),
 	}
 	if !result.Green {
-		observation.Signature = flake.NormalizeSignature(FailureSignatureText(result.Output))
+		observation.Signature = failureSignature(result.Output)
 		observation.Fingerprint = Fingerprint(req.Command, observation.Signature)
 	}
 	if err := e.Store.Record(observation); err != nil {

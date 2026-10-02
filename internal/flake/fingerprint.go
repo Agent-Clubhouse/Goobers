@@ -86,6 +86,27 @@ func NormalizeSignature(text string) string {
 	return boundSignature(strings.Join(signature, " | "))
 }
 
+// NormalizedLines returns EVERY distinct non-boilerplate line of text,
+// normalized exactly as NormalizeSignature normalizes the few it keeps. A
+// caller comparing whole failure rosters (internal/baseline, #4477) needs the
+// lines NormalizeSignature's three-line cap drops: two outputs that agree on
+// their first three findings and differ in a fourth are different failures.
+func NormalizedLines(text string) []string {
+	var lines []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if failureBoilerplate(line) {
+			continue
+		}
+		if line = normalizeLine(line); line != "" && !seen[line] {
+			seen[line] = true
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // Fingerprint returns the ledger identity for a package, test, and normalized
 // failure signature.
 func Fingerprint(pkg, test, signature string) string {
