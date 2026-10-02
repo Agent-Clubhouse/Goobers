@@ -67,6 +67,48 @@ func TestIdentityStateDistinguishesPresentAndGone(t *testing.T) {
 	}
 }
 
+func TestOpenIdentityForTerminatePinsRecordedProcess(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
+	cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=short")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	started, ok := startTime(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("helper process start time was not readable")
+	}
+	if target, err := openIdentityForTerminate(processIdentity{
+		pid:       cmd.Process.Pid,
+		startTime: started.Add(time.Nanosecond),
+	}); err != nil || target.handle != 0 {
+		target.close()
+		t.Fatalf("open mismatched identity = (handle=%v, err=%v), want no target", target.handle, err)
+	}
+
+	target, err := openIdentityForTerminate(processIdentity{pid: cmd.Process.Pid, startTime: started})
+	if err != nil {
+		t.Fatalf("open recorded identity: %v", err)
+	}
+	if target.handle == 0 {
+		t.Fatal("open recorded identity returned no target")
+	}
+	defer target.close()
+	if err := target.terminate(); err != nil {
+		t.Fatalf("terminate pinned identity: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("helper unexpectedly exited successfully after termination")
+	}
+	if got := identityStateForHandle(target.handle, started); got != identityGone {
+		t.Fatalf("pinned identity after termination = %v, want gone", got)
+	}
+}
+
 func TestStartAttachesBeforeChildExecutes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
@@ -455,7 +497,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, descendant := range guestDescendants {
-			if Alive(descendant.pid) {
+			if identityStateForPID(descendant.pid, descendant.startTime) == identityStatePresent {
 				brokeredDescendant = descendant
 				break
 			}
@@ -482,7 +524,7 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if Alive(wslPID) {
 		t.Fatalf("WSL process %d survived tree termination", wslPID)
 	}
-	if Alive(brokeredDescendant.pid) {
+	if identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime) == identityStatePresent {
 		t.Fatalf("WSL host descendant %d survived tree termination", brokeredDescendant.pid)
 	}
 }
