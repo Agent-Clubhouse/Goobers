@@ -187,11 +187,6 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"these inputs. That is the fallback working, not a missing feature.\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
-func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
-	id, title, ok, _, err = openPRIssueWithFallbackReason(root, runID)
-	return id, title, ok, err
-}
-
 func openPRIssueWithFallbackReason(root, runID string) (id, title string, ok bool, fallbackReason string, err error) {
 	id, title, ok, fallbackReason = claimedIssueFromJournal(root, runID)
 	explicitID := strings.TrimSpace(providerInput("itemID", ""))
