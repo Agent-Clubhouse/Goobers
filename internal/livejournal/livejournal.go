@@ -222,13 +222,6 @@ func WithSpanSource(src SpanSource) Option {
 	}
 }
 
-// WithObserver reports each durable append (journal.WithAppendObserver's
-// shape) — the daemon wires the read-model intake here so SSE and the portal
-// see a live run's events through the existing machinery.
-func WithObserver(observer func(runID string, seq uint64)) Option {
-	return func(w *Writer) { w.observer = observer }
-}
-
 // WithContextObserver installs a cancellable, bounded coalescing observer for
 // owned run handles. Closing a handle drains its final watermark.
 func WithContextObserver(observer func(context.Context, string, uint64)) Option {
@@ -238,7 +231,7 @@ func WithContextObserver(observer func(context.Context, string, uint64)) Option 
 // WithEventObserver reports each durable APPEND op with the event body the
 // writer just committed, in the same order it committed them.
 //
-// It exists because WithObserver — journal.WithAppendObserver's shape —
+// It exists because a sequence-only watermark observer
 // delivers only (runID, seq). That is everything the read-model intake needs
 // (it re-reads the journal at seq anyway) and nothing a mid-run policy
 // consumer needs: decision 005 D1's RateLimited observer has to see the

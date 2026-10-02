@@ -33,16 +33,16 @@ func TestRetentionADOReadsCurrentPullRequestLabels(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
 				case "/org/project/_apis/git/repositories/repo/pullrequests/17":
-					fmt.Fprint(w, `{"pullRequestId":17,"status":"active","repository":{"name":"repo","project":{"id":"project-id","name":"project"}}}`)
+					_, _ = fmt.Fprint(w, `{"pullRequestId":17,"status":"active","repository":{"name":"repo","project":{"id":"project-id","name":"project"}}}`)
 				case "/org/project/_apis/policy/evaluations":
-					fmt.Fprint(w, `{"value":[]}`)
+					_, _ = fmt.Fprint(w, `{"value":[]}`)
 				case "/org/project/_apis/git/repositories/repo/pullrequests/17/labels":
 					labelReads.Add(1)
 					if label == "read-error" {
 						http.Error(w, "labels unavailable", http.StatusForbidden)
 						return
 					}
-					fmt.Fprintf(w, `{"value":[{"id":"label-id","name":%q}]}`, label)
+					_, _ = fmt.Fprintf(w, `{"value":[{"id":"label-id","name":%q}]}`, label)
 				default:
 					t.Errorf("unexpected retention read: %s", r.URL)
 					http.NotFound(w, r)
@@ -108,7 +108,7 @@ func recordRetentionItem(t *testing.T, l instance.Layout, runID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	if err := recordItemRepository(log, runID, "17", itemKindIssue, providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "recorded-owner", Name: "recorded-repo"}); err != nil {
 		t.Fatal(err)
 	}

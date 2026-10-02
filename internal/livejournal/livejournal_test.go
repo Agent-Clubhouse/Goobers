@@ -12,6 +12,12 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// withSynchronousObserver preserves a direct callback for journal conformance
+// tests; production intake uses WithContextObserver.
+func withSynchronousObserver(observer func(string, uint64)) Option {
+	return func(w *Writer) { w.observer = observer }
+}
+
 func testWriter(t *testing.T, opts ...Option) (*Writer, string) {
 	t.Helper()
 	runsDir := filepath.Join(t.TempDir(), "runs")
@@ -71,7 +77,7 @@ func readEvents(t *testing.T, runsDir, runID string) []journal.Event {
 
 func TestEmitCreatesJournalAtFirstEmitAndStampsOpTimes(t *testing.T) {
 	var observed []uint64
-	w, runsDir := testWriter(t, WithObserver(func(runID string, seq uint64) { observed = append(observed, seq) }))
+	w, runsDir := testWriter(t, withSynchronousObserver(func(runID string, seq uint64) { observed = append(observed, seq) }))
 	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	resp, err := w.Emit(context.Background(), openBatch("run-live", started))
 	if err != nil {

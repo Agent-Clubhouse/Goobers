@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// Settled reports terminal runs that are not parked at an intervention gate.
 func Settled(events []journal.Event) bool {
 	if journal.ParkedAtGate(events) {
 		return false
