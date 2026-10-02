@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -37,16 +36,11 @@ const gatherIssueContextHelp = "Usage: goobers gather-issue-context [path]\n\n" 
 	"usage/IO error.\n"
 
 func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("gather-issue-context", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-issue-context")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommandRoot(args, "gather-issue-context", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
+	root := env.root
 
 	ancestryConfig, err := parseIssueAncestryConfig()
 	if err != nil {
@@ -64,11 +58,11 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read remediation brief: %v\n", err)
 		return 1
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok = resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repo
 	// Originating issues are read on the routed repository, or on the backlog
 	// provider when the backlog lives on another provider (topology (b)).
 	issuesRepo := issueContextIssuesRepo(root, repo)

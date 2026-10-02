@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -385,22 +384,11 @@ func implementationInReviewComment(prURL string) string {
 }
 
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("issue-close-out", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "issue-close-out")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommand(args, "issue-close-out", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	// Work items (the claimed PBI) live in the backlog project on ADO, not the
 	// routed code repo whose branch/PR this stage links; address them there.
 	backlogRepo := backlogRepoRefForStage(root, repo)
