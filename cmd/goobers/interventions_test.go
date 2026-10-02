@@ -503,6 +503,65 @@ func TestRunInterventionIdempotencyReplaysCompletedAction(t *testing.T) {
 	}
 }
 
+func TestPrepareInterventionReplaysCompletedActions(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		action     hitlAction
+		completion journal.Event
+		input      httpapi.InterventionRequest
+	}{
+		{
+			name:       "approve",
+			action:     hitlActionApprove,
+			completion: journal.Event{Type: journal.EventGateEvaluated, Gate: "review"},
+			input:      httpapi.InterventionRequest{Stage: "review", Decision: "pass"},
+		},
+		{
+			name:       "override",
+			action:     hitlActionOverride,
+			completion: journal.Event{Type: journal.EventRunResumed, Action: "override", Gate: "review"},
+			input:      httpapi.InterventionRequest{Stage: "review", Decision: "pass", Rationale: "manual review"},
+		},
+		{
+			name:       "rerun",
+			action:     hitlActionRerun,
+			completion: journal.Event{Type: journal.EventStageRerunRequested, Stage: "implement"},
+			input:      httpapi.InterventionRequest{Stage: "implement", InstructionAddendum: "try again"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runID := "run-replay-" + tc.name
+			input := tc.input
+			input.RunID = runID
+			input.IdempotencyKey = "same-request"
+			fingerprint, err := interventionFingerprint(tc.name, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service, _ := newInterventionServiceTestRun(t, interventionTestMachine(t, apiv1.EvaluatorAgentic), runID, []journal.Event{
+				{
+					Type: journal.EventRunnerAnnotation,
+					Runner: map[string]any{
+						"kind":           interventionIdempotencyMarker,
+						"idempotencyKey": input.IdempotencyKey,
+						"fingerprint":    fingerprint,
+					},
+				},
+				tc.completion,
+				{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+			})
+
+			_, result, done, err := service.prepareIntervention(context.Background(), tc.action, tc.name, input)
+			if err != nil {
+				t.Fatalf("prepareIntervention: %v", err)
+			}
+			if !done || result == nil || result.Phase != string(journal.PhaseCompleted) {
+				t.Fatalf("done = %t, result = %+v; want replayed completed result", done, result)
+			}
+		})
+	}
+}
+
 func TestRunInterventionApproveResolvesPausedHumanGate(t *testing.T) {
 	machine := interventionTestMachine(t, apiv1.EvaluatorHuman)
 	service, runDir := newInterventionServiceTestRun(t, machine, "run-approve", []journal.Event{
@@ -725,11 +784,52 @@ func TestRunInterventionRejectsInvalidStateAndInput(t *testing.T) {
 		t.Fatalf("missing-rationale error = %#v", err)
 	}
 
-	_, err = service.RerunStage(context.Background(), httpapi.InterventionRequest{
-		RunID: "run-complete", Stage: "implement", Actor: "operator", InstructionAddendum: "try again",
-	})
-	if !errors.As(err, &interventionErr) || interventionErr.Status != http.StatusConflict || interventionErr.Code != "run_not_escalated" {
-		t.Fatalf("terminal rerun error = %#v", err)
+	wrongPhase := []struct {
+		name string
+		call func() error
+		code string
+	}{
+		{
+			name: "approve",
+			call: func() error {
+				_, err := service.Approve(context.Background(), httpapi.InterventionRequest{
+					RunID: "run-complete", Stage: "review", Actor: "operator",
+				})
+				return err
+			},
+			code: "run_not_intervenable",
+		},
+		{
+			name: "override",
+			call: func() error {
+				_, err := service.Override(context.Background(), httpapi.InterventionRequest{
+					RunID: "run-complete", Stage: "review", Actor: "operator", Rationale: "manual review",
+				})
+				return err
+			},
+			code: "run_not_escalated",
+		},
+		{
+			name: "rerun",
+			call: func() error {
+				_, err := service.RerunStage(context.Background(), httpapi.InterventionRequest{
+					RunID: "run-complete", Stage: "implement", Actor: "operator", InstructionAddendum: "try again",
+				})
+				return err
+			},
+			code: "run_not_escalated",
+		},
+	}
+	for _, tc := range wrongPhase {
+		t.Run(tc.name+"_wrong_phase", func(t *testing.T) {
+			err := tc.call()
+			var interventionErr *httpapi.InterventionError
+			if !errors.As(err, &interventionErr) ||
+				interventionErr.Status != http.StatusConflict ||
+				interventionErr.Code != tc.code {
+				t.Fatalf("wrong-phase error = %#v, want %s", err, tc.code)
+			}
+		})
 	}
 
 	_, err = service.Approve(context.Background(), httpapi.InterventionRequest{
@@ -737,6 +837,33 @@ func TestRunInterventionRejectsInvalidStateAndInput(t *testing.T) {
 	})
 	if !errors.As(err, &interventionErr) || interventionErr.Status != http.StatusBadRequest || interventionErr.Code != "invalid_run_id" {
 		t.Fatalf("invalid-run error = %#v", err)
+	}
+}
+
+func TestFinishInterventionMapsExecutionErrors(t *testing.T) {
+	cause := errors.New("runner failed")
+	for _, tc := range []struct {
+		action  string
+		message string
+	}{
+		{action: "approve", message: "approve failed while advancing the run"},
+		{action: "override", message: "override failed while advancing the run"},
+		{action: "rerun stage", message: "rerun stage failed while advancing the run"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			result, err := finishIntervention(tc.action, resolvedInterventionRun{}, cause)
+			if result != (httpapi.InterventionResult{}) {
+				t.Fatalf("result = %+v, want empty", result)
+			}
+			var interventionErr *httpapi.InterventionError
+			if !errors.As(err, &interventionErr) ||
+				interventionErr.Status != http.StatusInternalServerError ||
+				interventionErr.Code != "intervention_failed" ||
+				interventionErr.Message != tc.message ||
+				!errors.Is(err, cause) {
+				t.Fatalf("execution error = %#v, want intervention_failed with message %q", err, tc.message)
+			}
+		})
 	}
 }
 
