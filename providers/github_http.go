@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,19 +91,9 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 // first (default 30-item) page, so a claim breadcrumb, failing check, or
 // changes-requested review beyond page 1 was silently invisible.
 func (p *GitHubProvider) getAllPages(ctx context.Context, endpoint string, onPage func([]byte) error) error {
-	return p.getAllPagesWithContext(ctx, endpoint, func(body []byte, _ pageContext) error {
+	return walkLinkPages(ctx, p.send, endpoint, func(body []byte, _ pageContext) error {
 		return onPage(body)
 	})
-}
-
-// pageContext is the per-page metadata getAllPagesWithContext hands a callback
-// alongside the body: the response headers (so a walk can price itself against
-// the live rate-limit window) and whether another page exists (so a callback
-// that stops early can tell "budget exhausted mid-history" from "reached the
-// natural end").
-type pageContext struct {
-	Header  http.Header
-	HasNext bool
 }
 
 // getAllPagesWithContext is getAllPages with each page's response metadata
@@ -113,29 +102,7 @@ type pageContext struct {
 // means the shared credential is already at zero for every other operation in
 // the window.
 func (p *GitHubProvider) getAllPagesWithContext(ctx context.Context, endpoint string, onPage func([]byte, pageContext) error) error {
-	next, err := withPerPage(endpoint, maxPerPage)
-	if err != nil {
-		return err
-	}
-	for next != "" {
-		resp, err := p.send(ctx, http.MethodGet, next, nil)
-		if err != nil {
-			return err
-		}
-		header := resp.Header.Clone()
-		body, nextLink, err := readPage(resp, http.MethodGet, next)
-		if err != nil {
-			return err
-		}
-		if err := onPage(body, pageContext{Header: header, HasNext: nextLink != ""}); err != nil {
-			if errors.Is(err, errStopPaging) {
-				return nil
-			}
-			return err
-		}
-		next = nextLink
-	}
-	return nil
+	return walkLinkPages(ctx, p.send, endpoint, onPage)
 }
 
 // quotaFromHeaders reads the absolute rate-limit window off a provider
