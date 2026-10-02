@@ -301,3 +301,16 @@ github.com/goobers/goobers/internal/decider.Question.validate # Unwired decision
 [windows] github.com/goobers/goobers/internal/sandbox.pathContains # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.singleLink # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDeniedDirectory # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+
+# Inert #4768 PR3A seams; remove this entire group during PR3B activation.
+github.com/goobers/goobers/internal/engine.StageAttemptAttestationArtifact # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.Reader.Revalidate # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.Projection.Bytes # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.Projection.Reference # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.Projection.Binding # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.Reader.Assemble # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.evidence.preparation # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.readError # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.decodeReceipt # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.Reader.read # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01
+github.com/goobers/goobers/internal/launchreceipt.readBody # Held-stack #4768 PR3A assembly/projection seam; must become reachable and lose this exemption in PR3B before any stack merge. expires=2027-01-01

@@ -117,6 +117,7 @@ type SpanSource interface {
 // ArtifactOp is one content-addressed artifact record: bytes the workflow
 // reconstructs deterministically (context manifests, gate verdicts).
 type ArtifactOp struct {
+	Branch    int                  `json:"branch,omitempty"`
 	Stage     string               `json:"stage,omitempty"`
 	Attempt   int                  `json:"attempt,omitempty"`
 	Class     journal.AttemptClass `json:"class,omitempty"`

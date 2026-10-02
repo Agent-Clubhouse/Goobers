@@ -71,6 +71,7 @@ type JournalOp struct {
 // journal.Run.RecordStageArtifact; a bare artifact (gate verdicts) leaves them
 // zero.
 type JournalArtifactOp struct {
+	Branch    int                  `json:"branch,omitempty"`
 	Stage     string               `json:"stage,omitempty"`
 	Attempt   int                  `json:"attempt,omitempty"`
 	Class     journal.AttemptClass `json:"class,omitempty"`

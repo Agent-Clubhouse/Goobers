@@ -60,10 +60,10 @@ func (w *Writer) recordArtifact(ctx context.Context, run *liveRun, a *ArtifactOp
 		if err != nil {
 			return journal.Ref{}, err
 		}
-		return run.jr.RecordExpectedArtifactAnnotated(a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
+		return run.jr.RecordBranchExpectedArtifactAnnotated(a.Branch, a.Stage, a.Attempt, a.Class, a.Name, data, *a.Ref, integrity, meta)
 	}
 	if a.Stage != "" {
-		return run.jr.RecordStageArtifactAnnotated(a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
+		return run.jr.RecordBranchStageArtifactAnnotated(a.Branch, a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity, meta)
 	}
 	return run.jr.RecordArtifactAnnotated(a.Name, a.Data, integrity, meta)
 }

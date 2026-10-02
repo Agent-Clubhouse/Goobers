@@ -257,7 +257,7 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 			var ref journal.Ref
 			var recErr error
 			if a.Stage != "" {
-				ref, recErr = jr.RecordStageArtifactWithIntegrity(a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity)
+				ref, recErr = jr.RecordBranchStageArtifactWithIntegrity(a.Branch, a.Stage, a.Attempt, a.Class, a.Name, a.Data, integrity)
 			} else {
 				ref, recErr = jr.RecordArtifactWithIntegrity(a.Name, a.Data, integrity)
 			}
