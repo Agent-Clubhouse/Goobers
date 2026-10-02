@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,5 +89,23 @@ func TestNamedDestinationsRejectSharedReplayRoot(t *testing.T) {
 	_, err := New(t.Context(), Config{Destinations: []NamedDestination{namedAzure("one", "http://127.0.0.1:1", root), namedAzure("two", "http://127.0.0.1:2", filepath.Join(root, "."))}})
 	if err == nil {
 		t.Fatal("shared replay root was accepted")
+	}
+}
+
+func TestNamedDestinationsRejectReplayRootSymlinkAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink creation requires privilege; lexical alias coverage remains active (#6346)")
+	}
+	root := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Destinations: []NamedDestination{namedAzure("one", "http://127.0.0.1:1", root), namedAzure("two", "http://127.0.0.1:2", alias)}}
+	if client, err := New(t.Context(), cfg); client != nil || err == nil {
+		t.Fatalf("client=%v err=%v; aliased replay roots accepted", client, err)
+	}
+	if client, err := NewDiagnosticExporter(cfg); client != nil || err == nil {
+		t.Fatalf("diagnostic client=%v err=%v; aliased replay roots accepted", client, err)
 	}
 }

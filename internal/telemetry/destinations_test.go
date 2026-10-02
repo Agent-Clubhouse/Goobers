@@ -254,3 +254,15 @@ func TestNamedDiagnosticDestinationsKeepIndependentQueuesAndPrivacy(t *testing.T
 		t.Fatalf("stats: %+v", stats)
 	}
 }
+
+func TestNamedDestinationsRejectAmbiguousTransportForEveryConstructor(t *testing.T) {
+	for _, exporter := range []ExporterKind{"", ExporterOTLP} {
+		cfg := Config{Destinations: []NamedDestination{{Name: "ambiguous", Config: Config{Exporter: exporter, OTLPEndpoint: "127.0.0.1:4317", AzureMonitorConnectionString: "InstrumentationKey=fixture;IngestionEndpoint=http://127.0.0.1:1"}}}}
+		if client, err := New(t.Context(), cfg); client != nil || err == nil {
+			t.Fatalf("client=%v err=%v; mixed transport accepted", client, err)
+		}
+		if client, err := NewDiagnosticExporter(cfg); client != nil || err == nil {
+			t.Fatalf("diagnostic client=%v err=%v; mixed transport accepted", client, err)
+		}
+	}
+}

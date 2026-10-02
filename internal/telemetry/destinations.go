@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -43,7 +42,7 @@ func validateNamedConfig(cfg Config) error {
 		names[d.Name] = true
 		c := d.Config
 		if c.AzureMonitorReplayRoot != "" {
-			root, err := filepath.Abs(c.AzureMonitorReplayRoot)
+			root, err := canonicalReplayRoot(c.AzureMonitorReplayRoot)
 			if err != nil {
 				return fmt.Errorf("destination %s: invalid replay root", d.Name)
 			}
@@ -58,8 +57,7 @@ func validateNamedConfig(cfg Config) error {
 		if len(c.Destinations) != 0 || c.SpanExporter != nil || c.MetricReader != nil || c.MetricExporter != nil || c.Stdout != nil {
 			return fmt.Errorf("destination %s must contain only remote transport settings", d.Name)
 		}
-		otlp, azure := c.Exporter == ExporterOTLP && c.OTLPEndpoint != "", c.AzureMonitorConnectionString != ""
-		if otlp == azure || (c.Exporter != "" && c.Exporter != ExporterOTLP) {
+		if !validNamedTransport(c) {
 			return fmt.Errorf("destination %s requires exactly one OTLP/gRPC or Azure Monitor transport", d.Name)
 		}
 	}
@@ -204,4 +202,13 @@ func (c *Client) DestinationJournalStats() map[string]JournalExportStats {
 		stats[child.destinationName] = child.JournalExportStats()
 	}
 	return stats
+}
+
+// Every constructor must select the same single transport. In particular the
+// diagnostic constructor consumes OTLPEndpoint directly, independent of Exporter.
+func validNamedTransport(c Config) bool {
+	if c.AzureMonitorConnectionString != "" {
+		return c.Exporter == "" && c.OTLPEndpoint == "" && !c.OTLPInsecure && len(c.OTLPHeaders) == 0 && c.OTLPCAFile == "" && c.OTLPServerName == "" && c.OTLPCertFile == "" && c.OTLPKeyFile == ""
+	}
+	return c.Exporter == ExporterOTLP && c.OTLPEndpoint != ""
 }
