@@ -84,11 +84,12 @@ jobs:
           GOOBERS_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          output="$(go test -count=1 -v -run '^TestReleaseTagWithinNextPlannedRelease$' ./internal/supportmatrix)"
-          printf '%s\n' "$output"
+          # tee keeps the failure message (e.g. "bump NextPlannedRelease") in
+          # the log; pipefail still fails the step when the test fails.
+          go test -count=1 -v -run '^TestReleaseTagWithinNextPlannedRelease$' ./internal/supportmatrix | tee "$RUNNER_TEMP/next-planned-release.log"
           # A renamed or deleted test would match nothing and exit 0; require
           # that the check actually ran and passed.
-          grep -q -- '--- PASS: TestReleaseTagWithinNextPlannedRelease' <<<"$output"
+          grep -q -- '--- PASS: TestReleaseTagWithinNextPlannedRelease' "$RUNNER_TEMP/next-planned-release.log"
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020

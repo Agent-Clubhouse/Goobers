@@ -120,6 +120,18 @@ func TestReleaseBuildPublishesReusablePortalPackage(t *testing.T) {
 // turned every legitimate pin bump into an unrelated failure of this test.
 var signingOrderCases = []signingOrderCase{
 	{
+		// #5852: NextPlannedRelease freshness is enforced per tag, before
+		// anything is uploaded for signing.
+		name: "NextPlannedRelease",
+		job:  "build",
+		markers: []string{
+			"- name: Check NextPlannedRelease covers this release",
+			"GOOBERS_RELEASE_TAG: ${{ github.ref_name }}",
+			"--- PASS: TestReleaseTagWithinNextPlannedRelease",
+			"- name: Upload unsigned artifacts",
+		},
+	},
+	{
 		name: "macOS",
 		job:  "sign-macos",
 		markers: []string{
