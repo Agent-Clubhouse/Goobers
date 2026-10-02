@@ -256,3 +256,24 @@ func TestTerminalCauseRecoveryStillRefusesStaleHumanDecision(t *testing.T) {
 		t.Fatalf("stale decision changed target: %+v", c)
 	}
 }
+
+func TestTerminalCauseStageDispositionKeepsSelectedCompletionTarget(t *testing.T) {
+	def := fixtureMachine(t).Def
+	def.Spec.Gates[0].Branches[workflow.BranchEscalate] = workflow.TerminalComplete
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "disposition-cause"
+	r, runsDir := newTestRunner(t, map[string]stubTaskResult{
+		runID + ":implement": {status: apiv1.ResultFailure, errorInfo: &apiv1.ErrorInfo{Code: "ISSUE_OVER_SCOPE", Message: "requires decomposition", Retryable: false}},
+	}, nil)
+	result, err := r.Start(context.Background(), StartInput{RunID: runID, Machine: machine, RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"}})
+	if err != nil || result.Phase != journal.PhaseEscalated {
+		t.Fatalf("run=%+v err=%v", result, err)
+	}
+	c := readTerminalCause(t, filepath.Join(runsDir, runID))
+	if c.SelectorKind != "stage" || c.Selector != "implement" || c.Target != workflow.TerminalComplete || c.Code != "ISSUE_OVER_SCOPE" {
+		t.Fatalf("cause=%+v", c)
+	}
+}

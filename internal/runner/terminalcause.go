@@ -234,6 +234,12 @@ func BuildTerminalCause(events []journal.Event, phase journal.RunPhase, finalSta
 			}
 		}
 		if task, ok := machine.Task(retryStage); ok && (c.SelectorKind == "stage" || c.SelectorKind == "gate") && c.Retry == nil {
+			// Recognized non-retryable dispositions bypass the Next gate.
+			// Its escalation control branch can select completion even though
+			// the resulting run phase remains escalated.
+			if c.SelectorKind == "stage" && phase == journal.PhaseEscalated && escalateErrorCodes[c.Code] {
+				c.Target = taskEscalationTarget(machine, task)
+			}
 			allowed := 0
 			if task.Retry != nil {
 				allowed = max(0, int(task.Retry.MaxAttempts)-1)
