@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -442,7 +441,7 @@ func writeGatherPRContextResult(
 	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
 
 	resultFile := providerInput("resultFile", remediationBriefResultFile)
-	data, err := json.MarshalIndent(apiv1.RemediationBrief{
+	brief := apiv1.RemediationBrief{
 		Schema:         apiv1.RemediationBriefVersion,
 		Integrity:      apiv1.WeakestIntegrity(integrities...),
 		SelectedNumber: strconv.Itoa(selected.Number),
@@ -472,18 +471,9 @@ func writeGatherPRContextResult(
 			Verdict:  verdict,
 			Comments: comments,
 		},
-	}, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal remediation brief: %v\n", err)
-		return 1
 	}
-	if err := validateRemediationBriefJSON(data); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if code := writeGatherRemediationBrief(stderr, resultFile, brief, 1); code != 0 {
+		return code
 	}
 
 	pf(stdout, "gathered context for PR #%d (%s): behind=%v, %d comment(s)\n", selected.Number, selected.Head, behind, len(comments))
