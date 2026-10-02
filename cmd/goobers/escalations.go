@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	iofs "io/fs"
+	"os"
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
 
-const escalationListPageSize = 200
+const defaultEscalationListLimit = 50
 
 type escalationListItem struct {
 	Run   readservice.RunSummary       `json:"run"`
@@ -53,21 +57,37 @@ type escalationInspection struct {
 	Verdicts     []verdictView                `json:"verdicts,omitempty"`
 }
 
-const escalationsHelp = "Usage: goobers escalations [--json] [--api=<url>] [path]\n" +
+const escalationsHelp = "Usage: goobers escalations [--json] [--limit=<n>] [--since=<time>] [--api=<url>] [path]\n" +
 	"       goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]\n" +
 	"       goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]\n\n" +
 	"List escalated runs newest first. Use `escalations show` to inspect an\n" +
 	"escalation cause and the artifacts available before and after each stage,\n" +
-	"and `escalations resolve` to approve, redirect, or deny one.\n"
+	"and `escalations resolve` to approve, redirect, or deny one. The list is\n" +
+	"bounded to 50 runs by default; use --limit 0 only when an explicit full scan\n" +
+	"is acceptable.\n"
 
 func runEscalations(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("escalations", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit escalated runs as JSON")
+	limit := fs.Int("limit", defaultEscalationListLimit, "maximum number of escalated runs to show (default: 50; 0 for all)")
+	sinceRaw := fs.String("since", "", "only include runs started at or after this time (RFC3339 or YYYY-MM-DD)")
 	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	fs.Usage = helpUsage(stderr, "escalations")
-	root, ok := parseOptionalRoot(fs, args)
+	if !parseFlagsBeforePath(fs, args, stderr) {
+		return 2
+	}
+	root, ok := optionalRoot(fs)
 	if !ok {
+		return 2
+	}
+	if *limit < 0 {
+		pf(stderr, "error: --limit must be non-negative\n")
+		return 2
+	}
+	since, err := parseEscalationSince(*sinceRaw)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
 
@@ -80,13 +100,17 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 	if endpoint != "" {
 		reads, err = prepareRemoteReads(context.Background(), endpoint, root, fs.NArg() == 1, stderr)
 	} else {
-		reads, err = readservice.NewOfflineRuns(instance.NewLayout(root))
+		reads, err = newEscalationReads(context.Background(), instance.NewLayout(root), *limit == 0)
 	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	items, err := listEscalations(context.Background(), reads)
+	defer closeEscalationReads(reads)
+	items, err := listEscalations(context.Background(), reads, escalationListOptions{
+		Limit: *limit,
+		Since: since,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -104,6 +128,86 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 	}
 	renderEscalationList(stdout, items)
 	return 0
+}
+
+type escalationListOptions struct {
+	Limit int
+	Since time.Time
+}
+
+func parseEscalationSince(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("--since must be RFC3339 or YYYY-MM-DD")
+}
+
+func newEscalationReads(ctx context.Context, layout instance.Layout, allowFullScan bool) (readservice.OfflineRuns, error) {
+	if !allowFullScan {
+		if _, err := os.Stat(layout.ReadDB()); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("stat read model: %w", err)
+			}
+			if _, configErr := os.Stat(layout.ConfigFile()); configErr == nil {
+				return nil, fmt.Errorf("%w: read model is not available; retry after the daemon builds it or use --limit 0 to opt into a full journal scan", readservice.ErrBoundedReadUnavailable)
+			} else if !errors.Is(configErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("stat instance config: %w", configErr)
+			}
+			return readservice.NewOfflineRuns(layout)
+		}
+		reader, err := readmodel.OpenExistingReader(ctx, layout.ReadDB())
+		if err == nil {
+			state, stateErr := reader.State(ctx)
+			if stateErr != nil {
+				_ = reader.Close()
+				return nil, fmt.Errorf("inspect read model: %w", stateErr)
+			}
+			if !state.Ready {
+				_ = reader.Close()
+				return nil, fmt.Errorf("%w: read model is still building; retry after the daemon finishes or use --limit 0 to opt into a full journal scan", readservice.ErrBoundedReadUnavailable)
+			}
+			reads, localErr := readservice.NewLocal(readservice.LocalSources{
+				Layout:      layout,
+				Definitions: &instance.ConfigSet{Manifest: &apiv1.Manifest{}},
+				ReadModel:   reader,
+			}, func() bool { return true })
+			if localErr != nil {
+				_ = reader.Close()
+				return nil, localErr
+			}
+			return &closeableOfflineRuns{OfflineRuns: reads, close: reader.Close}, nil
+		}
+		if !errors.Is(err, readmodel.ErrExistingProjectionUnavailable) {
+			return nil, fmt.Errorf("open read model: %w", err)
+		}
+		return nil, fmt.Errorf("%w: read model cannot serve escalations yet; retry after the daemon rebuilds it or use --limit 0 to opt into a full journal scan", readservice.ErrBoundedReadUnavailable)
+	}
+	return readservice.NewOfflineRuns(layout)
+}
+
+type closeableOfflineRuns struct {
+	readservice.OfflineRuns
+	close func() error
+}
+
+func (c *closeableOfflineRuns) Close() error {
+	if c.close == nil {
+		return nil
+	}
+	return c.close()
+}
+
+func closeEscalationReads(reads readservice.OfflineRuns) {
+	if closer, ok := reads.(interface{ Close() error }); ok {
+		_ = closer.Close()
+	}
 }
 
 const escalationsShowHelp = "Usage: goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]\n\n" +
@@ -191,26 +295,42 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func listEscalations(ctx context.Context, reads readservice.OfflineRuns) ([]escalationListItem, error) {
+func listEscalations(ctx context.Context, reads readservice.OfflineRuns, options escalationListOptions) ([]escalationListItem, error) {
 	items := make([]escalationListItem, 0)
 	cursor := ""
 	for {
+		limit := options.Limit
+		if limit > 0 {
+			remaining := limit - len(items)
+			if remaining <= 0 {
+				break
+			}
+			if remaining < limit {
+				limit = remaining
+			}
+			if limit > 200 {
+				limit = 200
+			}
+		}
 		page, err := reads.ListRuns(ctx, readservice.RunListOptions{
 			Phase:  journal.PhaseEscalated,
-			Limit:  escalationListPageSize,
+			Since:  options.Since,
+			Limit:  limit,
 			Cursor: cursor,
 		})
 		if err != nil {
 			return nil, err
 		}
 		for _, run := range page.Runs {
+			item := escalationListItem{Run: run}
 			detail, err := reads.GetRun(ctx, run.ID)
 			if err != nil {
 				return nil, err
 			}
-			items = append(items, escalationListItem{Run: run, Cause: detail.Escalation})
+			item.Cause = detail.Escalation
+			items = append(items, item)
 		}
-		if page.NextCursor == "" {
+		if page.NextCursor == "" || (options.Limit > 0 && len(items) >= options.Limit) {
 			break
 		}
 		cursor = page.NextCursor
