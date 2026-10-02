@@ -298,3 +298,57 @@ func TestAdvisoryPublisherRequiresBotIdentityAndIgnoresSpoofedMarker(t *testing.
 		t.Fatalf("spoofed marker suppressed bot comment: count=%d", count)
 	}
 }
+
+func TestAdvisorySelectionReconstructsOmittedPatchPinnedToMergeBase(t *testing.T) {
+	server, root := advisoryFixture(t)
+	head := strings.Repeat("c", 40)
+	base := strings.Repeat("d", 40)
+	mergeBase := strings.Repeat("9", 40)
+	server.addIssue(8, "PR issue")
+	server.addOpenPR(8, "feature/large", "main", head, base, false, nil, []fakePRFile{
+		{path: "api/schemas/workflow.schema.json", status: "modified", additions: 1, deletions: 1},
+		{path: "docs/logo.png", status: "modified"},
+		{path: "docs/kept.md", status: "modified", patch: "@@ -1 +1 @@\n-a\n+b"},
+	})
+	server.mu.Lock()
+	server.compares[base+"..."+head] = fakeCompare{mergeBaseSHA: mergeBase}
+	server.mu.Unlock()
+	server.setFileContent(mergeBase, "api/schemas/workflow.schema.json", "{\n  \"type\": \"object\"\n}\n")
+	server.setFileContent(head, "api/schemas/workflow.schema.json", "{\n  \"type\": \"array\"\n}\n")
+	server.setFileContent(mergeBase, "docs/logo.png", "\x89PNG\x00old")
+	server.setFileContent(head, "docs/logo.png", "\x89PNG\x00new")
+
+	selection := selectedAdvisory(t, root)
+	if selection.SelectedBaseSHA != base || selection.MergeBaseSHA != mergeBase {
+		t.Fatalf("selection does not pin base/merge base: base=%q mergeBase=%q", selection.SelectedBaseSHA, selection.MergeBaseSHA)
+	}
+	if len(selection.Files) != 3 {
+		t.Fatalf("files = %+v", selection.Files)
+	}
+	schema, logo, kept := selection.Files[0], selection.Files[1], selection.Files[2]
+	if !schema.PatchReconstructed || schema.PatchUnavailable != "" ||
+		!strings.Contains(schema.Patch, "-  \"type\": \"object\"") || !strings.Contains(schema.Patch, "+  \"type\": \"array\"") {
+		t.Fatalf("omitted text patch was not reconstructed: %+v", schema)
+	}
+	if logo.PatchReconstructed || logo.Patch != "" || logo.PatchUnavailable != "binary" {
+		t.Fatalf("binary file = %+v; want labelled unavailable", logo)
+	}
+	if kept.PatchReconstructed || kept.Patch != "@@ -1 +1 @@\n-a\n+b" {
+		t.Fatalf("provider patch was rewritten: %+v", kept)
+	}
+}
+
+func TestAdvisorySelectionFailsWhenOmittedPatchCannotBePinned(t *testing.T) {
+	server, root := advisoryFixture(t)
+	server.addIssue(9, "PR issue")
+	server.addOpenPR(9, "feature/large", "main", strings.Repeat("c", 40), strings.Repeat("d", 40), false, nil,
+		[]fakePRFile{{path: "api/schemas/workflow.schema.json", status: "modified"}})
+	code, _, stderr := runArgs(t, "advisory-pr-select", root)
+	if code == 0 || !strings.Contains(stderr, "reconstruct omitted PR diff") {
+		t.Fatalf("select without compare evidence: code=%d stderr=%s", code, stderr)
+	}
+	data, err := os.ReadFile(advisorySelectionFile)
+	if err == nil && strings.Contains(string(data), `"selectedNumber"`) {
+		t.Fatalf("selection artifact written without diff evidence: %s", data)
+	}
+}

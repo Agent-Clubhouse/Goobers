@@ -15,6 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"github.com/pmezard/go-difflib/difflib"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
@@ -38,15 +41,44 @@ const (
 var advisoryTypePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 type advisorySelection struct {
-	Repository      string                  `json:"repository"`
-	ReviewType      string                  `json:"reviewType"`
-	SelectedNumber  string                  `json:"selectedNumber"`
-	SelectedHeadSHA string                  `json:"selectedHeadSha"`
-	URL             string                  `json:"url"`
-	Body            string                  `json:"body"`
-	Draft           bool                    `json:"draft"`
-	Files           []providers.ChangedFile `json:"files"`
+	Repository      string `json:"repository"`
+	ReviewType      string `json:"reviewType"`
+	SelectedNumber  string `json:"selectedNumber"`
+	SelectedHeadSHA string `json:"selectedHeadSha"`
+	// SelectedBaseSHA is the PR's base commit as GitHub reports it, and
+	// MergeBaseSHA the common ancestor the per-file patches are computed
+	// against. With SelectedHeadSHA they pin the exact base...head diff the
+	// reviewer reads. MergeBaseSHA is resolved only when a patch had to be
+	// reconstructed.
+	SelectedBaseSHA string                `json:"selectedBaseSha,omitempty"`
+	MergeBaseSHA    string                `json:"mergeBaseSha,omitempty"`
+	URL             string                `json:"url"`
+	Body            string                `json:"body"`
+	Draft           bool                  `json:"draft"`
+	Files           []advisoryChangedFile `json:"files"`
 }
+
+// advisoryChangedFile is one changed file of the selected PR. GitHub omits
+// Patch for binary files and for diffs over its size cutoff; the selector
+// then reconstructs a unified diff from the file contents at the merge base
+// and the selected head (PatchReconstructed), within fixed size bounds. When
+// that is impossible, PatchUnavailable names why ("binary", "too-large",
+// "budget-exhausted"), so a reviewer never mistakes a missing patch for an
+// empty change.
+type advisoryChangedFile struct {
+	providers.ChangedFile
+	PatchReconstructed bool   `json:"patchReconstructed,omitempty"`
+	PatchUnavailable   string `json:"patchUnavailable,omitempty"`
+}
+
+const (
+	// advisoryMaxReconstructedSide bounds one side (base or head) of one
+	// file whose patch GitHub omitted.
+	advisoryMaxReconstructedSide = 256 << 10
+	// advisoryMaxReconstructedTotal bounds all reconstructed patch text in
+	// one selection artifact.
+	advisoryMaxReconstructedTotal = 1 << 20
+)
 
 type advisoryReview struct {
 	Schema     string `json:"schema"`
@@ -245,26 +277,135 @@ func runAdvisoryPRSelect(args []string, stdout, stderr io.Writer) int {
 			_ = ledger.ReleaseScoped(ctx, claim, runID)
 			continue
 		}
-		files, err := provider.PullRequestFiles(ctx, repo, pr.ID)
-		if err != nil {
-			return failProviderStage(stderr, "load PR diff", err, advisorySelectionFile)
-		}
-		selection := advisorySelection{Repository: advisoryScope(repo), ReviewType: reviewType,
-			SelectedNumber: strconv.Itoa(pr.Number), SelectedHeadSHA: pr.HeadSHA,
-			URL: pr.URL, Body: pr.Body, Draft: pr.Draft, Files: files}
-		data, err := json.Marshal(selection)
-		if err == nil {
-			err = os.WriteFile(providerInput("resultFile", advisorySelectionFile), data, 0o644)
-		}
-		if err != nil {
-			pf(stderr, "error: write selection: %v\n", err)
-			return 1
-		}
-		pf(stdout, "selected PR #%d at %s for %s advisory review\n", pr.Number, pr.HeadSHA, reviewType)
-		return 0
+		return writeAdvisorySelection(ctx, provider, repo, reviewType, pr, stdout, stderr)
 	}
 	return writeAdvisoryResult(providerInput("resultFile", advisorySelectionFile),
 		map[string]any{"noWork": true, "outcome": "every open PR is skipped, already reviewed at its current head, or claimed"}, stdout, stderr)
+}
+
+// writeAdvisorySelection writes the selector artifact for the claimed pr,
+// with diff evidence pinned to its selected head.
+func writeAdvisorySelection(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef,
+	reviewType string, pr providers.PullRequestSummary, stdout, stderr io.Writer,
+) int {
+	files, err := provider.PullRequestFiles(ctx, repo, pr.ID)
+	if err != nil {
+		return failProviderStage(stderr, "load PR diff", err, advisorySelectionFile)
+	}
+	selection := advisorySelection{Repository: advisoryScope(repo), ReviewType: reviewType,
+		SelectedNumber: strconv.Itoa(pr.Number), SelectedHeadSHA: pr.HeadSHA, SelectedBaseSHA: pr.BaseSHA,
+		URL: pr.URL, Body: pr.Body, Draft: pr.Draft}
+	if err := fillAdvisoryDiffEvidence(ctx, provider, repo, &selection, files); err != nil {
+		return failProviderStage(stderr, "reconstruct omitted PR diff", err, advisorySelectionFile)
+	}
+	data, err := json.Marshal(selection)
+	if err == nil {
+		err = os.WriteFile(providerInput("resultFile", advisorySelectionFile), data, 0o644)
+	}
+	if err != nil {
+		pf(stderr, "error: write selection: %v\n", err)
+		return 1
+	}
+	pf(stdout, "selected PR #%d at %s for %s advisory review\n", pr.Number, pr.HeadSHA, reviewType)
+	return 0
+}
+
+// fillAdvisoryDiffEvidence copies files into selection and, for every file
+// whose patch GitHub omitted, deterministically reconstructs a unified diff
+// pinned to the merge base and the selected head. Provider errors are
+// returned so the stage stays retryable; content that cannot be
+// reconstructed within bounds is labelled rather than silently dropped.
+func fillAdvisoryDiffEvidence(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef,
+	selection *advisorySelection, files []providers.ChangedFile,
+) error {
+	selection.Files = make([]advisoryChangedFile, 0, len(files))
+	budget := advisoryMaxReconstructedTotal
+	for _, file := range files {
+		entry := advisoryChangedFile{ChangedFile: file}
+		if file.Patch == "" {
+			if err := resolveAdvisoryMergeBase(ctx, provider, repo, selection); err != nil {
+				return err
+			}
+			if err := reconstructAdvisoryPatch(ctx, provider, repo, selection.MergeBaseSHA,
+				selection.SelectedHeadSHA, &entry, &budget); err != nil {
+				return err
+			}
+		}
+		selection.Files = append(selection.Files, entry)
+	}
+	return nil
+}
+
+func resolveAdvisoryMergeBase(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef,
+	selection *advisorySelection,
+) error {
+	if selection.MergeBaseSHA != "" {
+		return nil
+	}
+	if selection.SelectedBaseSHA == "" {
+		return fmt.Errorf("PR #%s reports no base SHA to pin an omitted patch against", selection.SelectedNumber)
+	}
+	cmp, err := provider.CompareCommits(ctx, repo, selection.SelectedBaseSHA, selection.SelectedHeadSHA)
+	if err != nil {
+		return err
+	}
+	if cmp.MergeBaseSHA == "" {
+		return fmt.Errorf("compare %s...%s reported no merge base", selection.SelectedBaseSHA, selection.SelectedHeadSHA)
+	}
+	selection.MergeBaseSHA = cmp.MergeBaseSHA
+	return nil
+}
+
+func reconstructAdvisoryPatch(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef,
+	baseSHA, headSHA string, entry *advisoryChangedFile, budget *int,
+) error {
+	if *budget <= 0 {
+		entry.PatchUnavailable = "budget-exhausted"
+		return nil
+	}
+	basePath := entry.Path
+	if entry.PreviousPath != "" {
+		basePath = entry.PreviousPath
+	}
+	var before, after []byte
+	var err error
+	if entry.Status != "added" {
+		if before, err = provider.RepositoryFileContent(ctx, repo, basePath, baseSHA); err != nil {
+			return fmt.Errorf("read %s at %s: %w", basePath, baseSHA, err)
+		}
+	}
+	if entry.Status != "removed" {
+		if after, err = provider.RepositoryFileContent(ctx, repo, entry.Path, headSHA); err != nil {
+			return fmt.Errorf("read %s at %s: %w", entry.Path, headSHA, err)
+		}
+	}
+	if len(before) > advisoryMaxReconstructedSide || len(after) > advisoryMaxReconstructedSide {
+		entry.PatchUnavailable = "too-large"
+		return nil
+	}
+	if advisoryBinary(before) || advisoryBinary(after) {
+		entry.PatchUnavailable = "binary"
+		return nil
+	}
+	var patch bytes.Buffer
+	if err := difflib.WriteUnifiedDiff(&patch, difflib.UnifiedDiff{
+		A: difflib.SplitLines(string(before)), B: difflib.SplitLines(string(after)),
+		FromFile: "a/" + basePath, ToFile: "b/" + entry.Path, Context: 3, Eol: "\n",
+	}); err != nil {
+		return err
+	}
+	if patch.Len() > *budget {
+		entry.PatchUnavailable = "budget-exhausted"
+		return nil
+	}
+	*budget -= patch.Len()
+	entry.Patch = patch.String()
+	entry.PatchReconstructed = true
+	return nil
+}
+
+func advisoryBinary(data []byte) bool {
+	return bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data)
 }
 
 func strictAdvisoryReview(data []byte) (advisoryReview, error) {
