@@ -621,6 +621,9 @@ const (
 	featureGaggleOutboxMirrorPath               FeatureID = "gaggle.spec.outboxMirrorPath"
 	featureGaggleWorkcopiesRoot                 FeatureID = "gaggle.spec.workcopies.root"
 	featureGaggleRequireLabels                  FeatureID = "gaggle.spec.requireLabels"
+	featureGaggleIssueOwnershipScope            FeatureID = "gaggle.spec.issueOwnershipScope"
+	featureGaggleIssueOwnershipScopeAssignees   FeatureID = "gaggle.spec.issueOwnershipScope.assignees"
+	featureGaggleIssueOwnershipScopeUnassigned  FeatureID = "gaggle.spec.issueOwnershipScope.unassigned"
 	featureGaggleSiblings                       FeatureID = "gaggle.spec.siblings"
 )
 
@@ -823,7 +826,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunControlsMaxRunDuration,
 		featureGaggleOutboxMirrorPath,
 		featureGaggleWorkcopiesRoot,
-		featureGaggleRequireLabels,
+		featureGaggleRequireLabels, featureGaggleIssueOwnershipScope, featureGaggleIssueOwnershipScopeAssignees, featureGaggleIssueOwnershipScopeUnassigned,
 		featureGaggleSiblings,
 	}
 	ids = append(ids, gaggleIsolationFeatureIDs...)
@@ -1240,10 +1243,24 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	if spec.RequireLabels != nil {
 		used.add(featureGaggleRequireLabels)
 	}
+	addGaggleIssueOwnershipFeatures(used, spec.IssueOwnershipScope)
 	if spec.Siblings != nil {
 		used.add(featureGaggleSiblings)
 	}
 	return currentFeatureRegistry.resolve(used.ids())
+}
+
+func addGaggleIssueOwnershipFeatures(used featureSet, scope *apiv1.IssueOwnershipScope) {
+	if scope == nil {
+		return
+	}
+	used.add(featureGaggleIssueOwnershipScope)
+	if scope.Assignees != nil {
+		used.add(featureGaggleIssueOwnershipScopeAssignees)
+	}
+	if scope.Unassigned != "" {
+		used.add(featureGaggleIssueOwnershipScopeUnassigned)
+	}
 }
 
 // addParallelFeatures records the GA DSL fields used by a parallel state.

@@ -190,6 +190,7 @@ type fakeGitHubServer struct {
 	// backlog size (#4182).
 	issueItemGetRequests int
 	hiddenIssueLabels    map[int]map[string]int
+	issueGetMutations    map[int][]func(*fakeGitHubServer, *fakeIssue)
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -319,6 +320,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 		securityAlerts:        map[string]string{},
 		securityAlertQueries:  map[string][]url.Values{},
 		securityAlertFailures: map[string]int{},
+		issueGetMutations:     map[int][]func(*fakeGitHubServer, *fakeIssue){},
 		nextPR:                1, authenticatedLogin: "goobers",
 	}
 	mux := http.NewServeMux()
@@ -861,6 +863,9 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 		if state := q.Get("state"); state != "" && state != "all" && issue.state != state {
 			continue
 		}
+		if assignee := q.Get("assignee"); assignee != "" && issue.assignee != assignee {
+			continue
+		}
 		if !hasAllLabels(issue.labels, wantLabels) {
 			continue
 		}
@@ -1023,6 +1028,11 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.issueItemGetRequests++
+		if mutations := s.issueGetMutations[num]; len(mutations) > 0 {
+			mutation := mutations[0]
+			s.issueGetMutations[num] = mutations[1:]
+			mutation(s, issue)
+		}
 		out := issueJSON(issue)
 		if hidden := s.hiddenIssueLabels[num]; len(hidden) > 0 {
 			labels, _ := out["labels"].([]map[string]string)

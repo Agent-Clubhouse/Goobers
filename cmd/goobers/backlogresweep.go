@@ -83,10 +83,10 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 
 // backlogResweepStateKey is the scheduler-state key holding the re-sweep
 // state for one distinct re-sweep shape. A pure function of the shape —
-// repository, gaggle, trust label, ready label — so two differently-scoped
-// re-sweeps never share state, and the SAME shape reaches the same state
-// whether it runs in the daemon's process or in a stage pod talking to the
-// scheduler-state plane (Goobers#3898).
+// repository, gaggle, trust label, ready label, and assignee scope — so two
+// differently-scoped re-sweeps never share state, and the SAME shape reaches
+// the same state whether it runs in the daemon's process or in a stage pod
+// talking to the scheduler-state plane (Goobers#3898).
 //
 // This replaces backlogResweepStatePath, which joined the digest onto the
 // scheduler directory. The key namespace is a BARE FILENAME on both backends;
@@ -96,17 +96,24 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 func backlogResweepStateKey(
 	repo providers.RepositoryRef,
 	gaggle, trustLabel, readyLabel string,
+	scope backlogReconcileAssigneeScope,
 ) string {
 	key, _ := json.Marshal(struct {
-		Repository providers.RepositoryRef `json:"repository"`
-		Gaggle     string                  `json:"gaggle,omitempty"`
-		TrustLabel string                  `json:"trustLabel"`
-		ReadyLabel string                  `json:"readyLabel"`
+		Repository     providers.RepositoryRef `json:"repository"`
+		Gaggle         string                  `json:"gaggle,omitempty"`
+		TrustLabel     string                  `json:"trustLabel"`
+		ReadyLabel     string                  `json:"readyLabel"`
+		AssignedTo     string                  `json:"assignedTo,omitempty"`
+		ScopedAssignee bool                    `json:"scopedAssignee,omitempty"`
+		Ownership      ownershipScopeKey       `json:"ownership,omitempty"`
 	}{
-		Repository: repo,
-		Gaggle:     gaggle,
-		TrustLabel: trustLabel,
-		ReadyLabel: readyLabel,
+		Repository:     repo,
+		Gaggle:         gaggle,
+		TrustLabel:     trustLabel,
+		ReadyLabel:     readyLabel,
+		AssignedTo:     scope.assignedTo,
+		ScopedAssignee: scope.respectAssignee,
+		Ownership:      scope.key(),
 	})
 	sum := sha256.Sum256(key)
 	return stateclient.ResweepStateKey(fmt.Sprintf("%x", sum))

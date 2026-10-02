@@ -80,6 +80,39 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 	return out
 }
 
+func TestIssueOwnershipScopeByGaggle(t *testing.T) {
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "cloud"},
+			Spec: apiv1.GaggleSpec{IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+				Assignees:  []string{"cloud-bot", "cloud-alt"},
+				Unassigned: "refuse",
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "local"},
+			Spec: apiv1.GaggleSpec{IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+				Assignees:  []string{"local-bot"},
+				Unassigned: "allow",
+			}},
+		},
+		{ObjectMeta: metav1.ObjectMeta{Name: "legacy"}},
+	}}
+
+	if got, want := issueOwnershipAssigneesByGaggle(set), map[string]string{
+		"cloud": "cloud-bot,cloud-alt",
+		"local": "local-bot",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("assignees = %#v, want %#v", got, want)
+	}
+	if got, want := issueOwnershipUnassignedByGaggle(set), map[string]string{
+		"cloud": "refuse",
+		"local": "allow",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("unassigned = %#v, want %#v", got, want)
+	}
+}
+
 type runnerWiringModelLister struct {
 	responses [][]harness.CopilotModelInfo
 	env       []string

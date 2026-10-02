@@ -91,6 +91,12 @@ const (
 	// InputMaxOutputBytes is a decimal integer overriding the per-stream
 	// output cap.
 	InputMaxOutputBytes = "maxOutputBytes"
+	// InputOwnershipAssignees scopes provider-visible issue writes to these
+	// assignees when inherited from a gaggle or overridden by a task.
+	InputOwnershipAssignees = "ownershipAssignees"
+	// InputOwnershipUnassigned controls whether unassigned issues are in scope
+	// for provider-visible issue writes.
+	InputOwnershipUnassigned = "ownershipUnassigned"
 )
 
 // OutputNoWork is the well-known InputResultFile output key a deterministic

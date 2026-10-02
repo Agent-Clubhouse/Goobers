@@ -254,6 +254,8 @@ var inputSchemas = map[string][]Input{
 // command implementation.
 var executorInputs = []Input{
 	{Name: "maxOutputBytes", Type: InputInteger, State: InputCurrent},
+	{Name: "ownershipAssignees", Type: InputStringList, State: InputCurrent},
+	{Name: "ownershipUnassigned", Type: InputString, State: InputCurrent},
 	{Name: "timeout", Type: InputDuration, State: InputCurrent},
 }
 
