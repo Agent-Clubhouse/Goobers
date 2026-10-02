@@ -1372,7 +1372,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		if actionsErr != nil {
 			return nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
 		}
-		for _, run := range runs {
+		for _, run := range withoutSupersededCancelledActionsRuns(runs) {
 			state := normalizeCheckRunState(run.Status, run.Conclusion)
 			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
 				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
@@ -1380,7 +1380,7 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		}
 		return details, nil
 	}
-	for _, run := range checkRuns {
+	for _, run := range withoutSupersededCancelledCheckRuns(checkRuns) {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
 		details = append(details, resolvedCheckDetail{
 			CheckDetail: CheckDetail{
@@ -1391,6 +1391,64 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		})
 	}
 	return details, nil
+}
+
+// withoutSupersededCancelledCheckRuns drops a cancelled check run when a newer
+// run of the same check exists on the commit (#6360). A workflow with
+// cancel-in-progress leaves the cancelled run beside the run that superseded
+// it, each in its own check suite, so the cancellation is an artifact of the
+// supersession rather than a verdict on the code. Runs are grouped by check
+// name plus the GitHub App that produced them, and "newer" means a higher run
+// id: GitHub allocates ids in creation order, and unlike started_at an id is
+// never null for a queued run.
+//
+// Only cancelled runs are dropped. A check name is a job name, so two
+// different workflows can each produce a "test" check from the same app; were
+// a superseded failure dropped too, a later pass in one workflow would hide a
+// genuine failure in the other (the #139 direction). Every other run counts
+// as before, and the output keeps the API's order.
+func withoutSupersededCancelledCheckRuns(runs []githubCheckRun) []githubCheckRun {
+	type checkKey struct {
+		name  string
+		appID int64
+	}
+	return withoutSupersededCancelled(runs, func(run githubCheckRun) (checkKey, int64, string) {
+		return checkKey{name: run.Name, appID: run.App.ID}, run.ID, run.Conclusion
+	})
+}
+
+// withoutSupersededCancelledActionsRuns applies the same rule to the
+// actions/runs fallback (#2685), grouping workflow runs by name and
+// workflow id.
+func withoutSupersededCancelledActionsRuns(runs []githubActionsRun) []githubActionsRun {
+	type workflowKey struct {
+		name       string
+		workflowID int64
+	}
+	return withoutSupersededCancelled(runs, func(run githubActionsRun) (workflowKey, int64, string) {
+		return workflowKey{name: run.Name, workflowID: run.WorkflowID}, run.ID, run.Conclusion
+	})
+}
+
+// withoutSupersededCancelled removes each cancelled run whose group, per
+// describe, also holds a run with a higher id. Order is preserved.
+func withoutSupersededCancelled[R any, K comparable](runs []R, describe func(R) (key K, id int64, conclusion string)) []R {
+	newest := make(map[K]int64, len(runs))
+	for _, run := range runs {
+		key, id, _ := describe(run)
+		if current, ok := newest[key]; !ok || id > current {
+			newest[key] = id
+		}
+	}
+	out := make([]R, 0, len(runs))
+	for _, run := range runs {
+		key, id, conclusion := describe(run)
+		if strings.EqualFold(conclusion, "cancelled") && id < newest[key] {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out
 }
 
 // actionsRunsForRef reads workflow-run conclusions for ref via the Actions
