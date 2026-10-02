@@ -108,7 +108,7 @@ func pathContains(parent, child string) bool {
 // validateReadDeniedDirectory rejects aliases that could escape a directory
 // mask. ReadDir batches bound memory and a shared budget bounds all configured
 // directory walks. This inspects metadata only, never credential contents.
-func validateReadDeniedDirectory(path string, depth int, remaining *int) error {
+func validateReadDeniedDirectory(path string, depth int, remaining *int) (result error) {
 	if depth >= maxReadDeniedDepth {
 		return errReadDeniedPath
 	}
@@ -116,7 +116,11 @@ func validateReadDeniedDirectory(path string, depth int, remaining *int) error {
 	if err != nil {
 		return errReadDeniedPath
 	}
-	defer directory.Close()
+	defer func() {
+		if err := directory.Close(); err != nil && result == nil {
+			result = errReadDeniedPath
+		}
+	}()
 	for {
 		entries, err := directory.ReadDir(64)
 		if err != nil && !errors.Is(err, io.EOF) {

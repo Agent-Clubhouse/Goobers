@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,7 +127,7 @@ func TestNativeSandboxRefusesGuardedDirectoryWithExternalHardlink(t *testing.T) 
 		t.Fatal(err)
 	}
 	command := exec.Command("sh", "-c", "exit 0")
-	if err := WithReadDenials(base, []string{private}).Wrap(command, Policy{Workspace: workspace}); err != errReadDeniedPath {
+	if err := WithReadDenials(base, []string{private}).Wrap(command, Policy{Workspace: workspace}); !errors.Is(err, errReadDeniedPath) {
 		t.Fatalf("guarded directory with external alias: %v; want generic refusal before launch", err)
 	}
 }
@@ -141,7 +142,7 @@ func TestReadDeniedDirectoryRejectsAmbiguityAndTraversalLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		remaining := maxReadDeniedEntries
-		if err := validateReadDeniedDirectory(private, 0, &remaining); err != errReadDeniedPath {
+		if err := validateReadDeniedDirectory(private, 0, &remaining); !errors.Is(err, errReadDeniedPath) {
 			t.Fatalf("symlink: %v; want refusal", err)
 		}
 	})
@@ -153,7 +154,7 @@ func TestReadDeniedDirectoryRejectsAmbiguityAndTraversalLimits(t *testing.T) {
 			}
 		}
 		remaining := 1
-		if err := validateReadDeniedDirectory(private, 0, &remaining); err != errReadDeniedPath {
+		if err := validateReadDeniedDirectory(private, 0, &remaining); !errors.Is(err, errReadDeniedPath) {
 			t.Fatalf("entry budget: %v; want refusal", err)
 		}
 	})
@@ -167,13 +168,13 @@ func TestReadDeniedDirectoryRejectsAmbiguityAndTraversalLimits(t *testing.T) {
 			}
 		}
 		remaining := maxReadDeniedEntries
-		if err := validateReadDeniedDirectory(private, 0, &remaining); err != errReadDeniedPath {
+		if err := validateReadDeniedDirectory(private, 0, &remaining); !errors.Is(err, errReadDeniedPath) {
 			t.Fatalf("depth budget: %v; want refusal", err)
 		}
 	})
 	t.Run("inspection-error", func(t *testing.T) {
 		remaining := maxReadDeniedEntries
-		if err := validateReadDeniedDirectory(filepath.Join(t.TempDir(), "missing"), 0, &remaining); err != errReadDeniedPath {
+		if err := validateReadDeniedDirectory(filepath.Join(t.TempDir(), "missing"), 0, &remaining); !errors.Is(err, errReadDeniedPath) {
 			t.Fatalf("inspection error: %v; want refusal", err)
 		}
 	})
