@@ -20,6 +20,7 @@ import (
 func TestRuntimePreflightJSONReportContract(t *testing.T) {
 	root := writeRuntimePreflightFixture(t)
 	t.Setenv("GOOBERS_COPILOT_TOKEN", "super-secret-token")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "repo-secret")
 
 	var stdout, stderr bytes.Buffer
 	code := runRuntimePreflight([]string{
@@ -32,7 +33,7 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 		t.Fatalf("runRuntimePreflight exit %d, want 1 for unsupported worker identity; stderr:\n%s", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, leaked := range []string{"super-secret-token", "SECRET_FROM_INSTRUCTIONS", "GOOBERS_COPILOT_TOKEN"} {
+	for _, leaked := range []string{"super-secret-token", "repo-secret", "SECRET_FROM_INSTRUCTIONS"} {
 		if strings.Contains(output, leaked) {
 			t.Fatalf("JSON report leaked %q:\n%s", leaked, output)
 		}
@@ -117,6 +118,7 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 func TestRuntimePreflightHumanReportRedactsSecrets(t *testing.T) {
 	root := writeRuntimePreflightFixture(t)
 	t.Setenv("GOOBERS_COPILOT_TOKEN", "super-secret-token")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "repo-secret")
 
 	var stdout, stderr bytes.Buffer
 	code := runRuntimePreflight([]string{
@@ -135,13 +137,13 @@ func TestRuntimePreflightHumanReportRedactsSecrets(t *testing.T) {
 		"authentication/authentication_unobservable: unobservable",
 		"cleanup_guarantee/cleanup_guarantee_unsupported: unsupported",
 		"capability_mismatch/stage_capability_satisfaction_unobservable: unobservable stage=claim",
-		"no external probes or mutations performed",
+		"credential source metadata only; no external credential or harness subprocess probes",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("human report missing %q:\n%s", want, output)
 		}
 	}
-	for _, leaked := range []string{"super-secret-token", "SECRET_FROM_INSTRUCTIONS", "GOOBERS_COPILOT_TOKEN"} {
+	for _, leaked := range []string{"super-secret-token", "repo-secret", "SECRET_FROM_INSTRUCTIONS"} {
 		if strings.Contains(output, leaked) {
 			t.Fatalf("human report leaked %q:\n%s", leaked, output)
 		}
@@ -289,6 +291,12 @@ func normalizedRuntimePreflightJSON(t *testing.T, report runtimePreflightReport)
 	report.Execution.Process = runtimeplan.Process{PID: 1, OS: "<host-os>", UID: "<effective-user>", GID: "<effective-group>", Source: runtimeplan.Source{Fidelity: "observed", Detail: "current process OS and effective identity"}}
 	for i := range report.Checks {
 		report.Checks[i].Process = &report.Execution.Process
+	}
+	for i := range report.Credentials {
+		report.Credentials[i].Process = report.Execution.Process
+	}
+	for i := range report.Harnesses {
+		report.Harnesses[i].Process = report.Execution.Process
 	}
 	for i := range report.Execution.Plan.Paths {
 		report.Execution.Plan.Paths[i].Path = "<" + report.Execution.Plan.Paths[i].Purpose + ">"

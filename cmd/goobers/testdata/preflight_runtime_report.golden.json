@@ -115,7 +115,7 @@
     },
     "source": {
       "fidelity": "static",
-      "detail": "static execution inputs and observed reporting-process identity; no provider, credential, sandbox, or harness probe was executed"
+      "detail": "static execution inputs and reporting-process identity; credential metadata and optional harness probes do not attest target identity"
     }
   },
   "stages": [
@@ -270,7 +270,7 @@
       },
       "code": "authentication_unobservable",
       "outcome": "unobservable",
-      "detail": "credential presence and sign-in state require an external auth probe, which this report intentionally does not run",
+      "detail": "target authentication remains unobservable; reporting-process credential and harness observations are listed separately",
       "source": {
         "fidelity": "unobservable",
         "detail": "contract boundary"
@@ -290,7 +290,7 @@
       },
       "code": "transport_unobservable",
       "outcome": "unobservable",
-      "detail": "provider and harness transport reachability require external network probes, which this report intentionally does not run",
+      "detail": "target provider transport remains unobservable; bounded local harness failures are listed separately",
       "source": {
         "fidelity": "unobservable",
         "detail": "contract boundary"
@@ -330,7 +330,7 @@
       },
       "code": "tool_unobservable",
       "outcome": "unobservable",
-      "detail": "tool availability requires host or harness execution, which this report intentionally does not run",
+      "detail": "target tool availability remains unobservable; reporting-process harness observations are listed separately",
       "source": {
         "fidelity": "unobservable",
         "detail": "contract boundary"
@@ -430,7 +430,7 @@
       },
       "code": "external_probe_unsupported",
       "outcome": "unsupported",
-      "detail": "external credential, harness, MCP, sandbox, lifecycle, and provider probes are outside this report contract slice",
+      "detail": "MCP, sandbox, lifecycle, and provider probes are outside this report contract slice",
       "source": {
         "fidelity": "unsupported",
         "detail": "contract boundary"
@@ -541,10 +541,87 @@
       }
     }
   ],
+  "credentials": [
+    {
+      "stage": "claim",
+      "capability": "github:issues:write",
+      "kind": "env",
+      "name": "GOOBERS_GITHUB_TOKEN",
+      "code": "credential_source_present",
+      "outcome": "present",
+      "detail": "source metadata present; value, readability, expiry and authentication unverified",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "source": {
+        "fidelity": "observed",
+        "detail": "reporting-process source metadata only; target daemon/worker availability unobservable"
+      }
+    },
+    {
+      "stage": "implement",
+      "capability": "agent:model",
+      "kind": "env",
+      "name": "GOOBERS_COPILOT_TOKEN",
+      "code": "credential_source_present",
+      "outcome": "present",
+      "detail": "source metadata present; value, readability, expiry and authentication unverified",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "source": {
+        "fidelity": "observed",
+        "detail": "reporting-process source metadata only; target daemon/worker availability unobservable"
+      }
+    }
+  ],
+  "harnesses": [
+    {
+      "stage": "implement",
+      "harness": "copilot",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "harness subprocess probes disabled; use --check-readiness; target daemon/worker remains unobservable"
+      },
+      "checks": [
+        {
+          "category": "unobservable",
+          "code": "harness_probe_unobservable",
+          "outcome": "unobservable",
+          "detail": "bounded read-only probes not requested"
+        }
+      ]
+    }
+  ],
   "mutationBoundary": [
     "loaded instance.yaml",
     "loaded config directory",
     "compiled workflow",
+    "credential source metadata only; no external credential or harness subprocess probes",
     "computed workflow and goober digests",
     "no provider mutation",
     "no package installation",

@@ -33,7 +33,7 @@ _goobers_completion()
             flags+=" --token-env --seed --replace --json"
             ;;
         preflight)
-            flags+=" --distro --launch-wsl"
+            flags+=" --instance --workflow --execution-identity --check-readiness --json --distro --launch-wsl"
             ;;
         onboarding)
             case "${COMP_WORDS[2]:-}" in

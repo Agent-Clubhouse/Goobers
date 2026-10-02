@@ -161,6 +161,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit the versioned onboarding action envelope"},
 	},
 	"preflight": {
+		{name: "instance", takesArg: true, desc: "Instance root to inspect"},
+		{name: "workflow", takesArg: true, desc: "Workflow name to inspect"},
+		{name: "execution-identity", takesArg: true, values: []string{"actual"}, desc: "Report actual identity boundaries"},
+		{name: "check-readiness", desc: "Run bounded read-only harness probes"},
+		{name: "json", desc: "Emit versioned runtime preflight report"},
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
 	},

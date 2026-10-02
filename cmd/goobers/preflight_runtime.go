@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,13 +24,15 @@ import (
 const runtimePreflightSchemaVersion = 1
 
 type runtimePreflightReport struct {
-	SchemaVersion    int                       `json:"schemaVersion"`
-	Instance         runtimePreflightInstance  `json:"instance"`
-	Workflow         runtimePreflightWorkflow  `json:"workflow"`
-	Execution        runtimePreflightExecution `json:"execution"`
-	Stages           []runtimePreflightStage   `json:"stages"`
-	Checks           []runtimePreflightCheck   `json:"checks"`
-	MutationBoundary []string                  `json:"mutationBoundary"`
+	SchemaVersion    int                           `json:"schemaVersion"`
+	Instance         runtimePreflightInstance      `json:"instance"`
+	Workflow         runtimePreflightWorkflow      `json:"workflow"`
+	Execution        runtimePreflightExecution     `json:"execution"`
+	Stages           []runtimePreflightStage       `json:"stages"`
+	Checks           []runtimePreflightCheck       `json:"checks"`
+	Credentials      []runtimeplan.CredentialCheck `json:"credentials,omitempty"`
+	Harnesses        []runtimePreflightHarness     `json:"harnesses,omitempty"`
+	MutationBoundary []string                      `json:"mutationBoundary"`
 }
 
 type runtimePreflightInstance struct {
@@ -106,7 +109,7 @@ func isRuntimePreflightInvocation(args []string) bool {
 		if arg == "--instance" || strings.HasPrefix(arg, "--instance=") ||
 			arg == "--workflow" || strings.HasPrefix(arg, "--workflow=") ||
 			arg == "--execution-identity" || strings.HasPrefix(arg, "--execution-identity=") ||
-			arg == "--json" {
+			arg == "--json" || arg == "--check-readiness" || strings.HasPrefix(arg, "--check-readiness=") {
 			return true
 		}
 	}
@@ -119,6 +122,7 @@ func runRuntimePreflight(args []string, stdout, stderr io.Writer) int {
 	instanceRoot := fs.String("instance", "", "instance root to inspect")
 	workflowName := fs.String("workflow", "", "workflow name to inspect")
 	executionIdentity := fs.String("execution-identity", "actual", "runner identity mode to report")
+	checkReadiness := fs.Bool("check-readiness", false, "run bounded read-only harness probes in the reporting process")
 	asJSON := fs.Bool("json", false, "emit the versioned JSON report")
 	fs.Usage = helpUsage(stderr, "preflight")
 	if err := fs.Parse(args); err != nil {
@@ -132,7 +136,7 @@ func runRuntimePreflight(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: unsupported execution identity %q (only \"actual\" is reportable without probing)\n", *executionIdentity)
 		return 2
 	}
-	report, err := buildRuntimePreflightReport(*instanceRoot, *workflowName, *executionIdentity)
+	report, err := buildRuntimePreflightReportWithReadiness(*instanceRoot, *workflowName, *executionIdentity, *checkReadiness)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -162,6 +166,10 @@ func runRuntimePreflight(args []string, stdout, stderr io.Writer) int {
 }
 
 func buildRuntimePreflightReport(root, workflowName, identityMode string) (runtimePreflightReport, error) {
+	return buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode, false)
+}
+
+func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode string, probe bool) (runtimePreflightReport, error) {
 	layout := layoutFor(root)
 	if _, err := os.Stat(layout.ConfigFile()); err != nil {
 		return runtimePreflightReport{}, fmt.Errorf("%s not found (not an instance root; run `goobers init` first)", layout.ConfigFile())
@@ -250,6 +258,10 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		stages[i].Identity = runtimeplan.TargetIdentity(process, kind)
 		stages[i].Settings = settings[stages[i].Name]
 	}
+	credentialChecks, harnessChecks, err := runtimePreflightReadiness(context.Background(), cfg, gaggle, resolvedGoobers, stages, process, probe)
+	if err != nil {
+		return runtimePreflightReport{}, err
+	}
 	checks := runtimePreflightChecks(stages)
 	for _, stage := range stages {
 		checks = append(checks, runtimePreflightCheck{Category: "execution_identity", Code: stage.Identity.Code, Outcome: stage.Identity.Outcome, Stage: stage.Name, Detail: stage.Identity.Detail, Source: runtimePreflightFactSrc(stage.Identity.Source)})
@@ -277,15 +289,18 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 			Plan:         plan,
 			Source: runtimePreflightFactSrc{
 				Fidelity: "static",
-				Detail:   "static execution inputs and observed reporting-process identity; no provider, credential, sandbox, or harness probe was executed",
+				Detail:   "static execution inputs and reporting-process identity; credential metadata and optional harness probes do not attest target identity",
 			},
 		},
-		Stages: stages,
-		Checks: checks,
+		Stages:      stages,
+		Credentials: credentialChecks,
+		Harnesses:   harnessChecks,
+		Checks:      checks,
 		MutationBoundary: []string{
 			"loaded instance.yaml",
 			"loaded config directory",
 			"compiled workflow",
+			runtimeReadinessBoundary(probe),
 			"computed workflow and goober digests",
 			"no provider mutation",
 			"no package installation",
@@ -538,6 +553,7 @@ func runtimePreflightStages(wf apiv1.Workflow, goobers map[string]apiv1.GooberSp
 		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil {
 			stage.Goober = gate.Agentic.Goober
 			if goober, ok := goobers[gate.Agentic.Goober]; ok {
+				stage.CredentialCapabilities = sortedStrings(goober.Capabilities)
 				h := goober.Harness
 				if h == "" {
 					h = apiv1.HarnessCopilot
@@ -565,15 +581,15 @@ func runtimePreflightChecks(stages []runtimePreflightStage) []runtimePreflightCh
 		outcome  string
 		detail   string
 	}{
-		{"authentication", "authentication_unobservable", "unobservable", "credential presence and sign-in state require an external auth probe, which this report intentionally does not run"},
-		{"transport", "transport_unobservable", "unobservable", "provider and harness transport reachability require external network probes, which this report intentionally does not run"},
+		{"authentication", "authentication_unobservable", "unobservable", "target authentication remains unobservable; reporting-process credential and harness observations are listed separately"},
+		{"transport", "transport_unobservable", "unobservable", "target provider transport remains unobservable; bounded local harness failures are listed separately"},
 		{"authorization", "authorization_unobservable", "unobservable", "permission checks require provider authorization probes, which this report intentionally does not run"},
-		{"unavailable_tool", "tool_unobservable", "unobservable", "tool availability requires host or harness execution, which this report intentionally does not run"},
+		{"unavailable_tool", "tool_unobservable", "unobservable", "target tool availability remains unobservable; reporting-process harness observations are listed separately"},
 		{"path_access", "path_access_unobservable", "unobservable", "runtime workspace path access requires runner execution, which this report intentionally does not run"},
 		{"sandbox", "sandbox_unobservable", "unobservable", "sandbox enforcement requires runner probing, which this report intentionally does not run"},
 		{"capability_mismatch", "capability_mismatch_unobservable", "unobservable", "runner capability satisfaction requires scheduler/runner inventory evaluation beyond this static report"},
 		{"cleanup_guarantee", "cleanup_guarantee_unsupported", "unsupported", "cleanup guarantees are not proven by this report contract slice"},
-		{"unsupported", "external_probe_unsupported", "unsupported", "external credential, harness, MCP, sandbox, lifecycle, and provider probes are outside this report contract slice"},
+		{"unsupported", "external_probe_unsupported", "unsupported", "MCP, sandbox, lifecycle, and provider probes are outside this report contract slice"},
 		{"unobservable", "unknown_facts_explicit", "unobservable", "unknown facts are explicit and cannot satisfy a required guarantee"},
 	}
 	checks := make([]runtimePreflightCheck, 0, len(categories)+len(stages))
@@ -658,7 +674,18 @@ func printRuntimePreflightReport(w io.Writer, report runtimePreflightReport) {
 		pf(w, "    %s/%s: %s%s source=%s detail=%s\n",
 			check.Category, check.Code, check.Outcome, stage, check.Source.Fidelity, check.Detail)
 	}
-	pf(w, "  no external probes or mutations performed\n")
+	for _, credential := range report.Credentials {
+		pf(w, "    credential stage=%s capability=%s source=%s/%s %s: %s\n", credential.Stage, credential.Capability, credential.Kind, credential.Name, credential.Code, credential.Detail)
+	}
+	for _, h := range report.Harnesses {
+		pf(w, "    harness stage=%s name=%s executable=%s version=%s\n", h.Stage, h.Harness, h.Executable, h.Version)
+		for _, check := range h.Checks {
+			pf(w, "      %s/%s: %s detail=%s\n", check.Category, check.Code, check.Outcome, check.Detail)
+		}
+	}
+	for _, boundary := range report.MutationBoundary {
+		pf(w, "  %s\n", boundary)
+	}
 }
 
 func runtimePreflightRunnerSummary(runner runtimePreflightRunner) string {
@@ -673,4 +700,11 @@ func runtimePreflightRunnerSummary(runner runtimePreflightRunner) string {
 		parts = append(parts, "os="+runner.OS)
 	}
 	return strings.Join(parts, " ")
+}
+
+func runtimeReadinessBoundary(probe bool) string {
+	if probe {
+		return "bounded read-only harness probes requested in reporting process; no model session or provider mutation"
+	}
+	return "credential source metadata only; no external credential or harness subprocess probes"
 }

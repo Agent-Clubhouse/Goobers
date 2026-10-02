@@ -3237,12 +3237,16 @@ $ goobers pr-select
 check WSL full-isolation readiness and optionally hand off a command
 
 ~~~text
-Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--json]]
+Usage: goobers preflight [--instance <path> --workflow <name> [--execution-identity actual] [--check-readiness] [--json]]
        goobers preflight [--distro <name>] [--launch-wsl -- <goobers-command> [args...]]
 
 With --instance and --workflow, emit the versioned runtime preflight report for
 one workflow without provider mutation, package installation, repository writes,
-model execution, or external credential/harness probes.
+or model execution. Source metadata is inspected without resolving secrets.
+With --check-readiness, also run bounded read-only harness version/authentication
+probes in the reporting process. Source presence is not authentication; local
+observations do not prove daemon or worker readiness. Unsupported probes remain
+explicitly unobservable. No configured model credential is resolved.
 
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux
