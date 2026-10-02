@@ -161,22 +161,40 @@ func (s *runInterventionService) AcceptApprove(admission, execution context.Cont
 	return s.approve(admission, execution, input, true)
 }
 
-func (s *runInterventionService) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
+func (s *runInterventionService) prepareIntervention(
+	execution context.Context,
+	action hitlAction,
+	replayAction string,
+	input httpapi.InterventionRequest,
+) (resolvedInterventionRun, *httpapi.InterventionResult, bool, error) {
 	resolved, err := s.resolve(input.RunID)
 	if err != nil {
-		return httpapi.InterventionResult{}, err
+		result := httpapi.InterventionResult{}
+		return resolvedInterventionRun{}, &result, true, err
 	}
-	// An engine-driven run is answered by its workflow, not by the runner
-	// machinery below. The branch is taken before replayIntervention because
-	// deduplication for engine runs is the protocol's, keyed on the intent's
-	// request id and settled durably inside the workflow — scanning this
-	// daemon's journal snapshot for a runner-written marker would be both
-	// wrong and racy against the workflow's own writer.
+	// Engine runs deduplicate inside the workflow; they must never scan the
+	// daemon snapshot for runner-written replay markers.
 	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionApprove, resolved, input)
+		result, err := s.deliverHITL(execution, action, resolved, input)
+		return resolved, &result, true, err
 	}
-	if result, replayed, err := replayIntervention(resolved, "approve", input); replayed || err != nil {
-		return result, err
+	if result, replayed, err := replayIntervention(resolved, replayAction, input); replayed || err != nil {
+		return resolved, &result, true, err
+	}
+	return resolved, nil, false, nil
+}
+
+func finishIntervention(action string, resolved resolvedInterventionRun, err error) (httpapi.InterventionResult, error) {
+	if err != nil {
+		return httpapi.InterventionResult{}, interventionExecutionError(action, err)
+	}
+	return interventionResult(resolved)
+}
+
+func (s *runInterventionService) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
+	resolved, result, done, err := s.prepareIntervention(execution, hitlActionApprove, "approve", input)
+	if done {
+		return *result, err
 	}
 	decision := strings.TrimSpace(input.Decision)
 	if decision == "" {
@@ -243,10 +261,7 @@ func (s *runInterventionService) approve(admission, execution context.Context, i
 			fmt.Sprintf("run %q is %s and cannot be approved", input.RunID, resolved.phase),
 		)
 	}
-	if err != nil {
-		return httpapi.InterventionResult{}, interventionExecutionError("approve", err)
-	}
-	return interventionResult(resolved)
+	return finishIntervention("approve", resolved, err)
 }
 
 func (s *runInterventionService) Override(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
@@ -266,15 +281,9 @@ func (s *runInterventionService) override(admission, execution context.Context, 
 	if decision == "" {
 		decision = "pass"
 	}
-	resolved, err := s.resolve(input.RunID)
-	if err != nil {
-		return httpapi.InterventionResult{}, err
-	}
-	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionOverride, resolved, input)
-	}
-	if result, replayed, err := replayIntervention(resolved, "override", input); replayed || err != nil {
-		return result, err
+	resolved, result, done, err := s.prepareIntervention(execution, hitlActionOverride, "override", input)
+	if done {
+		return *result, err
 	}
 	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -307,10 +316,7 @@ func (s *runInterventionService) override(admission, execution context.Context, 
 			ExpectedTerminalSeq: resolved.terminalSeq,
 		})
 	})
-	if err != nil {
-		return httpapi.InterventionResult{}, interventionExecutionError("override", err)
-	}
-	return interventionResult(resolved)
+	return finishIntervention("override", resolved, err)
 }
 
 func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
@@ -326,15 +332,9 @@ func (s *runInterventionService) rerunStage(admission, execution context.Context
 	if addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
 	}
-	resolved, err := s.resolve(input.RunID)
-	if err != nil {
-		return httpapi.InterventionResult{}, err
-	}
-	if resolved.engineDriven {
-		return s.deliverHITL(execution, hitlActionRerun, resolved, input)
-	}
-	if result, replayed, err := replayIntervention(resolved, "rerun", input); replayed || err != nil {
-		return result, err
+	resolved, result, done, err := s.prepareIntervention(execution, hitlActionRerun, "rerun", input)
+	if done {
+		return *result, err
 	}
 	if resolved.phase != journal.PhaseEscalated {
 		return httpapi.InterventionResult{}, interventionConflict(
@@ -349,10 +349,7 @@ func (s *runInterventionService) rerunStage(admission, execution context.Context
 			ExpectedTerminalSeq: resolved.terminalSeq,
 		})
 	})
-	if err != nil {
-		return httpapi.InterventionResult{}, interventionExecutionError("rerun stage", err)
-	}
-	return interventionResult(resolved)
+	return finishIntervention("rerun stage", resolved, err)
 }
 
 // escalationResolutionMarker tags the HITL plane's deny resolution event: an
