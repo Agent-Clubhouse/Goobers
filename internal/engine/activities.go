@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -972,32 +971,14 @@ func (a *Activities) scrubber() journal.Scrubber {
 }
 
 func readMutationSidecar(workspace string) (facts []mutationFact, issues []string) {
-	data, err := mutationsidecar.Read(workspace)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, []string{fmt.Sprintf("read sidecar: %v", err)}
-	}
-	for i, line := range bytes.Split(data, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		var fact mutationFact
-		if err := json.Unmarshal(line, &fact); err != nil {
-			issues = append(issues, fmt.Sprintf("line %d: %v", i+1, err))
-			continue
-		}
+	return mutationsidecar.ReadFacts(workspace, func(_ int, fact mutationFact) string {
 		if fact.Provider == "" || fact.Kind == "" || fact.ID == "" {
 			// The provider action has already happened. Keep malformed
 			// provenance observable without converting success into failure.
-			issues = append(issues, fmt.Sprintf("line %d: provider, kind, and id are required", i+1))
-			continue
+			return "provider, kind, and id are required"
 		}
-		facts = append(facts, fact)
-	}
-	return facts, issues
+		return ""
+	})
 }
 
 // EvaluateAutomated runs an automated gate check. Scalar checks remain pure;

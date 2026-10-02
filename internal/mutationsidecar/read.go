@@ -3,6 +3,7 @@ package mutationsidecar
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,36 @@ const MaxBytes = 16 << 20
 
 // MaxLines bounds the number of decoded facts or per-line diagnostics.
 const MaxLines = 10000
+
+// ReadFacts parses a sidecar for diagnostics without making malformed facts fatal.
+func ReadFacts[T any](workspace string, validate func(line int, fact T) string) (facts []T, issues []string) {
+	data, err := Read(workspace)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{fmt.Sprintf("read sidecar: %v", err)}
+	}
+	for i, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var fact T
+		if err := json.Unmarshal(line, &fact); err != nil {
+			issues = append(issues, fmt.Sprintf("line %d: %v", i+1, err))
+			continue
+		}
+		if validate != nil {
+			if issue := validate(i+1, fact); issue != "" {
+				issues = append(issues, fmt.Sprintf("line %d: %s", i+1, issue))
+				continue
+			}
+		}
+		facts = append(facts, fact)
+	}
+	return facts, issues
+}
 
 // ReadHandoff returns a complete receipt set suitable for durable custody.
 // Missing files are empty; legacy or conflicting receipt identities are errors.
