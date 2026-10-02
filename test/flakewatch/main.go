@@ -511,6 +511,9 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		annotations, err := getAll[annotation](ctx, c, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
 			"per_page": {"100"},
 		})
+		if status := serverErrorStatus(err); status != 0 {
+			return failureScan{}, &sourceUnavailableError{status: status, err: err}
+		}
 		if err != nil {
 			return failureScan{}, err
 		}
@@ -570,15 +573,15 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 	return result, nil
 }
 
-// sourceUnavailableError marks a source whose checks or jobs listing kept
-// answering 5xx after retries; scan records it and moves on.
+// sourceUnavailableError marks a source whose checks, jobs or annotations
+// kept answering 5xx after retries; scan records it and moves on.
 type sourceUnavailableError struct {
 	status int
 	err    error
 }
 
 func (e *sourceUnavailableError) Error() string {
-	return fmt.Sprintf("checks unavailable (HTTP %d)", e.status)
+	return fmt.Sprintf("source unavailable (HTTP %d)", e.status)
 }
 
 func (e *sourceUnavailableError) Unwrap() error { return e.err }

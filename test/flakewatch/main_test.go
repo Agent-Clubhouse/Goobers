@@ -778,6 +778,25 @@ func TestFailuresRecordsJobLogThatStaysUnavailable(t *testing.T) {
 	}
 }
 
+func TestFailuresReportsUnavailableAnnotationsAsUnavailableSource(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/sha/check-runs", jsonHandler(checksFixture(401)))
+	mux.HandleFunc("/repos/acme/app/check-runs/401/annotations", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	_, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).failures(context.Background(), source{SHA: "sha"}, time.Now())
+	var unavailable *sourceUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.status != http.StatusBadGateway {
+		t.Fatalf("failures error = %v, want unavailable source (HTTP 502)", err)
+	}
+}
+
 func TestRequestDoesNotRetryNonGETServerErrors(t *testing.T) {
 	t.Parallel()
 	calls := 0
