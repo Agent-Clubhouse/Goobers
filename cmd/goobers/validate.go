@@ -90,7 +90,10 @@ var validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--c
 	"that identity lacks Contribute, Contribute to pull requests or Create\n" +
 	"branch, and warns on a missing Force push, a held policy bypass, a blocking\n" +
 	"Prefix policy over refs/heads/, and backlog.doneStates state names the\n" +
-	"Boards project does not have; these checks only read. " +
+	"Boards project does not have; these checks only read. It also probes\n" +
+	"every credentials: capability override that replaces a repository token\n" +
+	"against each gaggle's target repository, since an override applies to\n" +
+	"every gaggle. " +
 	"--check-dispatch-namespaces additionally verifies, for each gaggle, that\n" +
 	"its declared isolation.namespace exists and this kubeconfig's credentials\n" +
 	"hold the RBAC grants mode-3 dispatch needs there (#4897) — the same check\n" +
@@ -344,7 +347,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		options.deferModelDiscovery, modelCredential,
+		options.deferModelDiscovery, modelCredential, knownExternalTelemetryConnectorNames(cfg),
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)

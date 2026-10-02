@@ -102,6 +102,7 @@ func TestWorkerGooberDigestsAgreeWithTheDaemonForTheSameTree(t *testing.T) {
 		snapshot.cfg.Runner.HarnessCommand,
 		true,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("daemon-side goober digests: %v", err)

@@ -183,6 +183,7 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		cfg.Runner.HarnessCommand,
 		true,
 		nil,
+		knownExternalTelemetryConnectorNames(cfg),
 	)
 	if err != nil {
 		return runtimePreflightReport{}, err

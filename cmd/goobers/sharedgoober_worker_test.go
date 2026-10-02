@@ -36,6 +36,7 @@ func TestWorkerRetainsSharedPersonaAcrossInstructionReload(t *testing.T) {
 	_, daemonPins, _, _, err := compiledMachinesWithGooberDigestsAndWarnings(
 		instance.NewLayout(root).ConfigDir(), snapshot.set, goobersByName(snapshot.set), snapshot.instructions,
 		harnessEnvironmentPolicy(snapshot.cfg.Runner), snapshot.cfg.Runner.HarnessCommand, true, nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

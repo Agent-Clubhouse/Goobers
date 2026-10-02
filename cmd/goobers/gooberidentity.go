@@ -169,9 +169,10 @@ func compiledMachinesWithGooberDigestsAndWarnings(
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 	modelCredential func(ctx context.Context) (string, error),
+	knownTelemetryConnectors []string,
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	return compiledMachinesWithGooberDigests(
-		set, goobers, instructions, environment, harnessCommand, deferModelDiscovery, modelCredential,
+		set, goobers, instructions, environment, harnessCommand, deferModelDiscovery, modelCredential, knownTelemetryConnectors,
 		func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 			return loadGooberSkillPackages(configDir, gaggle, resolved)
 		},
@@ -201,9 +202,10 @@ func compiledMachinesWithGooberDigests(
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 	modelCredential func(ctx context.Context) (string, error),
+	knownTelemetryConnectors []string,
 	skillPackagesFor func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error),
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, environment, harnessCommand, deferModelDiscovery, modelCredential)
+	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, environment, harnessCommand, deferModelDiscovery, modelCredential, knownTelemetryConnectors)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
