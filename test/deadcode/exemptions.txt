@@ -282,22 +282,14 @@ github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Sim
 # caller, the optional semantic check after the deterministic handoff validator. The
 # whole package is exercised only by its own tests until that gate wires it; remove
 # these entries in the PR that adds the caller.
-github.com/goobers/goobers/internal/decider.New # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.isLoopback # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Client.Decide # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Client.delay # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Client.once # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.checkAnswers # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.levelKeys # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.checkDistribution # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.sleepCtx # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.StatusError.Error # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Noul # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
 github.com/goobers/goobers/internal/decider.Choice # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
 github.com/goobers/goobers/internal/decider.Score # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
-github.com/goobers/goobers/internal/decider.Question.validate # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDenials # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.resolveReadDenial # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.pathContains # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.singleLink # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
 [windows] github.com/goobers/goobers/internal/sandbox.validateReadDeniedDirectory # Native read-denial policy helper (#6524); only Linux/macOS native wrappers call validation, while Windows refuses sandbox construction. expires=2027-01-01
+github.com/goobers/goobers/internal/decisiongate.RetryBudget.Run # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
+github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).

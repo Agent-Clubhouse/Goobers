@@ -556,6 +556,7 @@ type agenticExecutorInput struct {
 	SharedRegistry   *journal.RegistryScrubber
 	RunsDir          string
 	SandboxPosture   instance.SandboxPosture
+	Observer         harness.Observer
 	ArtifactRecorder runner.ArtifactRecorder
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
@@ -634,6 +635,9 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 	}
 	if input.SandboxPosture == instance.SandboxEnforced {
 		opts = append(opts, harness.WithSandboxEnforcement())
+	}
+	if input.Observer != nil {
+		opts = append(opts, harness.WithObserver(input.Observer))
 	}
 	return harness.NewExecutor(
 		adapter,
