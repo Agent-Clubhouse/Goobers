@@ -189,6 +189,7 @@ func TestDefaultExcludeAdmitsPackagesExtractedFromCmd(t *testing.T) {
 	for _, line := range []string{
 		"github.com/goobers/goobers/internal/apireadcache/cache.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/intervention/service.go:10.1,12.2 2 1",
+		"github.com/goobers/goobers/internal/nowork/terminal.go:10.1,12.2 2 1",
 	} {
 		if exclude.MatchString(line) {
 			t.Errorf("defaultExclude %q drops extracted package entry %q from the coverage denominator", defaultExclude, line)
