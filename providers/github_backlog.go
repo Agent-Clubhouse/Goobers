@@ -526,14 +526,14 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		return EnsureWorkItemLabelsResult{}, err
 	}
 
-	existing := make(map[string]bool)
+	var existing []string
 	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
 		var pageLabels []githubLabel
 		if err := json.Unmarshal(page, &pageLabels); err != nil {
 			return fmt.Errorf("decode labels page: %w", err)
 		}
 		for _, label := range pageLabels {
-			existing[strings.ToLower(label.Name)] = true
+			existing = append(existing, label.Name)
 		}
 		return nil
 	}); err != nil {
@@ -544,14 +544,12 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		Created: []string{},
 		Skipped: []string{},
 	}
-	for _, label := range labels {
-		label.Name = strings.TrimSpace(label.Name)
-		label.Color = strings.TrimPrefix(strings.TrimSpace(label.Color), "#")
+	for _, step := range planLabelEnsure(existing, labels, lowerLabelName) {
+		label := step.Label
 		if label.Name == "" || label.Color == "" {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("label name and color are required")
 		}
-		key := strings.ToLower(label.Name)
-		if existing[key] {
+		if !step.Create {
 			result.Skipped = append(result.Skipped, label.Name)
 			continue
 		}
@@ -563,7 +561,6 @@ func (p *GitHubProvider) EnsureWorkItemLabels(
 		}, &created); err != nil {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("create label %q: %w", label.Name, err)
 		}
-		existing[key] = true
 		result.Created = append(result.Created, label.Name)
 	}
 	return result, nil
