@@ -9,6 +9,67 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestHydratePatchesCopiesInputAndSkipsExistingPatch(t *testing.T) {
+	files := []providers.ChangedFile{{
+		Path:  "status.go",
+		Patch: "existing patch",
+	}}
+	argsCalls := 0
+
+	got, err := hydratePatches(t.TempDir(), files, func(providers.ChangedFile) []string {
+		argsCalls++
+		return []string{"diff"}
+	})
+	if err != nil {
+		t.Fatalf("hydratePatches: %v", err)
+	}
+	if argsCalls != 0 {
+		t.Fatalf("args callback calls = %d, want 0 for an existing patch", argsCalls)
+	}
+	got[0].Patch = "changed output"
+	if files[0].Patch != "existing patch" {
+		t.Fatalf("input patch = %q after changing output, want unchanged", files[0].Patch)
+	}
+}
+
+func TestPatchHydrationErrorsPreserveGitCommandsAndRenamePathOrder(t *testing.T) {
+	files := []providers.ChangedFile{{
+		Path:         "new.go",
+		PreviousPath: "old.go",
+	}}
+	tests := []struct {
+		name    string
+		hydrate func(string, []providers.ChangedFile) ([]providers.ChangedFile, error)
+		command string
+	}{
+		{
+			name: "current",
+			hydrate: func(dir string, files []providers.ChangedFile) ([]providers.ChangedFile, error) {
+				return hydrateCurrentPatches(dir, "base", files)
+			},
+			command: "git diff --no-color --function-context base...HEAD -- old.go new.go",
+		},
+		{
+			name: "merged sibling",
+			hydrate: func(dir string, files []providers.ChangedFile) ([]providers.ChangedFile, error) {
+				return hydrateMergedSiblingPatches(dir, "merge", files)
+			},
+			command: "git diff --no-color --function-context --find-renames merge^ merge -- old.go new.go",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := test.hydrate(t.TempDir(), files)
+			if err == nil {
+				t.Fatal("hydrate returned nil error outside a git repository")
+			}
+			if !strings.Contains(err.Error(), test.command+":") {
+				t.Fatalf("error = %q, want command %q", err, test.command)
+			}
+		})
+	}
+}
+
 func TestUnifiedHunkScopeParsesStandardAndCombinedHeaders(t *testing.T) {
 	tests := map[string]string{
 		"@@ -10,4 +10,7 @@ func runStatus() {":         "func runStatus() {",
