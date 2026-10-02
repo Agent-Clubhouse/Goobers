@@ -2231,6 +2231,9 @@ A push rejected as a ref race (non-fast-forward, "failed to push some
 refs") fetches the remote tip, rebases the local branch onto it, and
 retries up to 2 more times before failing, so a fully-validated diff is
 not discarded because a concurrent writer advanced the branch (#3366).
+A push the remote refuses outright (an ADO branch policy, or a GitHub
+App lacking the `workflows` permission for a .github/workflows change)
+fails immediately without retrying.
 [path] defaults to the current directory (the stage's worktree).
 Exit codes: 0 = pushed, 1 = business error, 2 = usage/IO error.
 

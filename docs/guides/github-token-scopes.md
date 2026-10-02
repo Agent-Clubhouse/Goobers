@@ -5,6 +5,11 @@
 > come from `instance.yaml` token refs resolved by `internal/credentials`
 > (issue #14). Tier-3 identity (Key Vault, Entra) is out of scope here.
 
+> **GitHub Enterprise Server is unsupported.** `provider: github` always means
+> github.com. `goobers validate` and instance loading refuse `baseUrl` on a
+> github repository, backlog, additional repo or sibling (gaggle code
+> `CFG013`); `baseUrl` is only for `provider: gitea`.
+
 ## Create a fine-grained PAT for a repository
 
 Open GitHub's [fine-grained personal access token settings](https://github.com/settings/personal-access-tokens/new)

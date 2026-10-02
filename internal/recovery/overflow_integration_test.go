@@ -140,6 +140,63 @@ func TestIntegrationOverflowRecordRefusesAnArchiveClaim(t *testing.T) {
 	}
 }
 
+// TestIntegrationRenewOverflowRetentionVerifiesThePinAndMovesForward pins the
+// overflow tier's renewal contract (#5403): the record every overflow reader
+// consults carries the extended deadline, the extension is forward-only, and
+// a record whose pin no longer resolves is refused rather than extended — the
+// tier's equivalent of an archive that no longer matches its binding.
+func TestIntegrationRenewOverflowRetentionVerifiesThePinAndMovesForward(t *testing.T) {
+	testdep.Require(t, "git")
+	source, root := t.TempDir(), t.TempDir()
+	recoveryTestGit(t, source, "init", "--initial-branch=main")
+	recoveryTestGit(t, source, "commit", "--allow-empty", "-m", "base")
+	base := recoveryTestGit(t, source, "rev-parse", "HEAD")
+	record := overflowSnapshot(t, source, base, storageTestRecord().RepositoryKey, "renew-me", 0)
+	published, path, err := PublishOverflow(context.Background(), source, root, record)
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	deadline := published.RetainUntil.Add(6 * time.Hour)
+	renewed, err := RenewOverflowRetention(context.Background(), source, path, deadline)
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if !renewed.RetainUntil.Equal(deadline) {
+		t.Fatalf("renewal returned deadline %s, want %s", renewed.RetainUntil, deadline)
+	}
+	entries, _, err := ReadOverflow(context.Background(), root)
+	if err != nil || len(entries) != 1 || !entries[0].Record.RetainUntil.Equal(deadline) {
+		t.Fatalf("the overflow tier's own read does not see the renewed deadline: %+v %v", entries, err)
+	}
+	comparison := entries[0].Record
+	comparison.RetainUntil = published.RetainUntil
+	if comparison != published {
+		t.Fatalf("renewal changed more than the deadline: %+v != %+v", entries[0].Record, published)
+	}
+	// Never shortened.
+	if again, err := RenewOverflowRetention(context.Background(), source, path, published.RetainUntil); err != nil || !again.RetainUntil.Equal(deadline) {
+		t.Fatalf("an earlier deadline shortened the renewed record: %+v %v", again, err)
+	}
+	// A pin that no longer resolves is refused, and the record is untouched.
+	recoveryTestGit(t, source, "update-ref", "-d", published.Ref)
+	if _, err := RenewOverflowRetention(context.Background(), source, path, deadline.Add(time.Hour)); !errors.Is(err, ErrOverflowRefUnresolved) {
+		t.Fatalf("renewal extended a record whose pin is gone: %v", err)
+	}
+	if current, err := ReadOverflowRecord(path); err != nil || !current.RetainUntil.Equal(deadline) {
+		t.Fatalf("a refused renewal changed the record: %+v %v", current, err)
+	}
+	// A record removed meanwhile (promoted or retired) is reported, never recreated.
+	if err := DeleteOverflowEntry(root, published); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenewOverflowRetention(context.Background(), source, path, deadline.Add(time.Hour)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("renewal of a removed overflow record: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("renewal recreated a removed overflow entry: %v", err)
+	}
+}
+
 func overflowSnapshot(t *testing.T, repository, base, repositoryKey, runID string, age time.Duration) Record {
 	t.Helper()
 	recoveryTestGit(t, repository, "checkout", "-b", "snap-"+runID, base)

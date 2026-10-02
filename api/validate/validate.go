@@ -357,6 +357,7 @@ const (
 	errorWorkcopiesRoot           WarningCode = "CFG008"
 	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
+	errorGaggleGitHubBaseURL      WarningCode = "CFG013"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1188,6 +1189,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// non-ADO mismatch (e.g. GitHub project, Gitea backlog) is warned, not
 	// refused, so no existing non-ADO config breaks.
 	ix.checkGaggleProviderTopology(r)
+	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
+	ix.checkGaggleGitHubBaseURL(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -2137,6 +2140,38 @@ func (ix *index) checkGaggleProviderTopology(r *Report) {
 					"provider than the project is not supported between these providers, and backlog stages "+
 					"query the project provider",
 				backlog, project)
+		}
+	}
+}
+
+// checkGaggleGitHubBaseURL refuses (CFG013) a baseUrl on any github repository
+// or backlog reference. GitHub Enterprise Server is out of scope (#6347): clone
+// URLs and git-auth matchers always address github.com, so a baseUrl there
+// would be silently ignored. The schema rejects it too, but a JSON-Schema
+// `not` renders only as "not failed"; this names the field and the reason.
+func (ix *index) checkGaggleGitHubBaseURL(r *Report) {
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec
+		var fields []string
+		if spec.Project.Provider == apiv1.ProviderGitHub && spec.Project.BaseURL != "" {
+			fields = append(fields, "spec.project.baseUrl")
+		}
+		if spec.Backlog.Provider == apiv1.ProviderGitHub && spec.Backlog.BaseURL != "" {
+			fields = append(fields, "spec.backlog.baseUrl")
+		}
+		for i, repo := range spec.AdditionalRepos {
+			if repo.Provider == apiv1.ProviderGitHub && repo.BaseURL != "" {
+				fields = append(fields, fmt.Sprintf("spec.additionalRepos[%d].baseUrl", i))
+			}
+		}
+		for i, sib := range spec.Siblings {
+			if sib.Project.Provider == apiv1.ProviderGitHub && sib.Project.BaseURL != "" {
+				fields = append(fields, fmt.Sprintf("spec.siblings[%d].project.baseUrl", i))
+			}
+		}
+		for _, field := range fields {
+			r.add(errorGaggleGitHubBaseURL, Error, ix.gaggleFile[name], "Gaggle", name,
+				"%s: %s", field, apiv1.GitHubBaseURLUnsupported)
 		}
 	}
 }
