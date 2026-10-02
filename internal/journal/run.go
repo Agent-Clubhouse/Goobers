@@ -32,13 +32,14 @@ var ErrImmutableSourceLockMissing = errors.New("immutable source journal lock is
 // a single line, and fsyncs before returning, so a completed event is never lost
 // to a crash. All methods are safe for concurrent use.
 type Run struct {
-	dir             string
-	id              RunIdentity
-	scrubber        Scrubber
-	now             func() time.Time
-	observer        func(runID string, seq uint64)
-	pendingObserver *appendObserver
-	commits         *commitTarget
+	dir              string
+	id               RunIdentity
+	scrubber         Scrubber
+	now              func() time.Time
+	observer         func(runID string, seq uint64)
+	pendingObserver  *appendObserver
+	observerStartSeq uint64
+	commits          *commitTarget
 
 	mu           sync.Mutex
 	events       *os.File
@@ -1141,7 +1142,9 @@ func (r *Run) Close() error {
 	err := r.events.Close()
 	releaseRunLock(r.lock)
 	pending := r.pendingObserver
-	if pending != nil {
+	// Closing an unchanged recovered handle must not initiate derived intake.
+	// Rehydration of terminal live journals can hold the writer-wide mutex.
+	if pending != nil && r.seq > r.observerStartSeq {
 		pending.enqueue(r.id.RunID, r.seq)
 	}
 	r.mu.Unlock()

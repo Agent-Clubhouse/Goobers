@@ -209,6 +209,69 @@ func TestEmitDedupSurvivesWriterRestart(t *testing.T) {
 	}
 }
 
+// A terminal replay must not wait for derived intake while holding Writer.mu.
+func TestTerminalReplayDoesNotObserveRecoveredWatermark(t *testing.T) {
+	original, runsDir := testWriter(t)
+	at := time.Now().UTC()
+	if _, err := original.Emit(context.Background(), openBatch("finished", at)); err != nil {
+		t.Fatal(err)
+	}
+	terminal := EmitRequest{RunID: "finished", Gaggle: "web", Ops: []Op{
+		appendOp("finished|0||0|1", at.Add(time.Minute), journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}),
+	}}
+	if _, err := original.Emit(context.Background(), terminal); err != nil {
+		t.Fatal(err)
+	}
+	original.Close()
+
+	observedTerminal := make(chan struct{}, 1)
+	release := make(chan struct{})
+	restarted, err := NewWriter(func(string) (string, bool) { return runsDir, true },
+		WithContextObserver(func(ctx context.Context, runID string, _ uint64) {
+			if runID != "finished" {
+				return
+			}
+			observedTerminal <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	defer close(release)
+	replayed := make(chan error, 1)
+	go func() {
+		_, err := restarted.Emit(context.Background(), terminal)
+		replayed <- err
+	}()
+	select {
+	case <-observedTerminal:
+		t.Fatal("unchanged terminal recovery waited for intake under the writer lock")
+	case err := <-replayed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal replay blocked")
+	}
+	unrelated := make(chan error, 1)
+	go func() {
+		_, err := restarted.Emit(context.Background(), openBatch("unrelated", at))
+		unrelated <- err
+	}()
+	select {
+	case err := <-unrelated:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("unrelated emit blocked behind terminal intake")
+	}
+}
+
 func TestEmitTerminalClosesJournalAndRefusesNewOps(t *testing.T) {
 	w, runsDir := testWriter(t)
 	started := time.Now().UTC().Truncate(time.Second)
