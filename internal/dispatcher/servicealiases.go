@@ -8,8 +8,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/goobers/goobers/internal/runnercap"
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 // ServiceReader is the narrow API access needed to resolve in-cluster endpoints.

@@ -2,9 +2,10 @@ package dispatcher
 
 import (
 	"encoding/json"
+	"testing"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"testing"
 )
 
 func TestStagePodOSAndServiceAccountGolden(t *testing.T) {

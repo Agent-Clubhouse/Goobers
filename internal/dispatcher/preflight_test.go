@@ -2,11 +2,12 @@ package dispatcher
 
 import (
 	"context"
+	"strings"
+	"testing"
+
 	"k8s.io/apimachinery/pkg/version"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/utils/ptr"
-	"strings"
-	"testing"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"

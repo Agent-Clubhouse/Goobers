@@ -6,10 +6,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +13,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func aliasConfig() Config {
