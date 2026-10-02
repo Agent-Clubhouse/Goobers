@@ -7,7 +7,7 @@ an opt-in reference topology; local `goobers init` defaults remain plaintext.
 After creating the namespace, provision the dedicated RSA key once:
 
 ```sh
-deploy/reference/temporal-codec/provision-key.sh goobers-system goobers-temporal-codec-key
+config-examples/temporal-codec/provision-key.sh goobers-system goobers-temporal-codec-key
 ```
 
 The script uses OpenSSL's RSA key generator, then `kubectl create secret` and

@@ -121,7 +121,7 @@ not certify key reachability or that stored histories have been migrated.
 
 The [authenticated reference](../../deploy/reference/authenticated/README.md)
 opts into a separate RSA wrapping-key Secret by default. Provision it once using
-[the reference key script](../../deploy/reference/temporal-codec/provision-key.sh)
+[the reference key script](../../config-examples/temporal-codec/provision-key.sh)
 and retain it alongside history backups. See the
 [reference instructions](../../deploy/reference/temporal-codec/README.md) for
 mounts, rotation and explicit plaintext opt-out.
