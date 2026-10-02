@@ -52,7 +52,7 @@ func (r *Runner) refuseSelfExecution(ctx context.Context, jr executionJournal, i
 // park the item and release claims without executing another workflow stage.
 func SelfExecutionBlockedResult(stage string) apiv1.ResultEnvelope {
 	err := &SelfExecutionRefusal{Stage: stage}
-	return apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Summary: err.Error(), Error: &apiv1.ErrorInfo{Code: SelfExecutionDeniedCode, Message: err.Error()}}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultBlocked, Summary: err.Error(), Error: journal.ErrorInfoFor(SelfExecutionDeniedCode, err, false)}
 }
 
 func (r *Runner) observeSelfExecution(refused bool) {
