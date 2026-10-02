@@ -1,10 +1,15 @@
 package harness
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 func TestResolveHarnessCommandUsesPowerShellShim(t *testing.T) {
@@ -139,5 +144,107 @@ func TestResolvedHarnessCommandPreservesBackticksInPrompt(t *testing.T) {
 	}
 	if strings.ReplaceAll(string(got), "\r\n", "\n") != prompt {
 		t.Fatalf("captured prompt = %q, want %q (backticks must survive the PowerShell shim unchanged)", got, prompt)
+	}
+}
+
+func TestCopilotWindowsShimQuotedPromptUsesStdin(t *testing.T) {
+	directory := t.TempDir()
+	cmdPath := filepath.Join(directory, "copilot.cmd")
+	psPath := filepath.Join(directory, "copilot.ps1")
+	if err := os.WriteFile(cmdPath, []byte("@echo off\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(psPath, []byte("exit 0\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+	workspace := t.TempDir()
+	var calls []ProcessRequest
+	runner := &fakeProcessRunner{result: ProcessResult{Transcript: []byte("finished"), ExitCode: 0}}
+	runner.act = func(req ProcessRequest) error {
+		calls = append(calls, req)
+		if len(calls) == 2 {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "ok"})
+		}
+		return nil
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot"}, Runner: runner}
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace),
+		Instructions:   `Use the "quoted" title exactly.`,
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Timeout:        time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("process calls = %d, want initial call plus one recovery", len(calls))
+	}
+	for i, call := range calls {
+		if call.Command[0] != cmdPath {
+			t.Fatalf("call %d command[0] = %q, want npm cmd shim %q", i, call.Command[0], cmdPath)
+		}
+		if slices.Contains(call.Command, psPath) || strings.Contains(strings.ToLower(strings.Join(call.Command, " ")), "powershell") {
+			t.Fatalf("call %d used PowerShell for quoted prompt: %v", i, call.Command)
+		}
+		if !slices.Contains(call.Command, defaultPromptFlag+"=") {
+			t.Fatalf("call %d missing empty prompt-mode flag: %v", i, call.Command)
+		}
+		for _, arg := range call.Command {
+			if arg != defaultPromptFlag+"=" && (strings.HasPrefix(arg, defaultPromptFlag+"=") || strings.Contains(arg, `"quoted"`)) {
+				t.Fatalf("call %d leaked prompt into argv: %v", i, call.Command)
+			}
+		}
+		if !strings.Contains(string(call.Stdin), `"`) {
+			t.Fatalf("call %d stdin missing quoted content: %q", i, call.Stdin)
+		}
+	}
+	if !strings.Contains(string(calls[0].Stdin), `"quoted"`) {
+		t.Fatalf("initial stdin missing quoted prompt: %q", calls[0].Stdin)
+	}
+	if !strings.Contains(string(calls[1].Stdin), "ended without writing the mandatory completion file") {
+		t.Fatalf("recovery stdin missing completion repair prompt: %q", calls[1].Stdin)
+	}
+}
+
+func TestCopilotWindowsCustomBatchLauncherKeepsPromptArgv(t *testing.T) {
+	directory := t.TempDir()
+	launcherPath := filepath.Join(directory, "copilot-launcher.cmd")
+	if err := os.WriteFile(launcherPath, []byte("@echo off\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{Transcript: []byte("finished"), ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "ok"})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot-launcher"}, Runner: runner}
+	_, err := adapter.Run(context.Background(), RunRequest{
+		Mode:           ModeInvoke,
+		Envelope:       testEnvelope(workspace),
+		Instructions:   `Use the "quoted" title exactly.`,
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Timeout:        time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(runner.lastReq.Stdin) != 0 {
+		t.Fatalf("custom launcher received stdin prompt unexpectedly: %q", runner.lastReq.Stdin)
+	}
+	prompt, ok := copilotPromptArgValue(runner.lastReq.Command)
+	if !ok || !strings.Contains(prompt, `"quoted"`) {
+		t.Fatalf("custom launcher prompt arg = %q, %v; command=%v", prompt, ok, runner.lastReq.Command)
 	}
 }
