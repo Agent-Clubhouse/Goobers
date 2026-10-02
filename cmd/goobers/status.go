@@ -193,6 +193,7 @@ func renderSchedulerStatusSignals(
 	text.WriteString(providerQuotaStatusLine(status, now))
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
+	text.WriteString(telemetryIngestStatusLine(status, now))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
 	text.WriteString(configReloadRejectionStatusLine(status))
