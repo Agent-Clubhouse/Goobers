@@ -233,31 +233,36 @@ func TestExistingCanonicalFixtureBytesSurviveCheckCycle(t *testing.T) {
 
 func TestRefreshMatchesExistingCanonicalFixtureBytes(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join("..", "..", "test", "providers", "testdata", "github_contract.json")
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	baseline, err := Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	refreshed, err := Refresh(context.Background(), RefreshConfig{
-		Repository: baseline.Repository,
-		Issue:      baseline.Issue,
-		Token:      "dedicated-token",
-		Client:     fixtureReplayClient(t, baseline),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	after, err := canonical(refreshed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	after = append(after, '\n')
-	if !bytes.Equal(before, after) {
-		t.Fatalf("canonical GitHub fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
+	for _, name := range []string{"github_contract.json", "github_pr_contract.json"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "test", "providers", "testdata", name)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseline, err := Read(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refreshed, err := Refresh(context.Background(), RefreshConfig{
+				Repository:  baseline.Repository,
+				Issue:       baseline.Issue,
+				PullRequest: baseline.PullRequest,
+				Token:       "dedicated-token",
+				Client:      fixtureReplayClient(t, baseline),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := canonical(refreshed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after = append(after, '\n')
+			if !bytes.Equal(before, after) {
+				t.Fatalf("canonical GitHub fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
 	}
 }
 
