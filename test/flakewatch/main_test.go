@@ -806,3 +806,39 @@ func TestParseOptionsRejectsInvalidRepository(t *testing.T) {
 		t.Fatal("parseOptions accepted invalid repository")
 	}
 }
+
+// The unit tier's capture annotates failures (test/testtiming, #681); flake
+// identity must still come from the job log so known ledger entries match.
+func TestFailuresFingerprintCaptureAnnotationsFromTheLog(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/actions/runs/99/jobs", jsonHandler(map[string]any{
+		"jobs": []workflowJob{{
+			ID: 201, CheckRunURL: "https://api.github.test/repos/acme/app/check-runs/301", Conclusion: "failure",
+		}},
+	}))
+	mux.HandleFunc("/repos/acme/app/check-runs/301/annotations", jsonHandler([]annotation{{
+		Path:    "internal/runner/run_test.go",
+		Title:   "go test: TestResume failed in github.com/goobers/goobers/internal/runner",
+		Message: "panic: boom\ngithub.com/goobers/goobers/internal/runner.TestResume(0x0)",
+	}}))
+	mux.HandleFunc("/repos/acme/app/actions/jobs/201/logs", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "=== RUN   TestResume\nassertion failed\n--- FAIL: TestResume (0.01s)\nFAIL\tgithub.com/goobers/goobers/internal/runner\t0.02s\n")
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	scanned, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).failures(context.Background(), source{SHA: "sha", RunID: 99, URL: "run-99"}, time.Now())
+	if err != nil {
+		t.Fatalf("failures: %v", err)
+	}
+	got := scanned.Failures
+	if len(got) != 1 || got[0].Package != "./internal/runner" || got[0].Test != "TestResume" {
+		t.Fatalf("failures = %+v, want only the log failure", got)
+	}
+	if want := flake.NormalizeSignature("assertion failed"); got[0].FailureSignature != want {
+		t.Fatalf("signature = %q, want log-derived %q", got[0].FailureSignature, want)
+	}
+}

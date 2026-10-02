@@ -25,6 +25,11 @@ import (
 const (
 	reportSchema = "goobers.dev/stress/v1"
 	flakeLabel   = "ci:flake"
+	// goTestAnnotationPrefix titles the failure annotations test/testtiming
+	// prints for the unit tier (its annotationTitlePrefix). Those failures are
+	// fingerprinted from the job log, as before the annotations existed;
+	// moving the ledger onto structured results is a separate decision (#681).
+	goTestAnnotationPrefix = "go test: "
 )
 
 var (
@@ -466,6 +471,11 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 			return failureScan{}, err
 		}
 		for _, annotation := range annotations {
+			if strings.HasPrefix(annotation.Title, goTestAnnotationPrefix) {
+				// The job log below carries the same failure; fingerprinting it
+				// from there keeps existing ledger entries matching.
+				continue
+			}
 			text := strings.TrimSpace(strings.Join([]string{
 				annotation.Title, annotation.Message, annotation.RawDetail,
 			}, "\n"))
