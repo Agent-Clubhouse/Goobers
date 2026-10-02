@@ -14,6 +14,25 @@ require explicit adopter configuration, not a broad egress bypass.
 Every manifest carries a comment citing the shape-doc section it implements, so drift
 between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy/reference`).
 
+## Workflow execution policy
+
+Use [`instance.yaml`](instance.yaml) as the hosted instance policy baseline
+when provisioning the API and worker roots. It explicitly sets
+`placement.selfExecution: deny` and declares a Linux dispatcher runner; create
+its `goobers-work` Deployment template and configure repositories, credentials,
+and API TLS in your overlay. This file is instance configuration, not a
+Kubernetes resource, and is not passed to kustomize. Keep the deny setting in
+both the daemon and worker configuration mirrors. Validate the finished
+instance before enabling the API replica or admitting workflow work. For an
+existing deployment, drain work and restart the daemon and workers after
+changing this startup-scoped instance policy.
+
+Every workflow task and agentic reviewer must place remotely. The built-in
+implementation workflows may contain instance-root-only commands and need
+migration before this policy can be enabled. See the
+[self execution migration guide](../../docs/guides/instance-placement.md#deny-execution-on-the-daemon).
+Local installs retain the compatible `allow` default.
+
 ## Layout
 
 | Path | Contents | Shape doc |
@@ -76,7 +95,10 @@ namespace is a required step, not follow-up hardening; bring the stack up in thi
    and wait for the Job to complete
    (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
    The Job is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
-4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
+4. For the authenticated reference, provision the dedicated [Temporal wrapping
+   key](temporal-codec/README.md) before the daemon and worker. Its generator opts
+   into payload encryption by default; keep the key with history backups.
+5. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
    registered).
 
 `namespace-job.yaml`'s `TEMPORAL_NAMESPACE`/`RETENTION` env vars are the single source for
@@ -110,6 +132,11 @@ scale-to-zero default.
   class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
   decision 016 — the rendered output is the only authoritative copy, and the render
   refuses unfilled documentation-CIDR placeholders instead of shipping stubs).
+- **Policies compose additively**: NetworkPolicy has no deny and no precedence, so
+  the effective egress of a pod is the union of every policy selecting it. Never
+  grant to `goobers.dev/role=stage` without a runner-class label; a generic grant
+  makes every per-class policy a no-op. See
+  [NetworkPolicy composition](../../docs/design/networkpolicy-composition.md).
 - **Image**: containers reference the image name `goobers`; the kustomize `images:`
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
@@ -261,12 +288,18 @@ the class-independent floor (default-deny-all + allow-dns).
 The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
 ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
 get, delete and list pods in this gaggle's namespace, read the worker's own
-Deployment (DI-9 template read), and read the Go module cache claim. This is what lets a worker actually dispatch
+Deployment (DI-9 template read), read the Go module cache claim, and verify stage ServiceAccounts. This is what lets a worker actually dispatch
 pod-per-stage runs into a gaggle namespace (#4286); stage pods themselves still get
 no token mount and no RBAC grants at all. The included `goobers-stage` ServiceAccount
-is still a target-topology template, not one the current dispatcher selects — every
-stage pod runs under its namespace's default ServiceAccount (workload identity
-federation, `spec.isolation.identityRef`, is tracked separately from #4897). As of
+is the default on both image and template render paths. Set
+`spec.isolation.serviceAccount` to use an existing account (including `default`
+as an explicit opt-out); every selected account must set
+`automountServiceAccountToken: false`. Worker startup fails closed with
+`STAGE_SERVICE_ACCOUNT` if an account is missing or unsafe. Apply
+`deploy/reference/gaggle-namespace/base/serviceaccount.yaml` in each target
+namespace before upgrading, and apply the updated dispatcher Role so the worker
+can read accounts. `goobers status` reports effective accounts per gaggle.
+Workload identity federation, `spec.isolation.identityRef`, remains separate. As of
 #4897, `--dispatch-namespace` no longer names a pod namespace at all — it is only
 the non-empty flag that enables mode-3 dispatch. The worker instead routes EACH
 stage pod to its OWNING gaggle's `spec.isolation.namespace`, resolved per attempt
@@ -880,3 +913,64 @@ A config tree delivered through a ConfigMap is bounded by the Kubernetes object
 size limit of roughly 1 MiB. This is a hard limit of the transport, not a tuning
 knob: a tree that outgrows it needs a different delivery (the `config-mirror`
 overlay), so check its size before relying on ConfigMap delivery (#3290).
+
+### Scheduled check reporting
+
+Cluster monitoring owns periodic drift/overlay checks and notifications. The
+Goobers daemon **does not schedule checks**. The
+[reference CronJob](examples/apiserver-drift-check/cronjob.yaml) runs the existing
+scoped drift detector hourly and records its results with
+`--record-instance /var/lib/goobers --result-max-age 2h`. A manual
+`goobers doctor --k8s` can use the same flags. Without `--record-instance`, doctor
+remains an install-time, read-only probe with stdout and exit status only.
+
+Each result appends a `runner.cluster_check.completed` instance journal event
+containing the builtin check ID, outcome, and expiration time. Raw diagnostics,
+endpoints, and credentials are not copied into the journal; inspect the check's
+JSON output or pod logs for detail. A failure to initialize the Kubernetes client
+records failed outcomes for the selected checks. Failure to write the journal
+exits 2 and makes the Job fail. Required detector failures retain exit 1.
+
+`goobers status` reads the latest outcome **per check**, so a successful drift
+check cannot hide a failing overlay check. Failure appears as `degraded` until
+that same check succeeds. A later skipped/warning result cannot clear that
+failure or refresh its original check time and expiration; an expired failure
+remains degraded and also says `stale`. Expired passing/warning results appear
+as `stale`; skipped/warning
+checks are never called healthy. Every line includes the last outcome, check
+time, and expiration. A subsequent fresh success restores `healthy`, including
+after daemon restart. Journal retention preserves the latest result per check.
+An instance with no recorded results has no cluster-check status: this is not
+proof of health. Configure the external missing-success alert before relying on
+unattended operation.
+
+Before enabling the CronJob, initialize the instance's `scheduler/` directory
+and adopt the reference API pod label, PVC name and namespace (or change all
+selectors consistently). The monitor mounts only the scheduler subdirectory and
+must run on the API pod's node: the instance journal requires **RWO block storage
+with working local file locks**, not RWX/NFS. The monitor uses the same UID/GID
+as the API. Treat permission to write this journal as trusted operator access.
+No daemon lock takeover or daemon restart is needed. Missing API placement,
+volume permission, or image-pull failures are visible through cluster monitoring
+even if the process never starts and cannot publish a result.
+
+Install [alerts.yaml](examples/apiserver-drift-check/alerts.yaml) separately if
+you use Prometheus Operator. It requires kube-state-metrics CronJob creation,
+last-schedule and last-successful-time metrics; enable those metrics in your
+version, set labels matching Prometheus's rule selector, and route the warning
+alerts through Alertmanager. The rule flags a scheduled run with no success
+after ten minutes (the Job deadline is five minutes), plus stale/missing success
+after two hours. Historic failed Jobs do not prevent recovery from clearing the
+alert. Verify rule evaluation and notification delivery, and monitor the
+kube-state-metrics scrape itself: missing metrics are not a passing detector.
+Keep alert thresholds and `--result-max-age` aligned with any schedule change.
+
+For periodic overlay checks, use the same reporting flags in a monitoring-owned
+CronJob selecting `overlay-pin-agreement,overlay-image-contract`, supplying a
+trusted `--overlay-dir`, pinned tools/runtime and the probe inputs described
+above. Adapt the alert selectors to that CronJob. Overlay image probing needs
+its documented container runtime; the minimal drift image/NetworkPolicy-only
+RBAC is not a ready-made overlay probe host. Do not put either schedule in the
+daemon. [#4290](https://github.com/Agent-Clubhouse/Goobers/issues/4290) owns adding
+checks; [#4878](https://github.com/Agent-Clubhouse/Goobers/issues/4878) provides
+recording, freshness, status and alert wiring for the existing checks.

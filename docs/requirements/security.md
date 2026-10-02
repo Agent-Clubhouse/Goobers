@@ -62,7 +62,9 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   (`SEC-044`); tier 3 adds namespace/identity/network policy. **Stated residual risk
   at tiers 1–2:** an agentic harness runs as the local user and can reach ambient
   credentials (shell config, keychain, its own signed-in session); Goobers does not
-  claim to stop that unless sandbox enforcement is enabled (`SEC-044`). The
+  claim to stop those reads: the current sandbox confines writes only
+  (`SEC-044`). Config-referenced credential files have a separate local-agentic
+  refusal (`SEC-049`). The
   compensating controls are local trust (`SEC-040`) + non-injection + the
   untrusted-input gate (`SEC-047`) + the reviewer gate (`ARCHITECTURE.md §5`) +
   **merge-authority separation** (`SEC-053`).
@@ -147,11 +149,11 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   daemon-identity token or GitHub App private key file, the webhook secret, an
   OTLP collector auth header, or any other file-backed token ref —
   `internal/instance.GuardedCredentialPaths` enumerates them by walking the
-  loaded config for every file-backed ref, so a newly added one is guarded on
+  loaded config for every file-backed ref and tagged private-key path, so a newly added ref is guarded on
   arrival rather than when someone remembers to extend a list) — the
   `self` runner has no filesystem confinement (`SEC-044` is not yet wired to the
   deterministic path, and even where the agentic sandbox IS enforced it only
-  confines writes, not reads), so a stage that names one of these paths directly
+  confines writes rather than general host reads), so a stage that names one of these paths directly
   can read key material a minted, short-lived token exists to avoid exposing.
   **This is a narrow, config-derived tripwire, not filesystem confinement**: it
   refuses, before exec, a stage whose *declared* command words, inline `script:`
@@ -168,7 +170,39 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   concatenation at runtime, `find`, or a symlink — which requires the full
   sandbox/read-confinement work `SEC-044` already tracks as in progress. The
   refusal is journaled (`credential.read.refused`) so an operator can see it
-  fire.
+  fire. This declaration-matching tripwire covers deterministic stages only.
+
+  **Agentic stages on the local (`self`) runner fail closed at executor
+  construction whenever the loaded instance config contains a file-backed
+  credential ref or private-key path** (#4889, #6524). Model-authored actions cannot be checked in advance,
+  and path masks do not establish general host isolation, so this refusal applies
+  with both `sandbox.agentic: disabled` (the default) and `enforced`. It does
+  not inspect file permissions or existence, and reports neither credential
+  paths nor contents. Move the refs to environment, keychain, or secret-store
+  sources, or use an isolated worker pod that does not mount the daemon's
+  credential files. The inventory includes the controller's `api.podTokenKeyFile`,
+  API/Temporal/OTLP private TLS keys, and `file-key` store directories (#6524).
+  Public certificates and CA files are not private-key paths.
+
+  Native sandbox policies additionally support explicit read-denied paths:
+  seatbelt denies reads and writes; bubblewrap masks files with `/dev/null`
+  and directories with an empty read-only mount after all writable grants.
+  Paths are canonicalized, multiply-linked files and writable overlap are
+  refused, and policy errors omit the private path. Guarded directories undergo
+  a bounded metadata walk that rejects hardlinks, symlinks, special files,
+  inspection errors, and traversal limits before launch. This defense in depth
+  does not relax the constructor refusal above or newly sandbox deterministic
+  execution. The deterministic tripwire matches named paths, not descendants
+  of a configured key directory; indirect and directory-child reads remain
+  outside that narrow check. Explicitly granted stage credentials remain available through
+  their existing delivery channels.
+
+  These guards are not a same-UID host isolation boundary. Unconfined code,
+  already copied secrets, and credentials outside the loaded configuration
+  remain outside this path policy. Pod kits carry scoped credentials and do not inherit the
+  daemon-host guarded paths; their deployment must maintain that isolation.
+  This refusal protects config-referenced files; it does not claim that ambient
+  credentials or arbitrary secrets outside the config are inaccessible.
 
 ### Isolation
 

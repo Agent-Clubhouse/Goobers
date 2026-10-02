@@ -202,6 +202,14 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	// A failed pre-read only loses the already-present skip: the POSTs still
 	// run, and ADO merges a label that exists in another casing server-side.
 	existing, readErr := p.pullRequestLabelsWithIDs(ctx, repo, pullID)
+	var existingNames []string
+	if existing != nil {
+		existingNames = make([]string, 0, len(existing))
+		for _, label := range existing {
+			existingNames = append(existingNames, label.Name)
+		}
+	}
+	pending = planLabelMutation(existingNames, pending, nil, equalFoldLabelName).Add
 	// The PR-labels endpoint is published only under the -preview version;
 	// a plain "7.1" is rejected (VssInvalidPreviewVersionException).
 	endpoint, err := p.repoURLVersion(repo, "7.1-preview.1", "pullrequests", pullID, "labels")
@@ -210,9 +218,6 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 	}
 	var result PullRequestLabelAddError
 	for _, name := range pending {
-		if _, present := existing[strings.ToLower(name)]; present {
-			continue
-		}
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]interface{}{"name": name}, nil); err != nil {
 			result.Failed = append(result.Failed, name)
 			result.errs = append(result.errs, err)
@@ -240,14 +245,14 @@ func adoPullRequestLabelAddResult(result *PullRequestLabelAddError, readErr erro
 // adoPendingPullRequestLabels drops blank names and case-insensitive
 // duplicates from an AddPullRequestLabels request, keeping first-seen order.
 func adoPendingPullRequestLabels(names []string) []string {
-	out := make([]string, 0, len(names))
+	nonblank := make([]string, 0, len(names))
 	for _, name := range names {
-		if strings.TrimSpace(name) == "" || adoHasLabel(out, name) {
+		if strings.TrimSpace(name) == "" {
 			continue
 		}
-		out = append(out, name)
+		nonblank = append(nonblank, name)
 	}
-	return out
+	return planLabelMutation(nil, nonblank, nil, equalFoldLabelName).Add
 }
 
 // adoPullRequestLabel is one label on a pull request: its id and the name in

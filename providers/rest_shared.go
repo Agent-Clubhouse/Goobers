@@ -50,10 +50,23 @@ type restMutationRecorder interface {
 	recordExternalRef(context.Context, ExternalRef)
 }
 
+type restPullRequestOpener interface {
+	restMutationRecorder
+	FindPullRequestByBranch(context.Context, RepositoryRef, string, string) (PullRequestResult, bool, error)
+}
+
+type restOpenPullRequestHooks struct {
+	title             func(PullRequestRequest) string
+	createBody        func(PullRequestRequest, string, string) interface{}
+	isCreateRaceError func(error) bool
+}
+
 // restWorkItemMutator adds the common issue workflow used by shared updates.
-// The HTTP details remain provider-owned.
+// The HTTP details remain provider-owned. restPager reads the comment history
+// an update's operation marker is looked up in (#2657).
 type restWorkItemMutator interface {
 	restMutationRecorder
+	restPager
 	GetWorkItem(context.Context, RepositoryRef, string) (WorkItem, error)
 	applyLabelChanges(context.Context, RepositoryRef, string, []string, []string) error
 	postComment(context.Context, RepositoryRef, string, string) error
@@ -387,93 +400,6 @@ func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind
 	return mapComment(comment), nil
 }
 
-func updateRESTWorkItem(ctx context.Context, c restWorkItemMutator, kind ProviderKind, baseURL string, req UpdateWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.Milestone != nil && *req.Milestone <= 0 {
-		return WorkItem{}, fmt.Errorf("milestone number must be positive")
-	}
-	before, err := c.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.ExpectedRevision != "" {
-		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	fields := map[string]FieldDigest{}
-	patch := map[string]interface{}{}
-	if req.Title != nil {
-		patch["title"] = *req.Title
-		fields["title"] = FieldDigest{Before: digestString(before.Title), After: digestString(*req.Title)}
-	}
-	if req.Body != nil {
-		patch["body"] = *req.Body
-		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
-	}
-	if req.Assignee != nil {
-		assignees := []string{}
-		if *req.Assignee != "" {
-			assignees = append(assignees, *req.Assignee)
-		}
-		patch["assignees"] = assignees
-		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
-	}
-	if req.Milestone != nil {
-		milestoneBefore := ""
-		if before.Parent != nil && before.Parent.Type == "milestone" {
-			milestoneBefore = before.Parent.ID
-		}
-		milestoneAfter := strconv.Itoa(*req.Milestone)
-		patch["milestone"] = *req.Milestone
-		fields["milestone"] = FieldDigest{Before: digestString(milestoneBefore), After: digestString(milestoneAfter)}
-	}
-	if req.State != "" {
-		state := strings.ToLower(req.State)
-		if state != "open" && state != "closed" {
-			return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-		}
-		patch["state"] = state
-		fields["state"] = FieldDigest{Before: digestString(before.State), After: digestString(state)}
-	}
-	if len(patch) > 0 {
-		endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := c.do(ctx, http.MethodPatch, endpoint, patch, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if req.Comment != "" {
-		if err := c.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-	if labelsChanged(req) {
-		if err := c.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
-			return WorkItem{}, err
-		}
-		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
-		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-	final, err := c.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if len(fields) > 0 {
-		c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(req.Repository, req.ID), URL: final.URL, Operation: updateOperation(req), Fields: fields})
-	}
-	return final, nil
-}
-
 func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, kind ProviderKind, baseURL string, attribution Attribution, req ClaimWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return WorkItem{}, err
@@ -570,6 +496,66 @@ type restClosedPull struct {
 	HTMLURL string `json:"html_url"`
 }
 
+type restOpenedPull struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url"`
+}
+
+func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks) (PullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	title := hooks.title(req)
+	prBody := withRunIDFooter(req.Body, req.RunID)
+	if existing, ok, err := c.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); err != nil {
+		return PullRequestResult{}, err
+	} else if ok {
+		return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	var out restOpenedPull
+	if err := c.do(ctx, http.MethodPost, endpoint, hooks.createBody(req, title, prBody), &out); err != nil {
+		if hooks.isCreateRaceError != nil && hooks.isCreateRaceError(err) {
+			if existing, ok, findErr := c.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); findErr == nil && ok {
+				return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
+			}
+		}
+		return PullRequestResult{}, err
+	}
+	recordRESTPullRequestMutation(ctx, c, kind, req, out, "open", title, prBody)
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+}
+
+func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req PullRequestRequest, number int, title, prBody string) (PullRequestResult, error) {
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", strconv.Itoa(number))
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	var out restOpenedPull
+	if err := c.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"title": title, "body": prBody}, &out); err != nil {
+		return PullRequestResult{}, err
+	}
+	recordRESTPullRequestMutation(ctx, c, kind, req, out, "update", title, prBody)
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+}
+
+func recordRESTPullRequestMutation(ctx context.Context, c restMutationRecorder, kind ProviderKind, req PullRequestRequest, out restOpenedPull, operation, title, body string) {
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider:  kind,
+		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
+		URL:       out.HTMLURL,
+		Operation: operation,
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(title)},
+			"body":  {After: digestString(body)},
+		},
+	})
+}
+
 func closeRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return ClosePullRequestResult{}, err
@@ -638,6 +624,31 @@ func restPullRequestFiles(ctx context.Context, c restPager, baseURL string, repo
 type restReviewResponse struct {
 	ID      int64  `json:"id"`
 	HTMLURL string `json:"html_url"`
+}
+
+func requestRESTReview(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req ReviewRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.PullID == "" {
+		return errPullIDRequired
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
+	if err != nil {
+		return err
+	}
+	if err := c.do(ctx, http.MethodPost, endpoint, map[string][]string{"reviewers": req.Reviewers}, nil); err != nil {
+		return err
+	}
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider:  kind,
+		Ref:       issueRef(req.Repository, req.PullID),
+		Operation: "request-review",
+		Fields: map[string]FieldDigest{
+			"reviewers": {After: digestString(strings.Join(req.Reviewers, ","))},
+		},
+	})
+	return nil
 }
 
 func submitRESTPullRequestReview(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req PullRequestReviewRequest) (PullRequestReviewResult, error) {

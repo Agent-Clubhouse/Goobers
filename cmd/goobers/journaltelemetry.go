@@ -61,7 +61,7 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 	}
 	azureEnabled := cfg.Telemetry.AzureMonitor != nil && cfg.Telemetry.AzureMonitor.Enabled() && cfg.Telemetry.EffectiveCollectionProfile().IncludesJournal()
 	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.JournalLogsEnabled()
-	if !cfg.TelemetryEnabled() || (!otlpEnabled && !azureEnabled) {
+	if !cfg.TelemetryEnabled() || (!otlpEnabled && !azureEnabled && !cfg.Telemetry.NamedJournalEnabled()) {
 		return noop
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
@@ -90,7 +90,9 @@ func startCommandJournalTelemetry(l instance.Layout, stderr io.Writer) func() {
 			return noop
 		}
 	}
+	namedErr := configureNamedTelemetry(initialize, &export, cfg.Telemetry, l.Root, registry, stores, false)
 	client, err := telemetry.New(initialize, export)
+	err = errors.Join(namedErr, err)
 	cancel()
 	if err != nil {
 		pf(stderr, "warning: journal telemetry unavailable: %v\n", err)

@@ -13,6 +13,8 @@ report step compares the test tier with
 workflow summary, and compares with the latest successful `main` artifact when
 one is available. Capture runs inside `test/hermetic`, preserving the unit
 tier's isolated tool `PATH` and offline Go environment.
+The same capture writes a per-test JUnit report beside each timing file and
+annotates failing tests; see [CI test results](ci-test-results.md).
 
 The macOS nightly (`macos-nightly.yml`) records the same capture for the
 macOS unit suite (no race, no coverage) and uploads it as

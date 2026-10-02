@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -54,8 +55,8 @@ type recordedFindingDisposition struct {
 // remediationResponseResult records the account exactly as validated.
 // FindingCount is the original merge-review verdict's finding count, which
 // also partitions Findings: entries numbered 1..FindingCount answer verdict
-// findings and carry their Original, entries past it answer findings raised
-// during this remediation cycle and carry none.
+// findings, entries past it answer findings an in-run reviewer raised during
+// this remediation cycle. Every entry carries the Original finding it answers.
 type remediationResponseResult struct {
 	SelectedNumber string                       `json:"selectedNumber"`
 	SourceRunID    string                       `json:"sourceRunId"`
@@ -97,12 +98,12 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	verdict, rawResponses, published, err := readRemediationResponseInputs(root, runID, !*checkOnly)
+	verdict, inRunFindings, rawResponses, published, err := readRemediationResponseInputs(root, runID, !*checkOnly)
 	if err != nil {
 		pf(stderr, "error: read remediation response inputs from journal: %v\n", err)
 		return 1
 	}
-	responses, err := validateFindingResponses(verdict.Findings, rawResponses)
+	responses, err := validateFindingResponses(verdict.Findings, inRunFindings, rawResponses)
 	if err != nil {
 		return failFindingResponseValidation(err, stderr)
 	}
@@ -131,10 +132,12 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 			Disposition: response.Disposition,
 			Detail:      response.Detail,
 		}
-		// Responses past FindingCount answer in-run review findings, so they
-		// have no original verdict finding to quote.
+		// Responses past FindingCount answer in-run review findings; bind each
+		// to the captured reviewer finding it names (#2748).
 		if response.Finding <= len(verdict.Findings) {
 			recorded.Original = verdict.Findings[response.Finding-1]
+		} else {
+			recorded.Original = inRunFindings[response.Finding-len(verdict.Findings)-1]
 		}
 		result.Findings[i] = recorded
 	}
@@ -226,15 +229,19 @@ func remediationStageNames() (implementStage, pushStage string) {
 		providerInput("pushStage", "push-remediated")
 }
 
-func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, string, bool, error) {
+// readRemediationResponseInputs returns the original merge-review verdict, the
+// findings in-run reviewer gates raised before the latest implement result
+// (#2748), the implementer's raw findingResponses, and whether the remediated
+// branch was published.
+func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, []apiv1.Finding, string, bool, error) {
 	implementStage, pushStage := remediationStageNames()
 	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
+		return apiv1.Verdict{}, nil, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
+		return apiv1.Verdict{}, nil, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 
 	var contextRef *journal.Ref
@@ -242,8 +249,17 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	var implementFound bool
 	var pushFound bool
 	var published string
+	// reviewRefs holds the runner-recorded verdict artifact of the latest
+	// agentic gate evaluated so far (the reviewer feedback a repass hands
+	// implement); inRunRefs snapshots it at the latest implement result, so
+	// responses are bounded by, and numbered against, the reviewer findings
+	// that attempt was actually answering (#2748).
+	var reviewRefs, inRunRefs []journal.Ref
 	for i := range events {
 		event := events[i]
+		if event.Type == journal.EventGateEvaluated && event.Ref != nil {
+			reviewRefs = []journal.Ref{*event.Ref}
+		}
 		// stageArtifactName, not a hard-coded "<runID>:" prefix: a pod
 		// records the same artifact without the run qualifier (#4119).
 		if event.Type == journal.EventArtifactRecorded &&
@@ -254,6 +270,7 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 		}
 		if event.Type == journal.EventStageFinished && event.Stage == implementStage {
 			implementFound = true
+			inRunRefs = append([]journal.Ref(nil), reviewRefs...)
 			rawResponses = ""
 			if raw, ok := event.Outputs[findingResponsesOutput].(string); ok {
 				rawResponses = raw
@@ -265,42 +282,75 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 		}
 	}
 	if contextRef == nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactMissing("gather-pr-context", remediationBriefArtifact)
+		return apiv1.Verdict{}, nil, "", false, upstreamArtifactMissing("gather-pr-context", remediationBriefArtifact)
 	}
 	if !implementFound {
-		return apiv1.Verdict{}, "", false, fmt.Errorf(
+		return apiv1.Verdict{}, nil, "", false, fmt.Errorf(
 			"no %q stage result found in this run's journal; set the implementStage input if the remediation stage has a different name",
 			implementStage)
 	}
 	if requirePublication {
 		if !pushFound {
-			return apiv1.Verdict{}, "", false, fmt.Errorf(
+			return apiv1.Verdict{}, nil, "", false, fmt.Errorf(
 				"no %q stage result found in this run's journal; set the pushStage input if the publication stage has a different name",
 				pushStage)
 		}
 		if published != "true" && published != "false" {
-			return apiv1.Verdict{}, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
+			return apiv1.Verdict{}, nil, "", false, fmt.Errorf("push-remediated result has invalid published output %q", published)
 		}
 	}
 
-	data, err := rd.ArtifactBytes(*contextRef)
+	verdict, err := remediationBriefVerdict(rd, *contextRef)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
+		return apiv1.Verdict{}, nil, "", false, err
+	}
+	inRunFindings, err := inRunReviewFindings(rd, inRunRefs)
+	if err != nil {
+		return apiv1.Verdict{}, nil, "", false, err
+	}
+	return verdict, inRunFindings, rawResponses, published == "true", nil
+}
+
+// remediationBriefVerdict decodes the gather-pr-context brief and returns its
+// original merge-review verdict (zero when the remediation cause carries none).
+func remediationBriefVerdict(rd journalclient.Reader, ref journal.Ref) (apiv1.Verdict, error) {
+	data, err := rd.ArtifactBytes(ref)
+	if err != nil {
+		return apiv1.Verdict{}, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 	var brief apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &brief); err != nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
+		return apiv1.Verdict{}, fmt.Errorf("unmarshal remediation-brief.json artifact: %w", err)
 	}
 	if brief.Schema != apiv1.RemediationBriefVersion {
-		return apiv1.Verdict{}, "", false, fmt.Errorf(
+		return apiv1.Verdict{}, fmt.Errorf(
 			"remediation-brief.json artifact schema is %q, want %q",
 			brief.Schema, apiv1.RemediationBriefVersion,
 		)
 	}
 	if brief.GatherPRContext.Verdict == nil {
-		return apiv1.Verdict{}, rawResponses, published == "true", nil
+		return apiv1.Verdict{}, nil
 	}
-	return *brief.GatherPRContext.Verdict, rawResponses, published == "true", nil
+	return *brief.GatherPRContext.Verdict, nil
+}
+
+// inRunReviewFindings loads the findings from the given gate verdict
+// artifacts in journal order. They are the ground truth for responses
+// numbered past the original verdict: response N+k answers the k-th finding.
+func inRunReviewFindings(rd journalclient.Reader, refs []journal.Ref) ([]apiv1.Finding, error) {
+	var findings []apiv1.Finding
+	for _, ref := range refs {
+		data, err := rd.ArtifactBytes(ref)
+		if err != nil {
+			return nil, fmt.Errorf("read in-run review verdict artifact: %w", err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return nil, fmt.Errorf("unmarshal in-run review verdict artifact: %w", err)
+		}
+		findings = append(findings, verdict.Findings...)
+	}
+	return findings, nil
 }
 
 // parseFindingResponses decodes the findingResponses output.
@@ -385,12 +435,14 @@ func parseFindingResponseLines(raw string) ([]findingDisposition, error) {
 // validateFindingResponses enforces the remediation account contract against
 // the original merge-review verdict: every verdict finding needs exactly one
 // addressed/declined disposition with a detail. Responses numbered past the
-// verdict's finding count account for findings raised by an in-run reviewer
-// repass; they are validated structurally and bind to no original finding.
+// verdict's finding count account for findings an in-run reviewer raised;
+// they are optional, but each must name one of the inRun findings captured
+// from this run's journal (numbered len(findings)+1 onward), so a producer
+// cannot claim to have addressed a finding no reviewer raised (#2748).
 // Runs whose remediation cause carries no verdict at all (failing-ci,
-// sibling-overlap) have nothing to account for, so responses are optional
-// there rather than required to be absent.
-func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDisposition, error) {
+// sibling-overlap) have no verdict findings to account for, so responses are
+// optional there rather than required to be absent.
+func validateFindingResponses(findings, inRun []apiv1.Finding, raw string) ([]findingDisposition, error) {
 	if strings.TrimSpace(raw) == "" {
 		if len(findings) == 0 {
 			return []findingDisposition{}, nil
@@ -410,6 +462,12 @@ func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDi
 		response.Detail = strings.TrimSpace(response.Detail)
 		if response.Finding < 1 {
 			return nil, fmt.Errorf("response %d names finding %d, want a 1-based finding number", i+1, response.Finding)
+		}
+		if limit := len(findings) + len(inRun); response.Finding > limit {
+			return nil, fmt.Errorf(
+				"response %d names finding %d, but only %d verdict finding(s) and %d in-run reviewer finding(s) were raised; "+
+					"respond only to findings a reviewer raised (\"[]\" when there are none)",
+				i+1, response.Finding, len(findings), len(inRun))
 		}
 		if seen[response.Finding] {
 			return nil, fmt.Errorf("finding %d is accounted for more than once", response.Finding)
@@ -463,25 +521,29 @@ func renderRemediationResponse(runID string, result remediationResponseResult) s
 			additional = append(additional, response)
 			continue
 		}
-		finding := response.Original
 		fmt.Fprintf(&b, "\n%d. **%s** - %s\n", response.Finding, dispositionLabel(response.Disposition), response.Detail)
-		fmt.Fprintf(&b, "   > [%s", finding.Severity)
-		if finding.Class != "" {
-			fmt.Fprintf(&b, "/%s", finding.Class)
-		}
-		fmt.Fprintf(&b, "] %s", finding.Message)
-		if finding.Location != "" {
-			fmt.Fprintf(&b, " (%s)", finding.Location)
-		}
-		b.WriteByte('\n')
+		writeFindingQuote(&b, response.Original)
 	}
 	if len(additional) > 0 {
 		b.WriteString("\n### Raised during this remediation cycle\n")
 		for _, response := range additional {
 			fmt.Fprintf(&b, "\n- **%s** - %s\n", dispositionLabel(response.Disposition), response.Detail)
+			writeFindingQuote(&b, response.Original)
 		}
 	}
 	return b.String()
+}
+
+func writeFindingQuote(b *strings.Builder, finding apiv1.Finding) {
+	fmt.Fprintf(b, "   > [%s", finding.Severity)
+	if finding.Class != "" {
+		fmt.Fprintf(b, "/%s", finding.Class)
+	}
+	fmt.Fprintf(b, "] %s", finding.Message)
+	if finding.Location != "" {
+		fmt.Fprintf(b, " (%s)", finding.Location)
+	}
+	b.WriteByte('\n')
 }
 
 func dispositionLabel(disposition string) string {

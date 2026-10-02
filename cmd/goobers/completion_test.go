@@ -91,10 +91,10 @@ func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 }
 
 func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
-	observed := make(map[string]*flag.FlagSet)
+	observed := make(map[string][]*flag.FlagSet)
 	cliFlagSetObserverMu.Lock()
 	cliFlagSetObserver = func(id string, fs *flag.FlagSet) {
-		observed[id] = fs
+		observed[id] = append(observed[id], fs)
 	}
 	cliFlagSetObserverMu.Unlock()
 	defer func() {
@@ -108,10 +108,13 @@ func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
 		node.cmd.run([]string{"-h"}, io.Discard, io.Discard)
 	}
 
+	// Preflight has two independently parsed forms; audit their union.
+	runRuntimePreflight([]string{"-h"}, io.Discard, io.Discard)
+
 	for _, node := range nodes {
-		fs := observed[node.id]
+		sets := observed[node.id]
 		actual := make(map[string]bool)
-		if fs != nil {
+		for _, fs := range sets {
 			fs.VisitAll(func(f *flag.Flag) {
 				boolFlag, isBool := f.Value.(interface{ IsBoolFlag() bool })
 				actual[f.Name] = !isBool || !boolFlag.IsBoolFlag()

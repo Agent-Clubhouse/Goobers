@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/converter"
 
@@ -39,6 +40,7 @@ type ProjectionObserver func(context.Context, string, uint64) error
 // before. Reconcile is bounded to one visibility page; successive calls
 // continue pagination and cycle back to the newest page.
 type CompletedRunReconciler struct {
+	dataConverter converter.DataConverter
 	client        CompletedRunClient
 	namespace     string
 	runsDirs      map[string]string
@@ -134,7 +136,7 @@ func (r *CompletedRunReconciler) reportDivergence(runID, detail string) {
 
 // NewCompletedRunReconciler constructs a reconciler scoped to configured
 // gaggle names and their journal roots.
-func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs map[string]string, observe ProjectionObserver) (*CompletedRunReconciler, error) {
+func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs map[string]string, observe ProjectionObserver, dc ...converter.DataConverter) (*CompletedRunReconciler, error) {
 	if c == nil {
 		return nil, errors.New("engine: Temporal client is required")
 	}
@@ -144,7 +146,7 @@ func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs 
 	if len(runsDirs) == 0 {
 		return nil, errors.New("engine: at least one gaggle runs directory is required")
 	}
-	return &CompletedRunReconciler{client: c, namespace: namespace, runsDirs: runsDirs, observe: observe}, nil
+	return &CompletedRunReconciler{client: c, namespace: namespace, runsDirs: runsDirs, observe: observe, dataConverter: memoDataConverter(dc)}, nil
 }
 
 // Reconcile processes one bounded page of closed workflow executions.
@@ -165,12 +167,15 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 		errs      []error
 	)
 	for _, info := range response.Executions {
+		if info.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+			continue
+		}
 		memo := info.GetMemo().GetFields()[RunGaggleMemoKey]
 		if memo == nil {
 			continue
 		}
 		var gaggle string
-		if err := converter.GetDefaultDataConverter().FromPayload(memo, &gaggle); err != nil {
+		if err := r.dataConverter.FromPayload(memo, &gaggle); err != nil {
 			errs = append(errs, fmt.Errorf("engine: decode gaggle memo for %q: %w", info.GetExecution().GetWorkflowId(), err))
 			continue
 		}
@@ -188,7 +193,36 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 			errs = append(errs, err)
 			continue
 		}
-		didProject, err := r.reconcileRun(ctx, runID, gaggle, runsDir, dir)
+		executionID := info.GetExecution().GetRunId()
+		// Only an explicitly closed, exact execution can be suppressed. A
+		// legacy visibility response without status/RunId keeps retrying.
+		closed := executionID != "" && info.GetStatus() != enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED
+		key := projectionExecutionKey(r.namespace, runID, executionID)
+		if closed {
+			recorded, err := projectionDeadLetterExists(runsDir, key)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if recorded {
+				continue
+			}
+		}
+		q := executionProjectionQuerier{projectionQuerier: r.client, executionID: executionID}
+		didProject, err := r.reconcileRun(ctx, q, key, runID, gaggle, runsDir, dir)
+		if closed && errors.Is(err, ErrUnprojectable) {
+			record := ProjectionDeadLetter{Namespace: r.namespace, WorkflowID: runID, ExecutionID: executionID,
+				Gaggle: gaggle, Status: info.GetStatus().String(), Reason: err.Error()}
+			path, recordErr := writeProjectionDeadLetter(runsDir, key, record)
+			if recordErr != nil {
+				err = errors.Join(err, recordErr)
+			} else {
+				// The daemon reports this first failure through its existing
+				// engine_projection_failed operator event. Later sweeps skip
+				// it, including after restart; the record remains inspectable.
+				err = fmt.Errorf("%w (closed execution %s dead-lettered at %s)", err, executionID, path)
+			}
+		}
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -203,7 +237,7 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 // reconcileRun verifies or repairs one closed run, holding the live writer's
 // reservation for the whole pass so no emit can rehydrate the journal while
 // the pass inspects — or replaces — its directory.
-func (r *CompletedRunReconciler) reconcileRun(ctx context.Context, runID, gaggle, runsDir, dir string) (bool, error) {
+func (r *CompletedRunReconciler) reconcileRun(ctx context.Context, q projectionQuerier, key, runID, gaggle, runsDir, dir string) (bool, error) {
 	if r.live != nil {
 		// Reserve, don't just peek: the live writer still owning this journal
 		// (Temporal reports the workflow closed while the terminal emission is
@@ -226,18 +260,18 @@ func (r *CompletedRunReconciler) reconcileRun(ctx context.Context, runID, gaggle
 			return false, err
 		}
 		if inspection.complete {
-			if inspection.liveAuthored && !r.verified[runID] {
+			if inspection.liveAuthored && !r.verified[key] {
 				// DS5: the journal already exists from live authorship —
 				// VERIFY against the independent history re-projection
 				// instead of writing. A divergence is filed, never
 				// silently repaired; the live journal stays the record.
-				if err := r.verifyLiveRun(ctx, runID, gaggle, inspection.events); err != nil {
+				if err := r.verifyLiveRun(ctx, q, runID, gaggle, inspection.events); err != nil {
 					return false, err
 				}
 				if r.verified == nil {
 					r.verified = map[string]bool{}
 				}
-				r.verified[runID] = true
+				r.verified[key] = true
 			}
 			return false, observeProjectedRun(ctx, r.observe, runID, dir)
 		}
@@ -248,7 +282,7 @@ func (r *CompletedRunReconciler) reconcileRun(ctx context.Context, runID, gaggle
 		// silent.
 		backfillingLive = inspection.liveAuthored
 	}
-	if _, err := projectCompletedRun(ctx, r.client, runID, gaggle, runsDir, r.observe, r.spans, r.projectOpts...); err != nil {
+	if _, err := projectCompletedRun(ctx, q, runID, gaggle, runsDir, r.observe, r.spans, r.projectOpts...); err != nil {
 		return false, err
 	}
 	if backfillingLive {
@@ -260,10 +294,10 @@ func (r *CompletedRunReconciler) reconcileRun(ctx context.Context, runID, gaggle
 // verifyLiveRun diffs a complete live-authored journal's normative view
 // against the history re-projection (DS5's conformance cross-check). A
 // divergence is filed through the reporter; inability to verify (the query
-// failed, the history is unprojectable) is an error so the next cycle
-// retries.
-func (r *CompletedRunReconciler) verifyLiveRun(ctx context.Context, runID, gaggle string, liveEvents []journal.Event) error {
-	proj, err := queryProjection(ctx, r.client, runID)
+// failed) is an error so the next cycle retries. Permanently unprojectable
+// closed executions are dead-lettered by Reconcile.
+func (r *CompletedRunReconciler) verifyLiveRun(ctx context.Context, q projectionQuerier, runID, gaggle string, liveEvents []journal.Event) error {
+	proj, err := queryProjection(ctx, q, runID)
 	if err != nil {
 		return fmt.Errorf("engine: verify live journal for %q: %w", runID, err)
 	}

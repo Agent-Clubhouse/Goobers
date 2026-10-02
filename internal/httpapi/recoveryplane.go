@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/recovery"
 )
 
 // RecoveryService delivers retained state to the authenticated receiving run.
@@ -43,15 +44,23 @@ func recoveryPlanePath(path string) bool {
 	return len(parts) == 2 && apiv1.ValidRunID(parts[0]) && parts[1] == "recovery"
 }
 
+func recoveryRequestScope(w http.ResponseWriter, request *http.Request) (run, key, issue string, ok bool) {
+	run = request.PathValue("run")
+	if !podRunContained(w, request, run, "recovery") {
+		return "", "", "", false
+	}
+	key, issue = request.URL.Query().Get("repositoryKey"), request.URL.Query().Get("issue")
+	if !apiv1.ValidRunID(run) || key == "" || len(key) > 4096 || issue == "" || len(issue) > 256 {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "recovery requires bounded run, repository, and issue identities")
+		return "", "", "", false
+	}
+	return run, key, issue, true
+}
+
 func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
-		run := request.PathValue("run")
-		if !podRunContained(w, request, run, "recovery") {
-			return
-		}
-		key, issue := request.URL.Query().Get("repositoryKey"), request.URL.Query().Get("issue")
-		if !apiv1.ValidRunID(run) || key == "" || len(key) > 4096 || issue == "" || len(issue) > 256 {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "recovery requires bounded run, repository, and issue identities")
+		run, key, issue, ok := recoveryRequestScope(w, request)
+		if !ok {
 			return
 		}
 		if service == nil {
@@ -63,12 +72,19 @@ func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		stream := &recoveryResponseWriter{destination: w}
 		if err := service.StreamRecovery(request.Context(), run, key, issue, stream); err != nil {
-			errorLog.Printf("recovery delivery failed for run %s", run)
 			if stream.started {
+				errorLog.Printf("recovery delivery failed for run %s", run)
 				// Never append a JSON error to binary archive bytes or report a
 				// normally completed response after partial delivery.
 				panic(http.ErrAbortHandler)
 			}
+			var pending *recovery.OverflowPendingError
+			if errors.As(err, &pending) {
+				w.Header().Set(recovery.PromotionStateHeader, pending.PromotionState)
+				writeError(w, http.StatusConflict, recovery.OverflowPendingCode, pending.Error())
+				return
+			}
+			errorLog.Printf("recovery delivery failed for run %s", run)
 			writeError(w, http.StatusForbidden, "recovery_refused", "recovery delivery was refused or its state is unavailable")
 		}
 	}

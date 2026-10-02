@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // TestGuardedCredentialPaths is #4273's coverage of the enumeration itself:
@@ -154,5 +156,18 @@ func TestGuardedCredentialPathsIgnoresNonFileRefs(t *testing.T) {
 	}
 	if got := GuardedCredentialPaths(cfg); len(got) != 0 {
 		t.Fatalf("GuardedCredentialPaths = %v, want empty for env/keychain/store-backed refs", got)
+	}
+}
+
+func TestGuardedCredentialPathsIncludeControllerAndTLSKeys(t *testing.T) {
+	cfg := &Config{
+		API:          APIConfig{PodTokenKeyFile: "  /private/controller.key  ", TLS: &APITLSConfig{KeyFile: "/private/api.key", CertFile: "/public/api.crt"}},
+		Engine:       &EngineConfig{TLS: &temporaldial.TLS{KeyFile: "/private/temporal.key", CertFile: "/public/temporal.crt"}},
+		Telemetry:    TelemetryConfig{OTLP: &OTLPConfig{TLS: &OTLPTLSConfig{KeyFile: "/private/otlp.key", CertFile: "/public/otlp.crt", CAFile: "/public/ca.crt"}}},
+		SecretStores: []SecretStoreConfig{{Name: "local", Kind: SecretStoreKindFileKey, Directory: "/private/wrapping-keys"}},
+	}
+	want := []string{"/private/api.key", "/private/controller.key", "/private/otlp.key", "/private/temporal.key", "/private/wrapping-keys"}
+	if got := GuardedCredentialPaths(cfg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("private key inventory=%v want %v", got, want)
 	}
 }

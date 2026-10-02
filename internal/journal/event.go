@@ -55,6 +55,12 @@ const (
 	EventRunFinished EventType = "run.finished"
 	// EventStageStarted marks a stage attempt beginning.
 	EventStageStarted EventType = "stage.started"
+	// EventReviewerStarted and EventReviewerFinished delimit one reviewer
+	// dispatch, using the same Stage/Attempt/AttemptClass vocabulary as tasks.
+	// They are operational events: gate.started/evaluated still own workflow
+	// recovery and routing, and a reviewer is never a completed workflow task.
+	EventReviewerStarted  EventType = "runner.reviewer.started"
+	EventReviewerFinished EventType = "runner.reviewer.finished"
 	// EventStageHeartbeat records observable progress from an active stage
 	// attempt. It is lightweight operational telemetry and excluded from
 	// conformance.
@@ -235,6 +241,8 @@ const (
 	// EventConfigReloadRejected records a changed config directory that failed
 	// validation and was not applied.
 	EventConfigReloadRejected EventType = "config.reload.rejected"
+	// EventClusterCheckCompleted records an externally scheduled Kubernetes check.
+	EventClusterCheckCompleted EventType = "runner.cluster_check.completed"
 	// EventWorkerConfigDivergence records a worker's observed config-tree
 	// relationship with the daemon. Its operational payload lives under Runner.
 	EventWorkerConfigDivergence EventType = "runner.config_divergence"
@@ -418,6 +426,9 @@ type Event struct {
 	// circuit, produced is every other terminal. Empty is accepted only for
 	// journals written before this field existed.
 	Disposition string `json:"disposition,omitempty"`
+	// TerminalCause is an additive diagnostic record on run.finished. Excluded
+	// from conformance; its human text uses the normal event scrubber.
+	TerminalCause *TerminalCause `json:"terminalCause,omitempty"`
 	// WorkflowVersion is the immutable workflow version re-asserted by a
 	// run.resumed action. Normative.
 	WorkflowVersion int `json:"workflowVersion,omitempty"`

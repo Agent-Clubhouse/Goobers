@@ -21,6 +21,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configsignal"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gooberassets"
@@ -120,6 +121,7 @@ type configReloader struct {
 	// matched observedDigest and was never looked at again, so a valid edit
 	// rejected during a quota window stayed unapplied until the next edit.
 	transientRetry transientReloadRetry
+	pollDigest     configsignal.Cache
 }
 
 // transientReloadRetry is the backoff schedule for one rejected digest. A zero
@@ -205,6 +207,7 @@ func (r *configReloader) pollOnceMode(now time.Time, forceSourceValidation bool)
 	defer r.mu.Unlock()
 	oldDigest = r.appliedDigest
 	r.lastRejectionMessage = ""
+	r.pollDigest.Invalidate() // Explicit apply always reads the current bytes.
 	if forceSourceValidation {
 		r.observedDigest = ""
 	}
@@ -251,7 +254,10 @@ func (r *configReloader) workflowSource(gaggle, workflow string) (string, bool) 
 func (r *configReloader) poll(now time.Time) error {
 	defer r.publishReloadStatus(now)
 	defer r.refreshConfigMirror(context.Background())
-	digest, err := configDirectoryDigest(r.layout.ConfigDir())
+	root := r.layout.ConfigDir()
+	digest, err := r.pollDigest.Digest(now, []string{root, filepath.Join(filepath.Dir(root), "goobers"), filepath.Join(filepath.Dir(root), "skills")}, func(observe func(string)) (string, error) {
+		return configDirectoryDigestObserved(root, "", observe)
+	})
 	if err != nil {
 		message := err.Error()
 		if message == r.lastDigestError {
@@ -482,6 +488,10 @@ func configDirectoryDigestForGaggle(root, gaggle string) (string, error) {
 }
 
 func configDirectoryDigestScoped(root, gaggle string) (string, error) {
+	return configDirectoryDigestObserved(root, gaggle, nil)
+}
+
+func configDirectoryDigestObserved(root, gaggle string, observe func(string)) (string, error) {
 	hash := sha256.New()
 	contentPaths := make(map[string]struct{})
 	includePath := func(path string) (bool, error) {
@@ -593,6 +603,9 @@ func configDirectoryDigestScoped(root, gaggle string) (string, error) {
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
+		if observe != nil {
+			observe(path)
+		}
 		info, err := os.Stat(path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue

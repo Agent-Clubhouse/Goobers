@@ -33,7 +33,7 @@ _goobers_completion()
             flags+=" --token-env --seed --replace --json"
             ;;
         preflight)
-            flags+=" --distro --launch-wsl"
+            flags+=" --instance --workflow --execution-identity --check-readiness --json --distro --launch-wsl"
             ;;
         onboarding)
             case "${COMP_WORDS[2]:-}" in
@@ -83,10 +83,10 @@ _goobers_completion()
             flags+=" --to --instance-schema --write"
             ;;
         doctor)
-            flags+=" --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
+            flags+=" --record-instance --result-max-age --psa-namespaces --psa-service-account --temporal-codec --instance --checks --apiserver-endpoint --image-pull-policy --overlay-dir --image-runtime --image-tools --image-ca --k8s --repo --harness-auth --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --temporal-hostport --temporal-namespace --timeout"
             ;;
         netpol-render)
-            flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
+            flags+=" --out --check --baseline --write-baseline --timeout --keep-dns-for-network-none --print-blob-endpoint"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
@@ -119,6 +119,11 @@ _goobers_completion()
                 task-status) flags+=" --json" ;;
             esac
             ;;
+        temporal)
+            case "${COMP_WORDS[2]:-}" in
+                codec-server) flags+=" --listen --tls-cert --tls-key --allow-origin" ;;
+            esac
+            ;;
         engine-start)
             flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --direct --live-journal"
             ;;
@@ -129,7 +134,7 @@ _goobers_completion()
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --blob-endpoint --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         config-seed)
             flags+=" --mirror --instance"
@@ -221,7 +226,7 @@ _goobers_completion()
         telemetry)
             case "${COMP_WORDS[2]:-}" in
                 configure) flags+=" --connection-string-env --connection-string-file --connection-string-store --profile --disable --json" ;;
-                test) flags+=" --json --timeout" ;;
+                test) flags+=" --destination --json --timeout" ;;
                 merges) flags+=" --compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
                 stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
@@ -368,6 +373,11 @@ _goobers_completion()
         service)
             if (( COMP_CWORD == 2 )); then
                 candidates="install uninstall stop start status task-install task-uninstall task-start task-stop task-status"
+            fi
+            ;;
+        temporal)
+            if (( COMP_CWORD == 2 )); then
+                candidates="codec-server"
             fi
             ;;
         run)

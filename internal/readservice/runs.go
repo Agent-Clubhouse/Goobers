@@ -3,7 +3,6 @@ package readservice
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -293,7 +292,10 @@ type RunDetail struct {
 	// non-completed terminal phase (#4246). Escalation stays escalated-only so
 	// consumers keyed on "this run escalated" keep their meaning.
 	TerminalCause *EscalationCause `json:"terminalCause,omitempty"`
-	Outcome       *RunOutcome      `json:"outcome,omitempty"`
+	// TerminalCauseStatus distinguishes durable causes from the legacy display
+	// projection. An unavailable record is never synthesized from log text.
+	TerminalCauseStatus string      `json:"terminalCauseStatus"`
+	Outcome             *RunOutcome `json:"outcome,omitempty"`
 	// Transitions is the run's exact executed workflow-graph transition
 	// history (#1427) — never inferred from "both endpoint nodes were
 	// visited", which is what let the portal highlight an untaken repass
@@ -365,6 +367,8 @@ type RunOutcome struct {
 
 // EscalationCause projects the durable event that selected escalation.
 type EscalationCause struct {
+	// Record is the authoritative typed terminal cause, nil for legacy journals.
+	Record         *journal.TerminalCause `json:"record,omitempty"`
 	Selector       EscalationSelector     `json:"selector"`
 	SelectedBranch string                 `json:"selectedBranch,omitempty"`
 	RepassCount    int                    `json:"repassCount"`
@@ -1217,6 +1221,13 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	if err != nil {
 		return RunDetail{}, err
 	}
+	causeStatus := "not-applicable"
+	if cause != nil {
+		causeStatus = "unavailable"
+		if cause.Record != nil {
+			causeStatus = "recorded"
+		}
+	}
 	var escalation *EscalationCause
 	if summary.Phase == journal.PhaseEscalated {
 		escalation = cause
@@ -1224,15 +1235,16 @@ func (s *Local) getRunUnannotated(ctx context.Context, runID string) (RunDetail,
 	transitions, transitionsStatus := readmodel.ProjectTransitions(recordEvents(run.records), graph)
 	agentProgress := summarizeAgentProgress(run.identity.RunID, run.records)
 	return RunDetail{
-		RunSummary:        summary,
-		Graph:             graph,
-		GraphStatus:       status,
-		AgentProgress:     agentProgress,
-		Escalation:        escalation,
-		TerminalCause:     cause,
-		Outcome:           runOutcome(summary, run.records),
-		Transitions:       runTransitionsFrom(transitions),
-		TransitionsStatus: transitionsStatus,
+		RunSummary:          summary,
+		Graph:               graph,
+		GraphStatus:         status,
+		AgentProgress:       agentProgress,
+		Escalation:          escalation,
+		TerminalCause:       cause,
+		TerminalCauseStatus: causeStatus,
+		Outcome:             runOutcome(summary, run.records),
+		Transitions:         runTransitionsFrom(transitions),
+		TransitionsStatus:   transitionsStatus,
 	}, nil
 }
 
@@ -2244,6 +2256,28 @@ func terminalCause(phase journal.RunPhase, records []journal.EventRecord) (*Esca
 	default:
 		return nil, nil
 	}
+	if recorded, err := journal.TerminalCauseFromEvents(recordEvents(records)); err == nil {
+		cause := &EscalationCause{
+			Record:         recorded,
+			Selector:       EscalationSelector{Kind: recorded.SelectorKind, Name: recorded.Selector},
+			SelectedBranch: recorded.Verdict, TerminalReason: recorded.Message,
+			CausalEventSeq: recorded.CausalEventSeq,
+		}
+		if cause.TerminalReason == "" {
+			cause.TerminalReason = recorded.Code
+		}
+		if recorded.Retry != nil {
+			cause.RetryCount = recorded.Retry.Consumed
+		}
+		if recorded.Repass != nil {
+			cause.RepassCount = recorded.Repass.Consumed
+		}
+		return cause, nil
+	} else if !errors.Is(err, journal.ErrTerminalCauseUnavailable) {
+		return nil, err
+	}
+	// Preserve pre-record display behavior for legacy consumers, explicitly
+	// marked unavailable in RunDetail. This is not an authoritative record.
 	records = currentLifecycleRecords(records)
 	repasses, retries, _, _ := countStageAttempts(records)
 	cause := &EscalationCause{
@@ -2890,7 +2924,10 @@ func collectStageAttempts(
 			visit := visits[event.Stage]
 			visit.humanRequested = true
 			visits[event.Stage] = visit
-		case journal.EventStageStarted:
+		case journal.EventStageStarted, journal.EventReviewerStarted:
+			if event.Type == journal.EventReviewerStarted {
+				closeInterruptedReviewerAttempts(attempts, event)
+			}
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
 		case journal.EventRunnerPlacement:
 			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
@@ -2917,7 +2954,7 @@ func collectStageAttempts(
 				i = len(attempts) - 1
 			}
 			finishAttempt(&attempts[i], event, string(apiv1.ResultFailure), nil, event.Error)
-		case journal.EventStageFinished:
+		case journal.EventStageFinished, journal.EventReviewerFinished:
 			i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch)
 			if i < 0 {
 				attempts = append(attempts, newStageAttempt(runID, event, visits, false))
@@ -2994,8 +3031,7 @@ func newStageAttempt(
 }
 
 func stageAttemptID(runID string, branch int, stage string, anchorSeq uint64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%d", runID, branch, stage, anchorSeq)))
-	return "sta_" + base64.RawURLEncoding.EncodeToString(sum[:])
+	return journal.StageAttemptID(runID, branch, stage, anchorSeq)
 }
 
 func finishAttempt(

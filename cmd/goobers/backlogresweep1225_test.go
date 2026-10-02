@@ -21,6 +21,7 @@ func configureCurationResweep(t *testing.T, maxItems, resweepMaxItems string) {
 	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady+","+providers.LabelNeedsHuman+","+blockedOnSiblingLabel)
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", maxItems)
 	t.Setenv("GOOBERS_INPUT_RESWEEPMAXITEMS", resweepMaxItems)
+	t.Setenv("GOOBERS_INPUT_RESWEEPDEPENDENCYMAXITEMS", "")
 	t.Setenv("GOOBERS_INPUT_RESWEEPINTERVAL", "")
 	t.Setenv("GOOBERS_INPUT_RESWEEPREADYLABEL", providers.LabelReady)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")

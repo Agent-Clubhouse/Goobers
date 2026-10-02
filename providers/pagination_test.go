@@ -9,14 +9,130 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestWalkLinkPages(t *testing.T) {
+	var (
+		endpoints []string
+		bodies    []*closeTrackingBody
+		contexts  []pageContext
+	)
+	sender := func(_ context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+		if method != http.MethodGet || body != nil {
+			t.Fatalf("request = (%q, %v), want (GET, nil)", method, body)
+		}
+		endpoints = append(endpoints, endpoint)
+		page := len(endpoints)
+		responseBody := &closeTrackingBody{Reader: strings.NewReader(strconv.Itoa(page))}
+		bodies = append(bodies, responseBody)
+		header := http.Header{"X-Page": []string{strconv.Itoa(page)}}
+		if page == 1 {
+			header.Set("Link", `<https://example.test/items?per_page=37&page=2>; rel="next"`)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: responseBody}, nil
+	}
+
+	err := walkLinkPages(context.Background(), sender, "https://example.test/items?per_page=37", func(body []byte, page pageContext) error {
+		if !bodies[len(contexts)].closed {
+			t.Fatal("response body was not closed before callback")
+		}
+		if string(body) != strconv.Itoa(len(contexts)+1) {
+			t.Fatalf("body = %q, want page number", body)
+		}
+		contexts = append(contexts, page)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walkLinkPages: %v", err)
+	}
+	if len(endpoints) != 2 {
+		t.Fatalf("requests = %d, want 2", len(endpoints))
+	}
+	for _, endpoint := range endpoints {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			t.Fatalf("parse requested endpoint: %v", err)
+		}
+		if got := u.Query().Get("per_page"); got != "37" {
+			t.Fatalf("per_page = %q, want preserved value 37", got)
+		}
+	}
+	if len(contexts) != 2 || contexts[0].Header.Get("X-Page") != "1" || !contexts[0].HasNext ||
+		contexts[1].Header.Get("X-Page") != "2" || contexts[1].HasNext {
+		t.Fatalf("page contexts = %#v, want headers and HasNext values for both pages", contexts)
+	}
+}
+
+func TestWalkLinkPagesStopsAndPropagatesErrors(t *testing.T) {
+	t.Run("stop paging", func(t *testing.T) {
+		calls := 0
+		sender := func(context.Context, string, string, interface{}) (*http.Response, error) {
+			calls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Link": []string{`<https://example.test/items?page=2>; rel="next"`}},
+				Body:       io.NopCloser(strings.NewReader("page")),
+			}, nil
+		}
+		if err := walkLinkPages(context.Background(), sender, "https://example.test/items", func([]byte, pageContext) error {
+			return errStopPaging
+		}); err != nil {
+			t.Fatalf("walkLinkPages: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("requests = %d, want 1", calls)
+		}
+	})
+
+	t.Run("sender error", func(t *testing.T) {
+		want := errors.New("send failed")
+		sender := func(context.Context, string, string, interface{}) (*http.Response, error) {
+			return nil, want
+		}
+		if got := walkLinkPages(context.Background(), sender, "https://example.test/items", func([]byte, pageContext) error {
+			t.Fatal("callback called after sender error")
+			return nil
+		}); !errors.Is(got, want) {
+			t.Fatalf("error = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("callback error", func(t *testing.T) {
+		want := errors.New("callback failed")
+		sender := func(context.Context, string, string, interface{}) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("page")),
+			}, nil
+		}
+		if got := walkLinkPages(context.Background(), sender, "https://example.test/items", func([]byte, pageContext) error {
+			return want
+		}); !errors.Is(got, want) {
+			t.Fatalf("error = %v, want %v", got, want)
+		}
+	})
+}
 
 // paginatedJSON serves pages[page-1] for ?page=N, setting a Link rel="next"
 // header (pointing back at this same test server) until the last page — exactly

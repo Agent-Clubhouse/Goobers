@@ -4188,6 +4188,16 @@ func TestRunConditionsResolveMemoryHighWater(t *testing.T) {
 	}
 }
 
+func TestExternalTelemetryConnectorNamesIsNonNilForAConfig(t *testing.T) {
+	var nilConfig *Config
+	if names := nilConfig.ExternalTelemetryConnectorNames(); names != nil {
+		t.Fatalf("nil config names = %#v, want nil (check skipped)", names)
+	}
+	if names := (&Config{}).ExternalTelemetryConnectorNames(); names == nil || len(names) != 0 {
+		t.Fatalf("empty config names = %#v, want a non-nil empty slice so the check still runs", names)
+	}
+}
+
 // TestExternalTelemetryConnectorsByName is #4341's dispatcher-side lookup:
 // the index the dispatcher stamps a stage pod from must clear Auth.Token,
 // never hand a credential reference to a caller that has no business
@@ -4506,5 +4516,24 @@ engine:
 `)
 	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "certFile and keyFile must be set together") {
 		t.Fatalf("LoadConfig error = %v, want the cert/key pairing refusal", err)
+	}
+}
+
+func TestTerminalBranchRetentionDuration(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		bad   bool
+	}{
+		{"", 30 * 24 * time.Hour, false}, {"0s", 0, false}, {"1440h", 60 * 24 * time.Hour, false}, {"-1h", 0, true}, {"30d", 0, true},
+	} {
+		cfg := RetentionConfig{TerminalBranchMaxAge: tc.value}
+		got, err := cfg.TerminalBranchMaxAgeDuration()
+		if (err != nil) != tc.bad || !tc.bad && got != tc.want {
+			t.Fatalf("%q: %v, %v", tc.value, got, err)
+		}
+		if err := (&Config{Retention: cfg}).Validate(); (err != nil) != tc.bad {
+			t.Fatalf("validate %q: %v", tc.value, err)
+		}
 	}
 }

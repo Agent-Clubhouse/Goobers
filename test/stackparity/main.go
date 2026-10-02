@@ -388,14 +388,14 @@ var stackEvidenceTable = []stackEvidence{
 	},
 	{
 		stack:     ".NET/C#",
-		status:    statusLocalGreen,
+		status:    statusCIGreen,
 		reference: "config-examples/gaggles/dotnet-service",
 		e2eTest:   "test/e2e/dotnet_gaggle_integration_test.go",
 		e2eEnv:    "GOOBERS_DOTNET_E2E",
 	},
 	{
 		stack:     "Python",
-		status:    statusLocalGreen,
+		status:    statusCIGreen,
 		reference: "config-examples/gaggles/python-service",
 		e2eTest:   "test/e2e/python_gaggle_integration_test.go",
 		e2eEnv:    "GOOBERS_PYTHON_E2E",

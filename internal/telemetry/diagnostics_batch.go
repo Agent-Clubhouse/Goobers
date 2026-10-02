@@ -29,6 +29,16 @@ type diagnosticBatch struct {
 // in-flight request. Accepted/Delivered/Dropped count records; Failures counts failed or
 // partially rejected RPCs.
 func (d *DiagnosticExporter) EmitBatch(records []DiagnosticRecord) int {
+	if d != nil && len(d.destinations) > 0 {
+		accepted := len(records)
+		if d.legacy != nil {
+			accepted = d.legacy.EmitBatch(records)
+		}
+		for _, child := range d.destinations {
+			accepted = min(accepted, child.EmitBatch(records))
+		}
+		return accepted
+	}
 	if d == nil || len(records) == 0 {
 		return 0
 	}

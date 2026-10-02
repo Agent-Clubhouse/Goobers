@@ -11,6 +11,8 @@ Direct export includes bounded on-disk replay. Windows, macOS, Linux, and
 Kubernetes use the same configuration; the Kubernetes instance root must be on
 a persistent volume if pending records must survive pod replacement.
 
+For multiple destinations, see [named telemetry destinations](telemetry-destinations.md).
+
 ## Configure the destination
 
 Copy the connection string from the Application Insights resource's Overview
@@ -298,6 +300,22 @@ alert conditions clear. Recovery does not restore previously dropped records.
 Reports contain aggregate counts and admission/delivery rates, never envelope
 content, user/machine names, connection strings, paths, or raw exception text.
 
+Each report also carries delivery evidence: `lastSuccess` (when the
+destination last acknowledged a batch), `lastFailure`, `failureClass`, and
+`activeFailure`. `failureClass` is one of `rejected` (the destination answered
+with a non-success HTTP status), `timeout`, `dns`, `tls`, `network`,
+`spool_io` (local storage refused admission or a manifest read failed),
+`malformed` (a spooled batch could not be read or projected), or `unknown`.
+While the latest delivery attempt has failed, `activeFailure` is true and the
+fixed cause `delivery_failure` is reported; the next acknowledged batch clears
+it and advances `lastSuccess`. A malformed file or refused admission records
+its class without setting `activeFailure`, because delivery of other records
+continues. `lastSuccess`, `lastFailure`, and `failureClass` survive a restart
+in a private `status-{journal,diagnostics,traces}.json` sidecar beside the
+health files (at most 4 KiB, rewritten at most once per sample). Whether a
+failure is still active does not survive a restart; the next attempt
+re-establishes it.
+
 An `accounting_unavailable` sample means the process could not obtain a current
 manifest snapshot. The lookup has a 100 ms budget and uses a separate read-only
 connection instead of waiting for replay's writer connection. A busy health
@@ -543,6 +561,27 @@ traces
 | project timestamp, instanceId, pending, pendingBytes, oldestSeconds, retried,
           prunedAge, prunedBytes, malformed, queueDropped
 | order by timestamp desc
+```
+
+The same records carry delivery evidence aggregated across the replay streams:
+`azureReplayLastSuccess` and `azureReplayLastFailure` (RFC 3339 UTC),
+`azureReplayFailureClass` (the class of the latest failure), and
+`azureReplayActiveFailure`. This alert query finds instances whose delivery is
+currently failing, or has not succeeded for an hour, by failure class:
+
+```kusto
+traces
+| where timestamp > ago(1h)
+| where message in ("goobers.fleet.heartbeat", "goobers.service.health")
+| extend instanceId=tostring(customDimensions["instanceId"]),
+         active=tobool(customDimensions["azureReplayActiveFailure"]),
+         lastSuccess=todatetime(customDimensions["azureReplayLastSuccess"]),
+         lastFailure=todatetime(customDimensions["azureReplayLastFailure"]),
+         failureClass=tostring(customDimensions["azureReplayFailureClass"])
+| summarize arg_max(timestamp, *) by instanceId
+| where active or (isnotnull(lastFailure) and (isnull(lastSuccess) or lastSuccess < ago(1h)))
+| project timestamp, instanceId, failureClass, active, lastSuccess, lastFailure
+| order by lastSuccess asc
 ```
 
 The generated incident/correlation schema, profile membership, emission

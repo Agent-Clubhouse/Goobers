@@ -177,7 +177,7 @@ func TestDoctorRequiresExactlyOneMode(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("%v: code = %d, want 2", args, code)
 		}
-		if !strings.Contains(stderr, "exactly one of --k8s, --repo, --harness-auth or --av-exclusions") {
+		if !strings.Contains(stderr, "exactly one of --k8s, --repo, --harness-auth, --av-exclusions or --temporal-codec") {
 			t.Fatalf("%v: stderr = %q, want the exactly-one-mode message", args, stderr)
 		}
 	}

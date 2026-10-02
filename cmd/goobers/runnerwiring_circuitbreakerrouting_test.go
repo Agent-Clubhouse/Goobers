@@ -152,7 +152,7 @@ func TestTerminalCircuitBreakerSingleRepoUnchanged(t *testing.T) {
 // proving simultaneous runs cannot cross-route identifiers." Two runs under
 // the SAME gaggle each claim an item from a DIFFERENT repo — the shape
 // #4243's gaggle-level fix never covered, since both runs share one gaggle
-// and therefore one declared project. Before #4417, applyCircuitBreaker
+// and therefore one declared project. Before #4417, the circuit breaker
 // applied a single repo argument to every item a call touched; with two
 // concurrent runs sharing that argument's derivation, one run's terminal
 // could mutate the other run's item on the wrong repo. Each run's own

@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/internal/temporaldial"
 )
 
@@ -47,17 +48,11 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	liveJournal := fs.Bool("live-journal", false, "author the run journal live through the daemon's journal plane (DS4)")
 	direct := fs.Bool("direct", false, "start the workflow straight on Temporal, bypassing the daemon's scheduler")
 	fs.Usage = helpUsage(stderr, "engine-start")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
+	workflowName, root, parsed := parseRequiredArgOptionalRootWithUsage(fs, args, func() {
 		pf(stderr, "usage: goobers engine-start [flags] <workflow> [path]\n")
+	})
+	if !parsed {
 		return 2
-	}
-	workflowName := fs.Arg(0)
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), engineStartTimeout)
 	defer cancel()
@@ -151,7 +146,12 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	}
 	defer release()
 
-	c, err := temporaldial.Dial(ctx, *hostPort, *namespace, engineConfig.TLS)
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		pf(stderr, "error: temporal payload codec: %v\n", err)
+		return 2
+	}
+	c, err := temporaldial.Dial(ctx, *hostPort, *namespace, engineConfig.TLS, dc)
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/worker"
 
 	"github.com/goobers/goobers/internal/dispatcher"
@@ -20,11 +21,12 @@ import (
 // workspace-needing stage fails closed (#621), so any host that dispatches
 // real stages must wire one.
 type EngineDeps struct {
-	Goober     invoke.Goober
-	Det        invoke.Deterministic
-	Auto       invoke.Automated
-	Workspaces engine.WorkspaceProvisioner
-	Scrubber   journal.Scrubber
+	AdmitSelfExecution func(stage string) error
+	Goober             invoke.Goober
+	Det                invoke.Deterministic
+	Auto               invoke.Automated
+	Workspaces         engine.WorkspaceProvisioner
+	Scrubber           journal.Scrubber
 	// Journal is the live-journal emission seam (DS4): in the daemon it is
 	// the *livejournal.Writer itself, on a remote worker it is
 	// livejournal.HTTPEmitter at the daemon write API's journal plane. Only
@@ -52,22 +54,22 @@ type EngineDeps struct {
 // Every deployable worker entrypoint calls this so the worker is identical.
 func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDeps) {
 	engine.RegisterWith(w, &engine.Activities{
-		Goober:          deps.Goober,
-		Det:             deps.Det,
-		Auto:            deps.Auto,
-		ScheduleService: temporalClient.WorkflowService(),
-		Workspaces:      deps.Workspaces,
-		Scrubber:        deps.Scrubber,
-		Journal:         deps.Journal,
-		Canary:          deps.Canary,
-		Dispatcher:      deps.Dispatcher,
-		Surrenders:      deps.Surrenders,
+		Goober:             deps.Goober,
+		AdmitSelfExecution: deps.AdmitSelfExecution,
+		Det:                deps.Det,
+		Auto:               deps.Auto,
+		Workspaces:         deps.Workspaces,
+		Scrubber:           deps.Scrubber,
+		Journal:            deps.Journal,
+		Canary:             deps.Canary,
+		Dispatcher:         deps.Dispatcher,
+		Surrenders:         deps.Surrenders,
 	})
 }
 
 // DialTemporal connects to a Temporal frontend. A thin wrapper so the cmd
 // entrypoints don't each reimplement client construction; the options come
 // from temporaldial, so a nil tls is today's plaintext dial (#5289).
-func DialTemporal(hostPort, namespace string, tls *temporaldial.TLS) (client.Client, error) {
-	return temporaldial.Dial(context.Background(), hostPort, namespace, tls)
+func DialTemporal(hostPort, namespace string, tls *temporaldial.TLS, dc ...converter.DataConverter) (client.Client, error) {
+	return temporaldial.Dial(context.Background(), hostPort, namespace, tls, dc...)
 }

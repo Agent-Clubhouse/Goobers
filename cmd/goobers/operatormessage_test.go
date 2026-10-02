@@ -480,6 +480,12 @@ func TestDaemonOperatorMessageLocalRunnerLifecycle(t *testing.T) {
 
 		reviewer.release()
 		waitForOperatorMessageRunDone(t, runDone)
+		if _, ok := runner.DefaultOperatorMessageDeliveryRegistry.Resolve(address); ok {
+			t.Fatal("terminated reviewer retained its live delivery target")
+		}
+		if _, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveJournal(address); ok {
+			t.Fatal("terminated reviewer retained its live journal registration")
+		}
 
 		request = operatorMessageRequest(runID, "key-after-termination",
 			httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
@@ -843,6 +849,7 @@ func (b *blockingOperatorMessageReviewer) release() {
 
 func startOperatorMessageRunner(t *testing.T, layout instance.Layout, runID string, reviewer *blockingOperatorMessageReviewer) <-chan operatorMessageRunResult {
 	t.Helper()
+	t.Cleanup(reviewer.release)
 	wtMgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
 	if err != nil {
 		t.Fatalf("new worktree manager: %v", err)
@@ -906,13 +913,22 @@ func waitForOperatorMessageGateAddress(t *testing.T, layout instance.Layout, run
 		if err == nil {
 			events, err := reader.Events()
 			if err == nil {
-				for _, event := range events {
-					if event.Type != journal.EventGateStarted || event.Gate != "review" {
+				for i := len(events) - 1; i >= 0; i-- {
+					event := events[i]
+					if event.Type != journal.EventReviewerStarted || event.Stage != "review" {
 						continue
 					}
-					address, err := journal.StageAgentAddress(runID, event.Gate, event.RepassAttempt(), agent, event.Seq)
+					// Delivery belongs to this reviewer dispatch, not the enclosing
+					// gate visit: retries each have their own durable start identity.
+					address, err := journal.StageAgentAddress(runID, event.Stage, event.Attempt, agent, event.Seq)
 					if err != nil {
 						t.Fatal(err)
+					}
+					if _, ok := runner.DefaultOperatorMessageDeliveryRegistry.Resolve(address.String()); !ok {
+						t.Fatal("reviewer dispatch has no live delivery target")
+					}
+					if _, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveJournal(address.String()); !ok {
+						t.Fatal("reviewer dispatch has no live journal registration")
 					}
 					return address.String()
 				}
@@ -920,7 +936,7 @@ func waitForOperatorMessageGateAddress(t *testing.T, layout instance.Layout, run
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("gate address was not journaled")
+	t.Fatal("reviewer dispatch address was not journaled")
 	return ""
 }
 

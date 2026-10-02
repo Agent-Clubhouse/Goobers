@@ -155,6 +155,12 @@ const PodPrincipalIssuer = "goobers/pod"
 // identity.
 const WorkerPrincipalIssuer = "goobers/worker"
 
+// WorkerBlobPrincipalIssuer is a blob-only resident-worker credential.
+const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
+
+// WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
+const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
+
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
 // authorizer admits it to the credential refresh route and nothing else.
@@ -401,8 +407,9 @@ func telemetryPlanePath(path string) bool {
 // convention.
 //
 // Resident worker principals use a separate identity and may only GET the
-// config digest or POST their own divergence report. Neither pod scopes nor
-// instance roles broaden that grant.
+// config digest or POST their own divergence report. Dedicated blob-worker
+// principals may only GET/PUT blobs; surrender-worker principals may only
+// read surrender results and presence. Pod scopes and roles broaden none.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -420,6 +427,12 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("a credential-refresh grant may only call the credential refresh route")
+		}
+		if principal.Issuer == WorkerSurrenderPrincipalIssuer {
+			return authorizeWorkerSurrender(request)
+		}
+		if principal.Issuer == WorkerBlobPrincipalIssuer {
+			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == WorkerPrincipalIssuer {
 			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
@@ -613,6 +626,7 @@ type handlerConfig struct {
 	telemetryReadsAvailable bool
 	workItemsAvailable      bool
 	activeClaimsAvailable   bool
+	configAuthoring         ConfigAuthoringReader
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -686,6 +700,17 @@ func WithConfigDigest(digest func() string) HandlerOption {
 			return errors.New("http api: config digest source is required")
 		}
 		c.configDigest = digest
+		return nil
+	}
+}
+
+// WithConfigAuthoringReader registers authenticated configuration-source reads.
+func WithConfigAuthoringReader(reader ConfigAuthoringReader) HandlerOption {
+	return func(c *handlerConfig) error {
+		if reader == nil {
+			return errors.New("http API configuration authoring reader is required")
+		}
+		c.configAuthoring = reader
 		return nil
 	}
 }
@@ -860,6 +885,19 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 	if !ok {
 		panic(fmt.Sprintf("unknown API route ID %q", routeID))
 	}
+	r.handleRoute(route, handler)
+}
+
+func (r *Router) handleAuthoring(routeID apicontract.RouteID, handler http.HandlerFunc) {
+	r.ensureAdmission()
+	route, ok := apicontract.V1ConfigAuthoringRoute(routeID)
+	if !ok {
+		panic(fmt.Sprintf("unknown configuration authoring route ID %q", routeID))
+	}
+	r.handleRoute(route, handler)
+}
+
+func (r *Router) handleRoute(route apicontract.Route, handler http.HandlerFunc) {
 	r.routes = append(r.routes, route)
 	r.mux.HandleFunc(route.Path, func(w http.ResponseWriter, request *http.Request) {
 		if request.Method != route.Method {
@@ -1034,6 +1072,9 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		return nil, fmt.Errorf("register API discovery routes: %w", err)
 	}
 	registerV1Routes(router, reader, errorLog, config, discovery)
+	if config.configAuthoring != nil {
+		registerConfigAuthoringReadRoutes(router, config.configAuthoring, errorLog)
+	}
 	// The event stream is optional wiring, so the events route is only part of
 	// what this handler must serve when a stream is actually configured.
 	expected := apicontract.V1Routes()
@@ -1043,6 +1084,13 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 		expected = slices.DeleteFunc(expected, func(route apicontract.Route) bool {
 			return route.ID == apicontract.RouteEvents
 		})
+	}
+	if config.configAuthoring != nil {
+		for _, route := range apicontract.V1ConfigAuthoringRoutes() {
+			if route.Method == http.MethodGet {
+				expected = append(expected, route)
+			}
+		}
 	}
 	if err := apicontract.ValidateRoutes(expected, router.routes); err != nil {
 		return nil, fmt.Errorf("register HTTP API routes: %w", err)

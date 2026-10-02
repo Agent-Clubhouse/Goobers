@@ -82,6 +82,9 @@ import (
 // client that is indistinguishable from the server dying.
 func routeBudget(id apicontract.RouteID) (time.Duration, bool) {
 	route, ok := apicontract.V1Route(id)
+	if !ok {
+		route, ok = apicontract.V1ConfigAuthoringRoute(id)
+	}
 	if !ok || route.Budget <= 0 {
 		return 0, false
 	}

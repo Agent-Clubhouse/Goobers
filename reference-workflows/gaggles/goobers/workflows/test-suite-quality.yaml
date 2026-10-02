@@ -5,6 +5,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: test-suite-quality
+  annotations:
+    goobers.dev/purpose: "Finds recurring and flaky test failures, classifies the likely causes and files backlog items to fix them."
 spec:
   gaggle: goobers
   displayName: Test suite quality

@@ -36,6 +36,10 @@ Decision-record rulings are cited as **D0–D12**; this document's own decisions
 
 ## 1. Why this document exists now
 
+Resident worker artifact-store modes and their authentication contract are
+described in [worker blob transport](worker-blob-transport.md).
+
+
 An OS-spanning run works. On 2026-08-12 run `300534f6f9503e251374d9433060ebf8` executed three stages
 across a Linux node and a Windows node in one AKS cluster, on one workflow definition, with one run
 id — dispatched by Temporal, with stage artifacts exchanged through a shared content-addressed store.

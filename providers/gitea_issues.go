@@ -408,55 +408,9 @@ func (p *GiteaProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWork
 	if err := p.ready(); err != nil {
 		return WorkItem{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	newLabel := statusLabel(req.Status)
-	var remove []string
-	for _, l := range current.Labels {
-		if strings.HasPrefix(l, statusLabelPrefix) && l != newLabel {
-			remove = append(remove, l)
-		}
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{newLabel}, remove); err != nil {
-		return WorkItem{}, err
-	}
-	if req.Status == WorkItemStatusDone {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"state": "closed"}, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	item, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	operation := "status"
-	if req.Status == WorkItemStatusDone {
-		operation = "close"
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.ID),
-		URL:       item.URL,
-		Operation: operation,
-		Fields: map[string]FieldDigest{
-			"status": {Before: digestString(string(statusFromLabels(current.Labels, current.State))), After: digestString(string(req.Status))},
-		},
+	return updateRESTWorkItemStatus(ctx, p, ProviderGitea, p.BaseURL, req, func(body string) error {
+		return p.postComment(ctx, req.Repository, req.ID, body)
 	})
-	return item, nil
 }
 
 // ClaimWorkItem writes a best-effort claiming marker (a label plus a run-id
@@ -473,45 +427,10 @@ func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 }
 
 func (p *GiteaProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
-	if err := p.ready(); err != nil {
-		return ClaimResult{}, err
-	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return ClaimResult{}, err
-	}
-	if req.ID == "" {
-		return ClaimResult{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	if winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID); err != nil {
-		return ClaimResult{}, err
-	} else if ok {
-		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
-	}
-
-	if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
-		return ClaimResult{}, err
-	}
-	winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if !ok {
-		winner = req.RunID
-	}
-	if winner == req.RunID {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
-			return ClaimResult{}, err
-		}
-	}
-	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
+	return claimRESTWorkItem(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req, claimRESTWorkItemHooks{
+		ready:                   p.ready,
+		missingBreadcrumbWinner: func(runID string) string { return runID },
+	})
 }
 
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its
@@ -529,29 +448,6 @@ func (p *GiteaProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 		return WorkItem{}, err
 	}
 	return releaseRESTWorkItemClaim(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req)
-}
-
-// finishClaim loads the final item, records the claim mutation, and reports
-// whether runID is the recognized winner.
-func (p *GiteaProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner string) (ClaimResult, error) {
-	item, err := p.GetWorkItem(ctx, repo, id)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	claimed := winner == runID
-	providerRunID := ""
-	if !claimed {
-		providerRunID = winner
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider: ProviderGitea, Ref: issueRef(repo, id), URL: item.URL,
-		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
-		RunID: runID, ProviderRunID: providerRunID,
-		Fields: map[string]FieldDigest{
-			"claim": {After: digestString("run=" + winner)},
-		},
-	})
-	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
 }
 
 // HasOpenWorkItemBlocker reports whether a Gitea issue has a native dependency
@@ -653,23 +549,21 @@ func (p *GiteaProvider) EnsureWorkItemLabels(ctx context.Context, repo Repositor
 	if err != nil {
 		return EnsureWorkItemLabelsResult{}, err
 	}
-	have := make(map[string]bool, len(existing))
+	existingNames := make([]string, 0, len(existing))
 	for _, l := range existing {
-		have[strings.ToLower(l.Name)] = true
+		existingNames = append(existingNames, l.Name)
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
 	if err != nil {
 		return EnsureWorkItemLabelsResult{}, err
 	}
 	result := EnsureWorkItemLabelsResult{Created: []string{}, Skipped: []string{}}
-	for _, label := range labels {
-		label.Name = strings.TrimSpace(label.Name)
-		label.Color = strings.TrimPrefix(strings.TrimSpace(label.Color), "#")
+	for _, step := range planLabelEnsure(existingNames, labels, lowerLabelName) {
+		label := step.Label
 		if label.Name == "" || label.Color == "" {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("label name and color are required")
 		}
-		key := strings.ToLower(label.Name)
-		if have[key] {
+		if !step.Create {
 			result.Skipped = append(result.Skipped, label.Name)
 			continue
 		}
@@ -681,7 +575,6 @@ func (p *GiteaProvider) EnsureWorkItemLabels(ctx context.Context, repo Repositor
 		}, &created); err != nil {
 			return EnsureWorkItemLabelsResult{}, fmt.Errorf("create label %q: %w", label.Name, err)
 		}
-		have[key] = true
 		result.Created = append(result.Created, label.Name)
 	}
 	return result, nil
@@ -717,17 +610,17 @@ func (p *GiteaProvider) giteaLabelIDs(ctx context.Context, repo RepositoryRef, n
 	for _, l := range existing {
 		byName[strings.ToLower(l.Name)] = l.ID
 	}
+	existingNames := make([]string, 0, len(existing))
+	for _, label := range existing {
+		existingNames = append(existingNames, label.Name)
+	}
+	plan := planLabelMutation(existingNames, names, nil, lowerLabelName)
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(names))
-	for _, name := range names {
+	for _, name := range plan.Add {
 		key := strings.ToLower(name)
-		if id, ok := byName[key]; ok {
-			ids = append(ids, id)
-			continue
-		}
 		var created giteaLabel
 		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{
 			"name":  name,
@@ -742,7 +635,6 @@ func (p *GiteaProvider) giteaLabelIDs(ctx context.Context, repo RepositoryRef, n
 			for _, l := range refreshed {
 				if strings.EqualFold(l.Name, name) {
 					byName[key] = l.ID
-					ids = append(ids, l.ID)
 					found = true
 					break
 				}
@@ -753,7 +645,10 @@ func (p *GiteaProvider) giteaLabelIDs(ctx context.Context, repo RepositoryRef, n
 			continue
 		}
 		byName[key] = created.ID
-		ids = append(ids, created.ID)
+	}
+	ids := make([]int64, 0, len(names))
+	for _, name := range names {
+		ids = append(ids, byName[strings.ToLower(name)])
 	}
 	return ids, nil
 }
@@ -781,8 +676,9 @@ func (p *GiteaProvider) listRepoLabels(ctx context.Context, repo RepositoryRef) 
 // IDs. Add posts the ID set; each removal is a DELETE of one label id,
 // tolerating a 404 when the label is not present.
 func (p *GiteaProvider) applyLabelChanges(ctx context.Context, repo RepositoryRef, id string, add, remove []string) error {
-	if add = uniqueStrings(add); len(add) > 0 {
-		addIDs, err := p.giteaLabelIDs(ctx, repo, add)
+	plan := planLabelMutation(nil, add, remove, exactLabelName)
+	if len(plan.Add) > 0 {
+		addIDs, err := p.giteaLabelIDs(ctx, repo, plan.Add)
 		if err != nil {
 			return err
 		}
@@ -794,11 +690,10 @@ func (p *GiteaProvider) applyLabelChanges(ctx context.Context, repo RepositoryRe
 			return err
 		}
 	}
-	remove = uniqueStrings(remove)
-	if len(remove) == 0 {
+	if len(plan.Remove) == 0 {
 		return nil
 	}
-	removeIDs, err := p.resolveExistingLabelIDs(ctx, repo, remove)
+	removeIDs, err := p.resolveExistingLabelIDs(ctx, repo, plan.Remove)
 	if err != nil {
 		return err
 	}
@@ -826,8 +721,13 @@ func (p *GiteaProvider) resolveExistingLabelIDs(ctx context.Context, repo Reposi
 	for _, l := range existing {
 		byName[strings.ToLower(l.Name)] = l.ID
 	}
-	ids := make([]int64, 0, len(names))
-	for _, name := range names {
+	existingNames := make([]string, 0, len(existing))
+	for _, label := range existing {
+		existingNames = append(existingNames, label.Name)
+	}
+	plan := planLabelMutation(existingNames, nil, names, lowerLabelName)
+	ids := make([]int64, 0, len(plan.Remove))
+	for _, name := range plan.Remove {
 		if id, ok := byName[strings.ToLower(name)]; ok {
 			ids = append(ids, id)
 		}

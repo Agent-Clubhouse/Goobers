@@ -22,7 +22,7 @@ const telemetryConfigureHelp = "Usage: goobers telemetry configure (--connection
 	"configuration. --disable removes only the direct Azure destination.\n\n" +
 	"Exit codes: 0 = configured, 1 = refused/invalid config, 2 = usage or I/O error.\n"
 
-const telemetryTestHelp = "Usage: goobers telemetry test [--json] [--timeout DURATION] [path]\n\n" +
+const telemetryTestHelp = "Usage: goobers telemetry test [--destination NAME] [--json] [--timeout DURATION] [path]\n\n" +
 	"Resolve the configured connection-string reference and send one fixed,\n" +
 	"identity-free connectivity record directly to Application Insights. The probe\n" +
 	"bypasses disk replay: success means Azure acknowledged this request now. No\n" +
@@ -83,6 +83,10 @@ func runTelemetryConfigure(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: load config: %v\n", err)
 		return 2
 	}
+	if len(cfg.Telemetry.Exporters) > 0 {
+		pf(stderr, "error: telemetry configure manages the legacy azureMonitor block; edit telemetry.exporters in instance.yaml to change named destinations\n")
+		return 2
+	}
 	result := telemetryConfigureResult{Schema: "goobers.dev/telemetry/configure/v1"}
 	if *disable {
 		cfg.Telemetry.AzureMonitor = nil
@@ -136,6 +140,7 @@ func looksLikeApplicationInsightsSecret(value string) bool {
 
 func runTelemetryTest(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("telemetry test", flag.ContinueOnError)
+	destination := fs.String("destination", "", "named Azure destination to probe")
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render the connectivity result as JSON")
 	timeout := fs.Duration("timeout", 10*time.Second, "connectivity deadline (1s through 1m)")
@@ -156,8 +161,9 @@ func runTelemetryTest(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "telemetry test: load config: %v\n", err)
 		return 2
 	}
-	if cfg.Telemetry.AzureMonitor == nil || !cfg.Telemetry.AzureMonitor.Enabled() {
-		pf(stderr, "telemetry test: direct Azure Monitor telemetry is not configured\n")
+	connection, err := telemetryTestConnection(cfg.Telemetry, *destination)
+	if err != nil {
+		pf(stderr, "telemetry test: %v\n", err)
 		return 2
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
@@ -165,7 +171,7 @@ func runTelemetryTest(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "telemetry test: configure secret stores: %v\n", err)
 		return 1
 	}
-	ref := cfg.Telemetry.AzureMonitor.ConnectionString.CredentialTokenRef("telemetry.azureMonitor.connectionString")
+	ref := connection.CredentialTokenRef("telemetry.azureMonitor.connectionString")
 	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{ref}, stores)
 	if err != nil {
 		pf(stderr, "telemetry test: configure connection-string resolver: %v\n", err)

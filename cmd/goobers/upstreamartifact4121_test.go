@@ -35,7 +35,7 @@ func TestUpstreamArtifactFailureIsAnInfraFault(t *testing.T) {
 				t.Fatal("an artifact the plane has not applied yet clears on its own; the stage retry budget is the instrument for it")
 			}
 			// The property the circuit breaker actually reads
-			// (runnerwiring_notifications.go's #3361/#3364 exemption).
+			// (internal/escalationnotify's #3361/#3364 exemption).
 			if class := telemetry.ClassifyError(code); !class.InfraFault() {
 				t.Fatalf("ClassifyError(%q) = %q, which is not an InfraFault: the failure-streak breaker will strike the item for it and eventually park it goobers:needs-human", code, class)
 			}

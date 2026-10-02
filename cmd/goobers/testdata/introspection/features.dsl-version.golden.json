@@ -110,6 +110,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.isolation.serviceAccount",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.outboxMirrorPath",
       "stability": "ga",
       "sinceVersion": "dev"

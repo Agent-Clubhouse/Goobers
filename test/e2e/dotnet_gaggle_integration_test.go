@@ -7,8 +7,8 @@
 // ["dotnet","test"]` (resolved into the local-ci stage by #1009's
 // ApplyGaggleCICommand) runs a real `dotnet build && dotnet test` against a real
 // .NET project in the run's worktree and comes back green. Skips when the .NET
-// SDK is absent (cloud CI pinning is soft/stretch this sprint) — validated
-// locally on a host that has the SDK.
+// SDK is absent; CI's declared-dependency integration job pins the SDK and
+// enables it (#4615).
 package e2e
 
 import (
@@ -169,13 +169,12 @@ func newPolyglotGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, r
 // command (#1009) and, at schedule time, the dotnet@9 runner capability
 // (#1101).
 func TestIntegrationDotnetServiceGaggleRunsLocalCIGreen(t *testing.T) {
-	// Opt-in only. This test runs a real `dotnet test`, which restores NuGet
-	// packages over the network and builds the SDK — a dependency deliberately
-	// kept OUT of the shared `make ci` gate: cloud CI pinning is soft/stretch
-	// this sprint (#1093), and a network-dependent restore has no place in the
-	// zero-tolerance flake budget. It is validated locally on a host that has
-	// the SDK — set GOOBERS_DOTNET_E2E=1 to run it. An evergreen CI leg pinning
-	// the reference gaggle is the tracked stretch follow-up.
+	// Opt-in only. This test runs a real `dotnet test`, which builds with the
+	// SDK and restores NuGet packages. CI's declared-dependency integration job
+	// sets GOOBERS_DOTNET_E2E after pinning the .NET 9 SDK and pre-restoring the
+	// fixture's packages cache-first (#4615), so the restore here resolves from
+	// the local global packages folder. Elsewhere, set GOOBERS_DOTNET_E2E=1 on a
+	// host that has the SDK.
 	testdep.RequireEnv(t, "GOOBERS_DOTNET_E2E")
 	testdep.Require(t, "dotnet")
 

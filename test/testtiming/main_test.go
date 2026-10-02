@@ -28,7 +28,7 @@ func TestParseTestEventsCollectsSortedTimingsAndStreamsOutput(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	got, err := parseTestEvents(&input, &output)
+	got, err := parseTestEvents(&input, &output, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestParseTestEventsCollectsSortedTimingsAndStreamsOutput(t *testing.T) {
 func TestParseTestEventsReturnsPartialArtifactOnInvalidJSON(t *testing.T) {
 	t.Parallel()
 	input := strings.NewReader("{\"Action\":\"pass\",\"Package\":\"example/a\",\"Elapsed\":1}\nnot-json\n")
-	got, err := parseTestEvents(input, &bytes.Buffer{})
+	got, err := parseTestEvents(input, &bytes.Buffer{}, nil)
 	if err == nil {
 		t.Fatal("parseTestEvents() succeeded")
 	}

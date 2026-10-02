@@ -117,16 +117,9 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 	includeVerdict := fs.Bool("include-verdict", false, "include review verdict content")
 	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	fs.Usage = helpUsage(stderr, "escalations show")
-	if err := fs.Parse(args); err != nil {
+	runSelector, root, ok := parseRequiredArgOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 
 	layout := instance.NewLayout(root)
@@ -147,12 +140,12 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 	}
 	var runID string
 	if endpoint != "" {
-		runID, err = resolveRemoteRunID(context.Background(), reads, fs.Arg(0))
+		runID, err = resolveRemoteRunID(context.Background(), reads, runSelector)
 	} else {
-		runID, err = resolveRunID(layout, fs.Arg(0))
+		runID, err = resolveRunID(layout, runSelector)
 	}
 	if errors.Is(err, iofs.ErrNotExist) {
-		pf(stderr, "error: no run %q found in %s; list escalations with 'goobers escalations'\n", fs.Arg(0), root)
+		pf(stderr, "error: no run %q found in %s; list escalations with 'goobers escalations'\n", runSelector, root)
 		return 1
 	}
 	if err != nil {

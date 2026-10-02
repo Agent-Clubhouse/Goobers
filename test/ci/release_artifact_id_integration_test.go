@@ -52,7 +52,7 @@ func TestIntegrationReleaseArtifactIDGuardsPreventDownloadAllFallback(t *testing
 			}
 		}
 	}
-	if checked != 5 {
-		t.Fatalf("expected five Bash identity download guards, got %d", checked)
+	if checked != 8 {
+		t.Fatalf("expected eight Bash identity download guards, got %d", checked)
 	}
 }

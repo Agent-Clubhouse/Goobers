@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/workflow"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -181,6 +182,8 @@ type Executor struct {
 	validator       *validate.Validator
 	instructions    string
 	assets          *gooberassets.Bundle
+	skillsHarness   apiv1.Harness
+	skills          map[string][]workflow.SkillFile
 	model           string
 	harnessVersion  string
 	harnessOptions  map[string]apiextensionsv1.JSON
@@ -191,8 +194,18 @@ type Executor struct {
 	timeout         time.Duration
 	transcriptLimit int64
 	sandboxEnforced bool
+	observer        Observer
 	newSandbox      func() (sandbox.Sandbox, error)
+
+	guardedCredentialFiles bool
 }
+
+// Observer is told about every completed Invoke. It is advisory: it must not
+// block, and it cannot change the result it is given (it receives a copy).
+type Observer func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope)
+
+// WithObserver registers an advisory Observer. Nil leaves behavior unchanged.
+func WithObserver(o Observer) Option { return func(e *Executor) { e.observer = o } }
 
 // Option configures an Executor at construction.
 type Option func(*Executor)
@@ -309,6 +322,9 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.guardedCredentialFiles {
+		return nil, ErrGuardedCredentialFiles
+	}
 	if e.timeout <= 0 {
 		// A caller that never sets WithTimeout must still get a bounded
 		// session, not an unbounded one (#119) — DefaultTimeout is applied
@@ -405,6 +421,9 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		return result, err
 	}
 	result.Artifacts = append(result.Artifacts, out.DiagnosticArtifacts...)
+	if e.observer != nil {
+		e.observer(env, result)
+	}
 	return result, nil
 }
 
@@ -506,7 +525,7 @@ func noWorkWithoutDeclaredArtifact(status apiv1.ResultStatus, err error) bool {
 // records whatever transcript was captured — even on failure, so a runner has
 // journaled diagnostics (via the returned error plus the recorded span) beyond
 // a bare error string.
-func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (Outcome, *apiv1.ArtifactPointer, *apiv1.ArtifactPointer, error) {
+func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvelope, completionPath string) (resultOutcome Outcome, resultTranscript *apiv1.ArtifactPointer, resultStderr *apiv1.ArtifactPointer, resultErr error) {
 	var envEffectivePolicy *apiv1.ChildExecutionPolicy
 	var nestedAdapter NestedPolicyCapability
 	var selectedEnvelopeSections map[string]any
@@ -550,6 +569,11 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 			return Outcome{}, nil, nil, fmt.Errorf("harness: admit nested-agent policy: %w", err)
 		}
 	}
+	skills, skillsErr := e.prepareSkills(ctx, env.Workspace)
+	if skillsErr != nil {
+		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize skills: %w", skillsErr)
+	}
+	defer func() { resultErr = errors.Join(resultErr, skills.Close()) }()
 	telemetry.RecordAgentProvenance(ctx, e.model, e.harnessVersion)
 	if err := e.assets.Materialize(env.Workspace); err != nil {
 		return Outcome{}, nil, nil, fmt.Errorf("harness: materialize goober assets: %w", err)

@@ -63,6 +63,14 @@ func (s nativeSandbox) Wrap(command *exec.Cmd, policy Policy) error {
 	for _, root := range validated.writableRoots {
 		args = append(args, "--bind", root, root)
 	}
+	// Apply masks AFTER writable binds so a broad grant cannot uncover a key.
+	for _, denied := range validated.readDenied {
+		if denied.directory {
+			args = append(args, "--tmpfs", denied.path, "--remount-ro", denied.path)
+		} else {
+			args = append(args, "--ro-bind", "/dev/null", denied.path)
+		}
+	}
 	args = append(args, "--chdir", command.Dir, "--", targetPath)
 	command.Args = append(args, targetArgs...)
 	return nil

@@ -7,6 +7,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: backlog-curation
+  annotations:
+    goobers.dev/purpose: "Keeps the issue backlog healthy by reconciling claims, checking for duplicates and curating items so that implementation always has well-scoped, ready work."
 spec:
   gaggle: goobers
   displayName: Backlog curation

@@ -17,6 +17,14 @@
     }
   ],
   "properties": {
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Instance workflow placement policy. Omitted keeps local execution compatible; hosted instances should explicitly deny self execution.",
+      "properties": {
+        "selfExecution": { "type": "string", "enum": ["allow", "deny"], "default": "allow", "description": "allow permits local workflow work (the default); deny refuses every self placement, including agentic reviewer gates." }
+      }
+    },
     "cost": {
       "type": "object",
       "description": "Instance default for external cost publication; local usage accounting remains active.",
@@ -167,7 +175,32 @@
       "default": false,
       "description": "Opts `goobers up` into native desktop notifications for escalated and failed runs. The one-shot daemon override is `goobers up --notify` (`--notify=all` adds completed and aborted runs)."
     },
-    "speech": {
+    "decisionGate": {
+      "description": "Opt-in decision-model (System One) layer. Omitted means off and nothing is sent to any endpoint. The *Env fields name environment variables; secrets are never stored here.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["off", "shadow", "enforce"], "default": "off", "description": "`shadow` scores and records without changing any outcome; `enforce` lets the decision change outcomes." },
+        "baseURLEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the endpoint URL." },
+        "keyEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the API key." },
+        "modelEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of the environment variable holding the model name." },
+        "fallback": { "type": "string", "enum": ["agent", "escalate", "fail"], "description": "Required when on: what happens on an uncertain answer or exhausted retries. `agent` keeps current behavior." },
+        "shadowSample": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of eligible handoffs scored in shadow mode; 0 means all." },
+        "gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Thresholds, cache and concurrency limits.",
+          "properties": {
+            "thresholds": { "type": "object", "description": "Per-question accept/reject cutoffs, keyed by question name. A probability between reject and accept is uncertain.", "additionalProperties": { "type": "object", "additionalProperties": false, "properties": { "accept": { "type": "number", "minimum": 0, "maximum": 1, "description": "Yes-probability at or above which the answer counts as yes." }, "reject": { "type": "number", "minimum": 0, "maximum": 1, "description": "Yes-probability at or below which the answer counts as no; must be below accept." } } } },
+            "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Choice answers below this confidence count as uncertain." },
+            "maxConcurrent": { "type": "integer", "minimum": 0, "description": "Bound on in-flight decision calls; 0 means 4." },
+            "cacheEntries": { "type": "integer", "minimum": 0, "description": "Digest cache size; 0 disables caching." },
+            "cacheTTL": { "description": "How long a cached answer is reused; 0 means 1h.", "$ref": "#/$defs/duration" },
+            "callTimeout": { "description": "Bound on one decision call; 0 means 5s.", "$ref": "#/$defs/duration" }
+          }
+        }
+      }
+    },    "speech": {
       "description": "Opt-in local speech sink for the same terminal alerts. Omitted stays silent.",
       "$ref": "#/$defs/speech"
     },
@@ -216,6 +249,29 @@
       "description": "Operator-supplied dashboard co-branding. Cosmetic only — nothing here affects scheduling or credentials.",
       "$ref": "#/$defs/portal"
     },
+    "temporal": {
+      "description": "Instance-wide Temporal payload encryption. A keyRef enables the shared codec on every client and memo reader; absent keyRef preserves the SDK default and plaintext payload bytes.",
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "payloadCodec": {
+          "description": "Opt-in sealed payload codec library. An absent keyRef keeps the default converter when explicitly constructed.",
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "keyRef": {
+              "description": "Typed wrapping key reference. Must name a keyvault-key or file-key store, never a secret-fetching store.",
+              "type": "object", "additionalProperties": false, "required": ["store", "name"],
+              "properties": {
+                "store": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "description": "Declared key store name."},
+                "name": {"type": "string", "pattern": "^[a-zA-Z0-9-]{1,127}$", "description": "Backend wrapping key name."},
+                "version": {"type": "string", "pattern": "^[a-zA-Z0-9-]{0,127}$", "description": "Optional backend version used for new wraps. Historical payloads retain their original backend version."}
+              }
+            },
+            "strict": {"type": "boolean", "description": "Reject legacy plaintext on decode. Requires keyRef; default false allows mixed histories."}
+          },
+          "allOf": [{"if": {"properties": {"strict": {"const": true}}, "required": ["strict"]}, "then": {"required": ["keyRef"]}}]
+        }
+      }
+    },
     "timezone": {
       "type": "string",
       "minLength": 1,
@@ -224,6 +280,125 @@
     }
   },
   "$defs": {
+    "telemetryExporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One explicitly configured, operator-owned export destination. Azure uses collectionProfile; OTLP preserves its independent journal/trace/metric signals.",
+      "required": [
+        "name",
+        "kind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "description": "Unique stable destination name. Selects an independent replay spool; list reorder preserves identity."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "otlp-grpc",
+            "azuremonitor"
+          ],
+          "description": "Supported native transport. OTLP/HTTP and durable OTLP replay are tracked in https://github.com/Agent-Clubhouse/Goobers/issues/6502."
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explicit OTLP/gRPC collector endpoint. Named destinations do not inherit environment overrides."
+        },
+        "connection": {
+          "$ref": "#/$defs/tokenRef",
+          "description": "Indirect Application Insights connection-string reference. The resolved secret selects the ingestion endpoint and is never rendered."
+        },
+        "headers": {
+          "$ref": "#/$defs/otlp/properties/headers",
+          "description": "OTLP authentication headers, with indirect TokenRef values only."
+        },
+        "insecure": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use plaintext only for a loopback OTLP collector; conflicts with TLS settings."
+        },
+        "tls": {
+          "$ref": "#/$defs/otlp/properties/tls",
+          "description": "Per-destination OTLP TLS trust and client identity; material is read when the exporter starts."
+        },
+        "journalLogs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include committed journals in this OTLP destination. Trace and metric export remain enabled."
+        },
+        "replay": {
+          "$ref": "#/$defs/telemetry/properties/azureMonitor/properties/replay",
+          "description": "Azure-only durable replay bounds, applied independently to this named destination."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "azuremonitor"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "connection"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "endpoint"
+                  ]
+                },
+                {
+                  "required": [
+                    "headers"
+                  ]
+                },
+                {
+                  "required": [
+                    "insecure"
+                  ]
+                },
+                {
+                  "required": [
+                    "tls"
+                  ]
+                },
+                {
+                  "required": [
+                    "journalLogs"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "endpoint"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "connection"
+                  ]
+                },
+                {
+                  "required": [
+                    "replay"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
     "tokenRef": {
       "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
       "type": "object",
@@ -587,14 +762,19 @@
       "description": "One named external secret store. Declaring a store no ref uses is harmless.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "kind", "vaultURI", "auth"],
+      "required": ["name", "kind"],
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "file-key"}}}, "then": {"required": ["directory"], "not": {"anyOf": [{"required": ["auth"]}, {"required": ["vaultURI"]}]}}, "else": {"required": ["vaultURI", "auth"], "not": {"required": ["directory"]}}},
+        {"if": {"properties": {"kind": {"enum": ["keyvault-key", "file-key"]}}}, "then": {"properties": {"cacheTTLSeconds": {"const": 0}}}}
+      ],
       "properties": {
         "name": {
           "type": "string",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "description": "Handle store-backed token refs address this store by. A lowercase DNS label, so it can never be confused with the `/`-separated secret name that follows it in a ref."
         },
-        "kind": { "type": "string", "enum": ["azure-key-vault"], "description": "Store vendor. The seam is vendor-neutral by name+kind indirection; azure-key-vault is the only kind implemented today." },
+        "kind": { "type": "string", "enum": ["azure-key-vault", "keyvault-key", "file-key"], "description": "Operation provider: azure-key-vault fetches secrets; keyvault-key and file-key wrap keys. Key stores cannot be used in token refs." },
+        "directory": {"type": "string", "minLength": 1, "description": "Absolute private directory containing name/version.pem RSA private keys and name/active version markers. Required only for file-key."},
         "vaultURI": {
           "type": "string",
           "format": "uri",
@@ -610,7 +790,7 @@
             "kind": {
               "type": "string",
               "enum": ["workload-identity", "managed-identity", "azure-cli"],
-              "description": "Ambient identity chain used to reach the store."
+              "description": "Exactly the declared ambient identity used to reach the store; no fallback chain."
             },
             "clientId": { "type": "string", "minLength": 1, "description": "Pins a user-assigned identity. Valid for workload-identity and managed-identity; azure-cli has no client to pin." }
           }
@@ -1162,7 +1342,9 @@
       "description": "Local rollup store, optional collector push, and journal retention.",
       "type": "object",
       "additionalProperties": false,
+      "allOf": [{ "if": { "required": ["exporters"], "properties": { "exporters": { "minItems": 1 } } }, "then": { "not": { "anyOf": [{ "required": ["otlp"] }, { "required": ["azureMonitor"] }] } } }],
       "properties": {
+        "exporters": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/telemetryExporter" }, "description": "Named destination list. Replaces the legacy otlp/azureMonitor blocks; no destination is enabled implicitly. Names must be unique." },
         "enabled": {
           "type": "boolean",
           "default": true,
@@ -1323,14 +1505,14 @@
       }
     },
     "retention": {
-      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h retained-worktree age bound and a safe first-enable grace window, unless enabled is explicitly false. Local run-branch cleanup currently requires Git ancestry; squash, merge-queue, and legacy landings may leave local branches behind.",
+      "description": "Cleanup of on-disk run remains and the portal's listable history window. Pruning is OPT-OUT (product policy decision per issue #3056/#4253, matching telemetry.retention): it defaults on with a 168h retained-worktree age bound and a safe first-enable grace window, unless enabled is explicitly false. Local run branches qualify through Git ancestry or a trustworthy terminal timestamp older than terminalBranchMaxAge (default 720h). Parked runs/items and unknown ownership remain protected.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Lets the daemon prune retained terminal-failure worktrees and local run branches whose tip is an ancestor of another local branch. Defaults to true (#4253); set explicitly to false to keep automatic pruning off. Active runs are never candidates. Squash, merge-queue, and legacy landings may not satisfy the ancestry check and can remain."
+          "description": "Lets the daemon prune retained terminal-failure worktrees and eligible local run branches. Defaults to true; set explicitly to false to disable automatic pruning. Active or parked runs/items are never branch candidates. Branches qualify by Git ancestry or terminalBranchMaxAge."
         },
         "dryRun": { "type": "boolean", "default": false, "description": "Reports the deterministic candidate set without deleting anything." },
         "maxRetainedWorktreeBytes": { "type": "integer", "minimum": 0, "description": "Byte ceiling for retained failure worktrees; the oldest are removed first once exceeded. Zero or omitted disables the size rule." },
@@ -1339,6 +1521,12 @@
           "$ref": "#/$defs/duration",
           "default": "168h",
           "examples": ["168h", "0s"]
+        },
+        "terminalBranchMaxAge": {
+          "description": "Minimum age since a trustworthy terminal run-finished event before an unmerged local branch is prunable. Omitted uses 720h (30 days); 0s disables this age rule. Requires known item ownership and fresh non-parked item state. Missing journals, unknown legacy ownership, parked runs/items, and provider read failures preserve branches.",
+          "$ref": "#/$defs/duration",
+          "default": "720h",
+          "examples": ["720h", "1440h", "0s"]
         },
         "journalGraceAge": {
           "description": "Grace period measured from the first persisted observation that a retained worktree's owning run journal is missing. Omitted uses 24h; an explicit \"0s\" disables the journal-absence rule without changing age or byte-limit retention.",

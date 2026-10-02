@@ -68,3 +68,26 @@ func TestRecoveryVerdictIsScopedToBranchAndParallelGeneration(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewerContinuationResolverUsesDurableBranchScope(t *testing.T) {
+	run := newRunnerTestJournal(t, "reviewer-continuation")
+	for _, event := range []journal.Event{
+		{Type: journal.EventReviewerStarted, Stage: "review", Gate: "review", Attempt: 2, Branch: 1},
+		{Type: journal.EventReviewerStarted, Stage: "review", Gate: "review", Attempt: 8, Branch: 2},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := reviewerContinuationResolver(&branchJournal{run: run, branch: 1})("review")
+	if err != nil || got != 2 {
+		t.Fatalf("continuation=%d err=%v", got, err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Branch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = reviewerContinuationResolver(&branchJournal{run: run, branch: 1})("review")
+	if err != nil || got != 0 {
+		t.Fatalf("settled continuation=%d err=%v", got, err)
+	}
+}

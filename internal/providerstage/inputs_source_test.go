@@ -36,6 +36,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"backlogreconcile.go":            {command: "backlog-query"},
 	"backlogreport.go":               {command: "backlog-query"},
 	"backlogresweep.go":              {command: "backlog-query"},
+	"backlogresweep_budget.go":       {command: "backlog-query"},
 	"backlogstaleness.go":            {command: "backlog-query"},
 	"cancelpendingci.go":             {command: "cancel-pending-ci"},
 	"checkfailfirst.go":              {command: "check-fail-first"},

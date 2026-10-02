@@ -428,6 +428,12 @@ func init() {
 			withSynopsis(synopsisByID["service"]).
 			withHelp("install and manage the platform-supervised daemon", serviceHelp).
 			withExamples("goobers service install", "goobers service status", "goobers service uninstall"),
+		groupCommand("temporal", runTemporal,
+			subcommand("temporal codec-server", "codec-server", apicontract.ActionDaemonLifecycle, runTemporalCodecServer).
+				withHelp("serve authenticated Temporal payload decoding over TLS", temporalCodecHelp).
+				withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
+		).withSynopsis(synopsisByID["temporal"]).withHelp("operate Temporal payload services", temporalHelp).
+			withExamples("goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem"),
 		command("engine-start", apicontract.ActionDaemonLifecycle, runEngineStart).
 			withSynopsis(synopsisByID["engine-start"]).
 			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).

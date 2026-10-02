@@ -94,6 +94,7 @@ type runnerCompositionInput struct {
 	Config               *instance.Config
 	Goobers              map[string]apiv1.GooberSpec
 	InstructionsByGoober map[string]string
+	SkillPackages        map[string][]workflow.SkillFile
 	Telemetry            *telemetry.Client
 	SharedRegistry       *journal.RegistryScrubber
 	WorktreeManager      *worktree.Manager
@@ -114,9 +115,11 @@ var runnerLookPath = exec.LookPath
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
 	executionFence := runnerExecutionFence(input)
-	cfg := input.Config
-	goobers := input.Goobers
-	instructionsByGoober := input.InstructionsByGoober
+	cfg, goobers := input.Config, input.Goobers
+	skillPackages, skillErr := input.resolvedSkillFiles()
+	if skillErr != nil {
+		return runner.Config{}, nil, skillErr
+	}
 	tel := input.Telemetry
 	sharedReg := input.SharedRegistry
 	wtMgr := input.WorktreeManager
@@ -242,7 +245,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 	assetsByGoober := make(map[string]*gooberassets.Bundle, len(goobers))
 	for name, spec := range goobers {
-		if _, ok := instructionsByGoober[name]; !ok {
+		if _, ok := input.InstructionsByGoober[name]; !ok {
 			return runner.Config{}, nil, fmt.Errorf("goober %q has no resolved instructions", name)
 		}
 		assets, err := gooberassets.Load(filepath.Join(gooberDefinitionDir(l.ConfigDir(), spec, name), gooberassets.SourceDir))
@@ -285,8 +288,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
-
-	rc := runner.Config{
+	decisionObserver := newDecisionShadowObserver(cfg, nil)
+	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
 		RunControls:      cfg.RunConditions.RunControls(),
@@ -305,10 +308,11 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			exec, err := buildAgenticExecutor(agenticExecutorInput{
-				GooberName: gooberName, Goobers: goobers, Instructions: instructionsByGoober, Assets: assetsByGoober,
+				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
+				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg), Observer: decisionObserver,
 			})
 			if err != nil {
 				return nil, err
@@ -368,7 +372,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
-	}
+	}, cfg, tel)
 	if tel != nil {
 		rc.Telemetry = tel
 	}
@@ -698,14 +702,12 @@ func (e *workflowCompileError) Unwrap() error {
 // follow-up introduces one.
 //
 // knownTelemetryConnectors (#4475) is the instance's configured
-// external-telemetry connector names (knownExternalTelemetryConnectorNames).
+// external-telemetry connector names (instance.Config.ExternalTelemetryConnectorNames).
 // Non-nil — even empty — rejects any task whose inputs.connector names a
 // connector the instance does not configure, at compile time rather than when
 // a run reaches the stage. Nil skips the check, for callers that compile
 // without the instance config's authority over connectors.
 func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	const workflowVersion = 1
-	knownChecks := knownAutomatedCheckNames()
 	// The admission registry resolves harness config (model/options), and model
 	// resolution spawns the configured launcher for model discovery whenever a
 	// goober declares spec.Model — so the launcher override must apply here too,
@@ -727,6 +729,19 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	machines, err := compileWorkflowMachines(set, goobers, adapterRegistry.Names(), knownTelemetryConnectors)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return machines, resolvedGoobers, warnings, nil
+}
+
+// compileWorkflowMachines applies structural workflow admission independently
+// of harness model/options admission, so diagnostics can report invalid harness
+// configuration without inventing a different workflow compilation path.
+func compileWorkflowMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, harnessNames, knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+	const workflowVersion = 1
+	knownChecks := knownAutomatedCheckNames()
 	// Gaggle-level runner requirements feed push-boundary admission (#2861):
 	// each stage's effective requirement set is its gaggle's
 	// RequiredCapabilities union its own. The DSL 3.0 successor surface — the
@@ -747,7 +762,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		opts := []workflow.Option{
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
-			workflow.WithKnownHarnesses(adapterRegistry.Names()),
+			workflow.WithKnownHarnesses(harnessNames),
 			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
@@ -762,27 +777,11 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			opts...,
 		)
 		if err != nil {
-			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
-	return machines, resolvedGoobers, warnings, nil
-}
-
-// knownExternalTelemetryConnectorNames returns cfg's configured
-// external-telemetry connector names for compiledMachinesWithWarnings'
-// authoring-time connector check (#4475). It is never nil for a non-nil cfg:
-// an instance with no connectors configured must still reject a workflow that
-// references one.
-func knownExternalTelemetryConnectorNames(cfg *instance.Config) []string {
-	if cfg == nil {
-		return nil
-	}
-	names := make([]string, 0, len(cfg.ExternalTelemetry.Connectors))
-	for _, connector := range cfg.ExternalTelemetry.Connectors {
-		names = append(names, connector.Name)
-	}
-	return names
+	return machines, nil
 }
 
 func admitGooberHarnessConfigs(adapterRegistry *harness.Registry, goobers map[string]apiv1.GooberSpec) (map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
@@ -909,4 +908,11 @@ func backlogLabelPredicatesByGaggle(set *instance.ConfigSet) map[string]string {
 		out[g.Name] = g.Spec.Backlog.LabelPredicate
 	}
 	return out
+}
+
+func (input runnerCompositionInput) resolvedSkillFiles() (map[string][]workflow.SkillFile, error) {
+	if input.SkillPackages != nil {
+		return input.SkillPackages, nil
+	}
+	return loadGooberSkillPackages(input.Layout.ConfigDir(), input.Layout.Gaggle(), input.Goobers)
 }

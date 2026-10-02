@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
@@ -65,6 +66,7 @@ const (
 	// whenever retention.retainedWorktreeMaxAge is omitted; set it to "0s" to
 	// turn the age rule off explicitly.
 	DefaultRetainedWorktreeMaxAge = 168 * time.Hour
+	DefaultTerminalBranchMaxAge   = 30 * 24 * time.Hour
 	// DefaultJournalGraceAge preserves the pre-#4856 24-hour policy while the
 	// clock now starts when a retained worktree's journal is first observed
 	// missing. Set retention.journalGraceAge to "0s" to disable this rule.
@@ -93,6 +95,7 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
+	selfExecution *selfExecutionCounters
 	// Cost controls external cost publication by default. Gaggles may override
 	// it; omitted or null enabled preserves the built-in enabled behavior.
 	Cost       *apiv1.CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
@@ -125,6 +128,8 @@ type Config struct {
 	Webhook          WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal           PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry        TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// Temporal declares opt-in payload codec library settings.
+	Temporal *TemporalConfig `json:"temporal,omitempty" yaml:"temporal,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
@@ -141,6 +146,9 @@ type Config struct {
 	Notifications bool `json:"notifications,omitempty" yaml:"notifications,omitempty"`
 	// Speech configures an opt-in local speech sink for the same terminal alerts.
 	Speech *speechnotify.Config `json:"speech,omitempty" yaml:"speech,omitempty"`
+	// DecisionGate is the opt-in decision-model (System One) layer. Absent means off.
+	// It names environment variables for the endpoint and key; it never holds them.
+	DecisionGate *decisiongate.Settings `json:"decisionGate,omitempty" yaml:"decisionGate,omitempty"`
 	// UpdateCheck configures the daemon's notify-only release check (#4903).
 	// Nil keeps the defaults: enabled, the stable channel, once a day. The
 	// check only tells the operator a newer release exists — applying it stays
@@ -179,6 +187,8 @@ type Config struct {
 	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
 	// is startup-only, so in-flight runs finish against their pinned snapshot.
 	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
+	// Placement governs workflow execution on the daemon host.
+	Placement *PlacementConfig `json:"placement,omitempty" yaml:"placement,omitempty"`
 	// Isolation is the operator's strengthen-only placement floor. It never
 	// grants a runner a protection; runners must already enforce every effect.
 	Isolation *IsolationConfig `json:"isolation,omitempty" yaml:"isolation,omitempty"`
@@ -454,14 +464,14 @@ type APIConfig struct {
 	// Path only; key material never appears in instance.yaml (CFG-009).
 	// Unset keeps the in-memory registry, which is correct whenever daemon
 	// and dispatcher share a process.
-	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty"`
+	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.
 // Paths only — key material never appears in instance.yaml (CFG-009).
 type APITLSConfig struct {
 	CertFile string `json:"certFile" yaml:"certFile"`
-	KeyFile  string `json:"keyFile" yaml:"keyFile"`
+	KeyFile  string `json:"keyFile" yaml:"keyFile" credentialPath:"file"`
 }
 
 // APIAuthConfig selects the daemon API authenticator behind the
@@ -944,6 +954,21 @@ func (c *Config) ExternalTelemetryConnectorsByName() map[string]externaltelemetr
 	return connectors
 }
 
+// ExternalTelemetryConnectorNames returns c's configured external-telemetry
+// connector names for the authoring-time connector check at workflow compile
+// (#4475). It is never nil for a non-nil c: an instance with no connectors
+// configured must still reject a workflow that references one.
+func (c *Config) ExternalTelemetryConnectorNames() []string {
+	if c == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.ExternalTelemetry.Connectors))
+	for _, connector := range c.ExternalTelemetry.Connectors {
+		names = append(names, connector.Name)
+	}
+	return names
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
@@ -1161,9 +1186,12 @@ func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[stri
 }
 
 const (
-	// SecretStoreKindAzureKeyVault is the only supported secret store kind
-	// today (SEC-010); the seam is vendor-neutral by name+kind indirection.
+	// SecretStoreKindAzureKeyVault fetches Azure Key Vault secrets.
 	SecretStoreKindAzureKeyVault = "azure-key-vault"
+	// SecretStoreKindKeyVaultKey wraps data keys using Azure Key Vault keys.
+	SecretStoreKindKeyVaultKey = "keyvault-key"
+	// SecretStoreKindFileKey wraps data keys using operator-provisioned RSA keys.
+	SecretStoreKindFileKey = "file-key"
 	// SecretStoreAuthWorkloadIdentity selects federated Azure workload identity.
 	SecretStoreAuthWorkloadIdentity = "workload-identity"
 	// SecretStoreAuthManagedIdentity selects an Azure managed identity.
@@ -1172,21 +1200,23 @@ const (
 	SecretStoreAuthAzureCLI = "azure-cli"
 )
 
-// SecretStoreConfig declares one named external secret store (#683). Token
+// SecretStoreConfig declares a named secret-fetching or key-wrapping store. Token
 // refs opt in per ref via store: "<name>/<secretName>"; declaring a store a
-// ref never uses is harmless. Auth to the store itself always uses an ambient
-// identity chain — never a token ref, which would be circular.
+// ref never uses is harmless. Azure authentication always uses an ambient
+// identity — never a token ref, which would be circular.
 type SecretStoreConfig struct {
 	// Name is the handle store-backed token refs address this store by.
 	// DNS-label shaped so it can never be confused with the "/"-separated
 	// secret name that follows it in a ref.
 	Name string `json:"name" yaml:"name"`
-	// Kind is the store vendor; only "azure-key-vault" is supported.
+	// Kind selects secret fetching or key wrapping.
 	Kind string `json:"kind" yaml:"kind"`
 	// VaultURI is the https vault endpoint, e.g. "https://acme.vault.azure.net".
-	VaultURI string `json:"vaultURI" yaml:"vaultURI"`
+	VaultURI string `json:"vaultURI,omitempty" yaml:"vaultURI,omitempty"`
+	// Directory is an absolute directory of versioned RSA keys for file-key.
+	Directory string `json:"directory,omitempty" yaml:"directory,omitempty" credentialPath:"directory"`
 	// Auth selects how this process authenticates to the store.
-	Auth *SecretStoreAuthConfig `json:"auth" yaml:"auth"`
+	Auth *SecretStoreAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 	// CacheTTLSeconds bounds the in-memory cache of resolved secrets so
 	// rotation in the store is picked up without hammering it per resolve.
 	// Zero/omitted leaves the resolver's default in effect.
@@ -1322,6 +1352,9 @@ type AgentModelGitHubAppConfig struct {
 // TelemetryConfig configures the local telemetry rollup store and optional
 // collector push (§8).
 type TelemetryConfig struct {
+	// Exporters are named, independent remote destinations. The legacy single
+	// destination blocks remain supported when this list is empty.
+	Exporters []TelemetryExporterConfig `json:"exporters,omitempty" yaml:"exporters,omitempty"`
 	// Enabled toggles OTel client construction, span emission, local SQLite
 	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
@@ -1472,7 +1505,7 @@ type OTLPTLSConfig struct {
 	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
 	// KeyFile is the PEM private key for CertFile. Requires CertFile; both
 	// or neither.
-	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty"`
+	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty" credentialPath:"file"`
 }
 
 // EngineConfig identifies the Temporal frontend and task queue shared by all
@@ -1768,6 +1801,9 @@ type RetentionConfig struct {
 	// Omitted means DefaultRetainedWorktreeMaxAge — the opt-out default, not
 	// "no age rule". An explicit "0s" turns the age rule off.
 	RetainedWorktreeMaxAge string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
+	// TerminalBranchMaxAge permits unmerged run branches to expire after terminal completion.
+	// Omitted means 30 days; "0s" disables this branch-age rule.
+	TerminalBranchMaxAge string `json:"terminalBranchMaxAge,omitempty" yaml:"terminalBranchMaxAge,omitempty"`
 	// JournalGraceAge bounds how long a retained worktree remains after its
 	// owning run journal is first observed missing. Omitted uses 24h; "0s"
 	// disables journal-absence pruning without changing the other rules.
@@ -2570,13 +2606,16 @@ func (c *Config) Validate() error {
 	if err != nil {
 		return err
 	}
+	if err := c.validateTemporalPayloadCodec(); err != nil {
+		return err
+	}
 	return c.validateConfigSections(stores)
 }
 
 // validateSecretStores checks every secretStores entry fail-closed at load
 // (#683): a malformed store is a typo nothing later could resolve, and the
 // scheduler-time alternative is an opaque credential failure mid-run. Returns
-// the set of declared store names for store-ref checks.
+// declared store names, with true for secret stores and false for key stores.
 func (c *Config) validateSecretStores() (map[string]bool, error) {
 	if len(c.SecretStores) == 0 {
 		return nil, nil
@@ -2601,7 +2640,9 @@ func validateStoreRef(scope string, ref TokenRef, stores map[string]bool) error 
 	if !ok || name == "" || secret == "" || strings.Contains(secret, "/") {
 		return fmt.Errorf("%s: store ref %q must have the form \"<storeName>/<secretName>\"", scope, ref.Store)
 	}
-	if !stores[name] {
+	if secretStore, declared := stores[name]; declared && !secretStore {
+		return fmt.Errorf("%s: store ref names key store %q, which cannot fetch secrets", scope, name)
+	} else if !declared {
 		return fmt.Errorf("%s: store ref %q names secret store %q, which is not declared under secretStores", scope, ref.Store, name)
 	}
 	return nil
@@ -3332,4 +3373,16 @@ func (u UpdateCheckConfig) Validate() error {
 		return errors.New("updateCheck.owner and updateCheck.repository must be set together")
 	}
 	return nil
+}
+
+// TerminalBranchMaxAgeDuration resolves the opt-out unmerged-branch age floor.
+func (c RetentionConfig) TerminalBranchMaxAgeDuration() (time.Duration, error) {
+	if c.TerminalBranchMaxAge == "" {
+		return DefaultTerminalBranchMaxAge, nil
+	}
+	age, err := time.ParseDuration(c.TerminalBranchMaxAge)
+	if err != nil || age < 0 {
+		return 0, fmt.Errorf("retention.terminalBranchMaxAge must be a nonnegative duration")
+	}
+	return age, nil
 }

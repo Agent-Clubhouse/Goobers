@@ -233,6 +233,27 @@ func TestStripAttributionRecoversTheWrittenBody(t *testing.T) {
 	}
 }
 
+// TestStripAttributionRemovesTheOperationMarker: a keyed work-item update
+// stores its comment as text + operation marker + attribution footer (#2657).
+// Both are the provider's stamp, so a reader comparing against the intended
+// text must not see either; caller-authored markers stay.
+func TestStripAttributionRemovesTheOperationMarker(t *testing.T) {
+	written := "Implementation complete: https://example.test/pr/1 is open for merge-review.\n<!-- goobers-action:v1 key=YXBp -->"
+	keyed := written + "\n\n" + OperationCommentMarker("issue-close-out/run-1/7/in-review")
+	if got := StripAttribution(keyed); got != strings.TrimSpace(written) {
+		t.Fatalf("StripAttribution(unattributed) = %q, want %q", got, strings.TrimSpace(written))
+	}
+	stamped, err := StampAttribution(keyed, Attribution{
+		Gaggle: "example-gaggle", Workflow: "implementation", Task: "issue-close-out", Goober: "deterministic", Run: "run-1",
+	}, "state-change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := StripAttribution(stamped); got != strings.TrimSpace(written) {
+		t.Fatalf("StripAttribution(stamped) = %q, want %q", got, strings.TrimSpace(written))
+	}
+}
+
 func TestStripAttributionKeepsTextAddedAfterTheFooterOnItsOwnLine(t *testing.T) {
 	stamped, err := StampAttribution("Body.\n<!-- goobers-action-digest:v1 sha256:00 -->", Attribution{
 		Gaggle: "example-gaggle", Workflow: "decomposition", Task: "publish-batch", Goober: "deterministic", Run: "run-strip-2",

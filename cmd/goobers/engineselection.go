@@ -104,7 +104,7 @@ func selectEngineForPinnedEntry(def wfpkg.Definition, placements []engine.Pinned
 	if len(placements) == 0 {
 		return engineSelection{
 			ReasonClass:    "no_pinned_placements",
-			FallbackReason: "no stage placements are pinned for this workflow (zero-declaration or local-mode inventory)",
+			FallbackReason: "no stage placements are pinned for this workflow (zero-declaration or local-mode inventory)" + selfExecutionMigrationReason(def),
 		}
 	}
 	pinned := make(map[string]engine.PinnedPlacement, len(placements))
@@ -137,7 +137,7 @@ func selectEngineForPinnedEntry(def wfpkg.Definition, placements []engine.Pinned
 	// Asked LAST, so a lane that is disqualified on placement grounds still
 	// reports the placement reason — the one an operator can act on with a
 	// runsOn edit.
-	if err := engine.RefuseDefinition(def.Name, def.Spec); err != nil {
+	if err := engine.RefusePlacedDefinition(def.Name, def.Spec, placements); err != nil {
 		return engineSelection{
 			ReasonClass:    "definition_refused",
 			Refusal:        err,
@@ -213,7 +213,11 @@ func engineSelections(
 	// placement facts that are not the reason.
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
 		for identity, machine := range machines {
-			out[identity] = engineSelection{PlacementDeclared: entryDeclaresPlacement(machine, set, identity.Gaggle), ReasonClass: "engine_not_configured", FallbackReason: "this instance has no engine configuration"}
+			reason := "this instance has no engine configuration"
+			if machine != nil {
+				reason += selfExecutionMigrationReason(machine.Def)
+			}
+			out[identity] = engineSelection{PlacementDeclared: entryDeclaresPlacement(machine, set, identity.Gaggle), ReasonClass: "engine_not_configured", FallbackReason: reason}
 		}
 		return out, nil
 	}

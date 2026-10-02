@@ -92,6 +92,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventRunnerMutationRecovered, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: map[string]any{"mutationReceiptId": "receipt"}},
+		{Type: EventClusterCheckCompleted, Runner: map[string]any{"check": "apiserver-ipblock-drift", "outcome": "fail", "expiresAt": "2026-10-02T12:00:00Z"}},
 		{Type: EventWorkerConfigDivergence, Runner: map[string]any{"worker": "worker-a", "state": "not-active", "message": "checking is not active"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
 		{Type: EventError, Error: ErrorDetailFor("empty_wrapped_leaf", fmt.Errorf("outer: %w", errors.New("")))},
@@ -103,6 +104,12 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 			"posture": "enforced", "mechanism": "seatbelt", "workspace": "/work/run-1/impl",
 		}},
 		{Type: EventRunFinished, Status: string(PhaseCompleted)},
+		{Type: EventRunFinished, Status: string(PhaseEscalated), TerminalCause: &TerminalCause{
+			Schema: TerminalCauseSchema, Phase: PhaseEscalated, Classification: TerminalPolicyExhaustion,
+			SelectorKind: "gate", Selector: "review", Verdict: "fail", Target: TargetEscalate,
+			Code: "REPASS_BUDGET_EXHAUSTED", Message: "review budget exhausted", CausalEventSeq: 1,
+			Retry: &TerminalBudget{Consumed: 1, Allowed: 2}, Repass: &TerminalBudget{Consumed: 3, Allowed: 3},
+		}},
 		{Type: EventAgentLifecycle, Agent: &AgentProvenance{
 			Schema: "goobers.dev/journal/agent/v1", ID: "worker-1", RunID: testIdentity().RunID,
 			Stage: "impl", Attempt: 1, Lifecycle: AgentCompleted,

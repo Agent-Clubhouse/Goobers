@@ -12,7 +12,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/httpapi"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -57,6 +56,11 @@ func (s *daemonRunJournalService) SubmitOperatorMessage(ctx context.Context, req
 		}
 		return httpapi.OperatorMessageSubmissionResponse{Accepted: false, Record: record}, httpapi.NewInterventionError(http.StatusForbidden,
 			operatorMessageDeniedCode, "principal is not authorized to submit operator messages for this run", nil)
+	}
+	if engineDriven, err := s.operatorMessageEngineDriven(request.Gaggle, request.RunID); err != nil {
+		return httpapi.OperatorMessageSubmissionResponse{}, err
+	} else if engineDriven {
+		return s.submitEngineOperatorMessage(ctx, request.Gaggle, request.RunID, message)
 	}
 	message.DeliveryMode = s.selectOperatorMessageDeliveryMode(request.Gaggle, request.RunID, request.TargetAddress, request.DeliveryMode)
 
@@ -110,14 +114,14 @@ func (s *daemonRunJournalService) recordOperatorMessageAccepted(gaggle, runID st
 }
 
 func (s *daemonRunJournalService) resolveOperatorMessageJournal(gaggle, runID, targetAddress string) (runner.OperatorMessageJournal, bool) {
-	if _, err := journal.ParseAgentAddress(targetAddress); err != nil {
-		return nil, false
-	}
 	if run, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveJournal(targetAddress); ok {
 		return run, true
 	}
 	if run, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisitJournal(targetAddress); ok {
 		return run, true
+	}
+	if s.operatorMessages.Writer != nil {
+		return s.operatorMessages.Writer.OperatorMessages(gaggle, runID), true
 	}
 	if !s.operatorMessageTargetAddressLive(gaggle, runID, targetAddress) {
 		return nil, false
@@ -264,6 +268,13 @@ func containsOperatorMessageMode(values []string, want string) bool {
 }
 
 func (s *daemonRunJournalService) recordOperatorMessageDenied(gaggle, runID string, request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
+	if backend, ok := s.resolveOperatorMessageJournal(gaggle, runID, request.TargetAddress); ok {
+		if rejecter, ok := backend.(interface {
+			RejectOperatorMessage(apiv1.OperatorMessageRequest, string, string) (apiv1.OperatorMessageRecord, bool, error)
+		}); ok {
+			return rejecter.RejectOperatorMessage(request, operatorMessageDeniedCode, "principal is not authorized to submit operator messages for this run")
+		}
+	}
 	run, err := s.recoverOperatorMessageRun(gaggle, runID)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
@@ -322,11 +333,3 @@ func (s *daemonRunJournalService) uniqueGaggleForRun(runID string) (string, bool
 }
 
 var _ httpapi.OperatorMessageService = (*daemonRunJournalService)(nil)
-
-func withDaemonRunJournalServices(layout instance.Layout, log *journal.InstanceLog) []httpapi.HandlerOption {
-	service := newDaemonRunJournalService(layout, log)
-	return []httpapi.HandlerOption{
-		httpapi.WithRunJournalService(service),
-		httpapi.WithOperatorMessageService(service),
-	}
-}
