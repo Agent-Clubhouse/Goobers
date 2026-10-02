@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/nowork"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -78,18 +79,18 @@ func TestRepeatedNoWorkParksItemAtThreshold(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	l := seedNoWorkStreakRun(t, "run-nowork", "5369", string(apiv1.ResultNoWork), "issue is a CI flake, no code change applies")
 
-	for i := 1; i <= noWorkStreakThreshold; i++ {
+	for i := 1; i <= nowork.StreakThreshold; i++ {
 		if err := settleNoWorkStreak(context.Background(), fake, l, "run-nowork", "implement", ""); err != nil {
 			t.Fatalf("settle %d: %v", i, err)
 		}
-		if i < noWorkStreakThreshold && parkCall(fake.calls) != nil {
-			t.Fatalf("parked early, after %d of %d verdicts", i, noWorkStreakThreshold)
+		if i < nowork.StreakThreshold && parkCall(fake.calls) != nil {
+			t.Fatalf("parked early, after %d of %d verdicts", i, nowork.StreakThreshold)
 		}
 	}
 
 	call := parkCall(fake.calls)
 	if call == nil {
-		t.Fatalf("no park after %d consecutive no-work verdicts", noWorkStreakThreshold)
+		t.Fatalf("no park after %d consecutive no-work verdicts", nowork.StreakThreshold)
 	}
 	if !slices.Contains(call.AddLabels, providers.LabelNeedsHuman) {
 		t.Fatalf("AddLabels = %v, want %s", call.AddLabels, providers.LabelNeedsHuman)
@@ -109,7 +110,7 @@ func TestProductiveCompletionResetsNoWorkStreak(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	noWork := seedNoWorkStreakRun(t, "run-nowork", "5369", string(apiv1.ResultNoWork), "nothing to do")
 
-	for i := 0; i < noWorkStreakThreshold-1; i++ {
+	for i := 0; i < nowork.StreakThreshold-1; i++ {
 		if err := settleNoWorkStreak(context.Background(), fake, noWork, "run-nowork", "implement", ""); err != nil {
 			t.Fatalf("settle no-work %d: %v", i, err)
 		}
@@ -118,8 +119,8 @@ func TestProductiveCompletionResetsNoWorkStreak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load record: %v", err)
 	}
-	if record.Count != noWorkStreakThreshold-1 {
-		t.Fatalf("count = %d, want %d", record.Count, noWorkStreakThreshold-1)
+	if record.Count != nowork.StreakThreshold-1 {
+		t.Fatalf("count = %d, want %d", record.Count, nowork.StreakThreshold-1)
 	}
 
 	// A productive run on the same item, in the same instance.
@@ -173,7 +174,7 @@ func TestNoWorkParkRetainsEarlierReasonWhenVerdictRecordsNone(t *testing.T) {
 		t.Fatalf("settle reasoned: %v", err)
 	}
 	seedNoWorkRunInLayout(t, withReason, "run-silent", "5369", "", "run-reasoned")
-	for i := 0; i < noWorkStreakThreshold-1; i++ {
+	for i := 0; i < nowork.StreakThreshold-1; i++ {
 		if err := settleNoWorkStreak(context.Background(), fake, withReason, "run-silent", "implement", ""); err != nil {
 			t.Fatalf("settle silent %d: %v", i, err)
 		}
@@ -184,20 +185,6 @@ func TestNoWorkParkRetainsEarlierReasonWhenVerdictRecordsNone(t *testing.T) {
 	}
 	if !strings.Contains(call.Comment, "flake, not a code defect") {
 		t.Fatalf("park comment lost the earlier reason:\n%s", call.Comment)
-	}
-}
-
-// TestNoWorkTerminalIgnoresSuccessfulStages guards the classification itself:
-// only a literal no-work stage status counts, so an ordinary successful run is
-// treated as productive.
-func TestNoWorkTerminalIgnoresSuccessfulStages(t *testing.T) {
-	l := seedNoWorkStreakRun(t, "run-ok", "5369", string(apiv1.ResultSuccess), "")
-	_, isNoWork, err := noWorkTerminalForRun(l, "run-ok", "implement")
-	if err != nil {
-		t.Fatalf("noWorkTerminalForRun: %v", err)
-	}
-	if isNoWork {
-		t.Fatal("a successful stage must not be classified as a no-work terminal")
 	}
 }
 
@@ -300,45 +287,6 @@ func seedRunWithEvents(t *testing.T, l instance.Layout, runID string, events []j
 	}
 }
 
-// TestParallelBranchNoWorkDoesNotCountAsRunVerdict is the regression for the
-// fan-out misclassification: branch stages append to the SAME run journal, and
-// a branch that returns no-work ends only that branch while its siblings keep
-// producing. Counting that as the run's verdict would park a healthy item.
-func TestParallelBranchNoWorkDoesNotCountAsRunVerdict(t *testing.T) {
-	l := seedNoWorkStreakRun(t, "run-seed", "5369", string(apiv1.ResultSuccess), "")
-	seedRunWithEvents(t, l, "run-fanout", []journal.Event{
-		{Type: journal.EventStageFinished, Stage: "security", Branch: 1, Status: string(apiv1.ResultNoWork)},
-		{Type: journal.EventStageFinished, Stage: "performance", Branch: 2, Status: string(apiv1.ResultSuccess)},
-		{Type: journal.EventStageFinished, Stage: "collate", Branch: 0, Status: string(apiv1.ResultSuccess)},
-	})
-	_, isNoWork, err := noWorkTerminalForRun(l, "run-fanout", "collate")
-	if err != nil {
-		t.Fatalf("noWorkTerminalForRun: %v", err)
-	}
-	if isNoWork {
-		t.Fatal("a branch's no-work verdict must not be treated as the run's verdict")
-	}
-}
-
-// TestStaleEarlierNoWorkDoesNotCountWhenRunEndedProductively is the regression
-// for the #5107 repass: a no-work event stays in the journal forever, so a run
-// that later produced a pull request must not be classified by it.
-func TestStaleEarlierNoWorkDoesNotCountWhenRunEndedProductively(t *testing.T) {
-	l := seedNoWorkStreakRun(t, "run-seed", "5369", string(apiv1.ResultSuccess), "")
-	seedRunWithEvents(t, l, "run-repass", []journal.Event{
-		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultNoWork)},
-		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
-		{Type: journal.EventStageFinished, Stage: "close-out", Status: string(apiv1.ResultSuccess)},
-	})
-	_, isNoWork, err := noWorkTerminalForRun(l, "run-repass", "close-out")
-	if err != nil {
-		t.Fatalf("noWorkTerminalForRun: %v", err)
-	}
-	if isNoWork {
-		t.Fatal("a stale earlier no-work must not classify a run that ended productively")
-	}
-}
-
 // TestBatchClaimNoWorkParksNothing is the regression for the curation batch:
 // a run holding many claims gives no basis to attribute its no-work verdict to
 // any single item, so none may be parked.
@@ -356,7 +304,7 @@ func TestBatchClaimNoWorkParksNothing(t *testing.T) {
 		seedItemRepositoryForTest(t, l, "run-batch", id, noWorkStreakRepo)
 	}
 
-	for i := 0; i < noWorkStreakThreshold+1; i++ {
+	for i := 0; i < nowork.StreakThreshold+1; i++ {
 		if err := settleNoWorkStreak(context.Background(), fake, l, "run-batch", "implement", ""); err != nil {
 			t.Fatalf("settle %d: %v", i, err)
 		}

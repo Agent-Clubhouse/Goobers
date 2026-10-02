@@ -191,6 +191,7 @@ func TestDefaultExcludeAdmitsPackagesExtractedFromCmd(t *testing.T) {
 		"github.com/goobers/goobers/internal/credentialoverride/preflight.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/escalationnotify/policy.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/intervention/service.go:10.1,12.2 2 1",
+		"github.com/goobers/goobers/internal/nowork/terminal.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/pushrejection/classify.go:10.1,12.2 2 1",
 	} {
 		if exclude.MatchString(line) {

@@ -523,6 +523,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/nowork",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No-work verdict domain tests extracted from cmd/goobers; the Windows CLI test selection did not run these tests. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/oidcauth",
       "coverage": "none",
       "category": "not-selected",

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/nowork"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -44,29 +45,6 @@ const (
 	noWorkStreakStateLockOperation = "no-work-streak.update"
 )
 
-// noWorkStreakRecord is one item's authoritative repeated-no-work state.
-//
-// Reason carries the LAST recorded no-work rationale so the park comment can
-// quote why the implementer kept declining, rather than parking an item with
-// no explanation attached — the second half of #5379, which observed that the
-// agentic stage journaled `status: no-work` with no outputs at all, leaving an
-// operator unable to tell an unactionable item from a misread one.
-//
-// Verdict and Evidence (#5643) carry the stage's own classification of its
-// no-work answer (for example "already-fixed") and the evidence it cited (for
-// example an existing commit). The record is the durable per-item verdict
-// artifact: query-backlog hands it to the next run on the item, and a later
-// verdict that disagrees with it is flagged on the issue.
-type noWorkStreakRecord struct {
-	Count     int       `json:"count"`
-	Reason    string    `json:"reason,omitempty"`
-	Verdict   string    `json:"verdict,omitempty"`
-	Evidence  string    `json:"evidence,omitempty"`
-	Stage     string    `json:"stage,omitempty"`
-	RunID     string    `json:"runId,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
 // noWorkStreakStateKey is the scheduler-state key holding one item's record,
 // a pure function of noWorkStreakKey (provider/owner/name#itemID).
 func noWorkStreakStateKey(key string) string {
@@ -74,7 +52,7 @@ func noWorkStreakStateKey(key string) string {
 	return stateclient.NoWorkStreakKey(fmt.Sprintf("%x", sum))
 }
 
-var noWorkStreakRecordSpec = keyedStateRecordSpec[noWorkStreakRecord]{
+var noWorkStreakRecordSpec = keyedStateRecordSpec[nowork.Record]{
 	schema:      noWorkStreakStateSchema,
 	operation:   noWorkStreakStateLockOperation,
 	errorPrefix: "decode no-work-streak state",
@@ -98,10 +76,10 @@ func updateNoWorkStreakRecord(
 	ctx context.Context,
 	store stateclient.Store,
 	key string,
-	fn func(noWorkStreakRecord) (noWorkStreakRecord, bool, error),
+	fn func(nowork.Record) (nowork.Record, bool, error),
 ) error {
 	return updateKeyedStateRecord(ctx, store, key, noWorkStreakRecordSpec,
-		func(current noWorkStreakRecord, _ bool) (noWorkStreakRecord, bool, error) {
+		func(current nowork.Record, _ bool) (nowork.Record, bool, error) {
 			return fn(current)
 		})
 }
@@ -127,34 +105,20 @@ func incrementNoWorkStreak(
 	repo providers.RepositoryRef,
 	itemID string,
 	runID string,
-	terminal noWorkTerminal,
-) (next, previous noWorkStreakRecord, err error) {
+	terminal nowork.Terminal,
+) (next, previous nowork.Record, err error) {
 	store, err := openStageStateStore(l)
 	if err != nil {
-		return noWorkStreakRecord{}, noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
+		return nowork.Record{}, nowork.Record{}, fmt.Errorf("open no-work-streak state: %w", err)
 	}
 	key := noWorkStreakKey(repo, itemID)
 	if err := updateNoWorkStreakRecord(ctx, store, key,
-		func(current noWorkStreakRecord) (noWorkStreakRecord, bool, error) {
+		func(current nowork.Record) (nowork.Record, bool, error) {
 			previous = current
-			next = noWorkStreakRecord{
-				Count:     current.Count + 1,
-				Reason:    terminal.reason,
-				Verdict:   terminal.verdict,
-				Evidence:  terminal.evidence,
-				Stage:     terminal.stage,
-				RunID:     runID,
-				UpdatedAt: time.Now().UTC(),
-			}
-			// An absent reason on this iteration must not erase a reason an
-			// earlier iteration did record: the park comment is more useful
-			// quoting a stale rationale than quoting nothing.
-			if next.Reason == "" {
-				next.Reason = current.Reason
-			}
+			next = nowork.Advance(current, terminal, runID, time.Now().UTC())
 			return next, true, nil
 		}); err != nil {
-		return noWorkStreakRecord{}, noWorkStreakRecord{}, err
+		return nowork.Record{}, nowork.Record{}, err
 	}
 	return next, previous, nil
 }
@@ -168,15 +132,15 @@ func loadNoWorkStreakRecord(
 	l instance.Layout,
 	repo providers.RepositoryRef,
 	itemID string,
-) (noWorkStreakRecord, error) {
+) (nowork.Record, error) {
 	store, err := openStageStateStore(l)
 	if err != nil {
-		return noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
+		return nowork.Record{}, fmt.Errorf("open no-work-streak state: %w", err)
 	}
 	key := noWorkStreakKey(repo, itemID)
 	value, err := store.Get(ctx, noWorkStreakStateKey(key))
 	if err != nil {
-		return noWorkStreakRecord{}, fmt.Errorf("read no-work-streak state for %s#%s: %w", repo.Name, itemID, err)
+		return nowork.Record{}, fmt.Errorf("read no-work-streak state for %s#%s: %w", repo.Name, itemID, err)
 	}
 	record, _, err := decodeKeyedStateRecord(value, key, noWorkStreakRecordSpec)
 	return record, err
@@ -195,21 +159,21 @@ func resetNoWorkStreakState(
 	repo providers.RepositoryRef,
 	itemID string,
 	runID string,
-) (noWorkStreakRecord, error) {
+) (nowork.Record, error) {
 	store, err := openStageStateStore(l)
 	if err != nil {
-		return noWorkStreakRecord{}, fmt.Errorf("open no-work-streak state: %w", err)
+		return nowork.Record{}, fmt.Errorf("open no-work-streak state: %w", err)
 	}
 	key := noWorkStreakKey(repo, itemID)
-	var cleared noWorkStreakRecord
+	var cleared nowork.Record
 	err = updateNoWorkStreakRecord(ctx, store, key,
-		func(current noWorkStreakRecord) (noWorkStreakRecord, bool, error) {
-			cleared = noWorkStreakRecord{}
+		func(current nowork.Record) (nowork.Record, bool, error) {
+			cleared = nowork.Record{}
 			if current.Count == 0 {
-				return noWorkStreakRecord{}, false, nil
+				return nowork.Record{}, false, nil
 			}
 			cleared = current
-			return noWorkStreakRecord{RunID: runID, UpdatedAt: time.Now().UTC()}, true, nil
+			return nowork.Record{RunID: runID, UpdatedAt: time.Now().UTC()}, true, nil
 		})
 	return cleared, err
 }
