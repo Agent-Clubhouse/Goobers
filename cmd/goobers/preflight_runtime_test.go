@@ -135,7 +135,7 @@ func TestRuntimePreflightHumanReportRedactsSecrets(t *testing.T) {
 		"goober digest: sha256:",
 		"runner: selected selected=linux-pool kind=image",
 		"authentication/authentication_unobservable: unobservable",
-		"cleanup_guarantee/cleanup_guarantee_unsupported: unsupported",
+		"cleanup_guarantee/cleanup_probe_not_requested: unobservable",
 		"capability_mismatch/stage_capability_satisfaction_unobservable: unobservable stage=claim",
 		"credential source metadata only; no external credential or harness subprocess probes",
 	} {
@@ -289,6 +289,7 @@ func normalizedRuntimePreflightJSON(t *testing.T, report runtimePreflightReport)
 	report.Workflow.Digest = "sha256:<workflow>"
 	report.Workflow.GooberDigest = "sha256:<goober>"
 	report.Execution.Process = runtimeplan.Process{PID: 1, OS: "<host-os>", UID: "<effective-user>", GID: "<effective-group>", Source: runtimeplan.Source{Fidelity: "observed", Detail: "current process OS and effective identity"}}
+	report.Lifecycle.Process = report.Execution.Process
 	for i := range report.Checks {
 		report.Checks[i].Process = &report.Execution.Process
 	}

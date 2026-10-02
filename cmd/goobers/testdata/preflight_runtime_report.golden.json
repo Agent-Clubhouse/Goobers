@@ -397,26 +397,6 @@
       }
     },
     {
-      "category": "cleanup_guarantee",
-      "process": {
-        "pid": 1,
-        "os": "\u003chost-os\u003e",
-        "uid": "\u003ceffective-user\u003e",
-        "gid": "\u003ceffective-group\u003e",
-        "source": {
-          "fidelity": "observed",
-          "detail": "current process OS and effective identity"
-        }
-      },
-      "code": "cleanup_guarantee_unsupported",
-      "outcome": "unsupported",
-      "detail": "cleanup guarantees are not proven by this report contract slice",
-      "source": {
-        "fidelity": "unsupported",
-        "detail": "contract boundary"
-      }
-    },
-    {
       "category": "unsupported",
       "process": {
         "pid": 1,
@@ -430,7 +410,7 @@
       },
       "code": "external_probe_unsupported",
       "outcome": "unsupported",
-      "detail": "MCP, sandbox, lifecycle, and provider probes are outside this report contract slice",
+      "detail": "target sandbox and provider probes are outside this report contract slice",
       "source": {
         "fidelity": "unsupported",
         "detail": "contract boundary"
@@ -496,6 +476,68 @@
       "source": {
         "fidelity": "static",
         "detail": "workflow stage declaration"
+      }
+    },
+    {
+      "category": "cleanup_guarantee",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "cleanup_probe_not_requested",
+      "outcome": "unobservable",
+      "detail": "metadata only; use --check-readiness for a controlled local force-stop fixture",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "controlled reporting-process fixture only"
+      }
+    },
+    {
+      "category": "remote_cleanup",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "remote_cleanup_unobservable",
+      "outcome": "unobservable",
+      "stage": "claim",
+      "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "no target cleanup observation or provider mutation"
+      }
+    },
+    {
+      "category": "remote_cleanup",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "remote_cleanup_unobservable",
+      "outcome": "unobservable",
+      "stage": "implement",
+      "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "no target cleanup observation or provider mutation"
       }
     },
     {
@@ -589,6 +631,67 @@
       }
     }
   ],
+  "lifecycle": {
+    "process": {
+      "pid": 1,
+      "os": "\u003chost-os\u003e",
+      "uid": "\u003ceffective-user\u003e",
+      "gid": "\u003ceffective-group\u003e",
+      "source": {
+        "fidelity": "observed",
+        "detail": "current process OS and effective identity"
+      }
+    },
+    "cancellationOwner": "attempt runner and its proc.Tree supervisor; remote execution host owns remote processes",
+    "cancellation": "graceful daemon drain preserves in-flight attempts; hard stop cancels owned attempts; harness timeout/cancellation kills its proc.Tree; configured timeout inputs are in execution.plan.timeouts and stages[].settings; effective live deadlines remain unobservable",
+    "drain": "daemon --drain-timeout defaults to unbounded; repeated shutdown signal or configured drain expiry requests hard stop; actual daemon/worker launch flags are unobservable; checkpoint recovery is unchanged",
+    "workerDrainDefault": "30s",
+    "disposalTimeout": "30s",
+    "fixture": {
+      "ownership": "owned",
+      "owner": "reporting process proc.Tree supervisor",
+      "code": "owned_cleanup_unobservable",
+      "outcome": "unobservable",
+      "requiredGuaranteeSatisfied": false,
+      "authorizesWriter": false,
+      "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+    },
+    "probe": {
+      "code": "cleanup_probe_not_requested",
+      "outcome": "unobservable",
+      "detail": "metadata only; use --check-readiness for a controlled local force-stop fixture"
+    },
+    "targets": [
+      {
+        "stage": "claim",
+        "cleanup": {
+          "ownership": "unobservable",
+          "owner": "dispatcher disposal and remote worker host; remote completion unobserved",
+          "code": "remote_cleanup_unobservable",
+          "outcome": "unobservable",
+          "requiredGuaranteeSatisfied": false,
+          "authorizesWriter": false,
+          "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+        }
+      },
+      {
+        "stage": "implement",
+        "cleanup": {
+          "ownership": "unobservable",
+          "owner": "dispatcher disposal and remote worker host; remote completion unobserved",
+          "code": "remote_cleanup_unobservable",
+          "outcome": "unobservable",
+          "requiredGuaranteeSatisfied": false,
+          "authorizesWriter": false,
+          "detail": "cleanup was not observed; cannot satisfy a required cleanup guarantee"
+        }
+      }
+    ],
+    "source": {
+      "fidelity": "static",
+      "detail": "supervisor contracts and defaults; local fixture evidence cannot attest daemon/worker identity, remote cleanup or authorize another writer"
+    }
+  },
   "harnesses": [
     {
       "stage": "implement",

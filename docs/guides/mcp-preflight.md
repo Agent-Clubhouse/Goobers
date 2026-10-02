@@ -45,3 +45,29 @@ Copilot login files.
 Operator-owned declarations for safely probing external tools are tracked in
 [#6481](https://github.com/Agent-Clubhouse/Goobers/issues/6481). This report does
 not infer or introduce that declaration contract.
+
+## Lifecycle evidence
+
+The same `--check-readiness` opt-in runs a disposable local lifecycle fixture
+on Unix. It starts a fixed shell and finite-lived descendant with `proc.Start`,
+forces their owned process tree to stop with `Tree.Kill`, and verifies neither
+remains alive. It invokes no model, provider mutation or real worker. Other
+platforms report `cleanup_guarantee_unavailable`. Without the opt-in the report
+launches no lifecycle fixture and returns `cleanup_probe_not_requested`.
+
+The `lifecycle` section identifies the reporting process, cancellation owner,
+drain behavior, worker drain default and remote disposal timeout. Configured
+stage and run timeouts remain in `stages[].settings` and
+`execution.plan.timeouts`. Actual daemon/worker launch flags, live deadlines,
+remote work termination and service identity remain unobservable. Graceful drain
+preserves in-flight attempts; hard shutdown requests cancellation through the
+attempt owner. The check does not change journal/checkpoint recovery behavior.
+
+`owned_cleanup_observed` satisfies only the fixture's owned-descendant guarantee.
+It does not prove cleanup of processes that escape/reparent before observation,
+remote jobs, containers or another service's work. `cleanup_host_owned`,
+`cleanup_guarantee_unavailable`, `owned_cleanup_unobservable` and
+`remote_cleanup_unobservable` never satisfy a required cleanup guarantee. Every
+cleanup row has `authorizesWriter: false`: neither local success nor uncertain
+remote cleanup authorizes another writer. Probe failures and cancellation remain
+explicit limitations, even when configured timeout values are available.

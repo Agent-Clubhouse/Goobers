@@ -32,6 +32,7 @@ type runtimePreflightReport struct {
 	Checks           []runtimePreflightCheck       `json:"checks"`
 	MCP              []runtimePreflightMCP         `json:"mcp,omitempty"`
 	Credentials      []runtimeplan.CredentialCheck `json:"credentials,omitempty"`
+	Lifecycle        runtimePreflightLifecycle     `json:"lifecycle"`
 	Harnesses        []runtimePreflightHarness     `json:"harnesses,omitempty"`
 	MutationBoundary []string                      `json:"mutationBoundary"`
 }
@@ -254,6 +255,8 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 		return runtimePreflightReport{}, err
 	}
 	checks := runtimePreflightChecks(stages)
+	lifecycle, lifecycleChecks := runtimeLifecycleChecks(context.Background(), stages, process, probe)
+	checks = append(checks, lifecycleChecks...)
 	mcp, mcpChecks := runtimePreflightMCPChecks(context.Background(), cfg, resolvedGoobers, stages, process, probe)
 	checks = append(checks, mcpChecks...)
 	for _, stage := range stages {
@@ -288,6 +291,7 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 		Stages:      stages,
 		Credentials: credentialChecks,
 		Harnesses:   harnessChecks,
+		Lifecycle:   lifecycle,
 		Checks:      checks,
 		MCP:         mcp,
 		MutationBoundary: []string{
@@ -582,8 +586,7 @@ func runtimePreflightChecks(stages []runtimePreflightStage) []runtimePreflightCh
 		{"path_access", "path_access_unobservable", "unobservable", "runtime workspace path access requires runner execution, which this report intentionally does not run"},
 		{"sandbox", "sandbox_unobservable", "unobservable", "sandbox enforcement requires runner probing, which this report intentionally does not run"},
 		{"capability_mismatch", "capability_mismatch_unobservable", "unobservable", "runner capability satisfaction requires scheduler/runner inventory evaluation beyond this static report"},
-		{"cleanup_guarantee", "cleanup_guarantee_unsupported", "unsupported", "cleanup guarantees are not proven by this report contract slice"},
-		{"unsupported", "external_probe_unsupported", "unsupported", "MCP, sandbox, lifecycle, and provider probes are outside this report contract slice"},
+		{"unsupported", "external_probe_unsupported", "unsupported", "target sandbox and provider probes are outside this report contract slice"},
 		{"unobservable", "unknown_facts_explicit", "unobservable", "unknown facts are explicit and cannot satisfy a required guarantee"},
 	}
 	checks := make([]runtimePreflightCheck, 0, len(categories)+len(stages))
@@ -659,6 +662,7 @@ func printRuntimePreflightReport(w io.Writer, report runtimePreflightReport) {
 		}
 		pf(w, " source=%s detail=%s\n", stage.Runner.Source.Fidelity, stage.Runner.Detail)
 	}
+	printRuntimeLifecycle(w, report.Lifecycle)
 	pf(w, "  checks:\n")
 	for _, check := range report.Checks {
 		stage := ""
@@ -698,7 +702,7 @@ func runtimePreflightRunnerSummary(runner runtimePreflightRunner) string {
 
 func runtimeReadinessBoundary(probe bool) string {
 	if probe {
-		return "bounded read-only harness/MCP probes requested in reporting process; no model execution or provider mutation"
+		return "bounded read-only harness/MCP probes and controlled lifecycle fixture requested in reporting process; no model execution or provider mutation"
 	}
 	return "credential source metadata only; no external credential or harness subprocess probes"
 }
