@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -587,6 +588,15 @@ func CreateContinuation(runsDir string, req ContinuationRequest, opts ...Option)
 // Append scrubs, stamps, writes, and fsyncs one event. seq, schema, and time are
 // assigned by the journal — any values set by the caller are overwritten.
 func (r *Run) Append(ev Event) error {
+	_, err := r.AppendWithSeq(ev)
+	return err
+}
+
+// AppendWithSeq returns the exact durable sequence allocated to this event,
+// while holding the append lock. Zero is returned on any persistence error.
+// A stage start with an explicit zero artifactVisit requests that same sequence
+// for its publication scope; legacy nonzero projection scopes are preserved.
+func (r *Run) AppendWithSeq(ev Event) (uint64, error) {
 	r.mu.Lock()
 	var observedSeq uint64
 	defer func() {
@@ -596,11 +606,15 @@ func (r *Run) Append(ev Event) error {
 		}
 	}()
 	if r.closed {
-		return ErrClosed
+		return 0, ErrClosed
 	}
 
+	if ev.Type == EventStageStarted && ev.Runner != nil && ev.Runner["artifactVisit"] == uint64(0) {
+		ev.Runner = maps.Clone(ev.Runner)
+		ev.Runner["artifactVisit"] = r.seq + 1
+	}
 	if err := r.append(ev); err != nil {
-		return err
+		return 0, err
 	}
 	// Track lifecycle transitions so Close/Checkpoint reflect the last durable
 	// run.finished or intervention event. Reason mirrors the terminal event's own
@@ -624,10 +638,10 @@ func (r *Run) Append(ev Event) error {
 		r.reason = ""
 	}
 	if err := r.checkpoint(); err != nil {
-		return err
+		return 0, err
 	}
 	observedSeq = r.seq
-	return nil
+	return r.seq, nil
 }
 
 // AppendIfAbsent appends ev while holding the journal lock only when no

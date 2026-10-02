@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -1374,6 +1375,9 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 	warnings := report.CLIWarnings()
+	if cfg.HasControllerSigningKey() {
+		warnings = append(warnings, validate.CodedWarning{Severity: validate.Warning, Scope: "local/self execution", Explanation: launchreceipt.ErrControllerKey.Error()})
+	}
 	showManualWorkflowDetails := !supportsWatch || showAllWorkflows
 	textWorkflows, hiddenManualWorkflows := statusTextWorkflows(set.Workflows, showManualWorkflowDetails, *workflowFilter)
 	textWarnings := statusTextWarnings(warnings, set.Workflows, hiddenManualWorkflows, showManualWorkflowDetails, *workflowFilter)

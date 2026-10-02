@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/launchreceipt"
 )
 
 // Full execution archives use a private namespace on the fleet's shared
@@ -80,6 +81,12 @@ func (w *workerSeams) snapshotForInvocation(ctx context.Context, env apiv1.Invoc
 }
 
 func (w *workerSeams) forInvocationGaggle(ctx context.Context, env apiv1.InvocationEnvelope, agentic bool) (*gaggleSeams, func(), error) {
+	// Admission belongs to this host's current instance, never the archived
+	// workflow/goober configuration supplied by an invocation.
+	if current := w.snapshot.Load(); current != nil && current.cfg.HasControllerSigningKey() {
+		return nil, nil, launchreceipt.ErrControllerKey
+	}
+
 	if env.ConfigGeneration == "" {
 		var seams *gaggleSeams
 		var err error
@@ -88,11 +95,18 @@ func (w *workerSeams) forInvocationGaggle(ctx context.Context, env apiv1.Invocat
 		} else {
 			seams, err = w.forGaggle(env.Gaggle)
 		}
+		if err == nil && seams != nil && seams.cfg.ExecutionRefusal != nil {
+			return nil, nil, seams.cfg.ExecutionRefusal
+		}
 		return seams, func() {}, err
 	}
 	snapshot, release, err := w.snapshotForInvocation(ctx, env)
 	if err != nil {
 		return nil, nil, err
+	}
+	if snapshot.cfg.HasControllerSigningKey() {
+		release()
+		return nil, nil, launchreceipt.ErrControllerKey
 	}
 	built, err := w.buildGaggleSeams(snapshot, env.Gaggle)
 	if err != nil {

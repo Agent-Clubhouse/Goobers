@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -218,8 +219,8 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		}
 	}
 	recoveryOption(wtMgr)
-	if _, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, sharedReg); err != nil {
-		return runner.Config{}, nil, fmt.Errorf("preflight external telemetry connectors: %w", err)
+	if err := preflightLocalTelemetry(cfg, sharedReg); err != nil {
+		return runner.Config{}, nil, err
 	}
 	instanceRoot, err := filepath.Abs(l.Root)
 	if err != nil {
@@ -289,6 +290,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		return runner.Config{}, nil, err
 	}
 
+	localReceipts := launchreceipt.LocalRecorder{Root: filepath.Join(instanceRoot, "runtime-local-launch-receipts")}
 	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
@@ -304,13 +306,14 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 			if err != nil {
 				return nil, err
 			}
-			return claimFencedDeterministic{Deterministic: exec, start: executionFence}, nil
+			return claimFencedDeterministic{Deterministic: launchreceipt.GuardDeterministic(exec, localReceipts, cfg.HasControllerSigningKey()), start: executionFence}, nil
 		},
 		NewAgentic: func(gooberName string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 			exec, err := buildAgenticExecutor(agenticExecutorInput{
 				GooberName: gooberName, Goobers: goobers, Instructions: input.InstructionsByGoober, Assets: assetsByGoober, SkillPackages: skillPackages,
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
-				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
+				LaunchReceipts: localReceipts,
+				Resolver:       resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg),
 			})
@@ -388,7 +391,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// protected too — see its own doc comment for why replace-semantics
 	// (SetPathLengthLimits's own shape) is the wrong model here.
 	wtMgr.SetRunBranchNamespaces(branchNamespaces[l.Gaggle()])
-	return rc, wtMgr, nil
+	return runnerHostAdmission(cfg, rc), wtMgr, nil
 }
 
 func deterministicStageConfigDigest(configDir, gaggle string) (string, error) {

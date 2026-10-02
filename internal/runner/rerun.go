@@ -42,6 +42,9 @@ type rerunContext struct {
 // The workflow definition remains pinned and unchanged; the operator, addendum,
 // target, and attempt are recorded before the invocation starts.
 func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, error) {
+	if r.cfg.ExecutionRefusal != nil {
+		return Result{}, r.cfg.ExecutionRefusal
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}

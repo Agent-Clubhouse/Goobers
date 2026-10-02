@@ -62,7 +62,7 @@ func registerLaunchReceiptRoute(router *Router, service LaunchReceiptService) {
 		decoder := json.NewDecoder(body)
 		decoder.DisallowUnknownFields()
 		var receipt launchreceipt.Receipt
-		if decoder.Decode(&receipt) != nil || decoder.Decode(new(any)) != io.EOF {
+		if decoder.Decode(&receipt) != nil || decoder.Decode(new(any)) != io.EOF || receipt.Local != nil {
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid launch receipt")
 			return
 		}

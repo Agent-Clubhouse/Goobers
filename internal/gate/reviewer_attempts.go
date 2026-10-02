@@ -6,6 +6,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 )
 
 func (e *Evaluator) reviewerContinuation(name string) (int, error) {
@@ -15,15 +16,24 @@ func (e *Evaluator) reviewerContinuation(name string) (int, error) {
 	return e.ReviewerContinuation(name)
 }
 
-func recordReviewerStart(j Journal, gate apiv1.Gate, number int, class journal.AttemptClass) error {
+func recordReviewerStart(ctx context.Context, j Journal, gate apiv1.Gate, number int, class journal.AttemptClass) (context.Context, error) {
 	if j == nil {
-		return nil
+		return ctx, nil
 	}
 	event := journal.ReviewerAttemptEvent(journal.EventReviewerStarted, gate.Name, number, class)
 	if gate.Agentic != nil {
 		event.Runner = map[string]any{"goober": gate.Agentic.Goober}
 	}
-	return j.Append(event)
+	if writer, ok := j.(interface {
+		AppendWithSeq(journal.Event) (uint64, error)
+	}); ok {
+		seq, err := writer.AppendWithSeq(event)
+		if err != nil {
+			return ctx, err
+		}
+		return launchreceipt.WithJournalStart(ctx, j, event, seq), nil
+	}
+	return ctx, j.Append(event)
 }
 
 func recordReviewerFinish(j Journal, name string, number int, class journal.AttemptClass, verdict apiv1.Verdict, err error, invalid bool) error {

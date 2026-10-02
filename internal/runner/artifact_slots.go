@@ -8,13 +8,15 @@ import (
 func (tf *taskFrame) recordTaskStarted(attempt int, class journal.AttemptClass) error {
 	started := taskStartedEvent(tf.t, attempt, class)
 	if len(tf.t.ArtifactSlots) > 0 {
-		tf.artifactVisit = tf.jr.Seq() + 1
 		if started.Runner == nil {
 			started.Runner = map[string]any{}
 		}
-		started.Runner["artifactVisit"] = tf.artifactVisit
+		started.Runner["artifactVisit"] = uint64(0)
 	}
-	return tf.jr.Append(started)
+	seq, err := tf.jr.AppendWithSeq(started)
+	tf.startedSeq = seq
+	tf.artifactVisit = seq
+	return err
 }
 
 func (tf taskFrame) pinPublicationAuthority(env *apiv1.InvocationEnvelope, attempt int) {

@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/k8spreflight"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/providers"
 )
@@ -425,6 +426,13 @@ func copilotAuthInfo(root string) (harness.AuthInfo, error) {
 }
 
 func copilotAuthInfoWithTimeout(root string, timeout time.Duration) (harness.AuthInfo, error) {
+	cfg, err := loadHarnessAuthConfig(root)
+	if err != nil {
+		return harness.AuthInfo{}, err
+	}
+	if cfg.HasControllerSigningKey() {
+		return harness.AuthInfo{Status: harness.AuthStatusUnknown, Remediation: launchreceipt.ErrControllerKey.Error()}, nil
+	}
 	adapter, err := copilotAuthAdapter(root)
 	if err != nil {
 		return harness.AuthInfo{}, err

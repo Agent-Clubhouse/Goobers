@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
@@ -173,6 +174,7 @@ const InputArtifactFile = "artifactFile"
 // Executor is constructed per Goober (Instructions is goober-level, not
 // per-invocation) and reused across its stage invocations.
 type Executor struct {
+	launchReceipts  launchreceipt.Recorder
 	adapter         Adapter
 	injector        *credentials.Injector
 	recorder        SpanRecorder
@@ -663,6 +665,9 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 	}
 	var out Outcome
 	var runErr error
+	if err := e.recordPreparedLaunch(ctx, req); err != nil {
+		return Outcome{}, nil, nil, err
+	}
 	capture, err := e.beginTranscriptCapture(env.TaskID, &req)
 	if err != nil {
 		return Outcome{}, nil, nil, err

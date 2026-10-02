@@ -1318,7 +1318,8 @@ func TestCompiledMachinesCarriesResolutionAndHarnessEnvironmentToExecutor(t *tes
 	if err != nil {
 		t.Fatalf("NewAgentic: %v", err)
 	}
-	if _, err := agentic.Invoke(context.Background(), apiv1.InvocationEnvelope{
+	if _, err := agentic.Invoke(localLaunchTestContext("shared-run", "implement", 1, false), apiv1.InvocationEnvelope{
+		Attempt:    1,
 		RunID:      "shared-run",
 		Gaggle:     "example",
 		WorkflowID: "claim",
@@ -1632,7 +1633,8 @@ func TestBuildRunnerConfigSetsLargeRepoStageEnvironment(t *testing.T) {
 		// construct instead, trimming the trailing CRLF it adds.
 		script = "@echo off\r\necho %MSBUILDDISABLENODEREUSE%"
 	}
-	result, err := deterministic.Run(context.Background(), apiv1.InvocationEnvelope{
+	result, err := deterministic.Run(localLaunchTestContext("shared-run", "build", 1, false), apiv1.InvocationEnvelope{
+		Attempt:    1,
 		RunID:      "shared-run",
 		Gaggle:     "example",
 		WorkflowID: "claim",

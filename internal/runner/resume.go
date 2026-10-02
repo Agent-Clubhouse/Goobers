@@ -120,6 +120,9 @@ type ResumeFromTerminalInput struct {
 // repeated interrupted evaluations exceed the budget, Evaluate escalates
 // without dispatching the side-effecting evaluator again (#263).
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
+	if r.cfg.ExecutionRefusal != nil {
+		return Result{}, r.cfg.ExecutionRefusal
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
@@ -162,6 +165,9 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 // appended. The event records the human actor, prior terminal phase, target,
 // and verified workflow pin so a crash after the action can recover it exactly.
 func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalInput) (Result, error) {
+	if r.cfg.ExecutionRefusal != nil {
+		return Result{}, r.cfg.ExecutionRefusal
+	}
 	if !apiv1.ValidRunID(in.RunID) {
 		return Result{}, fmt.Errorf("runner: invalid run id %q", in.RunID)
 	}

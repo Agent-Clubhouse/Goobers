@@ -75,6 +75,7 @@ type Receipt struct {
 	Version int         `json:"version"`
 	Binding Binding     `json:"binding"`
 	Facts   RemoteFacts `json:"facts"`
+	Local   *LocalFacts `json:"local,omitempty"`
 }
 
 // Grant binds both canonical identity and all receipt bytes. Changing even an
@@ -99,7 +100,7 @@ func ValidDigest(s string) bool {
 
 // Encode validates the bounded allowlist and returns canonical grant-bound bytes.
 func (r Receipt) Encode() ([]byte, error) {
-	if r.Version != 1 || !r.Binding.valid() || !r.Facts.valid() {
+	if r.Version != 1 || !r.Binding.valid() || !r.validFacts() {
 		return nil, ErrInvalid
 	}
 	raw, err := json.Marshal(r)
@@ -127,4 +128,11 @@ func (f RemoteFacts) valid() bool {
 		return false
 	}
 	return true
+}
+
+func (r Receipt) validFacts() bool {
+	if r.Local != nil {
+		return r.Facts == (RemoteFacts{}) && r.Local.valid()
+	}
+	return r.Facts.valid()
 }

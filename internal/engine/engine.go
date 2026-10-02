@@ -981,7 +981,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
+			err := executeLocalTask(ctx, rec, t, attemptEnv, nil, workspaceBranch, workspaceDelta).Get(ctx, &result)
 			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 			return result, err
 		}, deltaOut)
@@ -1008,7 +1008,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
+		err := executeLocalTask(ctx, rec, t, attemptEnv, &run, workspaceBranch, workspaceDelta).Get(ctx, &result)
 		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
@@ -1153,8 +1153,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 				if number, ok := reviewerNumber(ctx); ok {
 					attemptEnv.Attempt = int32(number)
 				}
-				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
-					g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+				return executeLocalReviewer(ctx, rec, g, attemptEnv, workspaceBranch, workspaceDelta, priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
 			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err

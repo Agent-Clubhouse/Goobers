@@ -368,6 +368,12 @@ func preflightDaemonHarnesses(
 }
 
 func preflightSchedulerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	// Key-holding controllers can dispatch remote work, but must never probe a
+	// local harness or resolve its credentials. Execution admission is separate.
+	if cfg.HasControllerSigningKey() {
+		return nil, nil, nil
+	}
+
 	return preflightDaemonHarnesses(
 		goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
 		harnessModelCredentialResolver(cfg, stores), os.Stderr,

@@ -33,11 +33,21 @@ type branchJournal struct {
 	setMachineState func(string)
 }
 
+func (j *branchJournal) PinnedRun() (string, string, string) { return j.run.PinnedRun() }
+func (j *branchJournal) Branch() int                         { return j.branch }
+
 func (j *branchJournal) Append(ev journal.Event) error {
 	if ev.Branch == 0 {
 		ev.Branch = j.branch
 	}
 	return j.run.Append(ev)
+}
+
+func (j *branchJournal) AppendWithSeq(ev journal.Event) (uint64, error) {
+	if ev.Branch == 0 {
+		ev.Branch = j.branch
+	}
+	return j.run.AppendWithSeq(ev)
 }
 
 func (j *branchJournal) AppendIfAbsent(ev journal.Event, match func(journal.Event) bool) (bool, error) {

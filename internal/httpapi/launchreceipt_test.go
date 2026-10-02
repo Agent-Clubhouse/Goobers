@@ -32,3 +32,15 @@ func TestLaunchReceiptRejectsForgedPrincipalRoles(t *testing.T) {
 		}
 	}
 }
+
+func TestLaunchReceiptHTTPRejectsLocalOnlyFacts(t *testing.T) {
+	auth := &fakeAuthenticator{principal: &Principal{Subject: "controller", Issuer: LaunchGrantPrincipalIssuer}}
+	handler := writePlaneHandler(t, auth, RequireRoles(), WithLaunchReceiptService(forbiddenLaunchService{t}))
+	req := jsonRequest(http.MethodPost, apicontract.LaunchReceiptPath, `{"version":1,"local":{"integrity":"unverified"}}`)
+	req.Header.Set("Authorization", "Bearer "+launchreceipt.TokenPrefix+"fixture")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("local receipt reached controller plane: %d %s", response.Code, response.Body.String())
+	}
+}

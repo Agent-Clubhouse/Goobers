@@ -179,6 +179,34 @@ the development repository's moving `main`.
 Windows adopters should use the checksum-verified
 [Windows release path](quickstart-windows.md).
 
+## Upgrade: local/self launch receipts
+
+The local/self launch-receipt change
+([#4768](https://github.com/Agent-Clubhouse/Goobers/issues/4768)) refuses **all
+local/self execution** on a host configured with `api.podTokenKeyFile`. This
+includes agent launches, arbitrary shell commands, and every current
+deterministic builtin kind. The safe default is an empty allowlist; there are no builtin exemptions.
+Existing example workflows containing `local-ci` therefore cannot run on that
+host. Admission depends on the launch contract, not the stage's name.
+
+Before upgrading an affected instance, move the reusable controller signing key
+off the runner host, or move local/self work to a keyless runner. Merely renaming
+a stage or selecting a deterministic builtin does not make it admissible.
+Shared errors, journal entries, and status diagnostics identify
+`api.podTokenKeyFile` without exposing its raw filesystem path.
+
+Keyless standalone runs retain their execution behavior and use ephemeral,
+local-only receipts that are explicitly **unverified**. Post-launch actuals
+remain unknown; these receipts do not establish a public attestation of what
+ran. A future trusted runtime contract for non-executing builtins is tracked in
+[#6532](https://github.com/Agent-Clubhouse/Goobers/issues/6532); it grants no
+exemptions now.
+
+The independently merged signing-key guard fix for
+[#6524](https://github.com/Agent-Clubhouse/Goobers/issues/6524), delivered in
+[PR #6530](https://github.com/Agent-Clubhouse/Goobers/pull/6530), is separate from
+this receipt change.
+
 ## The packaging engine
 
 After `make portal-build`, `go run ./release` cross-compiles `./cmd/goobers`
