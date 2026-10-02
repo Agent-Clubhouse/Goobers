@@ -520,7 +520,7 @@ func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
 	// check() is fail-closed on any non-success result, and it must still run
 	// after the run is cancelled, which is what always() guarantees.
 	requiredCI := workflowJob(workflow, "required-ci")
-	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' }}", `if [ "$2" != "success" ]; then`} {
+	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' && !" + ciMetadataEdit + " }}", `if [ "$2" != "success" ]; then`} {
 		if !strings.Contains(requiredCI, want) {
 			t.Errorf("required-ci must contain %q so a cancelled job reds the required check", want)
 		}
@@ -567,9 +567,12 @@ func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
 		t.Fatalf("read CI workflow: %v", err)
 	}
 
-	const requiredCheckName = "    name: make ci (fmt-check · vet · build · test · lint)"
 	// Repository ruleset 19093039 pins this exact required-check name:
 	// https://github.com/Agent-Clubhouse/Goobers/rules/19093039
+	// The name is an expression only so a skipped title/body-edit run cannot
+	// shadow it (#6360); every run that validates code renders the pinned name,
+	// which TestCIRunsOnBaseRetargetNotMetadataEdits evaluates per event.
+	const requiredCheckName = "    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (not re-run for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}"
 	requiredCI := workflowJob(string(data), "required-ci")
 	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {
 		t.Errorf("required-ci name must remain %q because repository ruleset 19093039 pins that exact required-check context", strings.TrimSpace(requiredCheckName))

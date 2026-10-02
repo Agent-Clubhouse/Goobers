@@ -153,7 +153,9 @@ func TestCILinuxJournalOTLPRaceCoverage(t *testing.T) {
 	workflow := loadCIWorkflow(t)
 	job := workflow.Jobs["unit"]
 	step := job.step(t, "Unit suite (-race, shard ${{ matrix.shard }})")
-	if job.RunsOn != "ubuntu-latest" || job.If != "" || job.ContinueOnError ||
+	// ciCodeGate skips only title/body-edit runs, which validate nothing
+	// (TestCIRunsOnBaseRetargetNotMetadataEdits); every code event runs it.
+	if job.RunsOn != "ubuntu-latest" || (job.If != "" && job.If != ciCodeGate) || job.ContinueOnError ||
 		step.If != "" || step.ContinueOnError || !slices.Contains(workflow.Jobs["required-ci"].Needs, "unit") {
 		t.Fatal("Linux race shards must remain an unconditional required gate")
 	}
