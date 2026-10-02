@@ -44,15 +44,15 @@ func TestIsADOPolicyProtected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := IsADOPolicyProtected(tc.output); got != tc.want {
-				t.Fatalf("IsADOPolicyProtected(%q) = %v, want %v", tc.output, got, tc.want)
+			if got := isADOPolicyProtected(tc.output); got != tc.want {
+				t.Fatalf("isADOPolicyProtected(%q) = %v, want %v", tc.output, got, tc.want)
 			}
 		})
 	}
 }
 
 // TestIsRaceAloneCannotTellAPolicyRejectionFromARace documents WHY
-// push-branch's retry loop must check IsADOPolicyProtected ahead of IsRace:
+// push-branch's retry loop must check isADOPolicyProtected ahead of IsRace:
 // TF402455's own "failed to push some refs" trailer is exactly the marker
 // IsRace keys on, so read in isolation the two classifiers disagree on the
 // same real ADO rejection text.
@@ -61,8 +61,8 @@ func TestIsRaceAloneCannotTellAPolicyRejectionFromARace(t *testing.T) {
 	if !IsRace(err) {
 		t.Fatal("IsRace = false, want true — precondition: TF402455's trailer text must still look race-shaped in isolation, which is exactly why the ordering in push-branch's retry loop matters")
 	}
-	if !IsADOPolicyProtected(err.Error()) {
-		t.Fatal("IsADOPolicyProtected = false, want true")
+	if !isADOPolicyProtected(err.Error()) {
+		t.Fatal("isADOPolicyProtected = false, want true")
 	}
 }
 
@@ -90,8 +90,8 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := IsGitHubWorkflowPermission(tc.output); got != tc.wantWorkflow {
-				t.Fatalf("IsGitHubWorkflowPermission = %v, want %v", got, tc.wantWorkflow)
+			if got := isGitHubWorkflowPermission(tc.output); got != tc.wantWorkflow {
+				t.Fatalf("isGitHubWorkflowPermission = %v, want %v", got, tc.wantWorkflow)
 			}
 			err := Classify("b", tc.output, errors.New("exit status 1"))
 			var workflowErr *WorkflowPermissionError

@@ -37,10 +37,10 @@ func IsRace(err error) bool {
 // push-branch's push and rebase-pr's force-push.
 func Classify(branch, output string, err error) error {
 	wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
-	if IsADOPolicyProtected(output) {
+	if isADOPolicyProtected(output) {
 		return &PolicyProtectedError{Branch: branch, Err: wrapped}
 	}
-	if IsGitHubWorkflowPermission(output) {
+	if isGitHubWorkflowPermission(output) {
 		return &WorkflowPermissionError{Branch: branch, Err: wrapped}
 	}
 	return wrapped
@@ -72,12 +72,12 @@ const (
 	githubWorkflowPermissionVerb   = " to create or update workflow"
 )
 
-// IsGitHubWorkflowPermission reports whether output — git's combined
+// isGitHubWorkflowPermission reports whether output — git's combined
 // stdout+stderr from a rejected push — is GitHub's refusal of a
 // workflow-file change by a credential lacking permission to change
 // workflows (#5502). Like TF402455 it carries git's generic "failed to push
 // some refs" trailer, so it is checked ahead of IsRace.
-func IsGitHubWorkflowPermission(output string) bool {
+func isGitHubWorkflowPermission(output string) bool {
 	for _, line := range strings.Split(strings.ToLower(output), "\n") {
 		i := strings.Index(line, githubWorkflowPermissionPrefix)
 		if i >= 0 && strings.Contains(line[i:], githubWorkflowPermissionVerb) {
@@ -105,7 +105,7 @@ func (e *WorkflowPermissionError) Error() string {
 
 func (e *WorkflowPermissionError) Unwrap() error { return e.Err }
 
-// IsADOPolicyProtected reports whether output — git's combined
+// isADOPolicyProtected reports whether output — git's combined
 // stdout+stderr from a rejected push — carries the markers ADO's Git provider
 // attaches to a push refused by an enabled branch policy: TF402455 in the
 // human-readable "remote rejected" line, and
@@ -117,7 +117,7 @@ func (e *WorkflowPermissionError) Unwrap() error { return e.Err }
 // PR-only — a direct push (or force-push) to it is refused outright, not
 // merely delayed by a race, so this is checked ahead of IsRace rather than
 // folded into it.
-func IsADOPolicyProtected(output string) bool {
+func isADOPolicyProtected(output string) bool {
 	return strings.Contains(output, "TF402455") ||
 		strings.Contains(output, "GitRefUpdateRejectedByPolicyException")
 }
