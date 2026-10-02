@@ -14,6 +14,13 @@ const (
 	ProviderGitea Provider = "gitea"
 )
 
+// GitHubBaseURLUnsupported is the diagnostic for a baseUrl on a github
+// RepoRef/BacklogRef. GitHub Enterprise Server is out of scope (#6347): a
+// github reference always means github.com, and clone URLs and git-auth
+// matchers would silently ignore a baseUrl on it, so it is rejected instead.
+const GitHubBaseURLUnsupported = "baseUrl is not supported for provider \"github\": " +
+	"GitHub Enterprise Server is unsupported and a github repository always means github.com; remove baseUrl"
+
 // SecretRef references a secret by name without storing its value in the repo;
 // secrets are never inlined into config-as-code (CFG-009, SEC-010).
 //
@@ -45,7 +52,8 @@ type RepoRef struct {
 	Provider Provider `json:"provider" yaml:"provider"`
 	// BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
 	// required when provider=gitea (self-hosted Gitea has no fixed host) and
-	// omitted for github/ado.
+	// omitted for ado. It is rejected for github: GitHub Enterprise Server is
+	// unsupported, so a github reference always means github.com (#6347).
 	// +optional
 	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Owner/organization (GitHub org/user or Azure DevOps organization).
@@ -111,7 +119,8 @@ type BacklogRef struct {
 	Provider Provider `json:"provider" yaml:"provider"`
 	// BaseURL is the forge root URL (e.g. https://gitea.example.com). It is
 	// required when provider=gitea (self-hosted Gitea has no fixed host) and
-	// omitted for github/ado.
+	// omitted for ado. It is rejected for github: GitHub Enterprise Server is
+	// unsupported, so a github reference always means github.com (#6347).
 	// +optional
 	BaseURL string `json:"baseUrl,omitempty" yaml:"baseUrl,omitempty"`
 	// Project scopes the backlog (GitHub repo "owner/name" or ADO project).

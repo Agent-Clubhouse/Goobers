@@ -2519,6 +2519,15 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "gitea auth requires token",
 		},
 		{
+			// GitHub Enterprise Server is unsupported (#6347): a baseUrl on a
+			// github repo would be silently ignored, so it is refused.
+			name: "github rejects baseUrl",
+			cfg: Config{Repos: []RepoRef{
+				{Provider: "github", BaseURL: "https://ghe.example.com", Owner: "acme", Name: "web", Token: TokenRef{Env: "T"}},
+			}},
+			wantErr: "GitHub Enterprise Server is unsupported",
+		},
+		{
 			name: "missing owner",
 			cfg: Config{Repos: []RepoRef{
 				{Provider: "github", Name: "web", Token: TokenRef{Env: "T"}},

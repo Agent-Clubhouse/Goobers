@@ -281,7 +281,7 @@
         "baseUrl": {
           "type": "string",
           "format": "uri",
-          "description": "Forge root URL (e.g. https://gitea.example.com). Required for provider `gitea`, which has no fixed host; omitted for github and ado."
+          "description": "Forge root URL (e.g. https://gitea.example.com). Required for provider `gitea`, which has no fixed host; omitted for ado. Rejected for provider `github`: GitHub Enterprise Server is unsupported, so a github repository always means github.com."
         },
         "owner": {
           "type": "string",
@@ -336,6 +336,10 @@
         {
           "if": { "properties": { "provider": { "const": "gitea" } }, "required": ["provider"] },
           "then": { "required": ["baseUrl"] }
+        },
+        {
+          "if": { "properties": { "provider": { "const": "github" } }, "required": ["provider"] },
+          "then": { "properties": { "baseUrl": false } }
         },
         {
           "if": {
