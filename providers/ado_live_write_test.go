@@ -449,8 +449,8 @@ func (e adoLiveWriteEnv) retireWorkItem(t *testing.T, id, scenario string) {
 		t.Errorf("cleanup: read %s states: %v", item.Type, err)
 		return
 	}
-	target, ok := adoLiveRetireState(states)
-	if !ok || strings.EqualFold(stringField(raw.Fields, "System.State"), target) {
+	target, ok := adoLiveRetireState(states, stringField(raw.Fields, "System.State"))
+	if !ok {
 		return
 	}
 	endpoint, err := e.provider.workURL(e.provider.project(e.repo), "workitems", id)
