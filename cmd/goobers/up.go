@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/intervention"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
@@ -945,7 +946,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// stdout/stderr: it returns the released entries so only the synchronous
 	// startup call site below prints.
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.Active, claimRecoveryGate)
 	}
 	// The run-control plane routes local runs through the pending-cancels
 	// sweep's live Runner path and retained engine runs through CancelWorkflow.
@@ -962,7 +963,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(claimPlane),
 		httpapi.WithTriggerService(durableTriggers),
-		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
+		httpapi.WithEscalationService(intervention.NewEscalationResolver(interventions)),
 		httpapi.WithCancelService(cancelPlane),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),

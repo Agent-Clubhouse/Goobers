@@ -33,7 +33,7 @@ import (
 //   - the startup resume scan (cmd/goobers/daemon.go),
 //   - the stall sweep (cmd/goobers/stalledruns.go),
 //   - `run abort` / `run cancel` (cmd/goobers/run.go),
-//   - the HITL intervention service (cmd/goobers/interventions.go).
+//   - the HITL intervention service (internal/intervention).
 //
 // Each drives the real function over a real run directory. The Temporal side
 // is a fake engineWorkflowClient — the same shape internal/engine's own

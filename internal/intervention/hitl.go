@@ -1,10 +1,10 @@
-package main
+package intervention
 
-// enginehitl.go wires the daemon's operator-intervention surface to #3883's
+// hitl.go wires the daemon's operator-intervention surface to #3883's
 // versioned Temporal HITL protocol.
 //
 // Before this file, every intervention on an engine-driven run was refused at
-// one place (runInterventionService.resolve) because all four verbs —
+// one place (Service.resolve) because all four verbs —
 // approve, override, rerun, deny — reach for an in-process runner that has
 // never executed a stage of an engine run and whose journal has a live writer
 // on the other side of a Temporal workflow (#3847). The refusal was correct;
@@ -39,11 +39,11 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
-// hitlDeliverer is the slice of engine.HITLDeliverer the intervention service
+// HITLDeliverer is the slice of engine.HITLDeliverer the intervention service
 // needs, kept as an interface so tests can substitute a double that records
 // what was delivered — and so a test can assert that NO runner method was
 // called for an engine-driven run.
-type hitlDeliverer interface {
+type HITLDeliverer interface {
 	Deliver(ctx context.Context, intent engine.HITLIntent) (engine.HITLAck, error)
 }
 
@@ -147,7 +147,7 @@ func hitlIntentFor(action hitlAction, resolved resolvedInterventionRun, input ht
 // It never fabricates a success: the result it returns is read back off the
 // run's journal AFTER the workflow's ack, so what the operator sees is what
 // the run durably recorded, not what the daemon hoped would happen.
-func (s *runInterventionService) deliverHITL(
+func (s *Service) deliverHITL(
 	ctx context.Context,
 	action hitlAction,
 	resolved resolvedInterventionRun,
@@ -160,7 +160,7 @@ func (s *runInterventionService) deliverHITL(
 		// refusal here is a nil dereference that looks like a daemon crash.
 		return httpapi.InterventionResult{}, interventionConflict(
 			"run_engine_driven",
-			engineDrivenRefusal(resolved.runID, "an operator intervention").Error(),
+			s.engineDrivenRefusal(resolved.runID, "an operator intervention").Error(),
 		)
 	}
 	intent, err := hitlIntentFor(action, resolved, input)
