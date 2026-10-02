@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -81,6 +82,70 @@ func TestExporterHealthJournalsRateLimitedTransitions(t *testing.T) {
 	for _, leaked := range []string{"collector-token.txt", "api_key", "v1/traces", "permission denied"} {
 		if strings.Contains(journalText, leaked) {
 			t.Fatalf("journal transition leaked %q in events: %+v", leaked, events)
+		}
+	}
+}
+
+// A persistently failing export writes telemetry_export_refused: on the first
+// failure, then once per suppression window with the repeats it stands for,
+// and again immediately after a recovery (#6417).
+func TestExporterHealthJournalsExportRefusedFirstRepeatAndRecovery(t *testing.T) {
+	schedulerDir := filepath.Join(t.TempDir(), "scheduler")
+	log, _, err := journal.OpenInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	health := NewExporterHealth(true, string(ExporterOTLP), "https://user:secret@collector.example.com:4317/v1/traces?api_key=secret")
+	health.now = func() time.Time { return clock }
+	health.refusedWindow = 30 * time.Minute
+	privateErr := errors.New("dial C:\\private\\collector-token.txt: permission denied")
+
+	// Before the instance log exists: held, then written on attach.
+	health.recordTraceExporterFailure(exporterHealthExporterOTLP, privateErr)
+	health.AttachInstanceLog(log)
+	for range 3 { // Suppressed repeats inside the window.
+		clock = clock.Add(time.Minute)
+		health.recordTraceExporterFailure(exporterHealthExporterOTLP, privateErr)
+	}
+	clock = clock.Add(30 * time.Minute) // The next repeat past the window.
+	health.recordTraceExporterFailure(exporterHealthExporterOTLP, privateErr)
+	health.recordTraceExporterSuccess(exporterHealthExporterOTLP)
+	clock = clock.Add(time.Minute) // A new failing period is a first occurrence.
+	health.recordTraceExporterFailure(exporterHealthExporterAzureMonitor, context.DeadlineExceeded)
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := journal.ReadInstanceLog(schedulerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refused []journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventError && event.Error != nil && event.Error.Code == exporterHealthRefusedCode {
+			refused = append(refused, event)
+		}
+	}
+	if len(refused) != 3 {
+		t.Fatalf("refused events = %+v, want first, one windowed repeat, and post-recovery first", refused)
+	}
+	first, repeat, again := refused[0], refused[1], refused[2]
+	if first.Runner["signal"] != "trace" || first.Runner["destination"] != exporterHealthExporterOTLP ||
+		first.Runner["errorClass"] != "exporter_error" || first.Runner["endpointClass"] != "dns-name" ||
+		first.Error.Message != "exporter_error" || first.Runner["repeats"] != nil {
+		t.Fatalf("first refused event = %+v", first)
+	}
+	if repeat.Runner["repeats"] != float64(4) || repeat.Runner["window"] != "30m0s" {
+		t.Fatalf("windowed repeat = %+v", repeat.Runner)
+	}
+	if again.Runner["destination"] != exporterHealthExporterAzureMonitor || again.Runner["errorClass"] != "deadline_exceeded" || again.Runner["repeats"] != nil {
+		t.Fatalf("post-recovery refused event = %+v", again.Runner)
+	}
+	journalText := fmt.Sprint(events)
+	for _, leaked := range []string{"collector-token.txt", "api_key", "secret", "v1/traces", "permission denied"} {
+		if strings.Contains(journalText, leaked) {
+			t.Fatalf("refused event leaked %q: %+v", leaked, refused)
 		}
 	}
 }
