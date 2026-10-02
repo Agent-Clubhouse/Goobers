@@ -26,7 +26,7 @@ const (
 	adoLiveParentMarker    = "goobers-live ancestry parent intent."
 	adoLiveSpecTitle       = "goobers live spec fixture (do not close)"
 	adoLiveSpecCriteria    = "goobers-live acceptance criterion: the provider composes this field into the work item body"
-	adoLiveSpecWorkItemEnv = "GOOBERS_ADO_LIVE_SPEC_WORK_ITEM"
+	adoLiveSpecWorkItemEnv = "GOOBERS_ADO_LIVE_SPEC_WORK_ITEM" // declared literally in TestIntegrationADOLiveSpecFixture
 	adoLiveReadTimeout     = 2 * time.Minute
 )
 
@@ -49,6 +49,7 @@ const (
 // Azure CLI session; GOOBERS_ADO_TENANT + an `az login` session is the
 // fallback for a developer running this locally without a PAT.
 func TestIntegrationADOLiveSmoke(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_ADO_LIVE_REPO")
 	provider, repo := adoLiveReadSetup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -71,8 +72,9 @@ func TestIntegrationADOLiveSmoke(t *testing.T) {
 // parent. It skips until GOOBERS_ADO_LIVE_SPEC_WORK_ITEM names the fixture
 // (repository variable ADO_LIVE_SPEC_WORK_ITEM).
 func TestIntegrationADOLiveSpecFixture(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_ADO_LIVE_REPO")
+	testdep.RequireEnv(t, "GOOBERS_ADO_LIVE_SPEC_WORK_ITEM")
 	provider, repo := adoLiveReadSetup(t)
-	testdep.RequireEnv(t, adoLiveSpecWorkItemEnv)
 	id := strings.TrimSpace(os.Getenv(adoLiveSpecWorkItemEnv))
 	ctx, cancel := context.WithTimeout(context.Background(), adoLiveReadTimeout)
 	defer cancel()
@@ -160,6 +162,7 @@ func checkADOLiveAncestry(ctx context.Context, t *testing.T, provider *ADOProvid
 // path, refreshing the credential once and then failing as an
 // authentication error, never as a JSON decode of the sign-in page.
 func TestIntegrationADOLiveSignInRejection(t *testing.T) {
+	testdep.RequireEnv(t, "GOOBERS_ADO_LIVE_REPO")
 	_, repo := adoLiveReadSetup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), adoLiveReadTimeout)
 	defer cancel()
@@ -220,11 +223,11 @@ func (r *adoLiveStatusRecorder) seen() []int {
 }
 
 // adoLiveReadSetup builds the read-only leg's provider from
-// GOOBERS_ADO_LIVE_REPO (organization/project/repository), skipping when it
-// is unset.
+// GOOBERS_ADO_LIVE_REPO (organization/project/repository). Each caller first
+// declares that variable with testdep.RequireEnv, as the integration tier's
+// dependency guard requires of every TestIntegration function.
 func adoLiveReadSetup(t *testing.T) (*ADOProvider, RepositoryRef) {
 	t.Helper()
-	testdep.RequireEnv(t, "GOOBERS_ADO_LIVE_REPO")
 	target := os.Getenv("GOOBERS_ADO_LIVE_REPO")
 	parts := strings.Split(target, "/")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {

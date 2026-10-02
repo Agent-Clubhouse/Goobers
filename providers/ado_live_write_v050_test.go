@@ -304,9 +304,11 @@ func (e adoLiveWriteEnv) checkPolicyClassification(ctx context.Context, t *testi
 //
 // It skips until the scratch project has the build definition: run
 // `go run ./test/adolive provision -ci-pipeline -apply` (it needs Azure
-// Pipelines hosted parallelism in the organization and Build Read & execute
-// on the PAT) and set the printed ADO_LIVE_CI_FAILURE_PIPELINE repository
-// variable.
+// Pipelines hosted parallelism in the organization) and set the printed
+// ADO_LIVE_CI_FAILURE_PIPELINE repository variable. The PAT needs Build Read;
+// with Build Read & execute the test queues the build itself, otherwise it
+// reads the build the branch push triggers, and skips with a notice when
+// neither happens.
 func TestLiveADOWriteCIFailureEvidence(t *testing.T) {
 	env := adoLiveWriteSetup(t)
 	definition := strings.TrimSpace(os.Getenv(adoLiveCIFailureDefinitionEnv))
@@ -385,7 +387,9 @@ func TestLiveADOWriteCIFailureEvidence(t *testing.T) {
 
 // ensureCIFailureYAML commits the pipeline the provisioned definition reads:
 // one step that prints marker and exits non-zero. Only this run's branch
-// carries it, and triggers are off, so nothing runs it but this test.
+// carries it, and its CI trigger names only that branch, so the push builds
+// it (the path failedBuild falls back to when the PAT may not queue builds)
+// and nothing else ever runs it.
 func (e adoLiveWriteEnv) ensureCIFailureYAML(ctx context.Context, t *testing.T, branch, marker string) {
 	t.Helper()
 	tip, found, err := e.provider.lookupBranchSHA(ctx, e.repo, branch)
@@ -394,7 +398,10 @@ func (e adoLiveWriteEnv) ensureCIFailureYAML(ctx context.Context, t *testing.T, 
 	}
 	yaml := strings.Join([]string{
 		"# goobers-live: fails on purpose for the ADO live write leg (#5652). Safe to delete.",
-		"trigger: none",
+		"trigger:",
+		"  branches:",
+		"    include:",
+		"    - " + branch,
 		"pr: none",
 		"pool:",
 		"  vmImage: ubuntu-latest",
@@ -440,7 +447,14 @@ func (e adoLiveWriteEnv) failedBuild(ctx context.Context, t *testing.T, definiti
 			t.Fatal(err)
 		}
 		body := map[string]any{"definition": map[string]any{"id": json.Number(definition)}, "sourceBranch": ref}
-		if err := e.provider.do(ctx, http.MethodPost, queue, body, &build); err != nil {
+		err = e.provider.do(ctx, http.MethodPost, queue, body, &build)
+		switch {
+		case err != nil && IsAuthenticationError(err):
+			// The PAT may read builds but not queue them. The YAML's CI
+			// trigger builds this branch on push instead; read that build.
+			t.Logf("queueing refused (%v); waiting for the build the push to %s triggers", err, branch)
+			build = e.pushTriggeredBuild(ctx, t, list, definition, branch)
+		case err != nil:
 			t.Fatalf("queue build of definition %s on %s: %v", definition, branch, err)
 		}
 	}
@@ -464,6 +478,31 @@ func (e adoLiveWriteEnv) failedBuild(ctx context.Context, t *testing.T, definiti
 		t.Fatalf("build %d result = %q, want failed: the pipeline's failing step did not run", build.ID, build.Result)
 	}
 	return build
+}
+
+// pushTriggeredBuild waits, within the poll budget, for the build the
+// definition's CI trigger started for branch. When none appears the scenario
+// cannot run with this PAT, and it skips with the scope to add rather than
+// fail: the leg stays green until the owner widens the PAT.
+func (e adoLiveWriteEnv) pushTriggeredBuild(ctx context.Context, t *testing.T, list, definition, branch string) adoBuild {
+	t.Helper()
+	for range adoLivePollAttempts {
+		var found adoBuildsResponse
+		if err := e.provider.do(ctx, http.MethodGet, list, nil, &found); err != nil {
+			t.Fatalf("list builds: %v", err)
+		}
+		if len(found.Value) > 0 {
+			return found.Value[0]
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for a push-triggered build: %v", ctx.Err())
+		case <-time.After(adoLivePollInterval):
+		}
+	}
+	t.Skipf("NOTICE: the PAT may not queue builds (grant it Build: Read & execute), and definition %s's CI trigger did not build %s after %d polls; CI failure evidence is not covered until one of the two works",
+		definition, branch, adoLivePollAttempts)
+	return adoBuild{}
 }
 
 // adoLivePoll retries check until it reports done, within adoLivePollAttempts.
