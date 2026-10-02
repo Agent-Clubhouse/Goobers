@@ -15,9 +15,9 @@ import (
 )
 
 // noWorkStreakThreshold is how many no-work terminals on the SAME item park it
-// for a human. Three mirrors failureStreakThreshold: the point is not to be
-// clever about the number but to make an unactionable item stop occupying a
-// lane long before a human would otherwise notice. #5379's incident ran to 28
+// for a human. Three mirrors escalationnotify.FailureStreakThreshold: the
+// point is not to be clever about the number but to make an unactionable
+// item stop occupying a lane long before a human would otherwise notice. #5379's incident ran to 28
 // claims over two days.
 //
 // Precisely, the streak counts no-work COMPLETIONS with no productive
@@ -148,7 +148,7 @@ func stringOutput(outputs map[string]any, key string) string {
 // settleNoWorkStreak is the completed-terminal entry point: it decides whether
 // this run counted as work and routes to the increment or the reset.
 //
-// It is kept as one call so buildTerminalCircuitBreaker gains a single branch
+// It is kept as one call so the terminal notifier gains a single branch
 // rather than the classification logic itself — the same decomposition idiom
 // #5107 used for noWorkRepassOutcome, and what the complexity gate rewards.
 //
@@ -164,8 +164,8 @@ func stringOutput(outputs map[string]any, key string) string {
 // readable terminal established.
 //
 // The read error is deliberately NOT propagated, matching the posture its
-// immediate sibling in buildTerminalCircuitBreaker already takes
-// (`attributedCtx, _ := attributionContextForRun(...)`): a terminal whose run
+// immediate sibling in escalationnotify.Policy.TerminalNotifier takes
+// (`attributedCtx, _ := AttributionContextForRun(...)`): a terminal whose run
 // directory has been pruned, or which never had a journal, is an ordinary
 // condition on this path and must not be reported as a failed terminal
 // notification. Errors from the state-plane work below ARE returned, because
@@ -189,8 +189,8 @@ func settleNoWorkStreak(
 // applyNoWorkStreak increments the repeated-no-work counter for every item the
 // completed run held, and parks the item once it reaches the threshold.
 //
-// Ordering mirrors applyCircuitBreaker deliberately: the authoritative state
-// update happens FIRST and the provider mutation second, so a park that cannot
+// Ordering mirrors the escalationnotify circuit breaker deliberately: the
+// authoritative state update happens FIRST and the provider mutation second, so a park that cannot
 // reach the provider still leaves a durable record that the protection was
 // owed. #5379's scope decision requires "idempotent finalization" — re-running
 // this for an already-parked item is safe because the provider mutation is a
@@ -211,9 +211,9 @@ func settleNoWorkStreak(
 // pure damage. Worse, that workflow's own selection filters on park labels, so
 // the items would be permanently excluded from curation thereafter.
 //
-// applyCircuitBreaker fans out across every claimed item, but it is only
-// reached from failure and escalation terminals where "everything this run
-// held is implicated" is defensible. On a completed terminal it is not.
+// The escalationnotify circuit breaker fans out across every claimed item,
+// but it is only reached from failure and escalation terminals where
+// "everything this run held is implicated" is defensible. On a completed terminal it is not.
 //
 // #5379's own loop is a single-item implementation run, so the narrow rule
 // covers the reported defect exactly.

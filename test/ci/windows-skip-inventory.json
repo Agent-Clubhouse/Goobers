@@ -319,6 +319,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/escalationnotify",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#3054), whose Windows steps never selected the terminal-handler tests; the notification policy runs against in-memory fakes on the Linux unit shards only."
+    },
+    {
       "package": "internal/externaltelemetry/adx",
       "coverage": "none",
       "category": "not-selected",
