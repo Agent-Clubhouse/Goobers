@@ -111,6 +111,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/py
 payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/goobers/python-reviewer/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/python-service/workflows/python-implementation.yaml
 payload/.goobers/agent-toolkit/config-examples/manifest.yaml
+payload/.goobers/agent-toolkit/config-examples/temporal-codec/provision-key.sh
 payload/.goobers/agent-toolkit/docs/ARCHITECTURE.md
 payload/.goobers/agent-toolkit/docs/VISION.md
 payload/.goobers/agent-toolkit/docs/adr/0001-agentic-sandbox-mechanism.md
