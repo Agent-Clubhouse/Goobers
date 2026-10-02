@@ -12,9 +12,6 @@ import (
 func RegisterWith(w worker.Worker, a *Activities) {
 	versioned := workflow.RegisterOptions{VersioningBehavior: workflow.VersioningBehaviorPinned}
 	w.RegisterWorkflowWithOptions(Run, versioned)
-	w.RegisterWorkflowWithOptions(RunScheduled, versioned)
-	w.RegisterWorkflowWithOptions(ClaimScheduled, versioned)
-	w.RegisterWorkflowWithOptions(ReconcileSchedules, versioned)
 	// DispatchOne is registered on the SAME worker as the rest (decision 003
 	// ruling 2: "goobers-worker polls the workflow queue and every dispatch
 	// queue exactly as today"). It must be registered wherever a caller might

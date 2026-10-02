@@ -37,12 +37,6 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 	experiment := r9Task("implement")
 	experiment.Experiment = &apiv1.BanditExperiment{}
 
-	tokens := r9Task("implement")
-	tokens.Limits = &apiv1.Limits{MaxTokens: 100000}
-
-	cost := r9Task("implement")
-	cost.Limits = &apiv1.Limits{MaxCostUSD: 5}
-
 	outbox := r9Task("implement")
 	outbox.Outbox = []string{"dist/report.json"}
 
@@ -53,8 +47,6 @@ func TestStartInputRefusesUnsupportedEngineFeatures(t *testing.T) {
 		wantIn   string
 	}{
 		{"bandit experiment", r9Spec(experiment), ErrExperimentUnsupported, "task.experiment"},
-		{"cumulative token budget", r9Spec(tokens), ErrUsageLimitsUnsupported, "task.limits.maxTokens/maxCostUSD"},
-		{"cumulative cost budget", r9Spec(cost), ErrUsageLimitsUnsupported, "task.limits.maxTokens/maxCostUSD"},
 		{"outbox export", r9Spec(outbox), ErrOutboxUnsupported, "task.outbox"},
 	}
 
@@ -156,7 +148,7 @@ func TestRefusalMessageReadsAsOneSentence(t *testing.T) {
 	// Each sentinel must still read as a whole sentence standalone, which is
 	// how an errors.Is caller that prints the sentinel sees it.
 	for _, sentinel := range []error{
-		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrUsageLimitsUnsupported, ErrOutboxUnsupported,
+		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrOutboxUnsupported,
 	} {
 		if strings.Contains(sentinel.Error(), "engine:") {
 			t.Errorf("sentinel %q carries its own \"engine:\" prefix, which doubles when wrapped", sentinel)
@@ -189,10 +181,10 @@ func TestStartInputRefusalReportsEveryDeclaration(t *testing.T) {
 	}
 	_, err := r.StartInput("flow", StartSpec{RunID: "run-1", Gaggle: "goobers"})
 	if err == nil {
-		t.Fatal("StartInput admitted a definition declaring four unsupported features")
+		t.Fatal("StartInput admitted a definition declaring three unsupported features")
 	}
 	for _, sentinel := range []error{
-		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrUsageLimitsUnsupported, ErrOutboxUnsupported,
+		ErrParallelsUnsupported, ErrExperimentUnsupported, ErrOutboxUnsupported,
 	} {
 		if !errors.Is(err, sentinel) {
 			t.Errorf("refusal does not reach sentinel %v: %v", sentinel, err)
@@ -202,15 +194,12 @@ func TestStartInputRefusalReportsEveryDeclaration(t *testing.T) {
 	if !errors.As(err, &multi) {
 		t.Fatalf("error is not an *UnsupportedFeaturesError: %v", err)
 	}
-	if len(multi.Refusals) != 4 {
-		t.Errorf("refusal names %d declarations, want 4: %v", len(multi.Refusals), err)
+	if len(multi.Refusals) != 3 {
+		t.Errorf("refusal names %d declarations, want 3: %v", len(multi.Refusals), err)
 	}
 }
 
-// TestStartInputAdmitsSupportedLimits guards the boundary: only the cumulative
-// usage budgets are refused. maxDurationSeconds IS enforced on the engine
-// (the stage activity's StartToCloseTimeout), so a definition declaring only
-// that must still start — otherwise the refusal is a regression, not a guard.
+// TestStartInputAdmitsSupportedLimits guards duration enforcement support.
 func TestStartInputAdmitsSupportedLimits(t *testing.T) {
 	task := r9Task("implement")
 	task.Limits = &apiv1.Limits{MaxDurationSeconds: 600}

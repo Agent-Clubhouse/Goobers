@@ -41,6 +41,7 @@ import (
 // scriptedCall is one scripted stage dispatch: either a ResultEnvelope or a
 // dispatch error (the only thing the runners' retry loops actually retry).
 type scriptedCall struct {
+	usage  map[string]float64
 	result apiv1.ResultEnvelope
 	err    error
 }
@@ -113,7 +114,7 @@ func newScriptedExec(script map[string][]scriptedCall) *scriptedExec {
 	return &scriptedExec{script: script}
 }
 
-func (s *scriptedExec) next(taskID string) (apiv1.ResultEnvelope, error) {
+func (s *scriptedExec) next(ctx context.Context, taskID string) (apiv1.ResultEnvelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stage := taskID[strings.Index(taskID, ":")+1:]
@@ -130,12 +131,15 @@ func (s *scriptedExec) next(taskID string) (apiv1.ResultEnvelope, error) {
 		n = len(script) - 1
 	}
 	call := script[n]
+	if call.usage != nil {
+		invoke.ReportAgentUsage(ctx, call.usage)
+	}
 	return call.result, call.err
 }
 
-func (s *scriptedExec) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+func (s *scriptedExec) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	s.waitForRelease(stageOfTaskID(env.TaskID))
-	return s.next(env.TaskID)
+	return s.next(ctx, env.TaskID)
 }
 
 // stageOfTaskID reads the stage or gate name off a dispatch task ID.
@@ -143,10 +147,10 @@ func stageOfTaskID(taskID string) string {
 	return taskID[strings.Index(taskID, ":")+1:]
 }
 
-func (s *scriptedExec) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+func (s *scriptedExec) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
 	s.recordAddendum(env)
 	s.waitForRelease(stageOfTaskID(env.TaskID))
-	return s.next(env.TaskID)
+	return s.next(ctx, env.TaskID)
 }
 
 func (s *scriptedExec) recordAddendum(env apiv1.InvocationEnvelope) {
