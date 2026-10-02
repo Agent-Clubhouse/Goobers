@@ -4937,6 +4937,9 @@ startup after reporting each candidate.
 
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
+It does not skip the harness admission preflight: a workflow whose agentic
+stage needs a harness that fails its startup check is still refused, while
+other workflows keep running.
 
 A Git workflowSource continuously reconciles its tracked ref. Local Git
 ref changes wake the loop immediately; periodic fetch-and-compare polling

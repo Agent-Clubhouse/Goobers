@@ -226,6 +226,15 @@ type CopilotAdapter struct {
 	// wired at the composition root once confirmed, so a wrong guess can't
 	// falsely refuse to start every agentic run.
 	AuthCheckArgs []string
+	// AuthCheckSuccessLine, if non-empty, is the stdout line (compared
+	// trimmed and case-insensitively) that proves the AuthCheckArgs prompt
+	// probe reached the model. Once it appears the probe succeeds at once and
+	// the CLI's remaining shutdown work is cut short, so a slow exit after a
+	// successful reply cannot run the probe into its deadline (#5165). Only
+	// the built-in prompt probe uses it: a launcher's declared probe and a
+	// probe that must verify an adapter-managed session transcript still wait
+	// for the process to exit.
+	AuthCheckSuccessLine string
 	// AuthProbeExtraArgs are operator-configured preflight-only arguments
 	// appended to a version-2 launcher's declared lightweight auth probe.
 	// Version-1 launchers receive the same arguments through AuthCheckArgs.
@@ -696,7 +705,8 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 			Env:                authEnv,
 			MaxTranscriptBytes: maxPreflightDiagnosticBytes,
 		}
-		if err := c.runCopilotAuthProbe(ctx, authProbe, authReq, version, sessionContract.AuthProbe != nil); err != nil {
+		earlySuccessLine := c.authProbeSuccessLine(sessionContract, verifyAdapterManagedSession)
+		if err := c.runCopilotAuthProbe(ctx, authProbe, authReq, version, sessionContract.AuthProbe != nil, earlySuccessLine); err != nil {
 			return PreflightInfo{}, err
 		}
 		if sessionTranscript != "" {
@@ -712,8 +722,8 @@ func (c *CopilotAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	return PreflightInfo{Version: version}, nil
 }
 
-func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, req ProcessRequest, version string, launcherProbe bool) error {
-	res, err := c.runner().Run(ctx, req)
+func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, req ProcessRequest, version string, launcherProbe bool, successLine string) error {
+	res, err := runProbeUntilSuccessLine(ctx, c.runner(), req, successLine)
 	if err == nil && res.ExitCode == 0 {
 		return nil
 	}
@@ -723,7 +733,7 @@ func (c *CopilotAdapter) runCopilotAuthProbe(ctx context.Context, probe string, 
 	if !shouldRetryCopilotLauncherAuthProbe(ctx, res, err, launcherProbe) {
 		return c.copilotAuthProbeError(ctx, probe, res, err, launcherProbe)
 	}
-	retryRes, retryErr := c.runner().Run(ctx, req)
+	retryRes, retryErr := runProbeUntilSuccessLine(ctx, c.runner(), req, successLine)
 	if retryErr == nil && retryRes.ExitCode == 0 {
 		return nil
 	}
