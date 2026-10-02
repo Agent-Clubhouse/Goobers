@@ -22,15 +22,16 @@ const modelAssistedShadowSchema = "goobers.dev/backprop/model-assisted-shadow/v1
 // ModelAssistedShadowRecord is a persisted advisory answer and, when one
 // becomes available, its later human or deterministic outcome.
 type ModelAssistedShadowRecord struct {
-	EvidenceDigest string                            `json:"evidenceDigest"`
-	Finding        *creditgraph.ModelAssistedFinding `json:"finding,omitempty"`
-	RunID          string                            `json:"runId,omitempty"`
-	NodeID         string                            `json:"nodeId"`
-	Stage          string                            `json:"stage,omitempty"`
-	Failure        string                            `json:"failure,omitempty"`
-	OutcomeClass   creditgraph.FailureClass          `json:"outcomeClass,omitempty"`
-	OutcomeSource  string                            `json:"outcomeSource,omitempty"`
-	MatchesOutcome *bool                             `json:"matchesOutcome,omitempty"`
+	EvidenceDigest    string                            `json:"evidenceDigest"`
+	Finding           *creditgraph.ModelAssistedFinding `json:"finding,omitempty"`
+	RunID             string                            `json:"runId,omitempty"`
+	NodeID            string                            `json:"nodeId"`
+	Stage             string                            `json:"stage,omitempty"`
+	Failure           string                            `json:"failure,omitempty"`
+	OutcomeClass      creditgraph.FailureClass          `json:"outcomeClass,omitempty"`
+	OutcomeSource     string                            `json:"outcomeSource,omitempty"`
+	OutcomeProvenance string                            `json:"outcomeProvenance,omitempty"`
+	MatchesOutcome    *bool                             `json:"matchesOutcome,omitempty"`
 }
 
 type modelAssistedShadowState struct {
@@ -59,7 +60,7 @@ func StoredModelAssistedShadow(
 	if err != nil {
 		return err
 	}
-	return updateModelAssistedShadow(ctx, root, func(state *modelAssistedShadowState) {
+	return updateModelAssistedShadow(ctx, root, func(state *modelAssistedShadowState) error {
 		compareModelAssistedOutcomes(state, observations)
 		for _, observation := range observations {
 			attribution := observation.Attribution
@@ -96,6 +97,7 @@ func StoredModelAssistedShadow(
 				state.Records[digest] = record
 			}
 		}
+		return nil
 	})
 }
 
@@ -109,12 +111,77 @@ func compareModelAssistedOutcomes(state *modelAssistedShadowState, observations 
 				if record.RunID != observation.RunID || record.NodeID != cause.NodeID || record.Finding == nil {
 					continue
 				}
-				matches := record.Finding.Class == cause.Class
+				if record.OutcomeSource == "human" {
+					continue
+				}
+				matches := record.Finding.SuggestedClass == cause.Class
 				record.OutcomeClass = cause.Class
 				record.OutcomeSource = "deterministic-rule"
+				record.OutcomeProvenance = ""
 				record.MatchesOutcome = &matches
 			}
 		}
+	}
+}
+
+// RecordModelAssistedHumanOutcome joins an explicit human classification to
+// existing shadow suggestions. provenance identifies the recorded review.
+func RecordModelAssistedHumanOutcome(
+	ctx context.Context,
+	root, runID, nodeID string,
+	class creditgraph.FailureClass,
+	provenance string,
+) error {
+	if strings.TrimSpace(root) == "" {
+		return errors.New("record model-assisted human outcome: root is required")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return errors.New("record model-assisted human outcome: run ID is required")
+	}
+	if strings.TrimSpace(nodeID) == "" {
+		return errors.New("record model-assisted human outcome: node ID is required")
+	}
+	if !knownFailureClass(class) || class == creditgraph.ClassUnknown {
+		return fmt.Errorf("record model-assisted human outcome: invalid outcome class %q", class)
+	}
+	provenance = strings.TrimSpace(provenance)
+	if provenance == "" {
+		return errors.New("record model-assisted human outcome: provenance is required")
+	}
+	return updateModelAssistedShadow(ctx, root, func(state *modelAssistedShadowState) error {
+		matched := false
+		for _, record := range state.Records {
+			if record.RunID != runID || record.NodeID != nodeID || record.Finding == nil {
+				continue
+			}
+			matches := record.Finding.SuggestedClass == class
+			record.OutcomeClass = class
+			record.OutcomeSource = "human"
+			record.OutcomeProvenance = provenance
+			record.MatchesOutcome = &matches
+			matched = true
+		}
+		if !matched {
+			return fmt.Errorf("record model-assisted human outcome: no shadow suggestion for run %q node %q", runID, nodeID)
+		}
+		return nil
+	})
+}
+
+func knownFailureClass(class creditgraph.FailureClass) bool {
+	switch class {
+	case creditgraph.ClassBadToolChoice,
+		creditgraph.ClassBadToolResult,
+		creditgraph.ClassBadInterpretation,
+		creditgraph.ClassWeakInstructions,
+		creditgraph.ClassRouting,
+		creditgraph.ClassModel,
+		creditgraph.ClassTopology,
+		creditgraph.ClassEnvironment,
+		creditgraph.ClassUnknown:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -168,7 +235,7 @@ func readModelAssistedShadowState(root string) (modelAssistedShadowState, error)
 func updateModelAssistedShadow(
 	ctx context.Context,
 	root string,
-	update func(*modelAssistedShadowState),
+	update func(*modelAssistedShadowState) error,
 ) (err error) {
 	path := modelAssistedShadowPath(root)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -201,7 +268,9 @@ func updateModelAssistedShadow(
 	if err != nil {
 		return err
 	}
-	update(&state)
+	if err := update(&state); err != nil {
+		return err
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("encode model-assisted shadow state: %w", err)
