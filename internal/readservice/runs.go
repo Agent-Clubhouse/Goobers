@@ -960,6 +960,14 @@ func paginateRuns(summaries []RunSummary, limit int) (RunList, error) {
 
 // listRunsScanning is the journal-authoritative fallback used when no telemetry
 // index is available (offline/CLI reads). It opens and summarizes every run.
+//
+// Retirement trigger: the daemon-side use of this path is superseded by
+// listRunsIndexed. It can be deleted from the daemon read path once the
+// read-model cutover has no remaining rollback, i.e. DisableReadModelReads
+// (`goobers up --disable-read-model-reads`) and the ReadModeAuthoritative
+// journal-scan mode are removed. The offline CLI journal walk (a Local built
+// without a telemetry source) must remain: it is the only list path that
+// works with no daemon and no index.
 func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
 	allSummaries, err := s.runSummariesForStage(ctx, false, attemptStageFor(options))
 	if err != nil {
@@ -990,6 +998,10 @@ func (s *Local) listRunsScanning(ctx context.Context, options RunListOptions, cu
 // was the wrong place to put that guarantee — so a run present on disk but
 // absent from the index (migrated/imported/still in flight) is never silently
 // hidden.
+//
+// This is the path that supersedes the daemon-side journal scan
+// (listRunsScanning); see that function for the exact condition under which the
+// scan can be retired and for the offline CLI walk that must stay.
 func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cursor *runCursor, limit int) (RunList, error) {
 	// No reconcile here — see listLatestWorkflowOutcomesIndexed. A read does not
 	// write.

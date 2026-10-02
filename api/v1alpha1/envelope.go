@@ -25,11 +25,21 @@ import "fmt"
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
 // v1alpha9 adds runner-authored nested-agent authority and ownership fields.
 // v1alpha10 adds immutable workspace-revision authority.
-const StageContractVersion = "v1alpha10"
+// v1alpha11 adds the runner-owned named artifact publication contract.
+const StageContractVersion = "v1alpha11"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
 // ---------------------------------------------------------------------------
+
+// ArtifactPublication is pinned by the runner from the admitted task. Visit is
+// a run/stage-scoped execution identity also recorded on stage.started.
+// +kubebuilder:object:generate=false
+type ArtifactPublication struct {
+	Stage string         `json:"stage"`
+	Visit uint64         `json:"visit"`
+	Slots []ArtifactSlot `json:"slots"`
+}
 
 // InvocationEnvelope is the standard context block delivered to a stage at
 // invocation (agentic via the harness adapter, or to a deterministic stage
@@ -45,6 +55,9 @@ const StageContractVersion = "v1alpha10"
 // deep-copied generically).
 // +kubebuilder:object:generate=false
 type InvocationEnvelope struct {
+	// ArtifactPublication authorizes named output publication. It is never
+	// populated from stage inputs or model-authored completion metadata.
+	ArtifactPublication *ArtifactPublication `json:"artifactPublication,omitempty"`
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
 	// Attempt identifies the scheduler attempt so adapter provenance remains

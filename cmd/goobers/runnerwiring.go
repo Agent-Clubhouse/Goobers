@@ -493,17 +493,21 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 // repo backing this gaggle's project, resolved so its configured token can
 // authenticate mirror clone/fetch (#667).
 func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
+	return repoForGaggleProvider(cfg, project, apiv1.ProviderGitHub, string(providers.ProviderGitHub))
+}
+
+func repoForGaggleProvider(cfg *instance.Config, project apiv1.RepoRef, apiProvider apiv1.Provider, instanceProvider string) (instance.RepoRef, bool) {
 	if cfg == nil {
 		return instance.RepoRef{}, false
 	}
-	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "github" {
+	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == instanceProvider {
 		return cfg.Repos[0], true
 	}
-	if project.Provider != apiv1.ProviderGitHub {
+	if project.Provider != apiProvider {
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == instanceProvider && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -579,21 +583,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 // project repo, mirroring githubRepoForGaggle. A single-repo instance with an
 // unspecified project provider resolves to its sole Gitea repo.
 func giteaRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
-	if cfg == nil {
-		return instance.RepoRef{}, false
-	}
-	if project.Provider == "" && len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "gitea" {
-		return cfg.Repos[0], true
-	}
-	if project.Provider != apiv1.ProviderGitea {
-		return instance.RepoRef{}, false
-	}
-	for _, repo := range cfg.Repos {
-		if repo.Provider == string(providers.ProviderGitea) && repo.Owner == project.Owner && repo.Name == project.Name {
-			return repo, true
-		}
-	}
-	return instance.RepoRef{}, false
+	return repoForGaggleProvider(cfg, project, apiv1.ProviderGitea, string(providers.ProviderGitea))
 }
 
 // giteaWorktreeGitEnvironment builds the worktree.WithGitEnvironment resolver
@@ -706,7 +696,14 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+//
+// knownTelemetryConnectors (#4475) is the instance's configured
+// external-telemetry connector names (knownExternalTelemetryConnectorNames).
+// Non-nil — even empty — rejects any task whose inputs.connector names a
+// connector the instance does not configure, at compile time rather than when
+// a run reaches the stage. Nil skips the check, for callers that compile
+// without the instance config's authority over connectors.
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	// The admission registry resolves harness config (model/options), and model
@@ -747,16 +744,22 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		wf := &set.Workflows[i]
 		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
 		// never the Manifest's or its gaggle's.
-		m, err := workflow.Compile(
-			workflow.Definition{
-				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
-			},
+		opts := []workflow.Option{
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
+		}
+		if knownTelemetryConnectors != nil {
+			opts = append(opts, workflow.WithKnownExternalTelemetryConnectors(knownTelemetryConnectors))
+		}
+		m, err := workflow.Compile(
+			workflow.Definition{
+				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
+			},
+			opts...,
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
@@ -764,6 +767,22 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
 	return machines, resolvedGoobers, warnings, nil
+}
+
+// knownExternalTelemetryConnectorNames returns cfg's configured
+// external-telemetry connector names for compiledMachinesWithWarnings'
+// authoring-time connector check (#4475). It is never nil for a non-nil cfg:
+// an instance with no connectors configured must still reject a workflow that
+// references one.
+func knownExternalTelemetryConnectorNames(cfg *instance.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.ExternalTelemetry.Connectors))
+	for _, connector := range cfg.ExternalTelemetry.Connectors {
+		names = append(names, connector.Name)
+	}
+	return names
 }
 
 func admitGooberHarnessConfigs(adapterRegistry *harness.Registry, goobers map[string]apiv1.GooberSpec) (map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {

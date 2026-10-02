@@ -206,6 +206,12 @@ func TestAzureCLICredentialFailureClassifiesOutputMarkers(t *testing.T) {
 		{"network unreachable", "[Errno 51] Network is unreachable " + azureCLIFailureCanary, azureCLINetworkUnreachableCode, "could not reach the network", "signing in again does not fix this"},
 		{"offline with appended az login advice", azureCLIOfflineOutput + "Please run 'az login' to setup account.", azureCLINetworkUnreachableCode, "could not reach the network", "network connectivity"},
 		{"server sign-in error beats network wording", azureCLIExpiredLoginOutput + "Max retries exceeded", azureCLISignInRequiredCode, "sign-in expired", "run az login"},
+		{"wrong tenant (AADSTS50020)", "ERROR: AADSTS50020: User account from identity provider does not exist in tenant. Trace ID: " + azureCLIFailureCanary + "\nPlease run az login", azureCLIWrongTenantCode, "different tenant", "az login --tenant <tenant>"},
+		{"wrong tenant (tenant not found)", "aadsts90002: tenant not found " + azureCLIFailureCanary, azureCLIWrongTenantCode, "different tenant", "az login --tenant <tenant>"},
+		{"wrong tenant (resource not in tenant)", "AADSTS500011 " + azureCLIFailureCanary, azureCLIWrongTenantCode, "different tenant", "az login --tenant <tenant>"},
+		{"wrong tenant beats generic az login advice", "AADSTS90072 az login " + azureCLIFailureCanary, azureCLIWrongTenantCode, "different tenant", "az login --tenant <tenant>"},
+		{"wrong tenant beats network wording", "AADSTS50020 Max retries exceeded " + azureCLIFailureCanary, azureCLIWrongTenantCode, "different tenant", "az login --tenant <tenant>"},
+		{"sign-in error beats tenant code", "AADSTS700082 AADSTS50020 " + azureCLIFailureCanary, azureCLISignInRequiredCode, "sign-in expired", "run az login"},
 		{"no account", azureCLINoAccountOutput, azureCLINoAccountCode, "no Azure CLI account is signed in", "run az login"},
 		{"unrecognized output", `{"accessToken":"` + azureCLIFailureCanary + `"}`, azureCLIExitCode, "process exited unsuccessfully", "only if that check requests sign-in"},
 		{"no output", "", azureCLIExitCode, "process exited unsuccessfully", "only if that check requests sign-in"},
@@ -357,5 +363,14 @@ func TestAzureCLICredentialFailureSurfacesThroughGitAuthEnvironment(t *testing.T
 			t.Fatalf("error = %v, want prefix %q", err, want)
 		}
 		assertAzureCLIDiagnosticWithholdsOutput(t, err)
+	}
+}
+
+func TestAzureCLIWrongTenantMarkersAllClassify(t *testing.T) {
+	for _, marker := range azureCLIWrongTenantMarkers {
+		class, ok := classifyAzureCLIOutput([]byte("ERROR: " + strings.ToUpper(string(marker)) + ": detail"))
+		if !ok || class.code != azureCLIWrongTenantCode {
+			t.Errorf("marker %q classified as %q (ok=%v), want %q", marker, class.code, ok, azureCLIWrongTenantCode)
+		}
 	}
 }

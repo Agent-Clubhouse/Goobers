@@ -377,11 +377,11 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		}
 		remaining := totalTimeout - time.Since(started)
 		if remaining <= 0 {
-			runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
+			runErr = errors.Join(repairExit(completionErr, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])))
 			return out, runErr
 		}
 		if parsed.threadID == "" {
-			runErr = fmt.Errorf("harness: codex: cannot repair completion: initial turn did not report a thread id")
+			runErr = errors.Join(repairExit(completionErr, fmt.Errorf("harness: codex: cannot repair completion: initial turn did not report a thread id")))
 			return out, runErr
 		}
 		recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
@@ -397,7 +397,7 @@ func (c *CodexAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, ru
 		out.TranscriptDroppedBytes = result.TranscriptDroppedBytes
 		out.Stderr = result.Stderr
 		if recoveryErr != nil {
-			runErr = recoveryErr
+			runErr = errors.Join(repairExit(completionErr, recoveryErr))
 			return out, runErr
 		}
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)

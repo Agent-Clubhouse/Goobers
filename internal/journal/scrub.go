@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/goobers/goobers/internal/secretpattern"
 )
@@ -90,33 +91,189 @@ func (nopScrubber) Scrub(b []byte) []byte { return b }
 // primary defense, fed every credential the secret resolver issues. Redaction of
 // known values is exact and cannot false-negative on a value it has been told
 // about. It is safe for concurrent use.
+//
+// Lifecycle (#2656). A value registered with Register is redacted for the
+// scrubber's lifetime. A value registered with RegisterUntil carries the expiry
+// its issuer stated, and is retired only RegistryRetirementGrace AFTER that
+// expiry: the grace covers output a stage captured while the credential was live
+// and flushes later (a buffered artifact, a delayed span batch).
+//
+// An expiry is a fact about the credential, not about the caller: a minted
+// token is dead after the expiry its issuer stated, however many callers
+// re-register the same value. So the latest stated expiry wins, a registration
+// stating an earlier one never shortens it, and a plain Register (a caller that
+// re-resolved the value without learning its expiry) neither pins nor shortens
+// a value whose expiry is already known. A value no caller ever stated an
+// expiry for is redacted for the scrubber's lifetime. With hourly-rotating
+// credentials the registry therefore holds at most about (TTL + grace) / rotation-interval
+// rotating entries, plus the permanent ones, instead of growing for the daemon's
+// lifetime.
+//
+// The sorted target list (raw plus JSON-escaped forms, longest first) is built
+// once per registry change and shared by every Scrub until the next
+// registration or retirement, so steady-state scrubs do no allocation or sort.
 type RegistryScrubber struct {
-	mu       sync.RWMutex
-	secrets  map[string][]byte // digest of secret -> secret bytes
-	observed redactionObservation
+	mu      sync.RWMutex
+	secrets map[string]*registryEntry // digest of secret -> entry
+	// targets is the sorted redaction list; it is rebuilt (never mutated in
+	// place) whenever stale is set, so a Scrub may use a snapshot outside mu.
+	targets [][]byte
+	stale   bool
+	// nextRetire is the earliest retirement deadline among expiring entries;
+	// zero when no entry expires.
+	nextRetire time.Time
+	grace      time.Duration
+	now        func() time.Time
+	observed   redactionObservation
+}
+
+// registryEntry is one registered value with its precomputed escaped forms.
+type registryEntry struct {
+	forms [][]byte // raw value first, then its JSON-escaped encodings
+	// expiresAt is the latest issuer-stated expiry; zero means none was
+	// stated and the value is never retired.
+	expiresAt time.Time
+}
+
+// RegistryRetirementGrace is how long after its stated expiry a RegisterUntil
+// value keeps being redacted. It is deliberately far longer than any credential
+// TTL or stage flush delay: retiring a value early would let it reach the
+// journal unredacted, while keeping it a day longer costs one more comparison
+// per scrub.
+const RegistryRetirementGrace = 24 * time.Hour
+
+// ExpiringRegistrar is implemented by registrars that can retire a secret after
+// its issuer-stated expiry. Callers holding a plain Register-only registrar use
+// RegisterSecretUntil, which falls back to permanent registration.
+type ExpiringRegistrar interface {
+	RegisterUntil(secret []byte, expiresAt time.Time)
+}
+
+// RegisterSecretUntil registers secret with r, carrying expiresAt when r
+// supports expiry and registering it permanently otherwise. A zero expiresAt is
+// a permanent registration.
+func RegisterSecretUntil(r interface{ Register([]byte) }, secret []byte, expiresAt time.Time) {
+	if e, ok := r.(ExpiringRegistrar); ok {
+		e.RegisterUntil(secret, expiresAt)
+		return
+	}
+	r.Register(secret)
 }
 
 // NewRegistryScrubber returns an empty registry scrubber.
 func NewRegistryScrubber() *RegistryScrubber {
-	return &RegistryScrubber{secrets: make(map[string][]byte)}
+	return &RegistryScrubber{
+		secrets: make(map[string]*registryEntry),
+		grace:   RegistryRetirementGrace,
+		now:     time.Now,
+	}
 }
 
-// Register adds a secret value to redact. Empty and very short values are
-// ignored: redacting them would corrupt unrelated content for no security gain
-// (a one-character "secret" is not a secret). Keying by digest avoids holding
-// duplicate copies and never logs the value.
+// Register adds a secret value to redact for the scrubber's lifetime, unless
+// another registration stated its expiry (see RegistryScrubber). Empty and
+// very short values are ignored: redacting them would corrupt unrelated content
+// for no security gain (a one-character "secret" is not a secret). Keying by
+// digest avoids holding duplicate copies and never logs the value.
 func (s *RegistryScrubber) Register(secret []byte) {
+	s.RegisterUntil(secret, time.Time{})
+}
+
+// RegisterUntil adds a secret value to redact until RegistryRetirementGrace
+// after expiresAt. A zero expiresAt states no expiry (Register). Re-registering
+// a value keeps the latest stated expiry.
+func (s *RegistryScrubber) RegisterUntil(secret []byte, expiresAt time.Time) {
 	if len(secret) < minSecretLen {
 		return
 	}
 	key := Digest(secret)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.secrets[key]; !ok {
+	if e, ok := s.secrets[key]; ok {
+		if !expiresAt.IsZero() && (e.expiresAt.IsZero() || expiresAt.After(e.expiresAt)) {
+			e.expiresAt = expiresAt
+			s.recomputeNextRetireLocked()
+		}
+	} else {
 		cp := make([]byte, len(secret))
 		copy(cp, secret)
-		s.secrets[key] = cp
+		s.secrets[key] = &registryEntry{forms: append([][]byte{cp}, jsonEscapedForms(cp)...), expiresAt: expiresAt}
+		s.stale = true
+		s.noteDeadlineLocked(expiresAt)
 	}
+	s.pruneLocked(s.now())
+}
+
+// noteDeadlineLocked folds one entry's retirement deadline into nextRetire.
+func (s *RegistryScrubber) noteDeadlineLocked(expiresAt time.Time) {
+	if expiresAt.IsZero() {
+		return
+	}
+	deadline := expiresAt.Add(s.grace)
+	if s.nextRetire.IsZero() || deadline.Before(s.nextRetire) {
+		s.nextRetire = deadline
+	}
+}
+
+func (s *RegistryScrubber) recomputeNextRetireLocked() {
+	s.nextRetire = time.Time{}
+	for _, e := range s.secrets {
+		s.noteDeadlineLocked(e.expiresAt)
+	}
+}
+
+// pruneLocked retires every entry whose deadline has passed. It is a no-op
+// until the earliest deadline is reached, so registrations stay O(1) between
+// retirements.
+func (s *RegistryScrubber) pruneLocked(now time.Time) {
+	if s.nextRetire.IsZero() || now.Before(s.nextRetire) {
+		return
+	}
+	for key, e := range s.secrets {
+		if !e.expiresAt.IsZero() && !now.Before(e.expiresAt.Add(s.grace)) {
+			delete(s.secrets, key)
+			s.stale = true
+		}
+	}
+	s.recomputeNextRetireLocked()
+}
+
+// redactionTargets returns the current sorted target list, retiring expired
+// entries and rebuilding the cache only when the registry changed or a
+// retirement deadline passed. The returned slice is never mutated afterwards.
+func (s *RegistryScrubber) redactionTargets() [][]byte {
+	now := s.now()
+	s.mu.RLock()
+	targets := s.targets
+	fresh := !s.stale && (s.nextRetire.IsZero() || now.Before(s.nextRetire))
+	s.mu.RUnlock()
+	if fresh {
+		return targets
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now)
+	if s.stale {
+		s.targets = sortedTargets(s.secrets)
+		s.stale = false
+	}
+	return s.targets
+}
+
+// sortedTargets flattens every entry's forms, longest first with a byte-order
+// tiebreak so the replacement order (and so the scrubbed bytes) is
+// deterministic.
+func sortedTargets(secrets map[string]*registryEntry) [][]byte {
+	targets := make([][]byte, 0, len(secrets)*2)
+	for _, e := range secrets {
+		targets = append(targets, e.forms...)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if len(targets[i]) != len(targets[j]) {
+			return len(targets[i]) > len(targets[j])
+		}
+		return bytes.Compare(targets[i], targets[j]) < 0
+	})
+	return targets
 }
 
 // Scrub replaces every registered secret value with the Redacted placeholder,
@@ -132,22 +289,10 @@ func (s *RegistryScrubber) Register(secret []byte) {
 // contains another registered value — or whose escaped form contains another
 // target — is fully redacted rather than partially unmasked.
 func (s *RegistryScrubber) Scrub(b []byte) []byte {
-	s.mu.RLock()
-	targets := make([][]byte, 0, len(s.secrets)*2)
-	for _, v := range s.secrets {
-		targets = append(targets, v)
-		targets = append(targets, jsonEscapedForms(v)...)
-	}
-	s.mu.RUnlock()
+	targets := s.redactionTargets()
 	if len(targets) == 0 {
 		return b
 	}
-	sort.Slice(targets, func(i, j int) bool {
-		if len(targets[i]) != len(targets[j]) {
-			return len(targets[i]) > len(targets[j])
-		}
-		return bytes.Compare(targets[i], targets[j]) < 0
-	})
 	out := b
 	for _, t := range targets {
 		out = bytes.ReplaceAll(out, t, []byte(Redacted))

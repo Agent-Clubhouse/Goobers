@@ -27,7 +27,7 @@ func TestSchemaBackedEnvelopeCompleteness(t *testing.T) {
 		"workspace-revision":      {schema: "workspace-revision.schema.json", value: completeWorkspaceRevision()},
 		"pr-queue-eligibility":    {schema: schemas.PRQueueEligibility, value: completePRQueueEligibility()},
 		"stage-artifact-manifest": {schema: schemas.StageArtifactManifest, value: artifactset.Manifest{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.ManifestEntry{{Name: "reproduction.bundle", Path: "output/bundle.tar", MediaType: "application/x-tar"}}}},
-		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.SchemaVersion, Entries: []artifactset.Entry{{Name: "reproduction.bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}}},
+		"stage-artifact-set":      {schema: schemas.StageArtifactSet, value: artifactset.Index{SchemaVersion: artifactset.NamedSchemaVersion, Entries: []artifactset.Entry{{Name: "bundle", Slot: 1, Artifact: completeArtifactPointer("artifacts/bundle")}}, Bindings: []artifactset.SlotBinding{{Stage: "producer", Visit: 1, Attempt: 1, Slot: "bundle", Artifact: completeArtifactPointer("artifacts/bundle")}}}},
 		"investigation-evidence":  {schema: schemas.InvestigationEvidence, value: completeInvestigationEvidence()},
 		"artifact": {
 			schema: schemas.Envelope["artifact"],
@@ -107,6 +107,7 @@ func completeArtifactPointer(path string) apiv1.ArtifactPointer {
 func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 	return apiv1.InvocationEnvelope{
 		TaskID:                              "implement",
+		ArtifactPublication:                 &apiv1.ArtifactPublication{Stage: "implement", Visit: 1, Slots: []apiv1.ArtifactSlot{{Name: "report", MediaType: "application/json", SchemaPath: "schemas/report.json", MaxSize: 100}}},
 		Attempt:                             1,
 		WorkflowID:                          "implementation",
 		RunID:                               "run-123",

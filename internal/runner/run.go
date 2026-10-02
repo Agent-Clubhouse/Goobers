@@ -1101,11 +1101,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
-		ctx = providers.WithAttributionContext(ctx, providers.Attribution{
-			Schema: 1, Goobers: true,
-			Gaggle: in.Gaggle, Workflow: in.Machine.Def.Name,
-			Goober: "runner", Run: in.RunID,
-		})
+		ctx = withRunAttribution(ctx, in.Gaggle, in.Machine.Def.Name, in.RunID)
 		setStalledAttemptContext(ctx)
 
 		// #735: verify the run's declared runtime toolchains are actually present
@@ -2988,6 +2984,18 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 	return nil
 }
 
+// withRunAttribution carries the run's durable identity to every daemon-side
+// provider write made on its behalf (#5178). Start, Resume and RerunStage all
+// attach it, so a resumed or rerun run's terminal handling can still satisfy
+// the daemon-write attribution guard.
+func withRunAttribution(ctx context.Context, gaggle, workflow, runID string) context.Context {
+	return providers.WithAttributionContext(ctx, providers.Attribution{
+		Schema: 1, Goobers: true,
+		Gaggle: gaggle, Workflow: workflow,
+		Goober: "runner", Run: runID,
+	})
+}
+
 func withRunnerAttributionTask(ctx context.Context, task string) context.Context {
 	attribution, ok := providers.AttributionFromContext(ctx)
 	if !ok {
@@ -4597,6 +4605,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 // value rather than as two parallel argument lists that drift apart field by
 // field (#4235) — the same reason walk takes a *walkState.
 type taskFrame struct {
+	artifactVisit   uint64
 	jr              executionJournal
 	in              StartInput
 	ex              *executors
@@ -4726,7 +4735,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
-		if err := jr.Append(taskStartedEvent(t, int(attempt), class)); err != nil {
+		if err := tf.recordTaskStarted(int(attempt), class); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
@@ -4851,9 +4860,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// Provenance flows with the data: what this stage produced is only as
 		// trustworthy as the weakest input it was admitted with. Downstream
 		// stages resolving inputsFrom grade against this, because Outputs are
-		// bare scalars that cannot carry a label of their own (TBH-4).
-		result.Integrity = producedIntegrity(t, in.Item, upstream,
-			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn))
+		// bare scalars that cannot carry a label of their own (TBH-4). A grade
+		// the executor stamped itself is kept when it is weaker (#2979).
+		result.Integrity = StageResultIntegrity(result.Integrity, producedIntegrity(t, in.Item, upstream,
+			resolvedInputGrades(t, in.Machine, upstreamResult, completed, fanIn)))
 		outputs := stageFinishedOutputs(result, t.ContinueOnError)
 		var eventWorkspaceRevision *apiv1.WorkspaceRevision
 		if t.Type == apiv1.TaskDeterministic &&
@@ -5236,15 +5246,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		return apiv1.ResultEnvelope{}, nil, nil, coded
 	}
-	env.MinimumIntegrity = t.MinimumIntegrity
-	env.Attempt = int32(attempt)
-	env.OwnershipBoundary = "task:" + t.Name
-	env.PolicyActions = append([]string(nil), t.PolicyActions...)
-	env.NestedAgentPolicy = t.NestedAgentPolicy
-	if t.NestedAgentPolicy != nil {
-		parent := apiv1.StagePlatformAuthority(env, "result")
-		env.ParentPlatformPolicy = &parent
-	}
+	tf.pinPublicationAuthority(&env, attempt)
 	env.InstructionAddendum = instructionAddendum
 	if t.Type == apiv1.TaskAgentic {
 		errorClass := ""

@@ -62,7 +62,7 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 	if strings.TrimSpace(input.Repo) != "" {
 		parsed, err := parseGuidedRepositoryIdentity(input.Repo)
 		if err != nil {
-			return nil, fmt.Errorf("--repo: %w", err)
+			return nil, standardRepoParseError(provider, err)
 		}
 		if provider != "" && provider != parsed.provider {
 			return nil, fmt.Errorf("--provider=%s conflicts with --repo provider %s", provider, parsed.provider)
@@ -122,6 +122,17 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		opts.CopilotTokenEnv = input.ModelTokenEnv
 	}
 	return opts, nil
+}
+
+// standardRepoParseError words a --repo parse failure. An explicit
+// --provider=ado must not surface the GitHub parser's "host must be
+// github.com" for a URL that is not Azure DevOps cloud (for example Azure
+// DevOps Server, which is unsupported).
+func standardRepoParseError(provider string, err error) error {
+	if provider == "ado" {
+		return fmt.Errorf("--repo: not a supported Azure DevOps repository (expected https://dev.azure.com/<organization>/<project>/_git/<repository>; Azure DevOps Server is not supported)")
+	}
+	return fmt.Errorf("--repo: %w", err)
 }
 
 // standardADORepoAuthKind resolves the Azure DevOps repository auth kind.

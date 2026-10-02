@@ -80,7 +80,7 @@ func promoteRecoveryOverflow(ctx context.Context, layout instance.Layout, setup 
 			free--
 			continue
 		}
-		promoted, err := promoteRecoveryOverflowEntry(ctx, layout, setup, managers, policy, entry.Record)
+		promoted, err := promoteRecoveryOverflowEntry(ctx, layout, setup, managers, policy, entry)
 		if err != nil {
 			pf(stderr, "warning: recovery overflow promotion failed run=%q ref=%q: %v\n", entry.Record.RunID, entry.Record.Ref, err)
 			failures = errors.Join(failures, err)
@@ -113,7 +113,12 @@ func recoveryInventoryFreeSlots(ctx context.Context, layout instance.Layout, pol
 // through the ordinary publication path, so a promoted entry is byte-for-byte
 // the entry a cleanup with a free slot would have written. Only once that
 // bundle is durable is the overflow record removed.
-func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, policy instance.RecoverySnapshotConfig, record recovery.Record) (bool, error) {
+//
+// The bundle carries the overflow record's deadline, including one a terminal
+// renewal extended (#5403): promotion moves an entry between tiers and must
+// neither shorten nor lengthen its retention.
+func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, setup *schedulerSetup, managers []*worktree.Manager, policy instance.RecoverySnapshotConfig, entry recovery.InventoryEntry) (bool, error) {
+	record := entry.Record
 	url, err := recoveryRetentionCloneURL(setup.Config, record.RepositoryKey)
 	if err != nil {
 		return false, err
@@ -129,8 +134,19 @@ func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, s
 		// cleanupRoots is the source repository itself: promotion removes
 		// nothing, and PublishRetainedState requires a declared set it can
 		// prove the inventory sits outside of.
-		if _, _, err := recovery.PublishToInventoryWithEviction(ctx, repository, root, []string{repository}, record,
-			policy.MaxSnapshotsEffective(), policy.MaxArchiveBytesEffective(), nil); err != nil {
+		_, publishedPath, err := recovery.PublishToInventoryWithEviction(ctx, repository, root, []string{repository}, record,
+			policy.MaxSnapshotsEffective(), policy.MaxArchiveBytesEffective(), nil)
+		if errors.Is(err, recovery.ErrRecordConflict) {
+			// An earlier promotion published this bundle and stopped before
+			// removing the overflow record, and a renewal has since moved the
+			// overflow deadline, so the retry no longer matches the bundle's
+			// published deadline. Carry the move onto that bundle instead.
+			publishedPath, err = promotedOverflowBundle(ctx, root, record)
+		}
+		if err != nil {
+			return err
+		}
+		if err := carryOverflowDeadline(ctx, entry.RecordPath, publishedPath, record.RetainUntil, policy.MaxArchiveBytesEffective()); err != nil {
 			return err
 		}
 		if err := recovery.DeleteOverflowEntry(overflowRoot, record); err != nil {
@@ -161,6 +177,48 @@ func recoveryOverflowSource(ctx context.Context, repositories []string, record r
 		}
 	}
 	return "", nil
+}
+
+// carryOverflowDeadline makes the promoted bundle's effective deadline at
+// least the overflow record's (#5403). It re-reads the overflow record after
+// the bundle is published rather than trusting the copy promotion started
+// from: a terminal renewal that moved it in between must not be lost when the
+// overflow record is deleted. Extension is forward-only, so a bundle that
+// already carries a later deadline is left as it is.
+func carryOverflowDeadline(ctx context.Context, overflowPath, bundlePath string, deadline time.Time, maxArchiveBytes int64) error {
+	if current, err := recovery.ReadOverflowRecord(overflowPath); err == nil && current.RetainUntil.After(deadline) {
+		deadline = current.RetainUntil
+	}
+	published, err := recovery.ReadRetainedRecord(bundlePath)
+	if err != nil {
+		return err
+	}
+	if !deadline.After(published.RetainUntil) {
+		return nil
+	}
+	_, err = recovery.RenewRetention(ctx, bundlePath, deadline, maxArchiveBytes)
+	return err
+}
+
+// promotedOverflowBundle finds the bundle an interrupted promotion already
+// published for record: the same identity in every field but the deadline,
+// which is the one field a renewal may have moved since.
+func promotedOverflowBundle(ctx context.Context, root string, record recovery.Record) (string, error) {
+	entries, _, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
+	if err != nil {
+		return "", err
+	}
+	want := record
+	want.RetainUntil = time.Time{}
+	for _, entry := range entries {
+		got := entry.Record
+		got.RetainUntil = time.Time{}
+		got.ArchiveDigest, got.ArchiveBytes, got.ArchiveFormat = "", 0, ""
+		if got == want {
+			return entry.RecordPath, nil
+		}
+	}
+	return "", recovery.ErrRecordConflict
 }
 
 // readRecoveryEntryRecord reads the current record for an entry in EITHER

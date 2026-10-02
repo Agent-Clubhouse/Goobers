@@ -81,3 +81,55 @@ updates:
       getting-started-task-api-npm:
         patterns:
           - "*"
+
+  - package-ecosystem: "docker"
+    directory: "/deploy/monitoring"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      monitoring-docker:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "pip"
+    directory: "/evals"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      evals-pip:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "maven"
+    directory: "/test/e2e/testdata/javaservice"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      javaservice-maven:
+        patterns:
+          - "*"
+
+  # Both .NET projects are listed explicitly (src and tests) rather than
+  # relying on solution-file discovery from the solution root.
+  - package-ecosystem: "nuget"
+    directories:
+      - "/test/e2e/testdata/dotnetservice/src"
+      - "/test/e2e/testdata/dotnetservice/tests"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    groups:
+      dotnetservice-nuget:
+        patterns:
+          - "*"

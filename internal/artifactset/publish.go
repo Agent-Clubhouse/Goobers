@@ -20,6 +20,9 @@ func (p *Prepared) Publish(ctx context.Context, record Record) ([]apiv1.Artifact
 		return nil, fmt.Errorf("%w: missing prepared set or recorder", ErrInvalid)
 	}
 	index := Index{SchemaVersion: SchemaVersion, Entries: make([]Entry, 0, len(p.entries))}
+	if p.publication != nil {
+		index.SchemaVersion = NamedSchemaVersion
+	}
 	pointers := make([]apiv1.ArtifactPointer, len(p.entries)+1)
 	for i, entry := range p.entries {
 		if err := ctx.Err(); err != nil {
@@ -31,6 +34,13 @@ func (p *Prepared) Publish(ctx context.Context, record Record) ([]apiv1.Artifact
 		}
 		pointers[i+1] = pointer
 		index.Entries = append(index.Entries, Entry{Name: entry.name, Slot: i + 1, Artifact: pointer})
+		if p.publication != nil {
+			for _, slot := range p.publication.Slots {
+				if slot.Name == entry.name {
+					index.Bindings = append(index.Bindings, SlotBinding{Stage: p.publication.Stage, Visit: p.publication.Visit, Attempt: p.attempt, Slot: slot.Name, Artifact: pointer})
+				}
+			}
+		}
 	}
 	data, err := json.Marshal(index)
 	if err != nil {

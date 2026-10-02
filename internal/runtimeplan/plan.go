@@ -1,0 +1,120 @@
+package runtimeplan
+
+import (
+	"fmt"
+	"sort"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credreadiness"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/runcontrol"
+)
+
+// Inputs are the declared runtime settings. Dynamic workspace allocations and
+// cancellation of a live process cannot be proven by inspecting configuration.
+// Only source kinds are retained for credentials, never refs or resolved values.
+type Inputs struct {
+	Paths             []Path             `json:"paths"`
+	CredentialSources []CredentialSource `json:"credentialSources"`
+	Sandbox           Sandbox            `json:"sandbox"`
+	Timeouts          Timeouts           `json:"timeouts"`
+	Source            Source             `json:"source"`
+}
+
+// Path describes one configured filesystem location and its evidence source.
+type Path struct {
+	Purpose string `json:"purpose"`
+	Path    string `json:"path"`
+	Source  Source `json:"source"`
+}
+
+// CredentialSource names the credential mechanism without resolving secrets.
+type CredentialSource struct {
+	Scope      string `json:"scope"`
+	Capability string `json:"capability,omitempty"`
+	Harness    string `json:"harness,omitempty"`
+	Kind       string `json:"kind"`
+	AuthKind   string `json:"authKind,omitempty"`
+}
+
+// Sandbox describes configured isolation and whether enforcement was observed.
+type Sandbox struct {
+	Agentic     string                    `json:"agentic"`
+	Isolation   *instance.IsolationConfig `json:"isolation,omitempty"`
+	Runners     []RunnerIsolation         `json:"runners,omitempty"`
+	Enforcement Identity                  `json:"enforcement"`
+}
+
+// RunnerIsolation lists a runner's declared restrictions.
+type RunnerIsolation struct {
+	Name         string                       `json:"name"`
+	Restrictions []instance.RunnerRestriction `json:"restrictions,omitempty"`
+}
+
+// Timeouts collects configured deadlines and cancellation evidence.
+type Timeouts struct {
+	RunnerDefault      string            `json:"runnerDefault,omitempty"`
+	RequiredMCPSettle  string            `json:"requiredMCPSettle,omitempty"`
+	RunControls        apiv1.RunControls `json:"runControls"`
+	RepositoryDefaults []string          `json:"repositoryDefaults,omitempty"`
+	Cancellation       Identity          `json:"cancellation"`
+}
+
+// ResolveInputs resolves gaggle-scoped paths and declared execution settings.
+func ResolveInputs(layout instance.Layout, cfg *instance.Config, gaggle apiv1.GaggleSpec, controls runcontrol.Effective) (Inputs, error) {
+	static := Source{"static", "loaded instance and workflow configuration; no path access or runtime enforcement probe"}
+	// The caller supplies an already gaggle-scoped layout. Keep that scope when
+	// applying the same workcopy override used by execution.
+	scoped, err := instance.EffectiveWorkcopiesLayout(layout, cfg, &apiv1.Gaggle{Spec: gaggle})
+	if err != nil {
+		return Inputs{}, err
+	}
+	result := Inputs{Source: static, CredentialSources: []CredentialSource{}, Sandbox: Sandbox{
+		Agentic: string(instance.EffectiveAgenticSandbox(cfg, &apiv1.Gaggle{Spec: gaggle})), Isolation: cfg.Isolation,
+		Enforcement: Identity{"unobservable", "sandbox_enforcement_unobservable", "configured posture is not proof of enforcement on the target runner", Source{"unobservable", "target runner not probed"}},
+	}, Timeouts: Timeouts{RunnerDefault: cfg.Runner.DefaultStageTimeout, RequiredMCPSettle: cfg.Runner.RequiredMCPSettleTimeout, RunControls: controls.Overrides(),
+		Cancellation: Identity{"unobservable", "cancellation_unobservable", "attempt parent deadlines and process cleanup require target execution", Source{"unobservable", "no running attempt"}}}}
+	for _, entry := range []struct{ purpose, path string }{{"instance", layout.Root}, {"config", layout.ConfigDir()}, {"runs", scoped.RunsDir()}, {"workcopies", scoped.WorkcopiesDir()}, {"configMirror", cfg.ConfigMirrorPath}} {
+		if entry.path != "" {
+			result.Paths = append(result.Paths, Path{entry.purpose, entry.path, static})
+		}
+	}
+	for i, repo := range cfg.Repos {
+		kind, _ := credreadiness.Describe(repo.Token.CredentialTokenRef(""))
+		authKind := ""
+		if repo.Auth != nil {
+			authKind = repo.Auth.Kind
+			if authKind == instance.GitHubAuthApp {
+				kind = credreadiness.SourceGitHubApp
+			}
+		}
+		result.CredentialSources = append(result.CredentialSources, CredentialSource{Scope: fmt.Sprintf("repos[%d]", i), Kind: string(kind), AuthKind: authKind})
+		result.Timeouts.RepositoryDefaults = append(result.Timeouts.RepositoryDefaults, repo.EffectiveDefaultStageTimeout(cfg.Runner.DefaultStageTimeout))
+	}
+	for _, grant := range cfg.Credentials {
+		kind, _ := credreadiness.Describe(grant.Token.CredentialTokenRef(""))
+		if grant.GitHubApp != nil {
+			kind = credreadiness.SourceGitHubApp
+		}
+		scope := "capability"
+		if grant.MCP != "" {
+			scope = "mcp"
+		}
+		result.CredentialSources = append(result.CredentialSources, CredentialSource{Scope: scope, Capability: grant.Capability, Harness: grant.Harness, Kind: string(kind)})
+	}
+	if cfg.DaemonIdentity != nil {
+		kind := credreadiness.SourceUnsupported
+		if cfg.DaemonIdentity.Token != nil {
+			kind, _ = credreadiness.Describe(cfg.DaemonIdentity.Token.CredentialTokenRef(""))
+		}
+		if cfg.DaemonIdentity.GitHubApp() {
+			kind = credreadiness.SourceGitHubApp
+		}
+		result.CredentialSources = append(result.CredentialSources, CredentialSource{Scope: "daemonIdentity", Kind: string(kind)})
+	}
+	for _, runner := range cfg.ResolvedRunners() {
+		result.Sandbox.Runners = append(result.Sandbox.Runners, RunnerIsolation{runner.Name, runner.Restrictions})
+	}
+	sort.Slice(result.Sandbox.Runners, func(i, j int) bool { return result.Sandbox.Runners[i].Name < result.Sandbox.Runners[j].Name })
+	return result, nil
+}

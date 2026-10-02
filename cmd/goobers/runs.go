@@ -194,6 +194,9 @@ type runSummary struct {
 	StartedAt      time.Time
 	LastActivityAt time.Time
 	Operator       readservice.OperatorRunSummary
+	// NoWork is the read model's no-work disposition (#2188): a completed run
+	// whose only stage found nothing to do.
+	NoWork bool
 }
 
 // listRuns scans an instance's runs/ directory for run subdirectories and

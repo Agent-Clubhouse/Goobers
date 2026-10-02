@@ -81,6 +81,9 @@ func TestProviderInputSchemasAreWellFormed(t *testing.T) {
 					if strings.TrimSpace(input.RetiredSince) == "" || strings.TrimSpace(input.Replacement) == "" {
 						t.Errorf("retired input %s/%s lacks actionable metadata", command, input.Name)
 					}
+					if input.UnsetDefault != "" {
+						t.Errorf("retired input %s/%s declares an unset default", command, input.Name)
+					}
 				default:
 					t.Errorf("input %s/%s has invalid state %q", command, input.Name, input.State)
 				}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
@@ -465,7 +466,13 @@ func TestRunnerRerunStageReacquiresPinnedWorkspace(t *testing.T) {
 		Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
 	}
 
-	started, err := r.Start(context.Background(), StartInput{
+	// Bound the real git subprocesses PreparePinned spawns: a stalled git call
+	// (seen on Windows) must fail this test fast instead of hanging the whole
+	// package until the go test timeout and blocking coverage collection.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	started, err := r.Start(ctx, StartInput{
 		RunID: runID, Machine: machine, Gaggle: "acme-web",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
 	})
@@ -476,7 +483,7 @@ func TestRunnerRerunStageReacquiresPinnedWorkspace(t *testing.T) {
 		t.Fatalf("initial phase = %s, want escalated", started.Phase)
 	}
 
-	result, err := r.RerunStage(context.Background(), RerunStageInput{
+	result, err := r.RerunStage(ctx, RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "implement",
 		Actor: "maintainer", InstructionAddendum: "Use the pinned workspace.",
 		ExpectedTerminalSeq: terminalRunSequence(t, filepath.Join(root, "runs"), runID),

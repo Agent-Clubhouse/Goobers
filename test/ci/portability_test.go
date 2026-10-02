@@ -418,7 +418,7 @@ func TestCIWorkflowPreflightGatesExpensiveJobs(t *testing.T) {
 	// cache key (a short un-gated job would win that race with a near-empty
 	// cache).
 	for _, job := range []string{
-		"deadcode", "checks", "deploy-reference", "lint", "darwin-build",
+		"cmdgoobers-growth", "deadcode", "checks", "deploy-reference", "lint", "darwin-build",
 		"unit-linux-coverage", "shipped", "integration",
 		"windows-smoke", "vulnerability-scan", "sandbox", "linux-validation",
 	} {
@@ -520,7 +520,7 @@ func TestCIWorkflowCancelsPullRequestRunOnFirstFailure(t *testing.T) {
 	// check() is fail-closed on any non-success result, and it must still run
 	// after the run is cancelled, which is what always() guarantees.
 	requiredCI := workflowJob(workflow, "required-ci")
-	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' }}", `if [ "$2" != "success" ]; then`} {
+	for _, want := range []string{"if: ${{ always() && github.event_name != 'push' && !" + ciMetadataEdit + " }}", `if [ "$2" != "success" ]; then`} {
 		if !strings.Contains(requiredCI, want) {
 			t.Errorf("required-ci must contain %q so a cancelled job reds the required check", want)
 		}
@@ -567,9 +567,12 @@ func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
 		t.Fatalf("read CI workflow: %v", err)
 	}
 
-	const requiredCheckName = "    name: make ci (fmt-check · vet · build · test · lint)"
 	// Repository ruleset 19093039 pins this exact required-check name:
 	// https://github.com/Agent-Clubhouse/Goobers/rules/19093039
+	// The name is an expression only so a skipped title/body-edit run cannot
+	// shadow it (#6360); every run that validates code renders the pinned name,
+	// which TestCIRunsOnBaseRetargetNotMetadataEdits evaluates per event.
+	const requiredCheckName = "    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}"
 	requiredCI := workflowJob(string(data), "required-ci")
 	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {
 		t.Errorf("required-ci name must remain %q because repository ruleset 19093039 pins that exact required-check context", strings.TrimSpace(requiredCheckName))
@@ -585,7 +588,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		section := workflowJob(workflow, job)
 		header := strings.SplitN(section, "\n    steps:", 2)[0]
 		if section == "" {
@@ -639,7 +642,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	escalation := workflowJob(workflow, "escalate-main-failure")
 	for _, want := range []string{
 		"github.event_name == 'push'",
-		"needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
+		"needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]",
 		"issues: write",
 		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		"github.rest.issues.create",
@@ -652,7 +655,7 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 			t.Errorf("main failure escalation job must contain %q", want)
 		}
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'failure'"
 		if !strings.Contains(escalation, want) {
 			t.Errorf("main failure escalation job must detect a failed %q job", job)
@@ -697,7 +700,7 @@ func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
 	if !found {
 		t.Fatal("escalate-main-failure must have a step that closes the resolved main failure issue")
 	}
-	for _, job := range []string{"preflight", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
+	for _, job := range []string{"preflight", "cmdgoobers-growth", "checks", "deploy-reference", "lint", "darwin-build", "unit", "unit-linux-coverage", "shipped", "windows-smoke"} {
 		want := "needs." + job + ".result == 'success'"
 		if !strings.Contains(closeStep, want) {
 			t.Errorf("close step must require %q: only a fully-green push lane resolves the incident", want)
@@ -756,7 +759,16 @@ func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, want := range []string{"schedule:", "workflow_dispatch:", "run: make vulncheck", "npm --prefix portal audit --audit-level=low"} {
+	// #4578: every non-Go dependency surface CI, samples or deployment ship
+	// must stay audited, so dropping one of these scans fails here.
+	for _, want := range []string{
+		"schedule:", "workflow_dispatch:", "run: make vulncheck", "npm --prefix portal audit --audit-level=low",
+		"npm --prefix samples/getting-started-task-api audit --audit-level=low",
+		"pip-audit --strict --require-hashes --disable-pip -r evals/requirements.txt",
+		"pip-audit --strict --require-hashes --disable-pip -r deploy/monitoring/requirements.txt",
+		"--lockfile=test/e2e/testdata/javaservice/pom.xml",
+		"dotnet list DotnetService.sln package --vulnerable --include-transitive",
+	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("scheduled vulnerability workflow must contain %q", want)
 		}

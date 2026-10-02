@@ -5,14 +5,18 @@
 > failure-cause classification for #4078, and the read service now calls
 > `creditgraph.Build` and `creditgraph.Attribute` while constructing stored
 > attribution observations for EffectiveVersion/workload cohorts.
-> Delivered-by: #4077, #4078
+> Delivered-by: #4077, #4078, #6355
+> Scope-delta: none; #6355 added the conformance tests and the compatibility contract that were the remaining reconciliation work.
+> Verified: 324c31ac6 (2026-10-02)
 >
 > The older `internal/readmodel/credit.go` implementation remains a separate
 > cross-run operational ranking. See
 > [Relationship to `internal/readmodel`](#relationship-to-internalreadmodel)
-> for the boundary between these paths. Their remaining reconciliation is
-> tracked by
-> [#4523](https://github.com/Agent-Clubhouse/Goobers/issues/4523).
+> for the boundary between these paths, and
+> [Conformance and compatibility](#conformance-and-compatibility) for where
+> their answers must agree and how existing credit data carries over. That
+> reconciliation is tracked by
+> [#6355](https://github.com/Agent-Clubhouse/Goobers/issues/6355).
 
 ## Workflow enrollment
 
@@ -127,7 +131,7 @@ hole, so a partially instrumented run
 projects a smaller, honest graph instead of a complete-looking, fabricated one.
 ("Read model" in this document's earlier revisions meant this journal→graph
 projection, not `internal/readmodel`; the two are unrelated, which is exactly
-the confusion #4523 exists to remove.)
+the confusion #4523 removed.)
 
 ## Provenance capture
 
@@ -222,9 +226,72 @@ So today:
   and aggregates those observations into the cohort and contributing-path
   surfaces.
 
-### What remains
+## Conformance and compatibility
 
-#4523 remains open for the remaining architectural work: define compatibility
-and migration between the operational rollup and provenance-aware per-run
-attribution, and add conformance coverage for overlapping answers. It no longer
-tracks missing production wiring for `Build` or `Attribute`.
+Tracked by #6355 (split from #4523, which closed the production-wiring half).
+
+### Where the answers overlap
+
+Both paths are projections of the same run journal, so where they answer the
+same question they must agree. `TestCreditGraphConformsToReadmodelRollup`
+(`internal/creditgraph/readmodel_conformance_test.go`) builds both from one
+journal and pins three rules:
+
+1. **Routed stages.** The stages `creditgraph.Build` records for a run are
+   exactly the `stage` rows `readmodel.ProjectRun` writes to `run_node` for it.
+2. **Cause location.** Every stage `creditgraph.Attribute` names in a
+   `CauseFinding` is a stage the rollup routed that run through. When the
+   rollup counts the run as a failure, it charges that failure to the stage
+   creditgraph blames (the rollup also charges every other routed node; it has
+   no per-node blame).
+3. **Aborts.** A run whose last gate routed to `@abort` is a failure in both:
+   the rollup counts it in `FailureRuns`, and creditgraph reads a failed
+   outcome.
+
+### Where they deliberately do not overlap
+
+- **Failure outside an abort.** The rollup's failure signal is the run's last
+  gate verdict and target. Creditgraph's is the `run.finished` status. They
+  differ in three ways, and the conformance test pins each one so none can
+  change silently:
+  - A run that fails inside a stage with no failing gate is a failed outcome
+    in creditgraph, and routed but not failed in the rollup.
+  - A rejecting gate that routes to `@escalate` is a failure (and an
+    escalation) in the rollup. Creditgraph reads an `escalated` outcome as
+    neutral.
+  - A rejecting gate that routes back to a stage, after which the run
+    completes, is still a failure in the rollup, because the last gate verdict
+    was a rejection. Creditgraph reads the completed outcome as a success.
+- **Nested elements.** Subagents, model invocations, tool calls, tool results,
+  runtime and environment nodes, and provenance gaps exist only in
+  creditgraph. The rollup has no node below stage or gate.
+- **Gates.** The rollup projects a gate as a `gate` node. Creditgraph models
+  gate evaluation as an `evaluator` node that judges a stage, so gate identity
+  is not compared.
+- **Cross-run ranking and causal estimates.** `CreditAssignment` and
+  `CausalCredit` aggregate across runs in a window. Creditgraph cohorts
+  aggregate by EffectiveVersion and workload over enrolled runs only. Neither
+  is computed from the other, and their numbers are not comparable.
+
+### Compatibility and migration of existing credit data
+
+No credit data migrates between the two stores, and none needs to:
+
+- The rollup tables (`run_node`, `run_node_parent` in the read model) are a
+  derived projection of run journals. They are rebuilt from the journals, not
+  from creditgraph, and their meaning does not change.
+- Per-run attribution is the `attribution.json` record written at
+  terminalization for a workflow enrolled in `backprop` (DSL 3.0). The read
+  service reads that record, and rebuilds the graph from the journal only for
+  evidence links and environment labels. Runs with no record (unenrolled, or
+  finished before enrollment) are skipped. They are not backfilled from the
+  rollup, because the rollup lacks the provenance that attribution requires.
+- Consumers keep their current path. The aggregate credit-assignment query,
+  the read API's causal credit, and the portal summaries read the rollup.
+  Cohort, contributing-path, and fault-audit surfaces, and `goobers trace`'s
+  attribution view, read creditgraph records. A
+  consumer that moves from one to the other must treat the non-overlapping
+  cases above as different answers, not as drift.
+- If a later change makes the two failure signals agree, that change belongs
+  in `readmodel.ProjectRun` and must update the pinned divergence cases in the
+  conformance test in the same commit.

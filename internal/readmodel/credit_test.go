@@ -2,6 +2,8 @@ package readmodel
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -99,17 +101,68 @@ func TestCreditAssignmentRunIDsReturnsNewestEvidenceForNode(t *testing.T) {
 	seedCreditRun(t, store, "newer", start.Add(time.Hour), journal.PhaseCompleted, "fail", "@abort",
 		[]NodeRow{{RunID: "newer", Kind: node.Kind, Name: node.Name, Identity: node.Identity}})
 
-	got, err := store.CreditAssignmentRunIDs(context.Background(), CreditOptions{
-		Gaggle: "core", Since: start.Add(-time.Minute),
-	}, NodeCredit{
+	credit := NodeCredit{
 		Gaggle: "core", Workflow: "implementation", Kind: node.Kind,
 		Stage: node.Name, Identity: node.Identity,
-	}, 1)
+	}
+	got, err := store.CreditAssignmentRunIDs(context.Background(), CreditOptions{
+		Gaggle: "core", Since: start.Add(-time.Minute),
+	}, []NodeCredit{credit}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "newer" {
-		t.Fatalf("evidence run ids = %v, want [newer]", got)
+	if ids := got[credit.Key()]; len(ids) != 1 || ids[0] != "newer" {
+		t.Fatalf("evidence run ids = %v, want [newer]", ids)
+	}
+}
+
+// TestCreditAssignmentRunIDsBatchesNodesInOneQuery pins #4572: every node's
+// evidence comes back from one call, bounded per node, with the window and the
+// full node identity respected and duplicate requests collapsed.
+func TestCreditAssignmentRunIDsBatchesNodesInOneQuery(t *testing.T) {
+	store := openTestStore(t)
+	start := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	review := NodeRow{Kind: "stage", Name: "review", Identity: "sha256:reviewer"}
+	implement := NodeRow{Kind: "stage", Name: "implement"}
+	gate := NodeRow{Kind: "gate", Name: "ci"}
+	for i := range 4 {
+		runID := fmt.Sprintf("run-%d", i)
+		nodes := []NodeRow{{RunID: runID, Kind: implement.Kind, Name: implement.Name}}
+		if i%2 == 0 {
+			nodes = append(nodes, NodeRow{RunID: runID, Kind: review.Kind, Name: review.Name, Identity: review.Identity})
+		}
+		seedCreditRun(t, store, runID, start.Add(time.Duration(i)*time.Hour),
+			journal.PhaseCompleted, "fail", "@abort", nodes)
+	}
+	// Outside the window: must not appear as evidence.
+	seedCreditRun(t, store, "ancient", start.Add(-48*time.Hour), journal.PhaseCompleted, "fail", "@abort",
+		[]NodeRow{{RunID: "ancient", Kind: implement.Kind, Name: implement.Name}})
+
+	credit := func(row NodeRow) NodeCredit {
+		return NodeCredit{Gaggle: "core", Workflow: "implementation", Kind: row.Kind, Stage: row.Name, Identity: row.Identity}
+	}
+	// A different identity on the same stage name is a different node.
+	otherReviewer := credit(review)
+	otherReviewer.Identity = "sha256:someone-else"
+	requested := []NodeCredit{credit(review), credit(implement), credit(gate), otherReviewer, credit(implement)}
+
+	got, err := store.CreditAssignmentRunIDs(context.Background(), CreditOptions{
+		Gaggle: "core", Since: start.Add(-time.Minute),
+	}, requested, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[NodeCreditKey][]string{
+		credit(review).Key():    {"run-2", "run-0"},
+		credit(implement).Key(): {"run-3", "run-2", "run-1"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("batched evidence = %v, want %v", got, want)
+	}
+
+	empty, err := store.CreditAssignmentRunIDs(context.Background(), CreditOptions{}, nil, 3)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty request = %v, %v; want empty map, nil", empty, err)
 	}
 }
 

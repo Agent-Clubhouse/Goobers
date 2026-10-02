@@ -159,7 +159,7 @@ func (s *daemonCredentialService) MintStageGrant(env apiv1.InvocationEnvelope, c
 	if err != nil {
 		return executor.StageCredentialGrant{}, err
 	}
-	s.shared.Register([]byte(token))
+	s.shared.RegisterUntil([]byte(token), grant.ExpiresAt)
 	var once sync.Once
 	return executor.StageCredentialGrant{
 		Endpoint: s.grants.endpoint,
@@ -189,7 +189,7 @@ func (s *daemonCredentialService) mintPodStageGrant(request httpapi.CredentialRe
 	if err != nil {
 		return nil
 	}
-	s.shared.Register([]byte(token))
+	s.shared.RegisterUntil([]byte(token), grant.ExpiresAt)
 	return &httpapi.CredentialGrantDelivery{Token: token, ExpiresAt: grant.ExpiresAt}
 }
 

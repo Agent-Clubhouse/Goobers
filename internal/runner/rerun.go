@@ -85,6 +85,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 		}
+		ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
 		phase, err := rd.Phase()
 		if err != nil {
 			return Result{}, fmt.Errorf("runner: reconstruct phase for run %q: %w", in.RunID, err)

@@ -350,7 +350,29 @@ func (r *runJournal) stageStarted(at time.Time, task apiv1.Task, attempt int, cl
 	if task.Type == apiv1.TaskAgentic {
 		event.Runner = map[string]any{"goober": task.Goober}
 	}
+	if len(task.ArtifactSlots) > 0 {
+		if event.Runner == nil {
+			event.Runner = map[string]any{}
+		}
+		event.Runner["artifactVisit"] = uint64(len(r.proj.Ops) + 1)
+	}
 	r.appendAt(at, event)
+}
+
+// artifactPublication reads the visit just recorded for this dispatch. The
+// projection ordinal is deterministic across workflow replay and retries.
+func (r *runJournal) artifactPublication(task apiv1.Task) *apiv1.ArtifactPublication {
+	if len(task.ArtifactSlots) == 0 {
+		return nil
+	}
+	for i := len(r.proj.Ops) - 1; i >= 0; i-- {
+		event := r.proj.Ops[i].Event
+		if event != nil && event.Type == journal.EventStageStarted && event.Stage == task.Name {
+			visit, _ := event.Runner["artifactVisit"].(uint64)
+			return &apiv1.ArtifactPublication{Stage: task.Name, Visit: visit, Slots: append([]apiv1.ArtifactSlot(nil), task.ArtifactSlots...)}
+		}
+	}
+	return nil
 }
 
 // placement journals one attempt's runner.placement provenance from what the
@@ -873,4 +895,10 @@ func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
 	return journal.Ref{
 		Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
 	}
+}
+
+func (r *runJournal) taskAttemptEnvelope(env apiv1.InvocationEnvelope, task apiv1.Task, attempt int) apiv1.InvocationEnvelope {
+	env.Attempt = int32(attempt)
+	env.ArtifactPublication = r.artifactPublication(task)
+	return env
 }

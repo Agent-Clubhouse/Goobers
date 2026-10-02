@@ -2073,6 +2073,15 @@ summary:focus-visible {
   grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.2fr) minmax(150px, 1fr) 60px 18px;
 }
 
+/* A row whose repository was never recorded has no detail page to open. */
+.work-item-grid:disabled {
+  cursor: default;
+}
+
+.work-item-grid:disabled:hover {
+  background: transparent;
+}
+
 .work-item-grid > span:not(.work-item-identity) {
   display: grid;
   gap: 3px;
@@ -10223,6 +10232,22 @@ code,
   background: var(--accent-soft);
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.guided-shell-selector {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.guided-shell-selector legend {
+  margin-bottom: 6px;
+  width: 100%;
+}
+
+.guided-shell-selector label {
+  align-items: center;
+  padding: 6px 12px;
 }
 
 .guided-source-choice {
