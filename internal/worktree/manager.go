@@ -944,6 +944,17 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 // carrying the exit code and captured stderr, so IsTransientProvisionError can
 // classify it — unlike gitOutput's plain wrap.
 func rawGitOutput(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	return gitCommand(ctx, dir, env, gitRawOutput, args...)
+}
+
+type gitOutputMode uint8
+
+const (
+	gitRawOutput gitOutputMode = iota
+	gitCombinedOutput
+)
+
+func gitCommand(ctx context.Context, dir string, env []string, mode gitOutputMode, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -951,16 +962,27 @@ func rawGitOutput(ctx context.Context, dir string, env []string, args ...string)
 	if env != nil {
 		cmd.Env = env
 	}
-	out, err := cmd.Output()
+
+	var out []byte
+	var err error
+	switch mode {
+	case gitRawOutput:
+		out, err = cmd.Output()
+	case gitCombinedOutput:
+		out, err = cmd.CombinedOutput()
+	default:
+		panic(fmt.Sprintf("unsupported git output mode %d", mode))
+	}
 	if err != nil {
 		exitCode := -1
-		var stderr []byte
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
-			stderr = exitErr.Stderr
+			if mode == gitRawOutput {
+				out = exitErr.Stderr
+			}
 		}
-		return nil, &gitCommandError{args: args, cause: err, output: stderr, exitCode: exitCode}
+		return nil, &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
 	}
 	return out, nil
 }
@@ -1044,23 +1066,8 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 }
 
 func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", hardenedGitArgs(args)...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	if env != nil {
-		cmd.Env = env
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-		return &gitCommandError{args: args, cause: err, output: out, exitCode: exitCode}
-	}
-	return nil
+	_, err := gitCommand(ctx, dir, env, gitCombinedOutput, args...)
+	return err
 }
 
 // fileLockRetryAttempts and fileLockRetryBackoff bound the teardown retry loop
