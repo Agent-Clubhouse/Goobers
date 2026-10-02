@@ -31,7 +31,7 @@ func (r *Runner) resolveWorkspaceRevision(ctx context.Context, revision apiv1.Wo
 func recordWorkspaceRevisionRejection(jr executionJournal, stage string, attempt int, class journal.AttemptClass, rejection *workspacerevision.Error) error {
 	if err := jr.Append(journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-		Error: &journal.ErrorDetail{Code: rejection.Code, Message: rejection.Error()},
+		Error: journal.ErrorDetailFor(rejection.Code, rejection),
 	}); err != nil {
 		return fmt.Errorf("runner: journal workspace revision rejection: %w", err)
 	}

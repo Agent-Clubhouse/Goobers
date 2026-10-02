@@ -123,7 +123,7 @@ func (r *Runner) acceptTaskWorkspaceRevision(
 
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: task, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: errorCode, Message: err.Error()},
+			Error: journal.ErrorDetailFor(errorCode, err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal workspace revision rejection for %q: %w", task, aerr)
 		}
@@ -133,7 +133,7 @@ func (r *Runner) acceptTaskWorkspaceRevision(
 	if err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: task, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: workspacerevision.CodeConflict, Message: err.Error()},
+			Error: journal.ErrorDetailFor(workspacerevision.CodeConflict, err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal workspace revision rejection for %q: %w", task, aerr)
 		}

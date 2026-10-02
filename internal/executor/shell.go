@@ -1190,7 +1190,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
 					if err := MergeResultFileOutputs(&result, data); err != nil {
 						result.Status = apiv1.ResultFailure
-						result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+						result.Error = journal.ErrorInfoFor("workspace_revision_invalid", err, false)
 						result.Summary = "declared result file contains an invalid workspace revision"
 						return result, nil
 					}
@@ -1254,7 +1254,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
 				if err := MergeResultFileOutputs(&result, data); err != nil {
 					result.Status = apiv1.ResultFailure
-					result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+					result.Error = journal.ErrorInfoFor("workspace_revision_invalid", err, false)
 					result.Summary = "declared result file contains an invalid workspace revision"
 					return result, nil
 				}

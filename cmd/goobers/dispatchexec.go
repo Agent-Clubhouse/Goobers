@@ -588,7 +588,7 @@ func applyDeclaredStageResultFile(result *apiv1.ResultEnvelope, path string, dat
 	case readErr == nil:
 		if err := executor.MergeResultFileOutputs(result, data); err != nil {
 			result.Summary = "declared result file contains an invalid workspace revision"
-			result.Error = &apiv1.ErrorInfo{Code: "workspace_revision_invalid", Message: err.Error()}
+			result.Error = journal.ErrorInfoFor("workspace_revision_invalid", err, false)
 		}
 	case os.IsNotExist(readErr) && completed:
 		result.Summary = "declared result file missing"

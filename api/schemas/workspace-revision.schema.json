@@ -15,9 +15,9 @@
       "properties": {
         "provider": {"description": "Provider kind for the repository identity.", "type": "string", "enum": ["github", "ado", "gitea"]},
         "url": {"description": "HTTP(S) service root or canonical repository URL without credentials, query, or fragment.", "$ref": "#/$defs/serviceURL"},
-        "owner": {"description": "Repository owner or organization name.", "$ref": "#/$defs/component", "minLength": 1},
+        "owner": {"description": "Repository owner or organization name.", "examples": ["example-owner"], "$ref": "#/$defs/component", "minLength": 1},
         "project": {"description": "Azure DevOps project containing the repository.", "$ref": "#/$defs/component"},
-        "name": {"description": "Repository name, excluding any branch or checkout policy.", "$ref": "#/$defs/component", "minLength": 1},
+        "name": {"description": "Repository name, excluding any branch or checkout policy.", "examples": ["example-repo"], "$ref": "#/$defs/component", "minLength": 1},
         "id": {"description": "Provider-native repository identifier, if the provider exposes one.", "$ref": "#/$defs/component"}
       },
       "allOf": [

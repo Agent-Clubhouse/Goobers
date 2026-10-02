@@ -69,7 +69,7 @@ func workspaceRevisionRejection(err error) *workspacerevision.Error {
 func (r *runJournal) workspaceRevisionRefused(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, rejection *workspacerevision.Error, identity *attemptidentity.Identity) {
 	event := journal.Event{
 		Type: journal.EventError, Stage: stage, Attempt: attempt, AttemptClass: class,
-		Error: &journal.ErrorDetail{Code: rejection.Code, Message: rejection.Error()},
+		Error: journal.ErrorDetailFor(rejection.Code, rejection),
 	}
 	addAttemptIdentity(&event, identity)
 	r.append(ctx, event)

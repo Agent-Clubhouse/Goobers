@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // NormalizeResult validates before producer and status filtering. It never
@@ -33,7 +34,7 @@ func NormalizeDeterministicResult(result apiv1.ResultEnvelope) apiv1.ResultEnvel
 	if err := NormalizeResult(&result, true); err != nil {
 		result.Status = apiv1.ResultFailure
 		result.WorkspaceRevision = nil
-		result.Error = &apiv1.ErrorInfo{Code: err.Code, Message: err.Error()}
+		result.Error = journal.ErrorInfoFor(err.Code, err, false)
 		result.Summary = "declared result contains an invalid workspace revision"
 	}
 	return result
