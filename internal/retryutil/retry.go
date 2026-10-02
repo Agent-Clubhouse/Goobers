@@ -1,3 +1,4 @@
+// Package retryutil provides shared retry loops and jittered exponential backoff.
 package retryutil
 
 import (
