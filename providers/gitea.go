@@ -512,64 +512,17 @@ func (p *GiteaProvider) OpenPullRequest(ctx context.Context, req PullRequestRequ
 	if err := p.ready(); err != nil {
 		return PullRequestResult{}, err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestResult{}, err
-	}
-	title := req.Title
-	if req.Draft {
-		title = "WIP: " + title
-	}
-	prBody := withRunIDFooter(req.Body, req.RunID)
-	if existing, ok, err := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); err != nil {
-		return PullRequestResult{}, err
-	} else if ok {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", strconv.Itoa(existing.Number))
-		if err != nil {
-			return PullRequestResult{}, err
-		}
-		var out giteaPull
-		if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"title": title, "body": prBody}, &out); err != nil {
-			return PullRequestResult{}, err
-		}
-		p.recordExternalRef(ctx, ExternalRef{
-			Provider:  ProviderGitea,
-			Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
-			URL:       out.HTMLURL,
-			Operation: "update",
-			RunID:     req.RunID,
-			Fields: map[string]FieldDigest{
-				"title": {After: digestString(title)},
-				"body":  {After: digestString(prBody)},
-			},
-		})
-		return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
-	if err != nil {
-		return PullRequestResult{}, err
-	}
-	body := map[string]interface{}{
-		"title": title,
-		"body":  prBody,
-		"head":  req.Head,
-		"base":  req.Base,
-	}
-	var out giteaPull
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		return PullRequestResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
-		URL:       out.HTMLURL,
-		Operation: "open",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(title)},
-			"body":  {After: digestString(prBody)},
+	return openRESTPullRequest(ctx, p, ProviderGitea, p.BaseURL, req, restOpenPullRequestHooks{
+		title: func(req PullRequestRequest) string {
+			if req.Draft {
+				return "WIP: " + req.Title
+			}
+			return req.Title
+		},
+		createBody: func(req PullRequestRequest, title, body string) interface{} {
+			return map[string]interface{}{"title": title, "body": body, "head": req.Head, "base": req.Base}
 		},
 	})
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
 }
 
 // FindPullRequestByBranch looks up an open PR for head/base, returning ok=false
@@ -643,28 +596,7 @@ func (p *GiteaProvider) RequestReview(ctx context.Context, req ReviewRequest) er
 	if err := p.ready(); err != nil {
 		return err
 	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return err
-	}
-	if req.PullID == "" {
-		return errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
-	if err != nil {
-		return err
-	}
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string][]string{"reviewers": req.Reviewers}, nil); err != nil {
-		return err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitea,
-		Ref:       issueRef(req.Repository, req.PullID),
-		Operation: "request-review",
-		Fields: map[string]FieldDigest{
-			"reviewers": {After: digestString(strings.Join(req.Reviewers, ","))},
-		},
-	})
-	return nil
+	return requestRESTReview(ctx, p, ProviderGitea, p.BaseURL, req)
 }
 
 // PollPullRequest reports review decision, combined check state, mergeability

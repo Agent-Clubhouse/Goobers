@@ -107,4 +107,36 @@ func TestGitHubSubmitPullRequestReviewValidatesPinnedVerdict(t *testing.T) {
 	}
 }
 
+func TestGitHubRequestReviewRecordsOrderedDigestAndRequiresPullID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/acme/web/pulls/42/requested_reviewers" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	recorder := &reviewMutationRecorder{}
+	provider := NewGitHubProvider("token",
+		func(p *GitHubProvider) { p.BaseURL = server.URL },
+		WithMutationRecorder(recorder),
+	)
+	repo := RepositoryRef{Owner: "acme", Name: "web"}
+	if err := provider.RequestReview(context.Background(), ReviewRequest{
+		Repository: repo, PullID: "42", Reviewers: []string{"zeta", "alpha"},
+	}); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if len(recorder.refs) != 1 {
+		t.Fatalf("recorded refs = %+v, want one request-review mutation", recorder.refs)
+	}
+	ref := recorder.refs[0]
+	if ref.Operation != "request-review" || ref.Fields["reviewers"].After != digestString("zeta,alpha") {
+		t.Fatalf("recorded ref = %+v, want caller-ordered reviewer digest", ref)
+	}
+	if err := provider.RequestReview(context.Background(), ReviewRequest{Repository: repo}); err != errPullIDRequired {
+		t.Fatalf("missing PullID error = %v, want %v", err, errPullIDRequired)
+	}
+}
+
 var _ PullRequestReviewSubmitter = (*GitHubProvider)(nil)
