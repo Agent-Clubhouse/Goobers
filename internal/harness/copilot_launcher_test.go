@@ -87,6 +87,7 @@ func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
 		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":[]}}`,
 		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":[""]}}`,
 		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth"]},"auth":{"interactiveLogin":{"args":[]}}}`,
+		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth"]},"auth":{"owner":"operator"}}`,
 		`{"version":1,"sessionMode":"auto"}`,
 		`{"version":1,"sessionMode":"adapter-managed","sessionArgs":["--id"]}`,
 		`{"version":1,"sessionMode":"templated"}`,
@@ -98,6 +99,27 @@ func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
 		if _, err := parseLauncherContract([]byte(input)); err == nil {
 			t.Errorf("accepted incompatible contract: %s", input)
 		}
+	}
+}
+
+func TestLauncherV2AuthContractDefaultsAndValidatesOwnership(t *testing.T) {
+	contract, err := parseLauncherContract([]byte(`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]},"auth":{"interactiveLogin":{"args":["auth","login"]}}}`))
+	if err != nil {
+		t.Fatalf("parse default ownership contract: %v", err)
+	}
+	if contract.Auth.Owner != launcherAuthOwnerLauncher {
+		t.Fatalf("auth owner = %q, want %q", contract.Auth.Owner, launcherAuthOwnerLauncher)
+	}
+	if contract.Auth.PersistedStateSharedWithDirectHarness {
+		t.Fatal("auth persisted state sharing defaulted to true, want false")
+	}
+
+	contract, err = parseLauncherContract([]byte(`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]},"auth":{"owner":"underlying-harness","persistedStateSharedWithDirectHarness":true,"interactiveLogin":{"args":["auth","login"]}}}`))
+	if err != nil {
+		t.Fatalf("parse underlying-harness ownership contract: %v", err)
+	}
+	if contract.Auth.Owner != launcherAuthOwnerUnderlyingHarness || !contract.Auth.PersistedStateSharedWithDirectHarness {
+		t.Fatalf("auth ownership contract = owner %q shared %v", contract.Auth.Owner, contract.Auth.PersistedStateSharedWithDirectHarness)
 	}
 }
 

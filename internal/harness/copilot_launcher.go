@@ -16,6 +16,11 @@ import (
 
 const launcherContractFlag = "--goobers-launcher-contract"
 
+const (
+	launcherAuthOwnerLauncher          = "launcher"
+	launcherAuthOwnerUnderlyingHarness = "underlying-harness"
+)
+
 var verifiedAdapterManagedLaunchers sync.Map
 
 // launcherContract is the versioned, credential-free wrapper handshake. It is
@@ -34,8 +39,10 @@ type launcherAuthProbe struct {
 }
 
 type launcherAuthOps struct {
-	InteractiveLogin *launcherAuthOp `json:"interactiveLogin,omitempty"`
-	Logout           *launcherAuthOp `json:"logout,omitempty"`
+	Owner                                 string          `json:"owner,omitempty"`
+	PersistedStateSharedWithDirectHarness bool            `json:"persistedStateSharedWithDirectHarness,omitempty"`
+	InteractiveLogin                      *launcherAuthOp `json:"interactiveLogin,omitempty"`
+	Logout                                *launcherAuthOp `json:"logout,omitempty"`
 }
 
 type launcherAuthOp struct {
@@ -115,15 +122,8 @@ func validateLauncherContract(contract launcherContract) (launcherContract, erro
 			return contract, err
 		}
 		if contract.Auth != nil {
-			if contract.Auth.InteractiveLogin != nil {
-				if err := validateLauncherArgs("auth interactiveLogin args", contract.Auth.InteractiveLogin.Args); err != nil {
-					return contract, err
-				}
-			}
-			if contract.Auth.Logout != nil {
-				if err := validateLauncherArgs("auth logout args", contract.Auth.Logout.Args); err != nil {
-					return contract, err
-				}
+			if err := validateLauncherAuthOps(contract.Auth); err != nil {
+				return contract, err
 			}
 		}
 	default:
@@ -156,6 +156,28 @@ func validateLauncherContract(contract launcherContract) (launcherContract, erro
 		return contract, fmt.Errorf("unsupported launcher sessionMode %q", contract.SessionMode)
 	}
 	return contract, nil
+}
+
+func validateLauncherAuthOps(auth *launcherAuthOps) error {
+	if auth.Owner == "" {
+		auth.Owner = launcherAuthOwnerLauncher
+	}
+	switch auth.Owner {
+	case launcherAuthOwnerLauncher, launcherAuthOwnerUnderlyingHarness:
+	default:
+		return fmt.Errorf("auth owner must be %q or %q", launcherAuthOwnerLauncher, launcherAuthOwnerUnderlyingHarness)
+	}
+	if auth.InteractiveLogin != nil {
+		if err := validateLauncherArgs("auth interactiveLogin args", auth.InteractiveLogin.Args); err != nil {
+			return err
+		}
+	}
+	if auth.Logout != nil {
+		if err := validateLauncherArgs("auth logout args", auth.Logout.Args); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateLauncherArgs(name string, args []string) error {

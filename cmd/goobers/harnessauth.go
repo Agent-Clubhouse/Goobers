@@ -12,9 +12,12 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/secretstore"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const harnessAuthHelp = "Usage: goobers harness auth copilot status [path]\n" +
@@ -169,6 +172,11 @@ func copilotAuthAdapter(root string) (harness.Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+	if unavailable, err := copilotAuthPlacementUnavailable(root, cfg); err != nil {
+		return nil, err
+	} else if unavailable != "" {
+		return nil, fmt.Errorf("interactive login unavailable in %s", unavailable)
+	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		return nil, fmt.Errorf("load secret stores: %w", err)
@@ -178,6 +186,100 @@ func copilotAuthAdapter(root string) (harness.Adapter, error) {
 		return nil, fmt.Errorf("resolve agent:model credential: %w", err)
 	}
 	return harnessAdapterFor(apiv1.HarnessCopilot, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, modelCredential)
+}
+
+func copilotAuthPlacementUnavailable(root string, cfg *instance.Config) (string, error) {
+	configDir := layoutFor(root).ConfigDir()
+	if _, err := os.Stat(configDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("inspect config directory: %w", err)
+	}
+	set, report, err := instance.LoadConfigDir(configDir)
+	if err != nil {
+		if summary := validationIssueSummary(report); summary != "" {
+			return "", fmt.Errorf("load config directory: %w: %s", err, summary)
+		}
+		return "", fmt.Errorf("load config directory: %w", err)
+	}
+	goobers := goobersByName(set)
+	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
+	gaggleRunsOn := make(map[string]*apiv1.GaggleRunsOn, len(set.Gaggles))
+	for i := range set.Gaggles {
+		gaggleRequiredCapabilities[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RequiredCapabilities
+		gaggleRunsOn[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RunsOn
+	}
+	for i := range set.Workflows {
+		wf := set.Workflows[i]
+		machine, err := workflow.Compile(
+			workflow.Definition{Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations},
+			workflow.WithGoobers(goobers),
+			workflow.WithKnownChecks(knownAutomatedCheckNames()),
+			workflow.WithKnownHarnesses([]string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode), string(apiv1.HarnessCodex)}),
+			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
+			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
+			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
+		)
+		if err != nil {
+			return "", &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+		}
+		placements, err := bootstrap.PinStagePlacements(cfg, set, wf.Spec.Gaggle, machine.Def)
+		if err != nil {
+			return "", err
+		}
+		if placement := copilotNonSelfPlacement(machine.Def.Spec, goobers, placements); placement != "" {
+			return placement, nil
+		}
+	}
+	return "", nil
+}
+
+func copilotNonSelfPlacement(spec apiv1.WorkflowSpec, goobers map[string]apiv1.GooberSpec, placements []engine.PinnedPlacement) string {
+	byStage := make(map[string]engine.PinnedPlacement, len(placements))
+	for _, placement := range placements {
+		byStage[placement.Stage] = placement
+	}
+	for _, task := range spec.Tasks {
+		if task.Type != apiv1.TaskAgentic || !gooberUsesCopilot(goobers, task.Goober) {
+			continue
+		}
+		if placement := nonSelfPlacementDescription(byStage[task.Name]); placement != "" {
+			return placement
+		}
+	}
+	for _, gate := range spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || !gooberUsesCopilot(goobers, gate.Agentic.Goober) {
+			continue
+		}
+		if placement := nonSelfPlacementDescription(byStage[gate.Name]); placement != "" {
+			return placement
+		}
+	}
+	return ""
+}
+
+func gooberUsesCopilot(goobers map[string]apiv1.GooberSpec, name string) bool {
+	spec, ok := goobers[name]
+	if !ok {
+		return false
+	}
+	return spec.Harness == "" || spec.Harness == apiv1.HarnessCopilot
+}
+
+func nonSelfPlacementDescription(placement engine.PinnedPlacement) string {
+	if placement.Stage == "" || placement.Self {
+		return ""
+	}
+	for _, runner := range placement.Eligible {
+		if runner.HostKind == instance.RunnerHostSelf {
+			continue
+		}
+		if strings.HasSuffix(placement.Queue, "."+runner.Name) {
+			return fmt.Sprintf("%s runner %q", runner.HostKind, runner.Name)
+		}
+	}
+	return "remote runner"
 }
 
 func loadHarnessAuthConfig(root string) (*instance.Config, error) {

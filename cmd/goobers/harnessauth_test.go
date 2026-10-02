@@ -4,14 +4,49 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/instance"
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
+
+type authPreflightRunner struct {
+	authExit       int
+	authTranscript string
+	authEnv        []string
+	authCommand    []string
+	authConfig     bool
+}
+
+func (r *authPreflightRunner) Run(_ context.Context, req harness.ProcessRequest) (harness.ProcessResult, error) {
+	if slices.Contains(req.Command, "--version") {
+		_, err := io.WriteString(req.StdoutCapture, "copilot fixture version\n")
+		return harness.ProcessResult{}, err
+	}
+	r.authCommand = slices.Clone(req.Command)
+	r.authEnv = slices.Clone(req.Env)
+	if home, ok := envValue(req.Env, "COPILOT_HOME"); ok {
+		_, err := os.Stat(filepath.Join(home, "config.json"))
+		r.authConfig = err == nil
+	}
+	return harness.ProcessResult{ExitCode: r.authExit, Transcript: []byte(r.authTranscript)}, nil
+}
+
+func envValue(env []string, key string) (string, bool) {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix), true
+		}
+	}
+	return "", false
+}
 
 type authStatusAdapter struct {
 	*harnesstest.FakeAdapter
@@ -165,6 +200,147 @@ func TestHarnessAuthCopilotLogoutFailsClearlyForDirectNativeHarness(t *testing.T
 		t.Fatalf("code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if !strings.Contains(stderr, "logout is not supported") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestHarnessAuthCopilotStatusUsesRealPreflightForPersistedLogin(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"oauthToken":"stored-login"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COPILOT_HOME", home)
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &authPreflightRunner{}
+	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+		return &harness.CopilotAdapter{
+			Command:           []string{program},
+			Runner:            runner,
+			AuthCheckArgs:     copilotAuthCheckArgs,
+			ExtraEnvAllowlist: []string{"COPILOT_HOME"},
+		}, nil
+	})
+	code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "HARNESS copilot auth: authenticated") || !strings.Contains(stdout, "version: copilot fixture version") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if !slices.Contains(runner.authCommand, "-p") || slices.Contains(runner.authCommand, "login") {
+		t.Fatalf("auth probe command = %v, want unattended status probe", runner.authCommand)
+	}
+	authHome, ok := envValue(runner.authEnv, "COPILOT_HOME")
+	if !ok || authHome == home {
+		t.Fatalf("auth probe COPILOT_HOME = %q, %v; want isolated copy", authHome, ok)
+	}
+	if !runner.authConfig {
+		t.Fatal("persisted login was not copied into isolated preflight home")
+	}
+}
+
+func TestHarnessAuthCopilotStatusRefusesSignedOutWithoutInteractivePrompt(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &authPreflightRunner{authExit: 1, authTranscript: "not signed in"}
+	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+		return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: copilotAuthCheckArgs}, nil
+	})
+	code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "HARNESS copilot auth: signed-out") || strings.Contains(stderr, "not signed in") {
+		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !slices.Contains(runner.authCommand, "-p") || slices.Contains(runner.authCommand, "login") {
+		t.Fatalf("auth probe command = %v, want unattended status probe", runner.authCommand)
+	}
+}
+
+func TestHarnessAuthCopilotStatusClassifiesExpiredAndInaccessiblePreflightState(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, transcript := range []string{"credential is expired", "stored credential is inaccessible"} {
+		t.Run(transcript, func(t *testing.T) {
+			runner := &authPreflightRunner{authExit: 1, authTranscript: transcript}
+			withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+				return &harness.CopilotAdapter{Command: []string{program}, Runner: runner, AuthCheckArgs: copilotAuthCheckArgs}, nil
+			})
+			code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
+			if code != 1 || !strings.Contains(stdout, "HARNESS copilot auth: signed-out") {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestHarnessAuthCopilotStatusUsesExplicitCredentialFallback(t *testing.T) {
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &authPreflightRunner{}
+	withHarnessAdapter(t, func(apiv1.Harness, harness.EnvironmentConfig, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
+		return &harness.CopilotAdapter{
+			Command:       []string{program},
+			Runner:        runner,
+			AuthCheckArgs: copilotAuthCheckArgs,
+			ModelCredential: func(context.Context) (string, error) {
+				return "explicit-token", nil
+			},
+		}, nil
+	})
+	code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "status")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if token, ok := envValue(runner.authEnv, "COPILOT_GITHUB_TOKEN"); !ok || token != "explicit-token" {
+		t.Fatalf("auth probe token = %q, %v; want explicit credential fallback", token, ok)
+	}
+}
+
+func TestHarnessAuthCopilotLoginRefusesNonSelfCopilotPlacement(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(filepath.Join(root, instance.ConfigFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaVersion := instance.InstanceSchemaVersionRunners
+	cfg.SchemaVersion = &schemaVersion
+	cfg.Engine = &instance.EngineConfig{
+		HostPort:  instance.DefaultTemporalHostPort,
+		Namespace: instance.DefaultTemporalNamespace,
+		TaskQueue: instance.DefaultEngineTaskQueue,
+	}
+	cfg.Runners = []instance.RunnerEntry{
+		{Name: "self", Host: instance.RunnerHostSelfName},
+		{
+			Name: "image-runner",
+			Host: "ghcr.io/example/goobers-copilot:latest",
+			Provides: instance.RunnerProvides{
+				OS:        instance.RunnerOSLinux,
+				Shell:     true,
+				Harnesses: []string{string(apiv1.HarnessCopilot)},
+			},
+		},
+	}
+	if err := instance.WriteConfig(filepath.Join(root, instance.ConfigFileName), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "harness", "auth", "copilot", "login", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, `interactive login unavailable in image runner "image-runner"`) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }
