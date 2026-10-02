@@ -1,0 +1,18 @@
+{
+  "summary": {
+    "consumerTask": "consume",
+    "localName": "summary",
+    "producerTask": "produce",
+    "slotName": "report",
+    "mediaType": "application/json",
+    "schemaPath": "schemas/report.schema.json",
+    "maxSize": 2048
+  },
+  "telemetry": {
+    "consumerTask": "consume",
+    "localName": "telemetry",
+    "producerTask": "produce",
+    "slotName": "trace",
+    "mediaType": "text/plain"
+  }
+}

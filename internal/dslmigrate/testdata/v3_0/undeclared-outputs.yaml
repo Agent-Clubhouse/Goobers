@@ -1,0 +1,26 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0" # Only this pin changes during migration.
+metadata:
+  name: default-implement
+  annotations:
+    goobers.dev/allow-preview-features: "true"
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: produce
+  tasks:
+    - name: produce
+      type: deterministic
+      goal: Produce evidence.
+      run: {command: ["true"], workspace: scratch}
+      next: consume
+    - name: consume
+      type: deterministic
+      goal: Read positional evidence.
+      run: {command: ["true"], workspace: scratch}
+      contextFrom: [produce]
+      inputs:
+        evidence: "produce.artifact[0]"
+        trace: 'produce.artifact[1]'

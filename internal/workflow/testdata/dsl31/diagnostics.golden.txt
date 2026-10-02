@@ -1,0 +1,3 @@
+consume|alpha|||task "consume" artifact input "alpha" references unknown producer task "nowhere"
+consume|middle|||task "consume" artifact input "middle" must reference a producer slot as producer.slot
+consume|zulu|||task "consume" artifact input "zulu" references unknown artifact slot "missing" on producer "produce"
