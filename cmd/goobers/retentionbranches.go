@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/branchretention"
@@ -76,10 +77,30 @@ var retentionItemParked = func(ctx context.Context, root, id string, entry recor
 	if err != nil {
 		return false, err
 	}
+	if entry.repo.Provider == providers.ProviderADO {
+		// Configured auth can fall back to the sole configured repository.
+		// ADO addresses requests using the client's organization, not repo.Owner.
+		ado, ok := provider.(*providers.ADOProvider)
+		if !ok || entry.repo.Owner == "" || entry.repo.Project == "" || !strings.EqualFold(ado.Organization, entry.repo.Owner) {
+			return false, fmt.Errorf("%w: ADO retention destination does not match recorded organization/project", ErrItemRepositoryUnknown)
+		}
+	}
 	if entry.kind == itemKindPullRequest {
 		item, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: entry.repo, PullID: id})
-		if err == nil && item.State == "" {
+		if err != nil {
+			return false, err
+		}
+		if item.State == "" {
 			return false, fmt.Errorf("pull request has no current state")
+		}
+		if entry.repo.Provider == providers.ProviderADO {
+			// ADO's single-PR response omits labels. Absence from that
+			// response cannot establish that the PR is not human-parked.
+			ado, ok := provider.(*providers.ADOProvider)
+			if !ok {
+				return false, fmt.Errorf("ADO retention provider cannot read pull request labels")
+			}
+			item.Labels, err = ado.PullRequestLabelNames(ctx, entry.repo, id)
 		}
 		return branchretention.Parked(item.State, item.Labels), err
 	}

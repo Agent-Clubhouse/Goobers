@@ -565,17 +565,6 @@ func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir stri
 	lock.Lock()
 	defer lock.Unlock()
 
-	current, err := localBranches(ctx, repoDir)
-	if err != nil {
-		return false, err
-	}
-	currentBranches := make(map[string]string, len(current))
-	for _, currentBranch := range current {
-		currentBranches[currentBranch.name] = currentBranch.tip
-	}
-	if currentBranches[branch.name] != branch.tip || rule == RetentionRuleMergedBranch && currentBranches[base.name] != base.tip {
-		return false, nil
-	}
 	if opts.IsRunTerminal != nil {
 		terminal, err := opts.IsRunTerminal(manager.Root, branch.runID)
 		if err != nil {
@@ -610,6 +599,19 @@ func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir stri
 		if err != nil || !eligible {
 			return false, err
 		}
+	}
+	// Provider reads above may take time. Inspect refs after those calls so
+	// a tip changed during item revalidation cannot use the earlier authority.
+	current, err := localBranches(ctx, repoDir)
+	if err != nil {
+		return false, err
+	}
+	currentBranches := make(map[string]string, len(current))
+	for _, currentBranch := range current {
+		currentBranches[currentBranch.name] = currentBranch.tip
+	}
+	if currentBranches[branch.name] != branch.tip || rule == RetentionRuleMergedBranch && currentBranches[base.name] != base.tip {
+		return false, nil
 	}
 	if err := runCleanupGit(ctx, repoDir, "branch delete", "branch", "-D", "--", branch.name); err != nil {
 		return false, err

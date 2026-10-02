@@ -590,7 +590,7 @@ func errorsJoin(first, second error) error {
 }
 
 func TestTerminalBranchAgeAndDeletionRevalidation(t *testing.T) {
-	for _, name := range []string{"dry-run", "delete", "young", "disabled", "missing-time", "future-time", "run-resumed", "item-parked", "sibling-protected", "timestamp-changed", "tip-changed", "provider-error", "checked-out"} {
+	for _, name := range []string{"dry-run", "delete", "young", "disabled", "missing-time", "future-time", "run-resumed", "item-parked", "sibling-protected", "timestamp-changed", "tip-changed", "tip-changed-during-check", "provider-error", "checked-out"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			repo := newSourceRepo(t)
@@ -610,10 +610,15 @@ func TestTerminalBranchAgeAndDeletionRevalidation(t *testing.T) {
 			terminal := true
 			allowed := true
 			protected := false
+			itemChecks := 0
 			opts := RetentionOptions{Now: now, Delete: name != "dry-run", TerminalBranchMaxAge: 30 * 24 * time.Hour,
 				IsRunTerminal: func(string, string) (bool, error) { return terminal, nil },
 				RunTerminalAt: func(string, string) (time.Time, error) { return ended, nil },
 				CanPruneBranch: func(string, string, string) (bool, error) {
+					itemChecks++
+					if name == "tip-changed-during-check" && itemChecks == 2 {
+						runTestGit(t, repoDir, "update-ref", "refs/heads/goobers/workflow/aged", "refs/heads/main")
+					}
 					if name == "provider-error" {
 						return false, fmt.Errorf("provider unavailable")
 					}

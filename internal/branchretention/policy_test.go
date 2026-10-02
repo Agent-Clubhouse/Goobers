@@ -1,9 +1,10 @@
 package branchretention
 
 import (
-	"github.com/goobers/goobers/internal/journal"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 func TestTerminalAuthority(t *testing.T) {
@@ -42,5 +43,31 @@ func TestParkedItems(t *testing.T) {
 	}
 	if Parked("closed", []string{"bug", "done"}) {
 		t.Fatal("ordinary item protected")
+	}
+}
+
+func TestTerminalAgeDoesNotCrossAttemptBoundary(t *testing.T) {
+	now := time.Now().UTC()
+	identity := journal.RunIdentity{RunID: "resumed", StartedAt: now.Add(-40 * 24 * time.Hour)}
+	oldFinish := journal.Event{Type: journal.EventRunFinished, Status: "aborted", Time: now.Add(-31 * 24 * time.Hour)}
+	for _, boundary := range []journal.EventType{journal.EventRunResumed, journal.EventStageRerunRequested, journal.EventGateOverridden} {
+		t.Run(string(boundary), func(t *testing.T) {
+			events := []journal.Event{oldFinish,
+				{Type: boundary, Time: now.Add(-time.Hour)},
+				{Type: journal.EventGateStarted, Gate: "abort", Time: now},
+				{Type: journal.EventGateEvaluated, Gate: "abort", Target: "@abort", Time: now},
+			}
+			if !Settled(events) {
+				t.Fatal("executed terminal gate must reproduce the settled crash window")
+			}
+			if ended, err := TerminalAt(identity, events, now); err == nil || !ended.IsZero() {
+				t.Fatalf("borrowed prior attempt's timestamp: %v %v", ended, err)
+			}
+			// Once this attempt durably finishes, its own timestamp supplies the floor.
+			events = append(events, journal.Event{Type: journal.EventRunFinished, Status: "aborted", Time: now})
+			if ended, err := TerminalAt(identity, events, now); err != nil || !ended.Equal(now) {
+				t.Fatalf("current attempt timestamp: %v %v", ended, err)
+			}
+		})
 	}
 }
