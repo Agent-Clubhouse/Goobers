@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -581,4 +582,169 @@ func ensuredNames(labels []providers.WorkItemLabel) []string {
 		names = append(names, label.Name)
 	}
 	return names
+}
+
+// buildBreakFailure is one downstream package's report of a shared compile
+// break: its own package, test, wrapper message and relative path to the
+// broken file, and so its own per-package fingerprint.
+func buildBreakFailure(index int, sha, undefined string) testFailure {
+	pkg := fmt.Sprintf("./internal/consumer%02d", index)
+	test := fmt.Sprintf("TestConsumer%02d", index)
+	text := strings.Join([]string{
+		fmt.Sprintf("    consumer_test.go:%d: build consumer %d: exit status 1", 20+index, index),
+		"        # github.com/goobers/goobers/cmd/goobers",
+		fmt.Sprintf("        %scmd/goobers/root.go:%d:7: undefined: %s", strings.Repeat("../", 1+index%3), 300+index%2, undefined),
+	}, "\n")
+	signature := flake.NormalizeSignature(text)
+	return testFailure{
+		Fingerprint:      flake.Fingerprint(pkg, test, signature),
+		Package:          pkg,
+		Test:             test,
+		FailureSignature: signature,
+		FailureText:      text,
+		LastSeenRun:      "555",
+		LastSeenAt:       time.Date(2026, 9, 1, 10, 33, 46+index, 0, time.UTC),
+		Occurrences:      1,
+		SHA:              sha,
+	}
+}
+
+func TestPublishGroupsOneBuildBreakAcrossThirteenPackagesIntoOneIssue(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	var failures []testFailure
+	for index := range 13 {
+		failures = append(failures, buildBreakFailure(index, "", "newRegistry"))
+	}
+	// Two of the per-package issues were already filed (by a ledger that did
+	// not group); the grouped issue supersedes them.
+	provider := &fakeLedgerProvider{items: []providers.WorkItem{
+		{ID: "4128", State: stateOpen, Body: fingerprintMarker(failures[0].Fingerprint)},
+		{ID: "4129", State: stateOpen, Body: fingerprintMarker(failures[1].Fingerprint)},
+		{ID: "4130", State: stateClosed, Body: fingerprintMarker(failures[2].Fingerprint)},
+	}}
+	report := failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "555", RunAttempt: "1", SHA: sha},
+		Failures:      failures,
+	}
+	// Each package's failure has its own per-package fingerprint, which is
+	// what used to fan this out into 13 issues.
+	if err := validateReport(report); err != nil {
+		t.Fatal(err)
+	}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{Owner: "acme", Name: "app"}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.creates) != 1 || result.Created != 1 {
+		t.Fatalf("13 packages broken by one commit filed %d issue(s), want 1: %+v", len(provider.creates), provider.creates)
+	}
+	create := provider.creates[0]
+	signature, _ := flake.BuildBreakSignature(failures[0].FailureText)
+	if want := fingerprintMarker(flake.BuildBreakFingerprint(sha, signature)); !strings.HasPrefix(create.Body, want) {
+		t.Fatalf("grouped issue is not keyed on commit + compile signature:\n%s", create.Body)
+	}
+	if !strings.Contains(create.Title, "build break at 0123456789ab in 13 package(s)") {
+		t.Fatalf("grouped title = %q", create.Title)
+	}
+	for _, failure := range failures {
+		if !strings.Contains(create.Body, "`"+failure.Package+"` `"+failure.Test+"`") {
+			t.Fatalf("grouped issue does not list affected package %s:\n%s", failure.Package, create.Body)
+		}
+	}
+	if !strings.Contains(create.Body, "- #4128 (closed as a duplicate") || !strings.Contains(create.Body, "- #4129 (closed as a duplicate") ||
+		strings.Contains(create.Body, "#4130") {
+		t.Fatalf("grouped issue does not cross-link exactly the open superseded issues:\n%s", create.Body)
+	}
+	// The open per-package issues are closed as duplicates of the grouped
+	// one; the already-closed one is left alone and nothing is refreshed.
+	if result.Superseded != 2 || result.Refreshed != 0 || result.Reopened != 0 || len(provider.updates) != 2 {
+		t.Fatalf("result = %+v, updates = %+v", result, provider.updates)
+	}
+	for index, id := range []string{"4128", "4129"} {
+		update := provider.updates[index]
+		if update.ID != id || update.State != stateClosed || !strings.Contains(update.Comment, "Duplicate of #99.") {
+			t.Fatalf("update %d = %+v, want %s closed as a duplicate of #99", index, update, id)
+		}
+	}
+
+	// Re-publishing the same report is a no-op: the grouped issue already
+	// carries this occurrence and its superseded issues are already closed.
+	provider.items = []providers.WorkItem{
+		{ID: "99", State: stateOpen, Body: create.Body},
+		{ID: "4128", State: stateClosed, Body: fingerprintMarker(failures[0].Fingerprint)},
+		{ID: "4129", State: stateClosed, Body: fingerprintMarker(failures[1].Fingerprint)},
+		{ID: "4130", State: stateClosed, Body: fingerprintMarker(failures[2].Fingerprint)},
+	}
+	provider.creates, provider.updates = nil, nil
+	again, err := publish(context.Background(), provider, providers.RepositoryRef{Owner: "acme", Name: "app"}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.creates) != 0 || len(provider.updates) != 0 || again != (publishResult{}) {
+		t.Fatalf("re-publish result = %+v, creates = %d, updates = %+v", again, len(provider.creates), provider.updates)
+	}
+}
+
+func TestPublishKeepsDifferentBuildBreaksSeparate(t *testing.T) {
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	failures := []testFailure{
+		// Same commit, different compile errors.
+		buildBreakFailure(0, sha, "newRegistry"),
+		buildBreakFailure(1, sha, "newRegistry"),
+		buildBreakFailure(2, sha, "loadPolicy"),
+		buildBreakFailure(3, sha, "loadPolicy"),
+		// Same compile error, different commits.
+		buildBreakFailure(4, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "newRegistry"),
+		buildBreakFailure(5, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "newRegistry"),
+		// A compile error only one package saw keeps its own identity.
+		buildBreakFailure(6, "cccccccccccccccccccccccccccccccccccccccc", "newRegistry"),
+		// Not a build break at all.
+		seedFailure(strings.Repeat("d", 64), "assertion failed"),
+	}
+	provider := &fakeLedgerProvider{}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{Owner: "acme", Name: "app"}, failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "1", SHA: "ffffffffffffffffffffffffffffffffffffffff"},
+		Failures:      failures,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 5 || len(provider.creates) != 5 {
+		t.Fatalf("created %d issue(s), want 5 (3 groups + 2 ungrouped): %+v", len(provider.creates), provider.creates)
+	}
+	var grouped, single int
+	for _, create := range provider.creates {
+		if strings.Contains(create.Title, "build break at") {
+			grouped++
+			if !strings.Contains(create.Title, "in 2 package(s)") {
+				t.Fatalf("grouped title = %q, want two packages", create.Title)
+			}
+			continue
+		}
+		single++
+	}
+	if grouped != 3 || single != 2 {
+		t.Fatalf("filed %d grouped and %d per-package issue(s), want 3 and 2", grouped, single)
+	}
+	if !strings.Contains(provider.creates[0].Title, "undefined: newRegistry") ||
+		!strings.Contains(provider.creates[1].Title, "undefined: loadPolicy") {
+		t.Fatalf("grouped issues lost report order or their signatures: %q, %q", provider.creates[0].Title, provider.creates[1].Title)
+	}
+}
+
+func TestPublishDoesNotGroupBuildBreaksWithoutACommit(t *testing.T) {
+	provider := &fakeLedgerProvider{}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{Owner: "acme", Name: "app"}, failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "1"},
+		Failures:      []testFailure{buildBreakFailure(0, "", "newRegistry"), buildBreakFailure(1, "", "newRegistry")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 2 {
+		t.Fatalf("created %d, want each failure filed on its own when no commit names the root cause", result.Created)
+	}
 }

@@ -143,8 +143,12 @@ type failure struct {
 	LastSeenRun          string    `json:"last_seen_run"`
 	LastSeenAt           time.Time `json:"last_seen_at"`
 	Occurrences          int       `json:"occurrences"`
-	SourcePath           string    `json:"-"`
-	Occurrence           string    `json:"-"`
+	// SHA is the commit the scanned run built. The flake ledger groups a
+	// build break by it (#4230); this report spans many commits, so the
+	// report's own run SHA would not name the triggering one.
+	SHA        string `json:"sha,omitempty"`
+	SourcePath string `json:"-"`
+	Occurrence string `json:"-"`
 }
 
 type failuresReport struct {
@@ -301,6 +305,9 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 		}
 		result.LogOmissions = append(result.LogOmissions, scanned.LogOmissions...)
 		for _, candidate := range scanned.Failures {
+			if candidate.SHA == "" {
+				candidate.SHA = failureSource.SHA
+			}
 			key := candidate.Occurrence
 			if key == "" {
 				key = candidate.Fingerprint + "\x00" + failureSource.URL

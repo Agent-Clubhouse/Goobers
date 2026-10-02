@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -83,6 +84,13 @@ type testFailure struct {
 	LastSeenRun          string    `json:"last_seen_run"`
 	LastSeenAt           time.Time `json:"last_seen_at"`
 	Occurrences          int       `json:"occurrences"`
+	// SHA is the commit the failure was observed at, when the producer scans
+	// more than one commit; it falls back to the report's run SHA.
+	SHA string `json:"sha,omitempty"`
+
+	// members is set only on a grouped build-break entry: the per-package
+	// failures it stands for (#4230).
+	members []testFailure
 }
 
 type ledgerProvider interface {
@@ -96,10 +104,11 @@ type ledgerProvider interface {
 type providerFactory func(token, apiURL string) ledgerProvider
 
 type publishResult struct {
-	Created   int
-	Refreshed int
-	Reopened  int
-	Skipped   int
+	Created    int
+	Refreshed  int
+	Reopened   int
+	Skipped    int
+	Superseded int
 }
 
 func main() {
@@ -142,6 +151,9 @@ func run(
 	}
 	if result.Skipped > 0 {
 		summary += fmt.Sprintf(", %d skipped without a distinguishing signature", result.Skipped)
+	}
+	if result.Superseded > 0 {
+		summary += fmt.Sprintf(", %d superseded by a grouped build break", result.Superseded)
 	}
 	_, _ = fmt.Fprintln(stdout, summary)
 	return 0
@@ -279,7 +291,8 @@ func publish(
 	}
 
 	result := publishResult{}
-	for _, failure := range report.Failures {
+	failures := groupBuildBreaks(report.Run, report.Failures)
+	for _, failure := range failures {
 		item, found := existing[failure.Fingerprint]
 		if !found {
 			if !distinguishingSignature(failure.FailureSignature) {
@@ -289,7 +302,7 @@ func publish(
 			created, err := provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 				Repository: repository,
 				Title:      issueTitle(failure),
-				Body:       issueBody(report.Run, failure),
+				Body:       issueBody(report.Run, failure, supersededIssues(failure, existing)),
 				Labels:     []string{flakeLabel, approvedLabel, cloudLabel},
 				RunID:      "flake-" + failure.Fingerprint,
 			})
@@ -343,7 +356,160 @@ func publish(
 		}
 		result.Refreshed++
 	}
+	for _, failure := range failures {
+		superseded, err := supersedeMembers(ctx, provider, repository, failure, existing)
+		result.Superseded += superseded
+		if err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+// groupBuildBreaks collapses failures that share one root cause — the same
+// commit and the same normalized compile-error signature — into a single
+// grouped entry (#4230). A broken shared package fails every downstream
+// package that builds it; filing per package turned one break into one issue
+// per consumer. A compile error seen by only one failure, or a failure with
+// no known commit, keeps its per-package identity.
+func groupBuildBreaks(run runMetadata, failures []testFailure) []testFailure {
+	type group struct {
+		sha       string
+		signature string
+		members   []testFailure
+	}
+	groups := make(map[string]*group)
+	keys := make([]string, len(failures))
+	for index, failure := range failures {
+		sha := strings.TrimSpace(firstNonEmpty(failure.SHA, run.SHA))
+		if sha == "" {
+			continue
+		}
+		signature, ok := flake.BuildBreakSignature(failure.FailureText)
+		if !ok {
+			continue
+		}
+		key := flake.BuildBreakFingerprint(sha, signature)
+		keys[index] = key
+		if groups[key] == nil {
+			groups[key] = &group{sha: sha, signature: signature}
+		}
+		groups[key].members = append(groups[key].members, failure)
+	}
+	result := make([]testFailure, 0, len(failures))
+	emitted := make(map[string]bool)
+	for index, failure := range failures {
+		key := keys[index]
+		if key == "" || len(groups[key].members) < 2 {
+			result = append(result, failure)
+			continue
+		}
+		if emitted[key] {
+			continue
+		}
+		emitted[key] = true
+		result = append(result, groupedFailure(key, groups[key].sha, groups[key].signature, groups[key].members))
+	}
+	return result
+}
+
+func groupedFailure(fingerprint, sha, signature string, members []testFailure) testFailure {
+	grouped := testFailure{
+		Fingerprint:          fingerprint,
+		Package:              strings.Join(affectedPackages(members), ", "),
+		Test:                 "(build break)",
+		FailureSignature:     signature,
+		FailureText:          members[0].FailureText,
+		FailureTextTruncated: members[0].FailureTextTruncated,
+		LastSeenRun:          members[0].LastSeenRun,
+		LastSeenAt:           members[0].LastSeenAt,
+		SHA:                  sha,
+		members:              members,
+	}
+	for _, member := range members {
+		// Each member saw the same break in the same runs; the group's count
+		// is the most any one of them saw, not their sum.
+		grouped.Occurrences = max(grouped.Occurrences, member.Occurrences)
+		if member.LastSeenAt.After(grouped.LastSeenAt) {
+			grouped.LastSeenAt = member.LastSeenAt
+			grouped.LastSeenRun = member.LastSeenRun
+		}
+	}
+	return grouped
+}
+
+func affectedPackages(members []testFailure) []string {
+	var packages []string
+	for _, member := range members {
+		pkg := singleLine(member.Package)
+		if !slices.Contains(packages, pkg) {
+			packages = append(packages, pkg)
+		}
+	}
+	slices.Sort(packages)
+	return packages
+}
+
+// supersededIssues lists the open per-package issues a grouped entry replaces.
+func supersededIssues(failure testFailure, existing map[string]providers.WorkItem) []string {
+	var ids []string
+	for _, member := range failure.members {
+		if item, found := existing[member.Fingerprint]; found && !isClosed(item) && !slices.Contains(ids, item.ID) {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+// supersedeMembers closes every open per-package issue a grouped build break
+// stands for as a duplicate of the grouped issue, so one break is tracked in
+// one place.
+func supersedeMembers(
+	ctx context.Context,
+	provider ledgerProvider,
+	repository providers.RepositoryRef,
+	failure testFailure,
+	existing map[string]providers.WorkItem,
+) (int, error) {
+	if len(failure.members) == 0 {
+		return 0, nil
+	}
+	grouped, found := existing[failure.Fingerprint]
+	if !found {
+		return 0, nil
+	}
+	closed := 0
+	for _, member := range failure.members {
+		item, found := existing[member.Fingerprint]
+		if !found || isClosed(item) || item.ID == grouped.ID {
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repository,
+			ID:         item.ID,
+			State:      stateClosed,
+			Comment:    supersededComment(grouped.ID, failure),
+		}); err != nil {
+			return closed, fmt.Errorf("close issue %s as duplicate of %s: %w", item.ID, grouped.ID, err)
+		}
+		item.State = stateClosed
+		existing[member.Fingerprint] = item
+		closed++
+	}
+	return closed, nil
+}
+
+func supersededComment(groupedID string, failure testFailure) string {
+	return strings.Join([]string{
+		"## Superseded by a grouped build break",
+		"",
+		fmt.Sprintf("Duplicate of #%s. This failure is one package's view of a build break at commit `%s` "+
+			"that failed %d package(s) with the same compile error. The grouped issue tracks every affected package, "+
+			"so this one is closed as a duplicate.",
+			singleLine(groupedID), singleLine(failure.SHA), len(affectedPackages(failure.members))),
+		"",
+		"**Normalized signature:** `" + renderedSignature(failure.FailureSignature) + "`",
+	}, "\n")
 }
 
 func indexIssues(items []providers.WorkItem) (map[string]providers.WorkItem, error) {
@@ -387,6 +553,13 @@ func distinguishingSignature(signature string) bool {
 }
 
 func issueTitle(failure testFailure) string {
+	if len(failure.members) > 0 {
+		return truncateRunes(fmt.Sprintf("[flake] build break at %s in %d package(s): %s",
+			shortSHA(failure.SHA),
+			len(affectedPackages(failure.members)),
+			renderedSignature(failure.FailureSignature),
+		), 240)
+	}
 	title := fmt.Sprintf("[flake] %s %s: %s",
 		singleLine(failure.Package),
 		singleLine(failure.Test),
@@ -395,7 +568,10 @@ func issueTitle(failure testFailure) string {
 	return truncateRunes(title, 240)
 }
 
-func issueBody(run runMetadata, failure testFailure) string {
+func issueBody(run runMetadata, failure testFailure, superseded []string) string {
+	if len(failure.members) > 0 {
+		return groupedIssueBody(run, failure, superseded)
+	}
 	return strings.Join([]string{
 		fingerprintMarker(failure.Fingerprint),
 		"",
@@ -417,6 +593,62 @@ func issueBody(run runMetadata, failure testFailure) string {
 		"",
 		"This issue is filed and refreshed automatically by the trusted stress workflow, and enters the cloud instance's backlog as approved work.",
 	}, "\n")
+}
+
+// groupedIssueBody describes one build break and every package it failed. It
+// deliberately carries no single Package/Test identity line: the issue's
+// identity is the commit plus the compile-error signature.
+func groupedIssueBody(run runMetadata, failure testFailure, superseded []string) string {
+	lines := []string{
+		fingerprintMarker(failure.Fingerprint),
+		"",
+		"## Build break identity",
+		"",
+		"One commit broke a build that several packages depend on, so each of them failed the same way. " +
+			"This issue groups those failures by commit and normalized compile-error signature instead of filing one issue per package.",
+		"",
+		"- **Fingerprint:** `" + failure.Fingerprint + "`",
+		"- **Commit:** `" + singleLine(failure.SHA) + "`",
+		"- **Normalized signature:** `" + renderedSignature(failure.FailureSignature) + "`",
+		"",
+	}
+	lines = append(lines, affectedFailureLines(failure)...)
+	if len(superseded) > 0 {
+		lines = append(lines, "", "## Superseded issues", "")
+		for _, id := range superseded {
+			lines = append(lines, "- #"+singleLine(id)+" (closed as a duplicate of this issue)")
+		}
+	}
+	lines = append(lines,
+		"",
+		"## Occurrences",
+		"",
+		occurrenceMarker(run, failure),
+		occurrenceLine(run, failure),
+		"",
+		"## Latest failure",
+		"",
+		failureSnippet(failure),
+		"",
+		"This issue is filed and refreshed automatically by the trusted stress workflow, and enters the cloud instance's backlog as approved work.",
+	)
+	return strings.Join(lines, "\n")
+}
+
+func affectedFailureLines(failure testFailure) []string {
+	lines := []string{"## Affected packages", ""}
+	for _, member := range failure.members {
+		lines = append(lines, "- `"+singleLine(member.Package)+"` `"+singleLine(member.Test)+"` (fingerprint `"+member.Fingerprint+"`)")
+	}
+	return lines
+}
+
+func shortSHA(sha string) string {
+	sha = singleLine(sha)
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // isClosed reports whether a work item is in the provider's closed state. The
@@ -453,8 +685,12 @@ func occurrenceComment(run runMetadata, failure testFailure, reopened bool) stri
 		"",
 		"**Normalized signature:** `"+renderedSignature(failure.FailureSignature)+"`",
 		"",
-		failureSnippet(failure),
 	)
+	if len(failure.members) > 0 {
+		lines = append(lines, affectedFailureLines(failure)...)
+		lines = append(lines, "")
+	}
+	lines = append(lines, failureSnippet(failure))
 	return strings.Join(lines, "\n")
 }
 
