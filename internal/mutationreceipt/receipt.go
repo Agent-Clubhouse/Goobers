@@ -1,5 +1,5 @@
 // Package mutationreceipt defines inert semantic provider-mutation capture and
-// evidence contracts. It never decides whether to skip or retry an action.
+// evidence contracts. Reconciliation requires fresh provider-specific evidence.
 package mutationreceipt
 
 import (
@@ -133,7 +133,7 @@ func Capture(ctx context.Context, recorder Recorder, runID string, mutation Iden
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := action(ctx, receipt); err != nil {
+	if err := action(context.WithValue(ctx, capturedActionKey{}, true), receipt); err != nil {
 		return err
 	}
 	receipt.Phase = "completed"
@@ -141,4 +141,14 @@ func Capture(ctx context.Context, recorder Recorder, runID string, mutation Iden
 		return fmt.Errorf("persist semantic mutation completion: %w", err)
 	}
 	return nil
+}
+
+type capturedActionKey struct{}
+
+// IsCapturedAction reports whether a durable intent owns this side effect.
+// Provider transports must surface ambiguous write failures to reconciliation
+// instead of automatically repeating the write under the same receipt.
+func IsCapturedAction(ctx context.Context) bool {
+	captured, _ := ctx.Value(capturedActionKey{}).(bool)
+	return captured
 }

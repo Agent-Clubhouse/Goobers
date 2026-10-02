@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/mutationreceipt"
+
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 )
@@ -28,6 +30,8 @@ type GitHubProvider struct {
 	tokenSource TokenSource
 	// recorder receives "external ref touched" facts for the run journal.
 	recorder MutationRecorder
+	// Private and nil in production until #6356 PR3 completes transport and provider coverage.
+	mutationSession *mutationreceipt.Session
 	// rateObserver receives rate-limit backoff signals for telemetry.
 	rateObserver RateLimitObserver
 	// quotaObserver receives absolute remaining/reset response headers.

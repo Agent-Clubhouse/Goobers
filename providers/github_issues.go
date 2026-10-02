@@ -797,6 +797,9 @@ func claimLabelConvergenceDelay(attempt int, jitter func(time.Duration) time.Dur
 // applyLabelChanges adds labels (additive; GitHub ignores duplicates) and removes
 // labels, tolerating a 404 when a removed label is not present.
 func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryRef, id string, add, remove []string) error {
+	if client := continuationClient(p); client != nil {
+		return client.labels(ctx, repo, id, add, remove)
+	}
 	if add = uniqueStrings(add); len(add) > 0 {
 		endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "labels")
 		if err != nil {

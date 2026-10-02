@@ -735,6 +735,9 @@ func (p *GiteaProvider) listRepoLabels(ctx context.Context, repo RepositoryRef) 
 // IDs. Add posts the ID set; each removal is a DELETE of one label id,
 // tolerating a 404 when the label is not present.
 func (p *GiteaProvider) applyLabelChanges(ctx context.Context, repo RepositoryRef, id string, add, remove []string) error {
+	if client := continuationClient(p); client != nil {
+		return client.labels(ctx, repo, id, add, remove)
+	}
 	if add = uniqueStrings(add); len(add) > 0 {
 		addIDs, err := p.giteaLabelIDs(ctx, repo, add)
 		if err != nil {
