@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -30,7 +31,8 @@ func TestExecutorRefusesGuardedCredentialFilesBeforeAgentStarts(t *testing.T) {
 				_, err := os.ReadFile(keyPath)
 				return err
 			}}
-			opts := []Option{WithGuardedCredentialPaths([]string{keyPath})}
+			cfg := &instance.Config{API: instance.APIConfig{PodTokenKeyFile: keyPath}}
+			opts := []Option{WithGuardedCredentialPaths(instance.GuardedCredentialPaths(cfg))}
 			if enforced {
 				opts = append(opts, WithSandboxEnforcement())
 			}
