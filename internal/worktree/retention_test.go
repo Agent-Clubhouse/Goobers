@@ -688,3 +688,51 @@ func TestTerminalBranchAgeAndDeletionRevalidation(t *testing.T) {
 		})
 	}
 }
+
+func TestBranchRetentionRechecksRunProtectionAfterProviderReads(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		for _, change := range []string{"owner-resumed", "sibling-protected"} {
+			t.Run(fmt.Sprintf("merged=%v/%s", merged, change), func(t *testing.T) {
+				ctx := context.Background()
+				repo := newSourceRepo(t)
+				manager := newTestManager(t)
+				repoDir, err := manager.WorkingCopy(ctx, repo)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wt, tip := committedRunBranch(t, manager, repo, "changing", "main")
+				if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if merged {
+					runTestGit(t, repoDir, "update-ref", "refs/heads/main", tip)
+				}
+				now := time.Now()
+				terminal, protected, calls := true, false, 0
+				results, warnings, err := PruneRetained(ctx, []*Manager{manager}, RetentionOptions{
+					Now: now, Delete: true, TerminalBranchMaxAge: 30 * 24 * time.Hour,
+					IsRunTerminal:     func(string, string) (bool, error) { return terminal, nil },
+					IsBranchProtected: func(string, string) (bool, error) { return protected, nil },
+					RunTerminalAt:     func(string, string) (time.Time, error) { return now.Add(-31 * 24 * time.Hour), nil },
+					CanPruneBranch: func(string, string, string) (bool, error) {
+						calls++
+						if calls == 2 {
+							if change == "owner-resumed" {
+								terminal = false
+							} else {
+								protected = true
+							}
+						}
+						return true, nil
+					},
+				})
+				if err != nil || len(warnings) != 0 || len(results) != 0 || calls != 2 {
+					t.Fatalf("results=%+v warnings=%+v err=%v provider calls=%d", results, warnings, err, calls)
+				}
+				if !branchExists(ctx, repoDir, "goobers/workflow/changing") {
+					t.Fatal("branch deleted after protection changed during provider lookup")
+				}
+			})
+		}
+	}
+}
