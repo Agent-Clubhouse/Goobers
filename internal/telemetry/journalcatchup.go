@@ -277,6 +277,10 @@ func canonicalJournalDir(root *os.Root, dir string) string {
 	return dir
 }
 
+// journalCatchupMtimeSlack is the timestamp granularity tolerated when
+// comparing a journal's mtime with the catch-up cutoff.
+const journalCatchupMtimeSlack = 2 * time.Second
+
 func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sql.DB, hint journalCatchupHint) (bool, error) {
 	hint.dir = canonicalJournalDir(root, hint.dir)
 	dir := hint.dir
@@ -290,7 +294,12 @@ func (s *journalCatchup) processBatch(ctx context.Context, root *os.Root, db *sq
 		if err != nil {
 			return false, err
 		}
-		if info.ModTime().Before(cutoff) {
+		// mtime comes from the kernel's coarse clock, which trails time.Now()
+		// by a tick (4ms on ext4) or by whole seconds on coarser filesystems.
+		// A journal created right after cutoff was taken (a run starting as
+		// the exporter does) can carry an mtime just before it; skipping it
+		// would silently drop the whole run. Event times still filter below.
+		if info.ModTime().Add(journalCatchupMtimeSlack).Before(cutoff) {
 			return false, nil
 		}
 		runFile = info
