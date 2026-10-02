@@ -546,8 +546,9 @@ func (a workerGoober) prepareExecutor(ctx context.Context, env apiv1.InvocationE
 	if err != nil {
 		return workerExecutorContext{}, err
 	}
+	transferred := false
 	defer func() {
-		if err != nil {
+		if !transferred {
 			release()
 		}
 	}()
@@ -573,6 +574,7 @@ func (a workerGoober) prepareExecutor(ctx context.Context, env apiv1.InvocationE
 	if err != nil {
 		return workerExecutorContext{}, err
 	}
+	transferred = true
 	return workerExecutorContext{ctx: ctx, exec: exec, release: release}, nil
 }
 
