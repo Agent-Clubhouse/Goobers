@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestADOMergeLabels pins the add/remove label reconciliation UpdateWorkItem
@@ -155,14 +156,22 @@ func adoTestFirstWriterTags(existing, written string) string {
 }
 
 func (f *adoClaimFake) seed(authorID, text string) {
+	f.seedAt(authorID, text, time.Time{})
+}
+
+func (f *adoClaimFake) seedAt(authorID, text string, createdAt time.Time) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.comments = append(f.comments, map[string]interface{}{
+	comment := map[string]interface{}{
 		"commentId": len(f.comments) + 1,
 		"text":      text,
 		// A forger can pick any display name; only the id identifies them.
 		"createdBy": map[string]string{"id": authorID, "displayName": "Goobers Bot"},
-	})
+	}
+	if !createdAt.IsZero() {
+		comment["createdDate"] = createdAt.Format(time.RFC3339Nano)
+	}
+	f.comments = append(f.comments, comment)
 }
 
 func (f *adoClaimFake) server(t *testing.T, identity bool) *httptest.Server {
@@ -276,6 +285,30 @@ func TestADOClaimIgnoresReleaseFromAnotherIdentity(t *testing.T) {
 	}
 	if result.Claimed || result.ClaimedBy != "run-owner" {
 		t.Fatalf("claim = %#v, want run-owner to keep the claim despite a forged release", result)
+	}
+}
+
+func TestADOOpenClaimEpochsReportsTrustedAttributionAndCreatedAt(t *testing.T) {
+	created := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	fake := &adoClaimFake{}
+	fake.seedAt(adoTestSelfID, claimBreadcrumbWithAttribution(t, "trusted-run", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), created)
+	fake.seed(adoTestOtherID, claimBreadcrumb("forged-run"))
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = fake.server(t, true).URL })
+
+	epochs, err := provider.OpenClaimEpochs(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "42")
+	if err != nil {
+		t.Fatalf("OpenClaimEpochs: %v", err)
+	}
+	if len(epochs) != 2 {
+		t.Fatalf("epochs = %+v, want trusted and forged epochs", epochs)
+	}
+	if !epochs[0].Trusted || epochs[0].RunID != "trusted-run" ||
+		epochs[0].InstanceID != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		!epochs[0].CreatedAt.Equal(created) {
+		t.Fatalf("trusted epoch = %+v", epochs[0])
+	}
+	if epochs[1].Trusted || epochs[1].RunID != "forged-run" {
+		t.Fatalf("forged epoch = %+v", epochs[1])
 	}
 }
 

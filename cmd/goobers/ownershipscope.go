@@ -166,6 +166,17 @@ func (p scopedIssueProvider) ReleaseWorkItemClaim(ctx context.Context, req provi
 	return releaser.ReleaseWorkItemClaim(ctx, req)
 }
 
+func (p scopedIssueProvider) OpenClaimEpochs(ctx context.Context, repo providers.RepositoryRef, id string) ([]providers.ClaimEpoch, error) {
+	if _, err := p.guardedItem(ctx, repo, id, "inspect issue claim epochs"); err != nil {
+		return nil, err
+	}
+	reader, ok := p.Provider.(providerClaimEpochReader)
+	if !ok {
+		return nil, fmt.Errorf("repository provider %q does not support issue claim epoch inspection", repo.Provider)
+	}
+	return reader.OpenClaimEpochs(ctx, repo, id)
+}
+
 func (p scopedIssueProvider) CreateWorkItem(ctx context.Context, req providers.CreateWorkItemRequest) (providers.WorkItem, error) {
 	if !p.scope.permitsAssignee(req.Assignee, nil) {
 		return providers.WorkItem{}, &issueOwnershipScopeError{

@@ -63,6 +63,10 @@ func TestIssueOwnershipScopeRejectsWrongOwnerMutations(t *testing.T) {
 				RunID:      tc.runID,
 			})
 			assertOwnershipRefusal(t, err)
+
+			reader := tc.provider.(providerClaimEpochReader)
+			_, err = reader.OpenClaimEpochs(context.Background(), repo, tc.id)
+			assertOwnershipRefusal(t, err)
 		})
 	}
 
@@ -77,6 +81,9 @@ func TestIssueOwnershipScopeRejectsWrongOwnerMutations(t *testing.T) {
 	}
 	if len(base.releases) != 0 {
 		t.Fatalf("claim releases = %+v, want none against cross-owned issues", base.releases)
+	}
+	if len(base.epochReads) != 0 {
+		t.Fatalf("claim epoch reads = %+v, want none against cross-owned issues", base.epochReads)
 	}
 	for id, item := range base.items {
 		if slices.Contains(item.Labels, providers.LabelClaimed) || item.Status != "" || item.Body != "" {
@@ -237,14 +244,15 @@ func assertOwnershipRefusal(t *testing.T, err error) {
 
 type ownershipFakeProvider struct {
 	providers.Provider
-	repo     providers.RepositoryRef
-	items    map[string]providers.WorkItem
-	updates  []providers.UpdateWorkItemRequest
-	statuses []providers.UpdateWorkItemStatusRequest
-	claims   []providers.ClaimWorkItemRequest
-	releases []providers.ClaimWorkItemRequest
-	creates  []providers.CreateWorkItemRequest
-	comments []string
+	repo       providers.RepositoryRef
+	items      map[string]providers.WorkItem
+	updates    []providers.UpdateWorkItemRequest
+	statuses   []providers.UpdateWorkItemStatusRequest
+	claims     []providers.ClaimWorkItemRequest
+	releases   []providers.ClaimWorkItemRequest
+	epochReads []string
+	creates    []providers.CreateWorkItemRequest
+	comments   []string
 
 	beforeUpdate func(providers.UpdateWorkItemRequest)
 }
@@ -327,6 +335,11 @@ func (p *ownershipFakeProvider) ReleaseWorkItemClaim(_ context.Context, req prov
 	item.Labels = slices.DeleteFunc(item.Labels, func(label string) bool { return label == providers.LabelClaimed })
 	p.items[req.ID] = item
 	return item, nil
+}
+
+func (p *ownershipFakeProvider) OpenClaimEpochs(_ context.Context, _ providers.RepositoryRef, id string) ([]providers.ClaimEpoch, error) {
+	p.epochReads = append(p.epochReads, id)
+	return []providers.ClaimEpoch{{RunID: "run-" + id, Trusted: true}}, nil
 }
 
 func (p *ownershipFakeProvider) ListWorkItemLabelTransitionsForItem(
