@@ -156,6 +156,9 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 		}
 	}
 	configureStageAttribution(provider, root)
+	if cfg.capability == capability.GitHubIssuesWrite && !cfg.readOnly {
+		return wrapIssueOwnershipProvider(provider), nil
+	}
 	return provider, nil
 }
 

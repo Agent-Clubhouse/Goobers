@@ -29,7 +29,7 @@ func readPriorDaemonLock(path string) (priorDaemonLock, error) {
 	}
 	var identity *daemonIdentity
 	if state != nil {
-		identity, err = state.daemonIdentity()
+		identity, err = state.DaemonIdentity()
 		if err != nil {
 			return priorDaemonLock{}, fmt.Errorf("read previous daemon identity: %w", err)
 		}
@@ -45,7 +45,7 @@ func readCurrentDaemonIdentity(path string) (*daemonIdentity, error) {
 	if state == nil || state.HolderKind != lockHolderDaemon {
 		return nil, errors.New("daemon lock does not contain the current daemon identity")
 	}
-	identity, err := state.daemonIdentity()
+	identity, err := state.DaemonIdentity()
 	if err != nil {
 		return nil, err
 	}

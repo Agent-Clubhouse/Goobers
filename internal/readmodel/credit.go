@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -123,28 +124,18 @@ ranked AS (
 SELECT gaggle, workflow, kind, name, identity, run_id FROM ranked
 WHERE evidence_rank <= ?
 ORDER BY gaggle, workflow, kind, name, identity, evidence_rank`
-	db, release, err := s.readHandle()
-	if err != nil {
-		return err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("readmodel: credit assignment run ids: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var key NodeCreditKey
-		var runID string
-		if err := rows.Scan(&key.Gaggle, &key.Workflow, &key.Kind, &key.Stage, &key.Identity, &runID); err != nil {
-			return fmt.Errorf("readmodel: scan credit assignment run id: %w", err)
-		}
-		into[key] = append(into[key], runID)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("readmodel: credit assignment run ids rows: %w", err)
-	}
-	return nil
+	return s.withReadRows(ctx, query, args,
+		"readmodel: credit assignment run ids",
+		"readmodel: credit assignment run ids rows",
+		func(rows *sql.Rows) error {
+			var key NodeCreditKey
+			var runID string
+			if err := rows.Scan(&key.Gaggle, &key.Workflow, &key.Kind, &key.Stage, &key.Identity, &runID); err != nil {
+				return fmt.Errorf("readmodel: scan credit assignment run id: %w", err)
+			}
+			into[key] = append(into[key], runID)
+			return nil
+		})
 }
 
 // CreditAssignment returns the highest-contributing graph nodes.
@@ -193,37 +184,30 @@ ORDER BY failure_runs + escalation_runs + retry_waste DESC,
          r.gaggle ASC, r.workflow ASC, rn.kind ASC, rn.name ASC, rn.identity ASC
 LIMIT ?`
 
-	db, release, err := s.readHandle()
+	var result []NodeCredit
+	err := s.withReadRows(ctx, query, args,
+		"readmodel: credit assignment",
+		"readmodel: credit assignment rows",
+		func(rows *sql.Rows) error {
+			var item NodeCredit
+			if err := rows.Scan(
+				&item.Gaggle,
+				&item.Workflow,
+				&item.Kind,
+				&item.Stage,
+				&item.Identity,
+				&item.RoutedRuns,
+				&item.FailureRuns,
+				&item.EscalationRuns,
+				&item.RetryWasteAttempts,
+			); err != nil {
+				return fmt.Errorf("readmodel: scan credit assignment: %w", err)
+			}
+			result = append(result, item)
+			return nil
+		})
 	if err != nil {
 		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: credit assignment: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var result []NodeCredit
-	for rows.Next() {
-		var item NodeCredit
-		if err := rows.Scan(
-			&item.Gaggle,
-			&item.Workflow,
-			&item.Kind,
-			&item.Stage,
-			&item.Identity,
-			&item.RoutedRuns,
-			&item.FailureRuns,
-			&item.EscalationRuns,
-			&item.RetryWasteAttempts,
-		); err != nil {
-			return nil, fmt.Errorf("readmodel: scan credit assignment: %w", err)
-		}
-		result = append(result, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: credit assignment rows: %w", err)
 	}
 	return result, nil
 }

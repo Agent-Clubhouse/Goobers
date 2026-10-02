@@ -421,6 +421,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/handoffcheck",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/hostedprogress",
       "coverage": "none",
       "category": "not-selected",
@@ -431,6 +437,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the read-model definition invalidation test runs, in the 'Windows worktree and event stream' step."
+    },
+    {
+      "package": "internal/instancelock",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Instance lock mechanics extracted from cmd/goobers; runs on the Linux unit shards."
     },
     {
       "package": "internal/intervention",
@@ -623,6 +635,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/providerconfig",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure provider configuration mapping extracted from cmd/goobers; runs on the Linux unit shards."
     },
     {
       "package": "internal/providerfixture",

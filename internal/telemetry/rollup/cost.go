@@ -154,6 +154,20 @@ type costModelRun struct {
 	measuredAttempts int
 }
 
+type attributedCostUsageSpec struct {
+	table, alias, selectColumns, joins, orderBy string
+	stageColumn, errorName                      string
+	hasModel                                    bool
+	add                                         func(runID string, model *string, measures costMeasures)
+}
+
+type costMeasureDestination struct {
+	input, output, cacheRead, cacheWrite, reasoning **int64
+	premium, costUSD                                **float64
+	nanoAIU                                         **int64
+	billingModels, costBases                        *[]string
+}
+
 // RunCostAttributions returns a run's relationships in deterministic order.
 func (db *DB) RunCostAttributions(ctx context.Context, runID string) ([]RunCostAttribution, error) {
 	rows, err := db.readDB().QueryContext(ctx, `
@@ -518,124 +532,124 @@ func loadCostRunReferences(ctx context.Context, tx *sql.Tx, provider string, cos
 }
 
 func loadCostAttemptUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
-	query := `
-		SELECT sa.run_id, su.input_tokens, su.output_tokens,
-		       su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens,
-		       su.copilot_premium_requests, su.nano_aiu, su.cost_usd,
-		       su.billing_model, su.cost_basis
-		FROM stage_attempts sa
-		JOIN runs r ON r.run_id = sa.run_id
-		LEFT JOIN stage_usage su
+	return loadAttributedCostUsage(ctx, tx, provider, costQuery, attributedCostUsageSpec{
+		table:         "stage_attempts",
+		alias:         "sa",
+		selectColumns: "su.input_tokens, su.output_tokens, su.cache_read_tokens, su.cache_write_tokens, su.reasoning_tokens, su.copilot_premium_requests, su.nano_aiu, su.cost_usd, su.billing_model, su.cost_basis",
+		joins: `LEFT JOIN stage_usage su
 			ON su.run_id = sa.run_id AND su.stage = sa.stage
-			AND su.traversal = sa.traversal AND su.branch IS sa.branch
+			AND su.traversal = sa.traversal AND su.branch IS sa.branch`,
+		stageColumn: "sa.stage",
+		orderBy:     "sa.run_id, sa.stage, sa.traversal",
+		errorName:   "attempt",
+		add: func(runID string, _ *string, measures costMeasures) {
+			run := byID[runID]
+			if run == nil {
+				return
+			}
+			run.attempts++
+			if measures.measured() {
+				run.measuredAttempts++
+			}
+			run.measures.add(measures)
+		},
+	})
+}
+
+func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
+	return loadAttributedCostUsage(ctx, tx, provider, costQuery, attributedCostUsageSpec{
+		table:         "stage_model_usage",
+		alias:         "smu",
+		selectColumns: "smu.model, smu.input_tokens, smu.output_tokens, smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens, smu.copilot_premium_requests, smu.nano_aiu, smu.cost_usd, smu.billing_model, smu.cost_basis",
+		stageColumn:   "smu.stage",
+		orderBy:       "smu.run_id, smu.stage, smu.traversal, smu.model",
+		errorName:     "model",
+		hasModel:      true,
+		add: func(runID string, model *string, measures costMeasures) {
+			run := byID[runID]
+			if run == nil {
+				return
+			}
+			if run.models == nil {
+				run.models = make(map[string]*costModelRun)
+			}
+			modelRun := run.models[*model]
+			if modelRun == nil {
+				modelRun = &costModelRun{}
+				run.models[*model] = modelRun
+			}
+			modelRun.attempts++
+			if measures.measured() {
+				modelRun.measuredAttempts++
+			}
+			modelRun.measures.add(measures)
+		},
+	})
+}
+
+func loadAttributedCostUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, spec attributedCostUsageSpec) error {
+	query := "\n\t\tSELECT " + spec.alias + ".run_id, " + spec.selectColumns +
+		"\n\t\tFROM " + spec.table + " " + spec.alias +
+		"\n\t\tJOIN runs r ON r.run_id = " + spec.alias + ".run_id"
+	if spec.joins != "" {
+		query += "\n\t\t" + spec.joins
+	}
+	query += `
 		WHERE EXISTS (
 			SELECT 1 FROM run_cost_attribution a
-			WHERE a.run_id = sa.run_id AND a.provider = ?
+			WHERE a.run_id = ` + spec.alias + `.run_id AND a.provider = ?
 		)`
 	args := []any{provider}
 	query, args = appendCostRunIdentityScope(query, args, "r", costQuery)
 	if costQuery.Stage != "" {
-		query += " AND sa.stage = ?"
+		query += " AND " + spec.stageColumn + " = ?"
 		args = append(args, costQuery.Stage)
 	}
 	query, args = appendCostWindow(query, args, "r.started_at", costQuery.Since, costQuery.Until)
-	query += ` ORDER BY sa.run_id, sa.stage, sa.traversal`
+	query += " ORDER BY " + spec.orderBy
 	usageRows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("rollup: query attributed attempt usage: %w", err)
+		return fmt.Errorf("rollup: query attributed %s usage: %w", spec.errorName, err)
 	}
 	defer func() { _ = usageRows.Close() }()
 	for usageRows.Next() {
-		var runID string
-		var input, output, cacheRead, cacheWrite, reasoning, nanoAIU sql.NullInt64
-		var premium, costUSD sql.NullFloat64
-		var billingModel, costBasis sql.NullString
-		if err := usageRows.Scan(
-			&runID, &input, &output, &cacheRead, &cacheWrite, &reasoning,
-			&premium, &nanoAIU, &costUSD, &billingModel, &costBasis,
-		); err != nil {
-			return fmt.Errorf("rollup: scan attributed attempt usage: %w", err)
+		runID, model, measures, err := scanAttributedCostUsage(usageRows, spec.hasModel)
+		if err != nil {
+			return fmt.Errorf("rollup: scan attributed %s usage: %w", spec.errorName, err)
 		}
-		run := byID[runID]
-		if run == nil {
-			continue
-		}
-		run.attempts++
-		if nanoAIU.Valid || costUSD.Valid {
-			run.measuredAttempts++
-		}
-		run.measures.addRow(input, output, cacheRead, cacheWrite, reasoning, premium, nanoAIU, costUSD, billingModel, costBasis)
+		spec.add(runID, model, measures)
 	}
 	if err := usageRows.Err(); err != nil {
-		return fmt.Errorf("rollup: iterate attributed attempt usage: %w", err)
+		return fmt.Errorf("rollup: iterate attributed %s usage: %w", spec.errorName, err)
 	}
 	if err := usageRows.Close(); err != nil {
-		return fmt.Errorf("rollup: close attributed attempt usage: %w", err)
+		return fmt.Errorf("rollup: close attributed %s usage: %w", spec.errorName, err)
 	}
 	return nil
 }
 
-func loadCostModelUsage(ctx context.Context, tx *sql.Tx, provider string, costQuery CostQuery, byID map[string]*costRun) error {
-	query := `
-		SELECT smu.run_id, smu.model, smu.input_tokens, smu.output_tokens,
-		       smu.cache_read_tokens, smu.cache_write_tokens, smu.reasoning_tokens,
-		       smu.copilot_premium_requests, smu.nano_aiu, smu.cost_usd,
-		       smu.billing_model, smu.cost_basis
-		FROM stage_model_usage smu
-		JOIN runs r ON r.run_id = smu.run_id
-		WHERE EXISTS (
-			SELECT 1 FROM run_cost_attribution a
-			WHERE a.run_id = smu.run_id AND a.provider = ?
-		)`
-	args := []any{provider}
-	query, args = appendCostRunIdentityScope(query, args, "r", costQuery)
-	if costQuery.Stage != "" {
-		query += " AND smu.stage = ?"
-		args = append(args, costQuery.Stage)
+func scanAttributedCostUsage(rows *sql.Rows, hasModel bool) (string, *string, costMeasures, error) {
+	var runID, model string
+	var input, output, cacheRead, cacheWrite, reasoning, nanoAIU sql.NullInt64
+	var premium, costUSD sql.NullFloat64
+	var billingModel, costBasis sql.NullString
+	destinations := []any{&runID}
+	if hasModel {
+		destinations = append(destinations, &model)
 	}
-	query, args = appendCostWindow(query, args, "r.started_at", costQuery.Since, costQuery.Until)
-	query += ` ORDER BY smu.run_id, smu.stage, smu.traversal, smu.model`
-	modelRows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("rollup: query attributed model usage: %w", err)
+	destinations = append(destinations,
+		&input, &output, &cacheRead, &cacheWrite, &reasoning,
+		&premium, &nanoAIU, &costUSD, &billingModel, &costBasis,
+	)
+	if err := rows.Scan(destinations...); err != nil {
+		return "", nil, costMeasures{}, err
 	}
-	defer func() { _ = modelRows.Close() }()
-	for modelRows.Next() {
-		var runID, model string
-		var input, output, cacheRead, cacheWrite, reasoning, nanoAIU sql.NullInt64
-		var premium, costUSD sql.NullFloat64
-		var billingModel, costBasis sql.NullString
-		if err := modelRows.Scan(
-			&runID, &model, &input, &output, &cacheRead, &cacheWrite, &reasoning,
-			&premium, &nanoAIU, &costUSD, &billingModel, &costBasis,
-		); err != nil {
-			return fmt.Errorf("rollup: scan attributed model usage: %w", err)
-		}
-		run := byID[runID]
-		if run == nil {
-			continue
-		}
-		if run.models == nil {
-			run.models = make(map[string]*costModelRun)
-		}
-		modelRun := run.models[model]
-		if modelRun == nil {
-			modelRun = &costModelRun{}
-			run.models[model] = modelRun
-		}
-		modelRun.attempts++
-		if nanoAIU.Valid || costUSD.Valid {
-			modelRun.measuredAttempts++
-		}
-		modelRun.measures.addRow(input, output, cacheRead, cacheWrite, reasoning, premium, nanoAIU, costUSD, billingModel, costBasis)
+	measures := costMeasures{}
+	measures.addRow(input, output, cacheRead, cacheWrite, reasoning, premium, nanoAIU, costUSD, billingModel, costBasis)
+	if hasModel {
+		return runID, &model, measures, nil
 	}
-	if err := modelRows.Err(); err != nil {
-		return fmt.Errorf("rollup: iterate attributed model usage: %w", err)
-	}
-	if err := modelRows.Close(); err != nil {
-		return fmt.Errorf("rollup: close attributed model usage: %w", err)
-	}
-	return nil
+	return runID, nil, measures, nil
 }
 
 func appendCostWindow(query string, args []any, column string, since, until time.Time) (string, []any) {
@@ -692,6 +706,37 @@ func (m *costMeasures) addRow(input, output, cacheRead, cacheWrite, reasoning sq
 			m.costBases = make(map[string]struct{})
 		}
 		m.costBases[costBasis.String] = struct{}{}
+	}
+}
+
+func (m *costMeasures) add(other costMeasures) {
+	m.input.value += other.input.value
+	m.input.valid = m.input.valid || other.input.valid
+	m.output.value += other.output.value
+	m.output.valid = m.output.valid || other.output.valid
+	m.cacheRead.value += other.cacheRead.value
+	m.cacheRead.valid = m.cacheRead.valid || other.cacheRead.valid
+	m.cacheWrite.value += other.cacheWrite.value
+	m.cacheWrite.valid = m.cacheWrite.valid || other.cacheWrite.valid
+	m.reasoning.value += other.reasoning.value
+	m.reasoning.valid = m.reasoning.valid || other.reasoning.valid
+	m.premium.value += other.premium.value
+	m.premium.valid = m.premium.valid || other.premium.valid
+	m.nanoAIU.value += other.nanoAIU.value
+	m.nanoAIU.valid = m.nanoAIU.valid || other.nanoAIU.valid
+	m.costUSD.value += other.costUSD.value
+	m.costUSD.valid = m.costUSD.valid || other.costUSD.valid
+	for name := range other.billingModels {
+		if m.billingModels == nil {
+			m.billingModels = make(map[string]struct{})
+		}
+		m.billingModels[name] = struct{}{}
+	}
+	for name := range other.costBases {
+		if m.costBases == nil {
+			m.costBases = make(map[string]struct{})
+		}
+		m.costBases[name] = struct{}{}
 	}
 }
 
@@ -827,16 +872,13 @@ func addCostRun(groups map[string]map[string]*costRun, externalID string, run *c
 }
 
 func addMeasuresToAggregate(dst *CostAggregate, src costMeasures) {
-	addIntPointer(&dst.InputTokens, src.input)
-	addIntPointer(&dst.OutputTokens, src.output)
-	addIntPointer(&dst.CacheReadTokens, src.cacheRead)
-	addIntPointer(&dst.CacheWriteTokens, src.cacheWrite)
-	addIntPointer(&dst.ReasoningTokens, src.reasoning)
-	addFloatPointer(&dst.CopilotPremiumRequests, src.premium)
-	addIntPointer(&dst.NanoAIU, src.nanoAIU)
-	addFloatPointer(&dst.CostUSD, src.costUSD)
-	dst.BillingModels = mergeNames(dst.BillingModels, src.billingModels)
-	dst.CostBases = mergeNames(dst.CostBases, src.costBases)
+	addMeasures(costMeasureDestination{
+		input: &dst.InputTokens, output: &dst.OutputTokens,
+		cacheRead: &dst.CacheReadTokens, cacheWrite: &dst.CacheWriteTokens,
+		reasoning: &dst.ReasoningTokens, premium: &dst.CopilotPremiumRequests,
+		nanoAIU: &dst.NanoAIU, costUSD: &dst.CostUSD,
+		billingModels: &dst.BillingModels, costBases: &dst.CostBases,
+	}, src)
 }
 
 func addModelsToAggregate(dst *CostAggregate, run *costRun) {
@@ -906,16 +948,26 @@ func modelAggregate(dst *CostAggregate, model string) *CostModelAggregate {
 }
 
 func addMeasuresToModelAggregate(dst *CostModelAggregate, src costMeasures) {
-	addIntPointer(&dst.InputTokens, src.input)
-	addIntPointer(&dst.OutputTokens, src.output)
-	addIntPointer(&dst.CacheReadTokens, src.cacheRead)
-	addIntPointer(&dst.CacheWriteTokens, src.cacheWrite)
-	addIntPointer(&dst.ReasoningTokens, src.reasoning)
-	addFloatPointer(&dst.CopilotPremiumRequests, src.premium)
-	addIntPointer(&dst.NanoAIU, src.nanoAIU)
-	addFloatPointer(&dst.CostUSD, src.costUSD)
-	dst.BillingModels = mergeNames(dst.BillingModels, src.billingModels)
-	dst.CostBases = mergeNames(dst.CostBases, src.costBases)
+	addMeasures(costMeasureDestination{
+		input: &dst.InputTokens, output: &dst.OutputTokens,
+		cacheRead: &dst.CacheReadTokens, cacheWrite: &dst.CacheWriteTokens,
+		reasoning: &dst.ReasoningTokens, premium: &dst.CopilotPremiumRequests,
+		nanoAIU: &dst.NanoAIU, costUSD: &dst.CostUSD,
+		billingModels: &dst.BillingModels, costBases: &dst.CostBases,
+	}, src)
+}
+
+func addMeasures(dst costMeasureDestination, src costMeasures) {
+	addIntPointer(dst.input, src.input)
+	addIntPointer(dst.output, src.output)
+	addIntPointer(dst.cacheRead, src.cacheRead)
+	addIntPointer(dst.cacheWrite, src.cacheWrite)
+	addIntPointer(dst.reasoning, src.reasoning)
+	addFloatPointer(dst.premium, src.premium)
+	addIntPointer(dst.nanoAIU, src.nanoAIU)
+	addFloatPointer(dst.costUSD, src.costUSD)
+	*dst.billingModels = mergeNames(*dst.billingModels, src.billingModels)
+	*dst.costBases = mergeNames(*dst.costBases, src.costBases)
 }
 
 func addIntPointer(dst **int64, src optionalInt) {

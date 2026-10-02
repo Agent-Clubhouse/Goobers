@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,8 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -61,6 +65,100 @@ func TestEscalationsListsOnlyEscalatedRuns(t *testing.T) {
 		got.Escalations[0].Cause.Selector.Name != "review" ||
 		got.Escalations[0].Cause.RepassCount != 3 {
 		t.Fatalf("escalations = %+v", got.Escalations)
+	}
+}
+
+func TestEscalationsLimitUsesExistingReadModelWithoutRunJournalWalk(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 12, 8, 0, 0, 0, time.UTC)
+	for i := range 1000 {
+		runID := fmt.Sprintf("projected-escalated-%04d", i)
+		if i >= 1000-defaultEscalationListLimit {
+			createEscalationInspectionRun(t, root, runID)
+		}
+		startedAt := base.Add(time.Duration(i) * time.Minute)
+		if err := store.UpsertRun(context.Background(), readmodel.Projection{Run: readmodel.RunRow{
+			RunID:        runID,
+			Gaggle:       "example",
+			Workflow:     "default-implement",
+			Phase:        journal.PhaseEscalated,
+			Terminal:     true,
+			StartedAt:    startedAt,
+			FinishedAt:   &startedAt,
+			LastActivity: startedAt,
+			LastSeq:      1,
+			RepassCount:  2,
+			RetryCount:   1,
+			Operator: readmodel.OperatorFacts{
+				LatestError: &journal.ErrorDetail{Message: "repass budget exhausted"},
+			},
+		}}); err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := store.MarkReady(context.Background()); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	code, stdout, stderr := runArgs(t, "escalations", "--json", root)
+	work := readprobe.Take()
+	readprobe.Disable()
+	if code != 0 {
+		t.Fatalf("escalations: code=%d stderr=%q", code, stderr)
+	}
+	var got escalationListResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode escalations JSON: %v\n%s", err, stdout)
+	}
+	if len(got.Escalations) != defaultEscalationListLimit {
+		t.Fatalf("escalations returned %d runs, want default limit %d", len(got.Escalations), defaultEscalationListLimit)
+	}
+	if got.Escalations[0].Run.ID != "projected-escalated-0999" {
+		t.Fatalf("first escalation = %q, want newest projected run", got.Escalations[0].Run.ID)
+	}
+	if got.Escalations[0].Cause == nil ||
+		got.Escalations[0].Cause.Selector.Kind != "gate" ||
+		got.Escalations[0].Cause.Selector.Name != "review" ||
+		got.Escalations[0].Cause.RepassCount != 3 ||
+		got.Escalations[0].Cause.RetryCount != 0 ||
+		got.Escalations[0].Cause.TerminalReason != "repass budget exhausted" {
+		t.Fatalf("projected cause = %+v", got.Escalations[0].Cause)
+	}
+	if work.JournalOpens > defaultEscalationListLimit {
+		t.Fatalf("escalations opened %d run journals with 1,000 projected escalations, want at most %d", work.JournalOpens, defaultEscalationListLimit)
+	}
+}
+
+func TestEscalationsRefusesUnreadyReadModelByDefault(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "escalations", "--json", root)
+	if code != 2 {
+		t.Fatalf("escalations: code=%d stdout=%q stderr=%q, want usage/read error", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "bounded reads are unavailable") ||
+		!strings.Contains(stderr, "--limit 0") {
+		t.Fatalf("stderr = %q, want bounded-read refusal with full-scan opt-in", stderr)
 	}
 }
 

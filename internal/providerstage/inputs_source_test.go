@@ -66,6 +66,7 @@ var providerInputSourceOwners = map[string]inputSourceOwner{
 	"mergepr.go":                     {command: "merge-pr"},
 	"mergequeuepoll.go":              {command: "merge-queue-poll"},
 	"openpr.go":                      {command: "open-pr"},
+	"ownershipscope.go":              {},
 	"postmerge.go":                   {command: "post-merge"},
 	"postmergereconcile.go":          {command: "reconcile-post-merge"},
 	"prclaim.go":                     {command: "pr-claim"},
@@ -222,6 +223,10 @@ func providerInputArgumentName(expression ast.Expr) (string, bool) {
 			return "resultFile", true
 		case "InputMaxOutputBytes":
 			return "maxOutputBytes", true
+		case "InputOwnershipAssignees":
+			return "ownershipAssignees", true
+		case "InputOwnershipUnassigned":
+			return "ownershipUnassigned", true
 		}
 	}
 	return "", false

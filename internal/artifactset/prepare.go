@@ -81,6 +81,9 @@ func Prepare(ctx context.Context, workspace, manifestPath string, sanitize Sanit
 			return nil, err
 		}
 		rawTotal += int64(len(data))
+		if err := checkJSONHandoff(entry.Name, entry.MediaType, data); err != nil {
+			return nil, err
+		}
 		clean, err := sanitize(entry.MediaType, data)
 		if err != nil {
 			return nil, fmt.Errorf("%w: payload rejected by sanitization policy", ErrInvalid)

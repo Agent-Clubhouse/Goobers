@@ -496,6 +496,10 @@ func statusCodeFrom(err error) (int, bool) {
 // retryable/non-retryable split, never a second, independent opinion on
 // whether the failure is retryable.
 func classifyProviderError(err error) (code string, retryable bool, extra map[string]interface{}) {
+	var ownership *issueOwnershipScopeError
+	if errors.As(err, &ownership) {
+		return ownership.ErrorCode(), false, map[string]interface{}{"errorClass": ownership.ErrorClass()}
+	}
 	if rl, ok := providers.AsRateLimitError(err); ok {
 		extra = map[string]interface{}{}
 		if !rl.Reset.IsZero() {

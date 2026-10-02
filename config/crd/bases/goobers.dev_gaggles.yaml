@@ -305,6 +305,30 @@ spec:
                 required:
                 - namespace
                 type: object
+              issueOwnershipScope:
+                description: |-
+                  IssueOwnershipScope is the default ownership policy every workflow task
+                  in this gaggle inherits for provider-visible issue writes. A task may
+                  override the policy with ownershipAssignees / ownershipUnassigned inputs.
+                  Empty leaves writes unrestricted, preserving legacy behavior.
+                properties:
+                  assignees:
+                    description: |-
+                      Assignees are provider identities this gaggle may mutate. Empty means no
+                      assigned-owner restriction, though Unassigned may still refuse unassigned
+                      issues.
+                    items:
+                      type: string
+                    type: array
+                  unassigned:
+                    description: |-
+                      Unassigned controls whether unassigned issues are in scope. Empty behaves
+                      as "allow" when Assignees is empty and "refuse" when Assignees is set.
+                    enum:
+                    - allow
+                    - refuse
+                    type: string
+                type: object
               outboxMirrorPath:
                 description: |-
                   OutboxMirrorPath is the default local filesystem root where workflows in

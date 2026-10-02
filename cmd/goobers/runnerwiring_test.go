@@ -80,6 +80,39 @@ func resolveGrants(t *testing.T, r credentials.Resolver, grants []credentials.Gr
 	return out
 }
 
+func TestIssueOwnershipScopeByGaggle(t *testing.T) {
+	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "cloud"},
+			Spec: apiv1.GaggleSpec{IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+				Assignees:  []string{"cloud-bot", "cloud-alt"},
+				Unassigned: "refuse",
+			}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "local"},
+			Spec: apiv1.GaggleSpec{IssueOwnershipScope: &apiv1.IssueOwnershipScope{
+				Assignees:  []string{"local-bot"},
+				Unassigned: "allow",
+			}},
+		},
+		{ObjectMeta: metav1.ObjectMeta{Name: "legacy"}},
+	}}
+
+	if got, want := issueOwnershipAssigneesByGaggle(set), map[string]string{
+		"cloud": "cloud-bot,cloud-alt",
+		"local": "local-bot",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("assignees = %#v, want %#v", got, want)
+	}
+	if got, want := issueOwnershipUnassignedByGaggle(set), map[string]string{
+		"cloud": "refuse",
+		"local": "allow",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("unassigned = %#v, want %#v", got, want)
+	}
+}
+
 type runnerWiringModelLister struct {
 	responses [][]harness.CopilotModelInfo
 	env       []string
@@ -2609,24 +2642,24 @@ func TestWorkflowRuntimeIndexesUseGaggleAndName(t *testing.T) {
 		return exec.LookPath(name)
 	}
 	t.Cleanup(func() { runnerLookPath = previousLookPath })
-	definitions, err := buildSchedulerDefinitions(
-		layout,
-		&instance.Config{},
-		set,
-		nil,
-		&wg,
-		newDaemonRunnerRegistry(),
-		nil,
-		nil,
-		nil,
-		log,
-		journal.NewRegistryScrubber(),
-		nil,
-		localscheduler.NewProviderQuotaState(),
-		nil,
-		nil,
-		nil,
-	)
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           layout,
+		Config:           &instance.Config{},
+		Definitions:      set,
+		Validation:       nil,
+		WaitGroup:        &wg,
+		RunnerRegistry:   newDaemonRunnerRegistry(),
+		Telemetry:        nil,
+		RollupDB:         nil,
+		Watermarks:       nil,
+		InstanceLog:      log,
+		SharedRegistry:   journal.NewRegistryScrubber(),
+		WorktreeManagers: nil,
+		ProviderQuota:    localscheduler.NewProviderQuotaState(),
+		TerminalNotifier: nil,
+		CredentialStores: nil,
+		StartupProgress:  nil,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3671,6 +3704,7 @@ func repoConfig() *instance.Config {
 // configured AND some workflow opts into the MaxOpenPRs cap — so an instance
 // that doesn't use the cap grows no GitHub poller.
 func TestBuildOpenPRRefresher(t *testing.T) {
+	t.Parallel()
 	t.Run("nil for a repo-less instance", func(t *testing.T) {
 		r, err := buildOpenPRRefresher(&instance.Config{}, cappedWorkflows(), nil, &escTestRegistrar{}, nil, "", nil)
 		if err != nil || r != nil {
@@ -3734,13 +3768,12 @@ func TestBuildOpenPRRefresherRoutesPerGaggleRepo(t *testing.T) {
 		"token-repo-a": {"goobers/implementation/run-1", "goobers-site/implementation/decoy"},
 		"token-repo-b": {"goobers-site/implementation/run-2", "goobers-site/implementation/run-3"},
 	}
-	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	deps := productionRuntimeDeps()
+	deps.openPRListers.github = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 		return &fakeHeadLister{heads: headsByToken[token]}
 	}
-	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	set, err := buildOpenPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
+	set, err := deps.openPRRefresher(cfg, workflows, projects, &openPRTestRegistrar{},
 		map[string]string{"site": "goobers-site"}, "", nil)
 	if err != nil {
 		t.Fatalf("buildOpenPRRefresher: %v", err)
@@ -3803,14 +3836,12 @@ func TestResolvingOpenPRListerResolvesTokenPerCall(t *testing.T) {
 
 	fake := &fakeHeadLister{heads: []string{"goobers/implementation/run-1"}}
 	var gotToken string
-	prev := newOpenPRProvider
-	newOpenPRProvider = func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
+	newProvider := func(token string, _ ...func(*providers.GitHubProvider)) localscheduler.OpenPRLister {
 		gotToken = token
 		return fake
 	}
-	t.Cleanup(func() { newOpenPRProvider = prev })
 
-	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg}
+	l := &resolvingOpenPRLister{ref: "acme/web", resolver: resolver, reg: reg, newProvider: newProvider}
 	prs, err := l.ListOpenPullRequests(context.Background(), providers.RepositoryRef{Owner: "acme", Name: "web"})
 	if err != nil {
 		t.Fatalf("ListOpenPullRequests: %v", err)

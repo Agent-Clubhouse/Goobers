@@ -80,30 +80,23 @@ type AggregateOptions struct {
 // count, in one query.
 func (s *Store) LatestPerWorkflow(ctx context.Context, options AggregateOptions) ([]WorkflowLatest, error) {
 	query, args := latestPerWorkflowQuery(options)
-	db, release, err := s.readHandle()
+	var out []WorkflowLatest
+	err := s.withReadRows(ctx, query, args,
+		"readmodel: latest per workflow",
+		"readmodel: latest per workflow rows",
+		func(rows *sql.Rows) error {
+			// The row is scanned by the SAME helper the list uses, against the same
+			// column list. Sharing it is what keeps the Workflows page and the Runs
+			// page from drifting into two different ideas of what a run looks like.
+			row, active, err := scanAggregateRow(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, WorkflowLatest{Run: row, ActiveRuns: active})
+			return nil
+		})
 	if err != nil {
 		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: latest per workflow: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []WorkflowLatest
-	for rows.Next() {
-		// The row is scanned by the SAME helper the list uses, against the same
-		// column list. Sharing it is what keeps the Workflows page and the Runs
-		// page from drifting into two different ideas of what a run looks like.
-		row, active, err := scanAggregateRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, WorkflowLatest{Run: row, ActiveRuns: active})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: latest per workflow rows: %w", err)
 	}
 	return out, nil
 }

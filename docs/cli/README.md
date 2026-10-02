@@ -1774,13 +1774,15 @@ $ goobers engine-start default-implement
 list escalated runs newest first
 
 ~~~text
-Usage: goobers escalations [--json] [--api=<url>] [path]
+Usage: goobers escalations [--json] [--limit=<n>] [--since=<time>] [--api=<url>] [path]
        goobers escalations show [--json] [--include-verdict] [--api=<url>] <run-id> [path]
        goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]
 
 List escalated runs newest first. Use `escalations show` to inspect an
 escalation cause and the artifacts available before and after each stage,
-and `escalations resolve` to approve, redirect, or deny one.
+and `escalations resolve` to approve, redirect, or deny one. The list is
+bounded to 50 runs by default; use --limit 0 only when an explicit full scan
+is acceptable.
 ~~~
 
 **Examples**
@@ -3286,8 +3288,9 @@ true; known failing and unknown states are never eligible. authorScope
 defaults to goobers;
 set it to any to admit PRs outside headPrefixes as advisory-only. PRs
 may be filtered by exact author, assignee, and requestedReviewer inputs.
-PRs labeled goobers:no-merge-review or goobers:run-aborted are always
-excluded. Before selection,
+PRs labeled goobers:no-merge-review are always excluded. A run-aborted
+PR is excluded unless audited recovery proves a later remediation completed.
+Before selection,
 park narrower PRs behind open PRs that clearly dominate a shared-file
 rewrite or deletion. Writes the
 selected PR's number/head/base/headSha/baseSha/url/advisoryMode to the declared

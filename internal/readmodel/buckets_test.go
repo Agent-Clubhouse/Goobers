@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -159,6 +160,24 @@ func TestProjectionMarksItsDayDirty(t *testing.T) {
 	if !found {
 		t.Errorf("dirty days = %v, want it to contain %q; without the marker the day is "+
 			"never recomputed and its buckets go stale silently", dirty, want)
+	}
+}
+
+func TestDirtyDaysReturnsOldestLimitedPage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	seedForBucket(t, store, 1, base.AddDate(0, 0, 2), journal.PhaseCompleted, "pass")
+	seedForBucket(t, store, 2, base, journal.PhaseCompleted, "pass")
+	seedForBucket(t, store, 3, base.AddDate(0, 0, 1), journal.PhaseCompleted, "pass")
+
+	got, err := store.DirtyDays(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{base.Format(dayFormat), base.AddDate(0, 0, 1).Format(dayFormat)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dirty days = %v, want %v", got, want)
 	}
 }
 
