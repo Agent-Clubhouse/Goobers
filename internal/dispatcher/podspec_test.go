@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"regexp"
@@ -15,12 +16,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
 func testConfig() Config {
 	return Config{
+		LaunchReceipts:   receiptRecorderFunc(func(context.Context, launchreceipt.Receipt) error { return nil }),
 		GaggleNamespaces: map[string]string{"alpha": "gaggle-alpha"},
 		InstanceID:       "0123456789abcdef0123456789abcdef",
 		Owner:            "goobers-worker-0",

@@ -161,6 +161,9 @@ const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 // WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
 const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
 
+// LaunchGrantPrincipalIssuer confines a controller grant to one receipt write.
+const LaunchGrantPrincipalIssuer = "goobers/launch-grant"
+
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
 // authorizer admits it to the credential refresh route and nothing else.
@@ -422,6 +425,9 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if handled, err := authorizeLaunchReceipt(request, principal); handled {
+			return err
+		}
 		if principal.Issuer == CredentialGrantPrincipalIssuer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
 				return nil
@@ -614,6 +620,7 @@ type handlerConfig struct {
 	blobs                   blobstore.Store
 	recovery                RecoveryService
 	surrenders              SurrenderService
+	launchReceipts          LaunchReceiptService
 	state                   StateService
 	telemetryDefects        TelemetryDefectAggregateService
 	podRunGaggle            func(context.Context, string) (string, error)
@@ -1182,6 +1189,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		apicontract.RouteRunRecoveryPublish: recoveryPublishHandler(config.recovery, errorLog),
 	})
 	registerSurrenderPlaneRoutes(router, config, errorLog)
+	registerLaunchReceiptRoute(router, config.launchReceipts)
 	registerStatePlaneRoutes(router, config.state, errorLog)
 }
 

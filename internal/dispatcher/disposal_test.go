@@ -43,7 +43,7 @@ func TestDispatchCancellationReportsUnconfirmedDisposal(t *testing.T) {
 				}
 				return context.DeadlineExceeded
 			}
-			report, err := d.Dispatch(ctx, testAttempt(), []RunnerSpec{linuxRunner()})
+			report, err := dispatchFixture(d, ctx, testAttempt(), []RunnerSpec{linuxRunner()})
 			if !errors.Is(err, context.Canceled) || !report.Disposed || !errors.Is(report.DisposeErr, want) || report.SurrenderConfirmed {
 				t.Fatalf("cancellation/DELETE acceptance/uncertainty = %+v, %v", report, err)
 			}

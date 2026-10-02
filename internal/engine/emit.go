@@ -212,6 +212,12 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 	if err := workflow.ExecuteActivity(emitActivityContext(ctx), ActEmitJournal, req).Get(ctx, &resp); err != nil {
 		return fmt.Errorf("engine: emit journal ops for run %s: %w", r.proj.Identity.RunID, err)
 	}
+	if r.startAcks == nil {
+		r.startAcks = make(map[string]livejournal.StartAcknowledgment)
+	}
+	for _, ack := range resp.Starts {
+		r.startAcks[ack.Key] = ack
+	}
 	r.emitted = pending
 	return nil
 }

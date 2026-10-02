@@ -24,6 +24,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/temporaltest"
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
@@ -78,7 +79,7 @@ func assertDispatchCancellationCleanup(t *testing.T, ctx context.Context, server
 	t.Helper()
 	api, created, deleted := cancellationPods(t)
 	store := surrenderStore(t)
-	dispatch, err := dispatcher.New(dispatcher.Config{GaggleNamespaces: map[string]string{"web": "test"}, EmbeddedVersion: "v1", SupervisionInterval: time.Millisecond},
+	dispatch, err := dispatcher.New(dispatcher.Config{LaunchReceipts: cancellationLaunchRecorder{}, GaggleNamespaces: map[string]string{"web": "test"}, EmbeddedVersion: "v1", SupervisionInterval: time.Millisecond},
 		dispatcher.NewKubernetesPodAPI(api), nil, dispatcher.PlaneSurrenderGate{Plane: store}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -160,6 +161,7 @@ func startCancellationWorkflow(t *testing.T, ctx context.Context, c client.Clien
 	id := in.RunID
 	if mode == "one" {
 		attempt := dispatchInput(in.RunID, "build", 1)
+		attempt.LaunchBinding = &launchreceipt.Binding{RunID: in.RunID, Stage: "build", Number: 1, StartedSeq: 1, Class: attempt.Class, AttemptID: journal.StageAttemptID(in.RunID, 0, "build", 1)}
 		attempt.Placement.Queue = queue
 		attempt.Placement.LedgerTouching = false
 		attempt.Run = spec.Tasks[0].Run
@@ -256,4 +258,13 @@ func assertCancellationJournal(t *testing.T, ctx context.Context, c client.Clien
 	if terminals != want {
 		t.Fatalf("terminal journal events = %d, want %d (settled=%t)", terminals, want, settled)
 	}
+}
+
+// The cancellation fixture tests pod custody; receipt persistence has its own
+// transport tests. Keep the required controller binding validated here.
+type cancellationLaunchRecorder struct{}
+
+func (cancellationLaunchRecorder) Record(_ context.Context, receipt launchreceipt.Receipt) error {
+	_, err := receipt.Encode()
+	return err
 }

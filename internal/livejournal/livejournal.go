@@ -196,6 +196,8 @@ type EmitRequest struct {
 
 // EmitResponse reports what the writer did with a batch.
 type EmitResponse struct {
+	// Starts reports exact accepted lifecycle anchors, never batch high-water guesses.
+	Starts []StartAcknowledgment `json:"starts,omitempty"`
 	// Applied counts ops appended by this call.
 	Applied int `json:"applied"`
 	// Deduplicated counts ops whose idempotency key was already applied — a
@@ -342,6 +344,7 @@ type liveRun struct {
 	// Adopt). Guarded by the WRITER's mu, not this run's.
 	loans              int
 	keys               map[string]uint64
+	starts             map[string]StartAcknowledgment
 	artifactRefs       map[string]journal.Ref
 	transcriptCaptures map[string]*remoteTranscriptCapture
 	lastEmit           time.Time
@@ -720,6 +723,7 @@ func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
 	for _, ev := range events {
 		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
 			run.keys[key] = ev.Seq
+			run.rememberStart(key, ev)
 		}
 		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
 			run.artifactRefs[ev.Name] = *ev.Ref
@@ -788,6 +792,7 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 			w.finishRun(req.RunID, run, &resp)
 			return resp, fmt.Errorf("livejournal: apply op %d for run %s: %w", i, req.RunID, err)
 		}
+		run.acknowledgeStart(req.Ops[i], &resp)
 		if applied {
 			resp.Applied++
 		} else {
@@ -1122,6 +1127,9 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 			return false, err
 		}
 		run.keys[op.Key] = run.jr.Seq()
+		startEvent := ev
+		startEvent.Seq = run.keys[op.Key]
+		run.rememberStart(op.Key, startEvent)
 		if ev.Type == journal.EventRunFinished {
 			run.keys[terminalMarker] = run.jr.Seq()
 		}

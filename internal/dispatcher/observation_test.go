@@ -102,7 +102,7 @@ func TestDispatchRetainsObservedPodAssignmentWithoutRunningPoll(t *testing.T) {
 			}
 			clock := &fakeClock{}
 			d.now, d.sleep = clock.Now, clock.Sleep
-			report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+			report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("dispatch error=%v; want %v", err, tc.wantErr)
 			}

@@ -186,7 +186,7 @@ func TestDispatchFreshPodPerAttemptDisposedAfterSurrender(t *testing.T) {
 	d.now = clock.Now
 	d.sleep = clock.Sleep
 
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDispatchFreshPodPerAttemptDisposedAfterSurrender(t *testing.T) {
 	// Attempt 2 of the same stage: a DIFFERENT fresh pod.
 	second := testAttempt()
 	second.Number = 2
-	if _, err := d.Dispatch(context.Background(), second, []RunnerSpec{linuxRunner()}); err != nil {
+	if _, err := dispatchFixture(d, context.Background(), second, []RunnerSpec{linuxRunner()}); err != nil {
 		t.Fatalf("Dispatch attempt 2: %v", err)
 	}
 	if len(pods.created) != 2 {
@@ -229,7 +229,7 @@ func TestDispatchUnconfirmedSurrenderStillDisposes(t *testing.T) {
 	d.now = clock.Now
 	d.sleep = clock.Sleep
 
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 	if !errors.Is(err, ErrSurrenderUnconfirmed) {
 		t.Fatalf("got %v, want ErrSurrenderUnconfirmed", err)
 	}
@@ -252,7 +252,7 @@ func TestDispatchFailedStage(t *testing.T) {
 	d.now = clock.Now
 	d.sleep = clock.Sleep
 
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 	if !errors.Is(err, ErrStageFailed) {
 		t.Fatalf("got %v, want ErrStageFailed", err)
 	}
@@ -282,7 +282,7 @@ func TestDispatchDisposeFailureDoesNotMaskSettledSuccess(t *testing.T) {
 	podName := PodName(testAttempt())
 	pods.deleteErrFor[podName] = errors.New("apiserver conflict")
 
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 	if err != nil {
 		t.Fatalf("Dispatch returned %v: a dispose failure must not mask a settled success", err)
 	}
@@ -313,7 +313,7 @@ func TestDispatchDisposeFailureDoesNotMaskSettledFailure(t *testing.T) {
 	podName := PodName(testAttempt())
 	pods.deleteErrFor[podName] = errors.New("apiserver conflict")
 
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 	if !errors.Is(err, ErrStageFailed) {
 		t.Fatalf("got %v, want ErrStageFailed — a dispose failure must not mask the settled failure", err)
 	}
@@ -332,7 +332,7 @@ func TestDispatchSelfHostIsLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{{
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{{
 		Name: "self", OS: "macOS", HostKind: instance.RunnerHostSelf, Host: "self",
 	}})
 	if err != nil {
@@ -356,7 +356,7 @@ func TestDispatchSkewRefusalCreatesNoPod(t *testing.T) {
 	}
 	runner := linuxRunner()
 	runner.Host = "ghcr.io/goobers/goobers-base:" + otherSha
-	_, err = d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+	_, err = dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{runner})
 	var skew *SkewError
 	if !errors.As(err, &skew) {
 		t.Fatalf("got %v, want SkewError", err)
@@ -382,7 +382,7 @@ func TestDispatchDeploymentTemplateSkewChecked(t *testing.T) {
 	runner := RunnerSpec{
 		Name: "consumer", OS: "linux", HostKind: instance.RunnerHostDeployment, Host: "consumer-runner",
 	}
-	_, err = d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+	_, err = dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{runner})
 	var skew *SkewError
 	if !errors.As(err, &skew) {
 		t.Fatalf("got %v, want SkewError for the template's stage image", err)
@@ -431,7 +431,7 @@ func TestDispatchMintsPodTokenAndStampsIt(t *testing.T) {
 
 	attempt := testAttempt()
 	attempt.PodToken = "" // the dispatcher mints only when one was not supplied
-	if _, err := d.Dispatch(context.Background(), attempt, []RunnerSpec{linuxRunner()}); err != nil {
+	if _, err := dispatchFixture(d, context.Background(), attempt, []RunnerSpec{linuxRunner()}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(minter.runIDs) != 1 || minter.runIDs[0] != attempt.RunID {
@@ -458,7 +458,7 @@ func TestDispatchFailsClosedWhenMintFails(t *testing.T) {
 	}
 	failing := testAttempt()
 	failing.PodToken = ""
-	if _, err := d.Dispatch(context.Background(), failing, []RunnerSpec{linuxRunner()}); err == nil {
+	if _, err := dispatchFixture(d, context.Background(), failing, []RunnerSpec{linuxRunner()}); err == nil {
 		t.Fatal("Dispatch must fail when the pod token cannot be minted")
 	}
 	if len(pods.created) != 0 {
@@ -483,7 +483,7 @@ func TestDispatchKeepsCallerSuppliedPodToken(t *testing.T) {
 	d.now = clock.Now
 	d.sleep = clock.Sleep
 
-	if _, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
+	if _, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(minter.runIDs) != 0 {
@@ -511,7 +511,7 @@ func TestDispatchFailsUnschedulablePodAndDisposesIt(t *testing.T) {
 	d.now = clock.Now
 	d.sleep = clock.Sleep
 
-	report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()})
 	if !errors.Is(err, ErrPodUnschedulable) {
 		t.Fatalf("error = %v, want ErrPodUnschedulable", err)
 	}
@@ -539,7 +539,7 @@ func TestDispatchToleratesTransientUnschedulability(t *testing.T) {
 	d.now = clock.Now
 	d.sleep = clock.Sleep
 
-	if _, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
+	if _, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
 		t.Fatalf("a pod that becomes schedulable must not be failed: %v", err)
 	}
 }
@@ -555,7 +555,7 @@ func TestDispatchReportsTheStageImageItRendered(t *testing.T) {
 		pods := &fakePodAPI{}
 		d, _ := newTestDispatcher(t, testConfig(), pods, nil)
 		runner := linuxRunner()
-		report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+		report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{runner})
 		if err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
@@ -574,7 +574,7 @@ func TestDispatchReportsTheStageImageItRendered(t *testing.T) {
 		runner := RunnerSpec{
 			Name: "consumer", OS: "linux", HostKind: instance.RunnerHostDeployment, Host: "consumer-runner",
 		}
-		report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+		report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{runner})
 		if err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
@@ -590,7 +590,7 @@ func TestDispatchReportsTheStageImageItRendered(t *testing.T) {
 		pods := &fakePodAPI{}
 		d, _ := newTestDispatcher(t, testConfig(), pods, nil)
 		self := RunnerSpec{Name: "self", OS: "linux", HostKind: instance.RunnerHostSelf, Host: "self"}
-		report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{self})
+		report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{self})
 		if err != nil {
 			t.Fatalf("Dispatch: %v", err)
 		}
@@ -611,7 +611,7 @@ func TestDispatchRefusesReviewWithoutAgentic(t *testing.T) {
 	}
 	attempt := testAttempt()
 	attempt.Review = true
-	_, err = d.Dispatch(context.Background(), attempt, []RunnerSpec{linuxRunner()})
+	_, err = dispatchFixture(d, context.Background(), attempt, []RunnerSpec{linuxRunner()})
 	if err == nil || !strings.Contains(err.Error(), "marked review but not agentic") {
 		t.Fatalf("Dispatch = %v, want the review-without-goober refusal", err)
 	}

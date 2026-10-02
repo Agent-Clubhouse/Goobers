@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -123,6 +124,10 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 
 	if _, err := buildStageDispatch(root, "https://daemon.example:8080", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root), ""); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
+	}
+	receiptClient, ok := built.LaunchReceipts.(launchreceipt.Client)
+	if !ok || receiptClient.BaseURL != "https://daemon.example:8080" || receiptClient.Minter == nil {
+		t.Fatal("production dispatcher lacks protected launch receipt transport")
 	}
 	wantInstanceID, err := instance.ReadRootIdentity(layout.Root)
 	if err != nil {
