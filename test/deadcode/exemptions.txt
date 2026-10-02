@@ -133,12 +133,6 @@ github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined t
 github.com/goobers/goobers/internal/configsync.AuthoritativeGeneration # Generation-barrier read side (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's authoritative-generation assertions.
 github.com/goobers/goobers/internal/configsync.GenerationSelector # Single-generation label selector (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's single-generation consistency assertions.
 github.com/goobers/goobers/internal/engine.NewRegistryWithPreviewFeatures # Test-only registry constructor that forces every registered definition preview-acknowledged, bypassing each definition's own annotation; production wiring uses NewRegistry since preview authorization is per-Workflow (#4220).
-github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
-github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
-github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
-github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
-github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
-github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
