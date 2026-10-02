@@ -91,32 +91,26 @@ func (s *Store) NonTerminalRuns(ctx context.Context, limit int) ([]RunRow, error
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var out []RunRow
+	err := s.withReadRows(ctx, `
 		SELECT `+runColumns+`
 		FROM run r
 		WHERE r.terminal = 0
 		ORDER BY r.started_at DESC, r.run_id ASC
-		LIMIT ?`, limit)
+		LIMIT ?`,
+		[]any{limit},
+		"readmodel: read non-terminal runs",
+		"readmodel: non-terminal rows",
+		func(rows *sql.Rows) error {
+			row, err := scanRunRow(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, row)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: read non-terminal runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunRow
-	for rows.Next() {
-		row, err := scanRunRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: non-terminal rows: %w", err)
+		return nil, err
 	}
 	return out, nil
 }
