@@ -167,29 +167,26 @@ func (s *Store) copyPolicyState(ctx context.Context, next *Store) error {
 // Nothing reports it. The change feed is the second source precisely because it
 // records what the old epoch applied, whether or not the marker survived.
 func (r *RebuildState) CatchUpRunIDs(ctx context.Context) ([]string, error) {
-	db, release, err := r.store.readHandle()
+	var out []string
+	err := r.store.withReadRows(ctx, `
+		SELECT DISTINCT run_id FROM change
+		WHERE seq > ? AND run_id IS NOT NULL
+		ORDER BY run_id`,
+		[]any{r.RebuildFromSeq},
+		"readmodel: read catch-up ids",
+		"",
+		func(rows *sql.Rows) error {
+			var runID string
+			if err := rows.Scan(&runID); err != nil {
+				return fmt.Errorf("readmodel: scan catch-up id: %w", err)
+			}
+			out = append(out, runID)
+			return nil
+		})
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
-		SELECT DISTINCT run_id FROM change
-		WHERE seq > ? AND run_id IS NOT NULL
-		ORDER BY run_id`, r.RebuildFromSeq)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: read catch-up ids: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []string
-	for rows.Next() {
-		var runID string
-		if err := rows.Scan(&runID); err != nil {
-			return nil, fmt.Errorf("readmodel: scan catch-up id: %w", err)
-		}
-		out = append(out, runID)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Validate checks the new epoch before it is allowed to replace anything.

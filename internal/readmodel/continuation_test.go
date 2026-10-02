@@ -17,6 +17,7 @@ func TestContinuationRunsReturnsDirectChildren(t *testing.T) {
 		{RunID: "source", Gaggle: "g", Workflow: "wf"},
 		{RunID: "child-b", Gaggle: "g", Workflow: "wf", Trigger: journal.Trigger{Kind: journal.TriggerManual, Ref: "source"}, ContinuedFromRunID: "source"},
 		{RunID: "child-a", Gaggle: "g", Workflow: "wf", Trigger: journal.Trigger{Kind: journal.TriggerManual, Ref: "source"}, ContinuedFromRunID: "source"},
+		{RunID: "unrelated", Gaggle: "g", Workflow: "wf", Trigger: journal.Trigger{Kind: journal.TriggerManual, Ref: "source"}, ContinuedFromRunID: "grandparent"},
 	} {
 		projection := ProjectRun(identity, Projection{}, completedRunEvents())
 		if err := store.UpsertRun(ctx, projection); err != nil {
