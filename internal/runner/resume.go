@@ -1141,8 +1141,7 @@ func hasRetryDecisionAfter(events []journal.Event, evaluated journal.Event) bool
 }
 
 func gateRepassAttempt(e journal.Event) int {
-	n, _ := e.Runner["repassAttempt"].(float64)
-	return int(n)
+	return e.RepassAttempt()
 }
 
 // PinnedWorkflowMachine reconstructs the historical machine from the trusted,

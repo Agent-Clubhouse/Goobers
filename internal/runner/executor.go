@@ -77,6 +77,11 @@ type gooberInvocation struct {
 	invoke.Goober
 	activateAssetPathGuard func() error
 	operatorMessageAddress string
+	operatorMessageJournal executionJournal
+	operatorMessageRunID   string
+	operatorMessageStage   string
+	operatorMessageAttempt int
+	operatorMessageAgent   string
 	invoked                bool
 }
 
@@ -117,9 +122,18 @@ func (g *gooberInvocation) materializedAssets() bool {
 func (g *gooberInvocation) registerOperatorMessageTarget() func() {
 	target, ok := g.Goober.(invoke.OperatorMessageTarget)
 	if !ok || g.operatorMessageAddress == "" {
-		return func() {}
+		if !ok || g.operatorMessageJournal == nil {
+			return func() {}
+		}
+		g.operatorMessageAddress = operatorMessageAddressFromStartedSeq(g.operatorMessageRunID, g.operatorMessageStage, g.operatorMessageAttempt, g.operatorMessageAgent, g.operatorMessageJournal.Seq())
+		if g.operatorMessageAddress == "" {
+			g.operatorMessageAddress = operatorMessageAddressForAttempt(g.operatorMessageJournal, g.operatorMessageRunID, g.operatorMessageStage, g.operatorMessageAttempt, g.operatorMessageAgent)
+		}
+		if g.operatorMessageAddress == "" {
+			return func() {}
+		}
 	}
-	return DefaultOperatorMessageDeliveryRegistry.Register(g.operatorMessageAddress, target)
+	return DefaultOperatorMessageDeliveryRegistry.RegisterWithJournal(g.operatorMessageAddress, target, g.operatorMessageJournal)
 }
 
 func newGooberInvocation(goober invoke.Goober, activateAssetPathGuard func() error, jr executionJournal, runID, stage string, attempt int, agent string) *gooberInvocation {
@@ -127,6 +141,11 @@ func newGooberInvocation(goober invoke.Goober, activateAssetPathGuard func() err
 		Goober:                 goober,
 		activateAssetPathGuard: activateAssetPathGuard,
 		operatorMessageAddress: operatorMessageAddressForAttempt(jr, runID, stage, attempt, agent),
+		operatorMessageJournal: jr,
+		operatorMessageRunID:   runID,
+		operatorMessageStage:   stage,
+		operatorMessageAttempt: attempt,
+		operatorMessageAgent:   agent,
 	}
 }
 
@@ -141,10 +160,20 @@ func operatorMessageAddressForAttempt(jr executionJournal, runID, stage string, 
 	}
 	var startedSeq uint64
 	for _, event := range events {
-		if event.Type == journal.EventStageStarted && event.Stage == stage && event.Attempt == attempt {
+		switch {
+		case event.Type == journal.EventStageStarted && event.Stage == stage && event.Attempt == attempt:
+			startedSeq = event.Seq
+		case event.Type == journal.EventGateStarted && event.Gate == stage && event.RepassAttempt() == attempt:
 			startedSeq = event.Seq
 		}
 	}
+	if startedSeq == 0 {
+		return ""
+	}
+	return operatorMessageAddressFromStartedSeq(runID, stage, attempt, agent, startedSeq)
+}
+
+func operatorMessageAddressFromStartedSeq(runID, stage string, attempt int, agent string, startedSeq uint64) string {
 	if startedSeq == 0 {
 		return ""
 	}

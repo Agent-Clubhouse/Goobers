@@ -524,6 +524,22 @@ type Event struct {
 	SkipCount int `json:"skipCount,omitempty"`
 }
 
+// RepassAttempt returns the runner-recorded per-gate attempt count, if present.
+func (e Event) RepassAttempt() int {
+	switch v := e.Runner["repassAttempt"].(type) {
+	case int:
+		return v
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
 // BranchStatus is the terminal status of one parallel branch.
 type BranchStatus string
 

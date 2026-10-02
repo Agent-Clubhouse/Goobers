@@ -98,12 +98,31 @@ func (s *daemonRunJournalService) recoverOperatorMessageRun(gaggle, runID string
 }
 
 func (s *daemonRunJournalService) recordOperatorMessageAccepted(gaggle, runID string, request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
+	if run, ok := s.resolveOperatorMessageJournal(gaggle, runID, request.TargetAddress); ok {
+		return run.AcceptOperatorMessage(request)
+	}
 	run, err := s.recoverOperatorMessageRun(gaggle, runID)
 	if err != nil {
 		return apiv1.OperatorMessageRecord{}, false, err
 	}
 	defer func() { _ = run.Close() }()
 	return run.AcceptOperatorMessage(request)
+}
+
+func (s *daemonRunJournalService) resolveOperatorMessageJournal(gaggle, runID, targetAddress string) (runner.OperatorMessageJournal, bool) {
+	if _, err := journal.ParseAgentAddress(targetAddress); err != nil {
+		return nil, false
+	}
+	if run, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveJournal(targetAddress); ok {
+		return run, true
+	}
+	if run, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisitJournal(targetAddress); ok {
+		return run, true
+	}
+	if !s.operatorMessageTargetAddressLive(gaggle, runID, targetAddress) {
+		return nil, false
+	}
+	return runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisitJournal(targetAddress)
 }
 
 func (s *daemonRunJournalService) selectOperatorMessageDeliveryMode(gaggle, runID, targetAddress, requested string) string {
@@ -135,12 +154,7 @@ func (s *daemonRunJournalService) resolveOperatorMessageTarget(gaggle, runID, ta
 }
 
 func (s *daemonRunJournalService) operatorMessageTargetAddressLive(gaggle, runID, targetAddress string) bool {
-	run, err := s.recoverOperatorMessageRun(gaggle, runID)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = run.Close() }()
-	return operatorMessageTargetAddressLiveInRunDir(run.Dir(), targetAddress)
+	return operatorMessageTargetAddressLiveInRunDir(filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID), targetAddress)
 }
 
 func operatorMessageTargetAddressLiveInRunDir(runDir, targetAddress string) bool {
@@ -154,25 +168,35 @@ func operatorMessageTargetAddressLiveInRunDir(runDir, targetAddress string) bool
 
 func (s *daemonRunJournalService) deliverAcceptedOperatorMessage(ctx context.Context, gaggle, runID string, record apiv1.OperatorMessageRecord) (apiv1.OperatorMessageRecord, error) {
 	request := record.Request
-	if request.DeliveryMode != invoke.OperatorMessageModeBetweenTurn {
+	if request.DeliveryMode != invoke.OperatorMessageModeBetweenTurn && request.DeliveryMode != invoke.OperatorMessageModeInterruptAndContinue {
 		return record, nil
 	}
 	if _, err := journal.ParseAgentAddress(request.TargetAddress); err != nil {
 		return record, nil
 	}
-	run, err := s.recoverOperatorMessageRun(gaggle, runID)
-	if err != nil {
-		return apiv1.OperatorMessageRecord{}, err
+	var run runner.OperatorMessageJournal
+	var active bool
+	var recoveredRunDir string
+	run, active = s.resolveOperatorMessageJournal(gaggle, runID, request.TargetAddress)
+	if !active {
+		recovered, err := s.recoverOperatorMessageRun(gaggle, runID)
+		if err != nil {
+			return apiv1.OperatorMessageRecord{}, err
+		}
+		defer func() { _ = recovered.Close() }()
+		recoveredRunDir = recovered.Dir()
+		run = recovered
 	}
-	defer func() { _ = run.Close() }()
 	target, ok := runner.DefaultOperatorMessageDeliveryRegistry.Resolve(request.TargetAddress)
-	if !ok && operatorMessageTargetAddressLiveInRunDir(run.Dir(), request.TargetAddress) {
+	if !ok && !active && operatorMessageTargetAddressLiveInRunDir(recoveredRunDir, request.TargetAddress) {
+		target, ok = runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisit(request.TargetAddress)
+	} else if !ok && active {
 		target, ok = runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisit(request.TargetAddress)
 	}
 	if !ok {
 		return run.CompleteOperatorMessage(operatorMessageOutcome(request, apiv1.OperatorMessageFailed, "target_unavailable", "target agent is no longer live"))
 	}
-	err = target.DeliverOperatorMessage(ctx, invoke.OperatorMessageDeliveryRequest{
+	err := target.DeliverOperatorMessage(ctx, invoke.OperatorMessageDeliveryRequest{
 		Message:       request,
 		TargetAddress: request.TargetAddress,
 	})

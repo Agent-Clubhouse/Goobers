@@ -97,6 +97,34 @@ func TestOperatorMessageAddressForAttemptUsesStageStartSequence(t *testing.T) {
 	}
 }
 
+func TestOperatorMessageAddressForAttemptUsesGateStartSequence(t *testing.T) {
+	const runID = "run-gate-operator-address"
+	run, err := journal.Create(t.TempDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "workflow", WorkflowVersion: 1,
+		Gaggle: "goobers", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateStarted, Gate: "review",
+		Runner: map[string]any{"repassAttempt": 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	startedSeq := run.Seq()
+
+	got := operatorMessageAddressForAttempt(run, runID, "review", 2, "reviewer")
+	want, err := journal.StageAgentAddress(runID, "review", 2, "reviewer", startedSeq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want.String() {
+		t.Fatalf("operatorMessageAddressForAttempt = %q, want %q", got, want.String())
+	}
+}
+
 type gateHeartbeatJournalStub struct{}
 
 func (gateHeartbeatJournalStub) Append(journal.Event) error  { return nil }

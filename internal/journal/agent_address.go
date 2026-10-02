@@ -356,6 +356,19 @@ func collectAttemptSpans(events []Event) (map[string][]attemptSpan, map[string]u
 			if event.Seq > latest[event.Stage] {
 				latest[event.Stage] = event.Seq
 			}
+		case EventGateStarted:
+			if event.Gate == "" {
+				continue
+			}
+			attempt := event.RepassAttempt()
+			if attempt < 1 {
+				continue
+			}
+			span := attemptSpan{stage: event.Gate, attempt: attempt, startedSeq: event.Seq}
+			spans[event.Gate] = append(spans[event.Gate], span)
+			if event.Seq > latest[event.Gate] {
+				latest[event.Gate] = event.Seq
+			}
 		case EventStageFinished:
 			stageSpans := spans[event.Stage]
 			for i := len(stageSpans) - 1; i >= 0; i-- {

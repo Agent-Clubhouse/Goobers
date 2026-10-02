@@ -24,6 +24,8 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 type operatorMessageCommitSink struct {
@@ -396,6 +398,92 @@ func TestDaemonOperatorMessageDeliversNestedSelectionThroughStageTarget(t *testi
 	}
 }
 
+func TestDaemonOperatorMessageLocalRunnerLifecycle(t *testing.T) {
+	t.Run("between-turn delivery retry termination and continuation", func(t *testing.T) {
+		layout := crossRunTestLayout(t)
+		runID := "run-live-between-turn"
+		reviewer := newBlockingOperatorMessageReviewer([]string{invoke.OperatorMessageModeBetweenTurn}, nil)
+		runDone := startOperatorMessageRunner(t, layout, runID, reviewer)
+		address := waitForOperatorMessageGateAddress(t, layout, runID, "reviewer")
+		service := newDaemonRunJournalService(layout, nil)
+
+		request := operatorMessageRequest(runID, "key-live-runner",
+			httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+		request.TargetAddress = address
+		record, err := service.SubmitOperatorMessage(context.Background(), request)
+		if err != nil {
+			t.Fatalf("submit live runner message: %v", err)
+		}
+		if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeBetweenTurn ||
+			record.Record.Outcome == nil || record.Record.Outcome.Status != apiv1.OperatorMessageDelivered {
+			t.Fatalf("live runner record = %+v", record)
+		}
+		delivery := reviewer.waitForDelivery(t)
+		if delivery.TargetAddress != address || delivery.Message.IdempotencyKey != "key-live-runner" {
+			t.Fatalf("delivery = %+v", delivery)
+		}
+		record, err = service.SubmitOperatorMessage(context.Background(), request)
+		if err != nil {
+			t.Fatalf("retry live runner message: %v", err)
+		}
+		if record.Accepted || reviewer.deliveryCount() != 1 {
+			t.Fatalf("retry accepted=%v delivery count=%d", record.Accepted, reviewer.deliveryCount())
+		}
+
+		reviewer.release()
+		waitForOperatorMessageRunDone(t, runDone)
+
+		request = operatorMessageRequest(runID, "key-after-termination",
+			httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+		request.TargetAddress = address
+		record, err = service.SubmitOperatorMessage(context.Background(), request)
+		if err != nil {
+			t.Fatalf("submit after termination: %v", err)
+		}
+		if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeNextAttempt ||
+			record.Record.Outcome != nil {
+			t.Fatalf("terminated target record = %+v", record)
+		}
+	})
+
+	t.Run("interrupt cancellation and delivery", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			runID      string
+			deliverErr error
+			wantStatus apiv1.OperatorMessageOutcomeStatus
+			wantCode   string
+		}{
+			{name: "canceled", runID: "run-live-interrupt-cancel", deliverErr: context.Canceled, wantStatus: apiv1.OperatorMessageFailed, wantCode: "delivery_canceled"},
+			{name: "delivered", runID: "run-live-interrupt-deliver", wantStatus: apiv1.OperatorMessageDelivered},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				layout := crossRunTestLayout(t)
+				reviewer := newBlockingOperatorMessageReviewer([]string{invoke.OperatorMessageModeInterruptAndContinue}, tc.deliverErr)
+				runDone := startOperatorMessageRunner(t, layout, tc.runID, reviewer)
+				address := waitForOperatorMessageGateAddress(t, layout, tc.runID, "reviewer")
+				service := newDaemonRunJournalService(layout, nil)
+
+				request := operatorMessageRequest(tc.runID, "key-"+tc.name,
+					httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+				request.TargetAddress = address
+				record, err := service.SubmitOperatorMessage(context.Background(), request)
+				if err != nil {
+					t.Fatalf("submit interrupt message: %v", err)
+				}
+				if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeInterruptAndContinue ||
+					record.Record.Outcome == nil || record.Record.Outcome.Status != tc.wantStatus ||
+					record.Record.Outcome.Code != tc.wantCode {
+					t.Fatalf("interrupt record = %+v", record)
+				}
+				_ = reviewer.waitForDelivery(t)
+				reviewer.release()
+				waitForOperatorMessageRunDone(t, runDone)
+			})
+		}
+	})
+}
+
 func TestDaemonOperatorMessageRejectsForeignRunAgentAddress(t *testing.T) {
 	layout := crossRunTestLayout(t)
 	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
@@ -409,7 +497,7 @@ func TestDaemonOperatorMessageRejectsForeignRunAgentAddress(t *testing.T) {
 	}
 }
 
-func TestDaemonOperatorMessageRecordsUnsupportedModesWithoutLiveSuccess(t *testing.T) {
+func TestDaemonOperatorMessageDeliversInterruptAndContinue(t *testing.T) {
 	layout := crossRunTestLayout(t)
 	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
 	addressInterrupt := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-interrupt", 2)
@@ -424,14 +512,21 @@ func TestDaemonOperatorMessageRecordsUnsupportedModesWithoutLiveSuccess(t *testi
 		t.Fatalf("submit interrupt-mode message: %v", err)
 	}
 	if !record.Accepted || record.Record.Request.DeliveryMode != invoke.OperatorMessageModeInterruptAndContinue ||
-		record.Record.Outcome != nil || len(interruptTarget.deliveries) != 0 {
-		t.Fatalf("interrupt fallback record = %+v deliveries = %+v", record, interruptTarget.deliveries)
+		record.Record.Outcome == nil || record.Record.Outcome.Status != apiv1.OperatorMessageDelivered ||
+		len(interruptTarget.deliveries) != 1 || interruptTarget.deliveries[0].TargetAddress != addressInterrupt {
+		t.Fatalf("interrupt delivery record = %+v deliveries = %+v", record, interruptTarget.deliveries)
 	}
+}
 
-	request = operatorMessageRequest("target-run", "key-next",
+func TestDaemonOperatorMessageRecordsNextAttemptWithoutLiveSuccess(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	service := newDaemonRunJournalService(layout, nil)
+
+	request := operatorMessageRequest("target-run", "key-next",
 		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
 	request.TargetAddress = operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-missing", 2)
-	record, err = service.SubmitOperatorMessage(context.Background(), request)
+	record, err := service.SubmitOperatorMessage(context.Background(), request)
 	if err != nil {
 		t.Fatalf("submit next-attempt message: %v", err)
 	}
@@ -586,9 +681,191 @@ func (f *fakeOperatorMessageTarget) DeliverOperatorMessage(_ context.Context, re
 func registerOperatorMessageTarget(t *testing.T, address string, modes []string, err error) *fakeOperatorMessageTarget {
 	t.Helper()
 	target := &fakeOperatorMessageTarget{modes: modes, err: err}
-	unregister := runner.DefaultOperatorMessageDeliveryRegistry.Register(address, target)
+	unregister := runner.DefaultOperatorMessageDeliveryRegistry.RegisterWithJournal(address, target, nil)
 	t.Cleanup(unregister)
 	return target
+}
+
+type operatorMessageRunResult struct {
+	result runner.Result
+	err    error
+}
+
+type operatorMessageDeterministic struct{}
+
+func (operatorMessageDeterministic) Run(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+type blockingOperatorMessageReviewer struct {
+	modes       []string
+	err         error
+	started     chan struct{}
+	released    chan struct{}
+	delivered   chan invoke.OperatorMessageDeliveryRequest
+	startOnce   sync.Once
+	releaseOnce sync.Once
+	mu          sync.Mutex
+	deliveries  []invoke.OperatorMessageDeliveryRequest
+}
+
+func newBlockingOperatorMessageReviewer(modes []string, err error) *blockingOperatorMessageReviewer {
+	return &blockingOperatorMessageReviewer{
+		modes:     modes,
+		err:       err,
+		started:   make(chan struct{}),
+		released:  make(chan struct{}),
+		delivered: make(chan invoke.OperatorMessageDeliveryRequest, 8),
+	}
+}
+
+func (b *blockingOperatorMessageReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (b *blockingOperatorMessageReviewer) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	b.startOnce.Do(func() { close(b.started) })
+	<-b.released
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func (b *blockingOperatorMessageReviewer) OperatorMessageDeliveryModes() []string {
+	return append([]string(nil), b.modes...)
+}
+
+func (b *blockingOperatorMessageReviewer) DeliverOperatorMessage(_ context.Context, req invoke.OperatorMessageDeliveryRequest) error {
+	b.mu.Lock()
+	b.deliveries = append(b.deliveries, req)
+	b.mu.Unlock()
+	b.delivered <- req
+	return b.err
+}
+
+func (b *blockingOperatorMessageReviewer) waitForDelivery(t *testing.T) invoke.OperatorMessageDeliveryRequest {
+	t.Helper()
+	select {
+	case delivery := <-b.delivered:
+		return delivery
+	case <-time.After(15 * time.Second):
+		t.Fatal("operator message was not delivered to live reviewer")
+		return invoke.OperatorMessageDeliveryRequest{}
+	}
+}
+
+func (b *blockingOperatorMessageReviewer) deliveryCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.deliveries)
+}
+
+func (b *blockingOperatorMessageReviewer) release() {
+	b.releaseOnce.Do(func() { close(b.released) })
+}
+
+func startOperatorMessageRunner(t *testing.T, layout instance.Layout, runID string, reviewer *blockingOperatorMessageReviewer) <-chan operatorMessageRunResult {
+	t.Helper()
+	wtMgr, err := worktree.NewManager(filepath.Join(t.TempDir(), "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	r, err := runner.New(runner.Config{
+		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			return operatorMessageDeterministic{}, nil
+		},
+		NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
+			return reviewer, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      layout.ForGaggle(crossRunTestGaggle).RunsDir(),
+		ScratchDir:   filepath.Join(t.TempDir(), "scratch"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return "", errors.New("repo workspace should not be provisioned") },
+	})
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	machine := operatorMessageAgenticGateMachine(t)
+	done := make(chan operatorMessageRunResult, 1)
+	go func() {
+		result, startErr := r.Start(context.Background(), runner.StartInput{
+			RunID:   runID,
+			Machine: machine,
+			Gaggle:  crossRunTestGaggle,
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- operatorMessageRunResult{result: result, err: startErr}
+	}()
+	select {
+	case <-reviewer.started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("reviewer did not start")
+	}
+	return done
+}
+
+func waitForOperatorMessageRunDone(t *testing.T, done <-chan operatorMessageRunResult) {
+	t.Helper()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("runner start: %v", got.err)
+		}
+		if got.result.Phase != journal.PhaseCompleted {
+			t.Fatalf("runner phase = %q, want completed", got.result.Phase)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("runner did not finish")
+	}
+}
+
+func waitForOperatorMessageGateAddress(t *testing.T, layout instance.Layout, runID, agent string) string {
+	t.Helper()
+	runDir := filepath.Join(layout.ForGaggle(crossRunTestGaggle).RunsDir(), runID)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		reader, err := journal.OpenRead(runDir)
+		if err == nil {
+			events, err := reader.Events()
+			if err == nil {
+				for _, event := range events {
+					if event.Type != journal.EventGateStarted || event.Gate != "review" {
+						continue
+					}
+					address, err := journal.StageAgentAddress(runID, event.Gate, event.RepassAttempt(), agent, event.Seq)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return address.String()
+				}
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("gate address was not journaled")
+	return ""
+}
+
+func operatorMessageAgenticGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   crossRunTestGaggle,
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a result", Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review"},
+		},
+		Gates: []apiv1.Gate{{
+			Name:      "review",
+			Evaluator: apiv1.EvaluatorAgentic,
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceScratch},
+			Branches:  map[string]string{"pass": workflow.TerminalComplete, "needs-changes": "implement", "fail": workflow.TargetAbort},
+		}},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "operator-message-local-runner", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile operator-message machine: %v", err)
+	}
+	return machine
 }
 
 func operatorMessageAgentAddress(t *testing.T, runID, stage string, attempt int, agent string, startedSeq uint64) string {

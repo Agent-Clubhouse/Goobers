@@ -90,6 +90,13 @@ func (j *branchJournal) RecordSpanWithSchema(stage, name, dataSchema string, dat
 func (j *branchJournal) ObserveActivity()            { j.run.ObserveActivity() }
 func (j *branchJournal) RepairAppendBoundary() error { return j.run.RepairAppendBoundary() }
 func (j *branchJournal) Dir() string                 { return j.run.Dir() }
+func (j *branchJournal) Seq() uint64                 { return j.run.Seq() }
+func (j *branchJournal) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
+	return j.run.AcceptOperatorMessage(request)
+}
+func (j *branchJournal) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error) {
+	return j.run.CompleteOperatorMessage(outcome)
+}
 func (j *branchJournal) SetMachineState(state string) {
 	j.setMachineState(state)
 }
