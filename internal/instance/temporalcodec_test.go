@@ -3,7 +3,7 @@ package instance
 import "testing"
 
 func TestTemporalPayloadCodecConfig(t *testing.T) {
-	key := SecretStoreConfig{Name: "keys", Kind: SecretStoreKindFileKey, Directory: "/private/keys"}
+	key := SecretStoreConfig{Name: "keys", Kind: SecretStoreKindFileKey, Directory: t.TempDir()}
 	for _, tc := range []struct {
 		name     string
 		settings *PayloadCodecConfig
