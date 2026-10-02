@@ -2369,8 +2369,22 @@ func stopReadServiceWorker(stop func() error, name string, stderr io.Writer) {
 	}
 }
 
+// daemonAPIAddressTempFile is the slice of *os.File publishDaemonAPIAddress
+// uses, so tests can inject write and close failures at the durability
+// boundary (#4575).
+type daemonAPIAddressTempFile interface {
+	io.WriteCloser
+	Name() string
+}
+
+// createDaemonAPIAddressTempFile is the temporary-file factory behind
+// publishDaemonAPIAddress; tests replace it to fail a write or close.
+var createDaemonAPIAddressTempFile = func(dir, pattern string) (daemonAPIAddressTempFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
 func publishDaemonAPIAddress(path, address string) error {
-	file, err := os.CreateTemp(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
+	file, err := createDaemonAPIAddressTempFile(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
 	if err != nil {
 		return fmt.Errorf("create daemon API address file: %w", err)
 	}
