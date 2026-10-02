@@ -68,6 +68,15 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 			IdentityTime: identity.StartedAt, RetainUntil: identity.StartedAt.Add(retainWindow),
 			InventoryRoot: root, CleanupRoots: []string{manager.Root},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
+			EnsureImportBase: func(ctx context.Context, record recovery.Record) error {
+				if !record.RequiresImportBase() {
+					return nil
+				}
+				if _, err := authorizeRecoveryDelivery(ctx, s.layout, runID, key, issue, time.Now().UTC()); err != nil {
+					return err
+				}
+				return manager.EnsureRecoveryBase(ctx, url, repository, record.BaseRef, record.BaseSHA)
+			},
 			EvictFull: recoveryEvictFunc(s.layout, cfg, manager, key),
 		}, recoveryPublicationAck{ctx: ctx, service: s, runID: runID, key: key, issue: issue, runDir: runDir, recoveryConfig: recoveryCfg})
 		return err

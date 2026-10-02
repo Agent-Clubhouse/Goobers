@@ -34,6 +34,11 @@ type RetentionRequest struct {
 	// inventory before releasing source state. The path is the bundle, not
 	// its metadata sidecar. Failure preserves the source for an identical retry.
 	AcknowledgeArchive func(context.Context, Record, string) error
+	// EnsureImportBase optionally prepares Repository to import an already
+	// validated archive record. It is called after the record is decoded and
+	// host policy fields are bound, but before inventory publication attempts
+	// to import the bundle. Failure preserves the source for an identical retry.
+	EnsureImportBase func(context.Context, Record) error
 	// EvictFull optionally retires a reclaimable entry when the inventory is
 	// full, so this capture is not refused when reclaimable capacity exists
 	// (#4823). Nil disables eviction; a full inventory then still refuses.

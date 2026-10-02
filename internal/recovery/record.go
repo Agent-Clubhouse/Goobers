@@ -53,6 +53,12 @@ func (r Record) archiveFormat() string {
 	return archiveFormatFull
 }
 
+// RequiresImportBase reports whether importing the record's archive needs the
+// base commit to already exist in the destination repository.
+func (r Record) RequiresImportBase() bool {
+	return r.archiveFormat() == archiveFormatDelta
+}
+
 // RefForRun returns a private Git ref, never a provider branch name. Rejecting
 // arbitrary ref syntax prevents a restore or reap request from naming main.
 func RefForRun(runID string) (string, error) {

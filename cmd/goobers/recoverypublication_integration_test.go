@@ -63,28 +63,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	source := t.TempDir()
 	recoveryCLIGit(t, source, "init", "--initial-branch=main")
 	recoveryCLIGit(t, source, "commit", "--allow-empty", "-m", "base")
-	manager, err := worktree.NewManager(t.TempDir(), worktree.WithRemoteGitGate(func(context.Context, string) error {
-		t.Fatal("archive publication attempted a forge operation")
-		return nil
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
 	previous := repoCloneURL
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return source, nil }
 	t.Cleanup(func() { repoCloneURL = previous })
-	// Seed the same-keyed managed mirror directly with plain git, matching
-	// what a live run's own workspace provisioning already establishes by
-	// the time any run exists (WorkingCopy populates this mirror, and the
-	// run's `git worktree add` workspace shares its object storage) — so the
-	// base commit below is already present when recovery captures it. This
-	// must not go through manager.WorkingCopy itself: this test asserts
-	// archive publication performs no forge/remote git operation at all.
-	mirrorDir := filepath.Join(manager.Root, worktree.RepositoryDigest(source)[:16], "repo.git")
-	if err := os.MkdirAll(filepath.Dir(mirrorDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	recoveryCLIGit(t, t.TempDir(), "clone", "--mirror", source, mirrorDir)
 	if err := os.WriteFile(filepath.Join(source, "implementation.txt"), []byte("remote worker changes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +81,14 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	}
 	var wire bytes.Buffer
 	if err := recovery.WriteArchiveEnvelope(ctx, filepath.Join(archive, recovery.BundleFileName), record, 1<<20, &wire); err != nil {
+		t.Fatal(err)
+	}
+	remoteFetches := 0
+	manager, err := worktree.NewManager(t.TempDir(), worktree.WithRemoteGitGate(func(context.Context, string) error {
+		remoteFetches++
+		return nil
+	}))
+	if err != nil {
 		t.Fatal(err)
 	}
 	service := recoveryDeliveryService{layout: layout, setup: &schedulerSetup{LegacyWorktrees: manager}}
@@ -120,6 +109,13 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 	err = service.PublishRecovery(ctx, runID, repo.CanonicalKey(), "7", body)
 	if (err != nil) != release {
 		t.Fatalf("publication release=%t: %v", release, err)
+	}
+	wantFetches := 1
+	if release {
+		wantFetches = 0
+	}
+	if remoteFetches != wantFetches {
+		t.Fatalf("remote base fetches = %d, want %d", remoteFetches, wantFetches)
 	}
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -152,6 +148,9 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 		t.Fatalf("missing managed custody repository: found=%t err=%v", found, err)
 	}
 	verifyRecoveryPublicationArchive(t, service, wire.Bytes(), runID, repo.CanonicalKey(), deadline, source)
+	if remoteFetches != 1 {
+		t.Fatalf("retry fetched already present base: got %d remote fetches", remoteFetches)
+	}
 }
 
 func verifyRecoveryPublicationArchive(t *testing.T, service recoveryDeliveryService, wire []byte, runID, key string, deadline time.Time, base string) {

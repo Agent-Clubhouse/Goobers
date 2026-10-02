@@ -43,6 +43,37 @@ func (m *Manager) WithRecoveryMirror(ctx context.Context, repoURL string, visit 
 	return visit(dir)
 }
 
+// EnsureRecoveryBase fetches a recovery record's base into an existing managed
+// recovery mirror when the mirror does not already contain it. The exact base
+// SHA is verified after fetching; no recovery refs are pruned or overwritten.
+func (m *Manager) EnsureRecoveryBase(ctx context.Context, repoURL, repository, baseRef, baseSHA string) error {
+	if repoURL == "" || repository == "" || baseSHA == "" {
+		return fmt.Errorf("recovery mirror base fetch requires repository identity and base")
+	}
+	if err := rawGitExists(ctx, repository, baseSHA+"^{commit}"); err == nil {
+		return nil
+	}
+	fetchRef := baseRef
+	if fetchRef == "" {
+		fetchRef = baseSHA
+	}
+	if strings.HasPrefix(fetchRef, "-") || strings.ContainsAny(fetchRef, "\x00\r\n") {
+		return fmt.Errorf("recovery mirror base fetch requires a safe ref")
+	}
+	if err := m.runRemoteGit(ctx, repoURL, repository, "fetch", "--no-tags", "--refmap=", "origin", fetchRef); err != nil {
+		return fmt.Errorf("fetch recovery base %s: %w", baseSHA, err)
+	}
+	if err := rawGitExists(ctx, repository, baseSHA+"^{commit}"); err != nil {
+		return fmt.Errorf("fetched recovery base ref %q without required commit %s: %w", fetchRef, baseSHA, err)
+	}
+	return nil
+}
+
+func rawGitExists(ctx context.Context, repository, rev string) error {
+	_, err := rawGitOutput(ctx, repository, recoveryMirrorEnvironment(), "cat-file", "-e", rev)
+	return err
+}
+
 func ensureRecoveryMirrorDirectory(path string) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
