@@ -1087,6 +1087,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/soak",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pressure driver is Linux-only; pressure-free planning and fake-driver tests run on Linux unit shards."
+    },
+    {
       "package": "test/stackparity",
       "coverage": "none",
       "category": "not-selected",
