@@ -392,6 +392,37 @@ func TestOpenPRIssueAcceptsMatchingClaimedIdentity(t *testing.T) {
 	}
 }
 
+func TestOpenPRIssueRecoversClaimedIdentityFromJournalPlane(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-claimed-item-plane"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "6566", "title": "Recover claimed item in pod"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	plane := newFileIssuesPlane(t, root)
+	plane.stampPodEnv(t, runID, "goobers")
+
+	id, title, ok, err := openPRIssue(t.TempDir(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "6566" || title != "Recover claimed item in pod" {
+		t.Fatalf("openPRIssue over journal plane = (%q, %q, %t), want claimed item", id, title, ok)
+	}
+}
+
 func TestOpenPRIssueRejectsConflictingClaimedIdentity(t *testing.T) {
 	root := initDemo(t)
 	const runID = "run-conflicting-item"
