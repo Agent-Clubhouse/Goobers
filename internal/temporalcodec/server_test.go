@@ -105,7 +105,7 @@ func TestServerMandatoryOIDCTLSAndBoundedLifecycle(t *testing.T) {
 		t.Fatal("server did not stop")
 	}
 	if conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second); err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("listener survived shutdown")
 	}
 }
@@ -136,7 +136,7 @@ func TestServerCancellationReachesActiveRequest(t *testing.T) {
 		defer close(requested)
 		resp, err := httpClient.Get("https://" + listener.Addr().String())
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}()
 	select {

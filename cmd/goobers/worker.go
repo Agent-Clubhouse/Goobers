@@ -20,7 +20,6 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
-	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerblob"
@@ -182,38 +181,14 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
 	var recurringStageSweeper stageOrphanSweeper
-	if *dispatchNamespace != "" {
-		if *instanceRoot == "" {
-			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
-			return 2
-		}
-		cfg, err := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
-		if err != nil {
-			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
-			return 2
-		}
-		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT")); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-	}
-
-	engineConfig, err := resolveEngineConfig(*instanceRoot)
-	if err != nil {
-		pf(stderr, "error: load engine config: %v\n", err)
+	if err := validateWorkerDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI); err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	var codecConfig *instance.Config
-	if *instanceRoot != "" {
-		codecConfig, err = instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-	}
-	dc, err := temporalcodec.DataConverter(codecConfig)
+
+	engineConfig, dc, err := resolveWorkerTemporalConfig(*instanceRoot)
 	if err != nil {
-		pf(stderr, "error: temporal payload codec: %v\n", err)
+		pf(stderr, "error: load engine config: %v\n", err)
 		return 2
 	}
 	if *hostPort == "" {
@@ -424,6 +399,23 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "goobers worker: drained cleanly\n")
 	return 0
+}
+
+// validateWorkerDispatch rejects invalid mode-3 authority before startup opens
+// background resources or prints potentially sensitive endpoints.
+func validateWorkerDispatch(root, dispatchNamespace, daemonAPI string) error {
+	if dispatchNamespace == "" {
+		return nil
+	}
+	if root == "" {
+		return fmt.Errorf("--dispatch-namespace requires --instance (the runner inventory names the dispatch queues)")
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return fmt.Errorf("stage dispatch: load instance config: %w", err)
+	}
+	_, err = validateStageDispatchConfig(cfg, daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT"))
+	return err
 }
 
 // onOff renders an opt-in's state for the worker's startup line.

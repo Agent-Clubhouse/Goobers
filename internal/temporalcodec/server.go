@@ -55,7 +55,7 @@ func Serve(ctx context.Context, server *http.Server, listener net.Listener) erro
 		_ = listener.Close()
 		return fmt.Errorf("codec server requires TLS")
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	requestCtx, cancelRequests := context.WithCancel(ctx)
 	defer cancelRequests()
 	server.BaseContext = func(net.Listener) context.Context { return requestCtx }

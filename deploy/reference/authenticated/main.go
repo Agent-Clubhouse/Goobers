@@ -158,7 +158,7 @@ func validateTopologyOptions(o options) error {
 			return fmt.Errorf("invalid temporal-codec-key-secret name")
 		}
 		if o.TemporalCodecKeySecret == o.TLSSecret || o.TemporalCodecKeySecret == o.TokenSecret || o.TemporalCodecKeySecret == o.CredentialsSecret {
-			return fmt.Errorf("Temporal wrapping key must use a separate Secret")
+			return fmt.Errorf("temporal wrapping key must use a separate Secret")
 		}
 	}
 	if o.CredentialsSecret != "" && len(kvalidation.IsDNS1123Subdomain(o.CredentialsSecret)) != 0 {
