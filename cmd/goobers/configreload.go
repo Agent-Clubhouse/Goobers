@@ -21,6 +21,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/configgeneration"
 	"github.com/goobers/goobers/internal/configsignal"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/credentials"
@@ -295,25 +296,25 @@ func (r *configReloader) poll(now time.Time) error {
 	if err := journalLegacyRuntimeMigration(r.layout, r.setup.InstanceLog, runtimeMigration); err != nil {
 		return r.reject(digest, fmt.Errorf("journal legacy runtime migration: %w", err))
 	}
-	definitions, err := buildSchedulerDefinitions(
-		r.layout,
-		r.setup.Config,
-		set,
-		report,
-		r.wg,
-		r.setup.RunnerRegistry,
-		r.setup.Telemetry,
-		r.setup.RollupDB,
-		r.setup.Watermarks,
-		r.setup.InstanceLog,
-		r.setup.SharedRegistry,
-		r.setup.WorktreesByGaggle,
-		r.setup.ProviderQuota,
-		r.setup.TerminalNotifier,
-		r.setup.SecretStores,
-		nil,
-		r.setup.Generations,
-	)
+	definitions, err := buildSchedulerDefinitions(schedulerDefinitionsInput{
+		Layout:           r.layout,
+		Config:           r.setup.Config,
+		Definitions:      set,
+		Validation:       report,
+		WaitGroup:        r.wg,
+		RunnerRegistry:   r.setup.RunnerRegistry,
+		Telemetry:        r.setup.Telemetry,
+		RollupDB:         r.setup.RollupDB,
+		Watermarks:       r.setup.Watermarks,
+		InstanceLog:      r.setup.InstanceLog,
+		SharedRegistry:   r.setup.SharedRegistry,
+		WorktreeManagers: r.setup.WorktreesByGaggle,
+		ProviderQuota:    r.setup.ProviderQuota,
+		TerminalNotifier: r.setup.TerminalNotifier,
+		CredentialStores: r.setup.SecretStores,
+		StartupProgress:  nil,
+		Generations:      []*configgeneration.Retainer{r.setup.Generations},
+	})
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: r.scheduleTransientRetry(digest, err, now)})
 	}

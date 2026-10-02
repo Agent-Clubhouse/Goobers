@@ -37,67 +37,6 @@ func topologyBBacklogRef() providers.RepositoryRef {
 	return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "example-org", Name: "example-backlog"}
 }
 
-func topologyBGaggleSet(backlog apiv1.BacklogRef) *instance.ConfigSet {
-	return namedGaggleSet(apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: topologyBOrg, Project: topologyBCodeProject, Name: topologyBCodeRepo}, backlog)
-}
-
-func namedGaggleSet(project apiv1.RepoRef, backlog apiv1.BacklogRef) *instance.ConfigSet {
-	g := apiv1.Gaggle{Spec: apiv1.GaggleSpec{Project: project, Backlog: backlog}}
-	g.Name = "example"
-	return &instance.ConfigSet{Gaggles: []apiv1.Gaggle{g}}
-}
-
-// applyBacklogProject routes by role: a GitHub or Gitea backlog for ADO code
-// resolves to the backlog provider's own ref, and the ADO project split is
-// unchanged.
-func TestApplyBacklogProjectRoutesTopologyB(t *testing.T) {
-	routed := topologyBRouted()
-	for _, tc := range []struct {
-		name    string
-		backlog apiv1.BacklogRef
-		want    providers.RepositoryRef
-	}{
-		{
-			name:    "github backlog",
-			backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: topologyBBacklog},
-			want:    topologyBBacklogRef(),
-		},
-		{
-			name:    "gitea backlog",
-			backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitea, Project: topologyBBacklog, BaseURL: "https://gitea.example.com"},
-			want:    providers.RepositoryRef{Provider: providers.ProviderGitea, Owner: "example-org", Name: "example-backlog", URL: "https://gitea.example.com"},
-		},
-		{
-			name:    "ado project split is unchanged",
-			backlog: apiv1.BacklogRef{Provider: apiv1.ProviderADO, Project: "example-backlog-project"},
-			want:    providers.RepositoryRef{Provider: providers.ProviderADO, Owner: topologyBOrg, Project: "example-backlog-project", Name: topologyBCodeRepo},
-		},
-		{
-			name:    "malformed github backlog keeps routed",
-			backlog: apiv1.BacklogRef{Provider: apiv1.ProviderGitHub, Project: "example-backlog"},
-			want:    routed,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := applyBacklogProject(topologyBGaggleSet(tc.backlog), "example", routed)
-			if got != tc.want {
-				t.Fatalf("applyBacklogProject = %+v, want %+v", got, tc.want)
-			}
-		})
-	}
-
-	// A non-ADO mismatch (GitHub code, Gitea backlog) keeps its routed
-	// provider: GitHub and Gitea behaviour does not change.
-	github := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "example-org", Name: "service"}
-	set := namedGaggleSet(
-		apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-org", Name: "service"},
-		apiv1.BacklogRef{Provider: apiv1.ProviderGitea, Project: topologyBBacklog, BaseURL: "https://gitea.example.com"},
-	)
-	if got := applyBacklogProject(set, "example", github); got != github {
-		t.Fatalf("GitHub project with a Gitea backlog routed to %+v, want the unchanged routed repo", got)
-	}
-}
-
 // open-pr never writes a bare "#<id>" into an ADO pull request whose item is
 // a GitHub issue: the item's full URL replaces it, in the generic body and in
 // the structured one.

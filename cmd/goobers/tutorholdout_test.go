@@ -1075,8 +1075,17 @@ func TestTelemetryQueryTutorHoldoutsWithoutRecordsCanProceed(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("unmarshal output: %v\n%s", err, stdout)
 	}
-	if !result.CanProceed || !result.NoWork || result.PendingCount != 0 {
-		t.Fatalf("result = %+v, want clean no-work", result)
+	if !result.CanProceed || result.PendingCount != 0 {
+		t.Fatalf("result = %+v, want clean can-proceed", result)
+	}
+	// noWork would end the whole Tutor run at its first stage (the runner
+	// ends a run on any stage noWork), so it must never be emitted here.
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["noWork"]; ok {
+		t.Fatalf("empty verification must not emit noWork: %s", stdout)
 	}
 }
 
