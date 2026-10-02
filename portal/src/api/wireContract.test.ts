@@ -65,6 +65,7 @@ describe("Go daemon wire contract", () => {
     });
     expect(checkedFixtures.goobers.items[0].harness).toBe("claude-code");
     expect(checkedFixtures.runDetail.graphStatus).toBe("pinned");
+    expect(checkedFixtures.runDetail.terminalCauseStatus).toBe("unavailable");
     expect(checkedFixtures.runEvents.events[0].type).toBe("stage.finished");
     expect(checkedFixtures.runEvents.events[0]).toMatchObject({
       category: "transition",
