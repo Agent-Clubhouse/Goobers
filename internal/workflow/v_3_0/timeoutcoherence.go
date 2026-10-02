@@ -51,6 +51,52 @@ func CheckStageTimeoutCoherence(def Definition) []string {
 	return problems
 }
 
+// engineFallbackStageTimeout is the start-to-close timeout the engine applies
+// to a stage that declares no duration limit (internal/engine's
+// activityTimeout).
+const engineFallbackStageTimeout = time.Hour
+
+// uncappedWaitBudgetWarnings reports a deterministic stage whose inputs
+// declare a poll budget (inputs.pollTimeoutSeconds, alongside any
+// inputs.timeout) while the task itself declares no ceiling (#3288).
+// TaskLimits reads only timeoutSeconds/limits.maxDurationSeconds, so the
+// stage's envelope carries no duration limit and the engine falls back to its
+// own 1-hour timeout: the stage looks carefully bounded in YAML and is
+// unbounded-to-an-hour at the engine. CheckStageTimeoutCoherence only compares
+// a wait against a ceiling, so it is silent here. A poll stage relying on the
+// default poll budget declares nothing in its inputs and is left alone.
+func uncappedWaitBudgetWarnings(def Definition) []string {
+	var warnings []string
+	for _, task := range def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+			continue
+		}
+		if TaskLimits(task).MaxDurationSeconds > 0 {
+			continue
+		}
+		// The poll budget is what makes the stage look bounded; a lone
+		// legacy inputs.timeout is the shell executor's own stage timeout.
+		var declared []string
+		for _, input := range []string{boundedwait.InputPollTimeout, boundedwait.InputTimeout} {
+			if value, ok := task.Inputs[input]; ok && strings.TrimSpace(value) != "" {
+				declared = append(declared, fmt.Sprintf("inputs.%s %q", input, value))
+			} else if _, dynamic := task.InputsFrom[input]; dynamic {
+				declared = append(declared, fmt.Sprintf("inputsFrom.%s", input))
+			} else if input == boundedwait.InputPollTimeout {
+				break
+			}
+		}
+		if len(declared) == 0 {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"task %q declares wait budget %s but no task-level ceiling (timeoutSeconds or limits.maxDurationSeconds), so the engine applies its %s fallback stage timeout; declare timeoutSeconds to bound the stage",
+			task.Name, strings.Join(declared, " and "), engineFallbackStageTimeout,
+		))
+	}
+	return warnings
+}
+
 func effectiveStageTimeout(task apiv1.Task) (time.Duration, bool) {
 	limits := TaskLimits(task)
 	if limits.MaxDurationSeconds > 0 {
