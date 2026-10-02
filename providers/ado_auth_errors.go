@@ -23,6 +23,7 @@ const (
 	azureCLISignInRequiredCode     = "azure_cli_sign_in_required"
 	azureCLINoAccountCode          = "azure_cli_no_account"
 	azureCLINetworkUnreachableCode = "azure_cli_network_unreachable"
+	azureCLIWrongTenantCode        = "azure_cli_wrong_tenant"
 )
 
 type azureCLICommandFailure struct {
@@ -55,6 +56,12 @@ var (
 		detail: "no Azure CLI account is signed in",
 		hint:   "run az login (with the configured --tenant, if any) in the same user/process context as Goobers, then retry",
 	}
+	azureCLIWrongTenant = azureCLIOutputClass{
+		code:   azureCLIWrongTenantCode,
+		detail: "Azure CLI is signed in to a different tenant than the one that holds this identity or resource",
+		hint: "run az login --tenant <tenant> (the Microsoft Entra tenant that owns the Azure DevOps organization;" +
+			" use the configured --tenant, if any) in the same user/process context as Goobers, then retry",
+	}
 	azureCLINetworkUnreachable = azureCLIOutputClass{
 		code:   azureCLINetworkUnreachableCode,
 		detail: "Azure CLI could not reach the network",
@@ -63,8 +70,9 @@ var (
 	}
 )
 
-// Fixed, lowercase markers. Server-issued sign-in errors prove the network
-// worked, so they win over network markers; network markers win over the
+// Fixed, lowercase markers. Server-issued sign-in and tenant errors prove the
+// network worked, so they win over network markers (sign-in errors win over
+// tenant errors); network markers win over the
 // generic `az login` advice the CLI appends to many failures.
 var (
 	azureCLIServerSignInMarkers = [][]byte{
@@ -79,6 +87,14 @@ var (
 		[]byte("refresh token has expired"),
 		[]byte("interaction_required"),
 		[]byte("invalid_grant"),
+	}
+	azureCLIWrongTenantMarkers = [][]byte{
+		[]byte("aadsts50020"),  // account from an external identity provider is not in the tenant
+		[]byte("aadsts50059"),  // no tenant-identifying information found
+		[]byte("aadsts50128"),  // invalid domain name, no tenant-identifying information
+		[]byte("aadsts90002"),  // tenant not found
+		[]byte("aadsts90072"),  // account must be added as an external user in the tenant
+		[]byte("aadsts500011"), // resource principal not found in the tenant
 	}
 	azureCLINetworkMarkers = [][]byte{
 		[]byte("failed to establish a new connection"),
@@ -113,6 +129,7 @@ func classifyAzureCLIOutput(out []byte) (azureCLIOutputClass, bool) {
 		class   azureCLIOutputClass
 	}{
 		{azureCLIServerSignInMarkers, azureCLISignInRequired},
+		{azureCLIWrongTenantMarkers, azureCLIWrongTenant},
 		{azureCLINetworkMarkers, azureCLINetworkUnreachable},
 		{azureCLINoAccountMarkers, azureCLINoAccount},
 		{azureCLISignInMarkers, azureCLISignInRequired},

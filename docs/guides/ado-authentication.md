@@ -64,11 +64,12 @@ also appears in the run journal and `goobers status` error message:
 | --- | --- | --- |
 | `Azure CLI sign-in expired or requires interaction` (an expired or revoked refresh token, MFA or other interaction required, or the CLI asking for `az login`) | `azure_cli_sign_in_required` | Run `az login` (with `--tenant` if `auth.tenant` is set) as the user Goobers runs as. |
 | `no Azure CLI account is signed in` | `azure_cli_no_account` | Same as above. |
+| `Azure CLI is signed in to a different tenant than the one that holds this identity or resource` (for example `AADSTS50020`, `AADSTS90002` or `AADSTS500011`) | `azure_cli_wrong_tenant` | Run `az login --tenant <tenant>` with the Microsoft Entra tenant that owns the Azure DevOps organization (the `auth.tenant` value, if set) as the user Goobers runs as. |
 | `Azure CLI could not reach the network` (name resolution or connection failures, for example after the host slept or a VPN dropped) | `azure_cli_network_unreachable` | Restore network, DNS, VPN or proxy access, then retry. Signing in again does not help. |
 | An unclassified failure when multiple Azure CLI launchers are on `PATH` | `azure_cli_path_ambiguous` | Inspect `PATH`, remove or reorder stale installations, and retry. Goobers uses the first launcher and never probes alternatives with a credential command. |
 | `process exited with code N` (no recognized marker) | `azure_cli_exit` | Run the check below. |
 
-A sign-in error returned by Microsoft Entra ID takes precedence over network
+A sign-in or tenant error returned by Microsoft Entra ID takes precedence over network
 markers, because receiving it proves the network was reachable.
 
 For a command failure, run this token-free output check in the same user and
