@@ -13,7 +13,7 @@
 #     namespace);
 #   - NO INBOUND TO STAGE PODS. EVER. (No Ingress rule exists for them.)
 # This base is exactly the class-independent floor: default-deny-all +
-# allow-dns. Compose it with the
+# allow-dns for non-stage pods. Compose it with the
 # per-runner-class output of `goobers netpol-render` (issue #3568), which
 # fills the egress CIDRs from instance.yaml egress.allowlist and refuses
 # CHANGE-ME placeholders instead of shipping stubs.
@@ -34,8 +34,13 @@ kind: NetworkPolicy
 metadata:
   name: allow-dns
 spec:
-  # Name resolution for the allowed egress targets (§5).
-  podSelector: {}
+  # Stage DNS is owned by the per-class policies; a namespace-wide DNS
+  # grant would silently reopen network:none through additive policy union.
+  podSelector:
+    matchExpressions:
+      - key: goobers.dev/role
+        operator: NotIn
+        values: [stage]
   policyTypes:
     - Egress
   egress:

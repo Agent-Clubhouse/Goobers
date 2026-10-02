@@ -42,7 +42,7 @@ func fallbackFailureEvidence(stdout, stderr []byte, preferred diagnosticRange) (
 		if useful {
 			context := cleanOutputLine(raw)
 			if anchor > 0 && len(stream.data) > maxFailureDigestBytes || end < len(stream.data) && end-start >= maxFailureDigestBytes-3 {
-				context += "\n... (failure evidence truncated; see output artifacts)"
+				context += "\n" + FailureEvidenceTruncatedMarker
 			}
 			contexts = append(contexts, context)
 		}
@@ -111,7 +111,7 @@ func boundFailureDigest(lines []string) []string {
 	if len(text) <= maxFailureDigestBytes {
 		return lines
 	}
-	const marker = "\n... (failure evidence truncated; see output artifacts)"
+	const marker = "\n" + FailureEvidenceTruncatedMarker
 	end := maxFailureDigestBytes - len(marker)
 	for end > 0 && !utf8.ValidString(text[:end]) {
 		end--

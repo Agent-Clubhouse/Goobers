@@ -280,12 +280,18 @@ the class-independent floor (default-deny-all + allow-dns).
 The base also ships `dispatcher-rbac.yaml`, binding the **existing** `goobers-worker`
 ServiceAccount (`goobers-system/worker-rbac.yaml`) — not a new identity — to create,
 get, delete and list pods in this gaggle's namespace, read the worker's own
-Deployment (DI-9 template read), and read the Go module cache claim. This is what lets a worker actually dispatch
+Deployment (DI-9 template read), read the Go module cache claim, and verify stage ServiceAccounts. This is what lets a worker actually dispatch
 pod-per-stage runs into a gaggle namespace (#4286); stage pods themselves still get
 no token mount and no RBAC grants at all. The included `goobers-stage` ServiceAccount
-is still a target-topology template, not one the current dispatcher selects — every
-stage pod runs under its namespace's default ServiceAccount (workload identity
-federation, `spec.isolation.identityRef`, is tracked separately from #4897). As of
+is the default on both image and template render paths. Set
+`spec.isolation.serviceAccount` to use an existing account (including `default`
+as an explicit opt-out); every selected account must set
+`automountServiceAccountToken: false`. Worker startup fails closed with
+`STAGE_SERVICE_ACCOUNT` if an account is missing or unsafe. Apply
+`deploy/reference/gaggle-namespace/base/serviceaccount.yaml` in each target
+namespace before upgrading, and apply the updated dispatcher Role so the worker
+can read accounts. `goobers status` reports effective accounts per gaggle.
+Workload identity federation, `spec.isolation.identityRef`, remains separate. As of
 #4897, `--dispatch-namespace` no longer names a pod namespace at all — it is only
 the non-empty flag that enables mode-3 dispatch. The worker instead routes EACH
 stage pod to its OWNING gaggle's `spec.isolation.namespace`, resolved per attempt

@@ -49,6 +49,8 @@ type StatusFleetFact struct {
 // local status adapters.
 type SchedulerStatus struct {
 	SelfExecution instance.SelfExecutionStats
+	// StageServiceAccounts reports each gaggle's effective pod account.
+	StageServiceAccounts map[string]string
 	// IsolationMandates is the effective, operator-owned class floor loaded
 	// by this daemon. Nil means no instance mandate is configured.
 	IsolationMandates     map[string][]string
@@ -717,6 +719,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		return SchedulerStatus{}, err
 	}
 	definitions := s.definitions.Load().inventory.definitions
+	status.StageServiceAccounts = stageServiceAccounts(definitions.Gaggles)
 	status.RefillOccupancy = workflowRefillOccupancy(
 		definitions.Workflows,
 		activeCounts,
@@ -962,4 +965,12 @@ func parseProviderQuotaResumeTime(reason string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return resetAt, true
+}
+
+func stageServiceAccounts(gaggles []apiv1.Gaggle) map[string]string {
+	accounts := make(map[string]string, len(gaggles))
+	for _, gaggle := range gaggles {
+		accounts[gaggle.Name] = gaggle.Spec.Isolation.EffectiveServiceAccount()
+	}
+	return accounts
 }

@@ -595,14 +595,19 @@
       "description": "One named external secret store. Declaring a store no ref uses is harmless.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "kind", "vaultURI", "auth"],
+      "required": ["name", "kind"],
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "file-key"}}}, "then": {"required": ["directory"], "not": {"anyOf": [{"required": ["auth"]}, {"required": ["vaultURI"]}]}}, "else": {"required": ["vaultURI", "auth"], "not": {"required": ["directory"]}}},
+        {"if": {"properties": {"kind": {"enum": ["keyvault-key", "file-key"]}}}, "then": {"properties": {"cacheTTLSeconds": {"const": 0}}}}
+      ],
       "properties": {
         "name": {
           "type": "string",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "description": "Handle store-backed token refs address this store by. A lowercase DNS label, so it can never be confused with the `/`-separated secret name that follows it in a ref."
         },
-        "kind": { "type": "string", "enum": ["azure-key-vault"], "description": "Store vendor. The seam is vendor-neutral by name+kind indirection; azure-key-vault is the only kind implemented today." },
+        "kind": { "type": "string", "enum": ["azure-key-vault", "keyvault-key", "file-key"], "description": "Operation provider: azure-key-vault fetches secrets; keyvault-key and file-key wrap keys. Key stores cannot be used in token refs." },
+        "directory": {"type": "string", "minLength": 1, "description": "Absolute private directory containing name/version.pem RSA private keys and name/active version markers. Required only for file-key."},
         "vaultURI": {
           "type": "string",
           "format": "uri",
@@ -618,7 +623,7 @@
             "kind": {
               "type": "string",
               "enum": ["workload-identity", "managed-identity", "azure-cli"],
-              "description": "Ambient identity chain used to reach the store."
+              "description": "Exactly the declared ambient identity used to reach the store; no fallback chain."
             },
             "clientId": { "type": "string", "minLength": 1, "description": "Pins a user-assigned identity. Valid for workload-identity and managed-identity; azure-cli has no client to pin." }
           }

@@ -403,6 +403,7 @@ type statusJSONOutput struct {
 	Warnings               []validate.CodedWarning                    `json:"warnings"`
 	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
 	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	StageServiceAccounts   map[string]string                          `json:"stageServiceAccounts,omitempty"`
 	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
 	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
 	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
@@ -1552,6 +1553,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
 		selfExecution := cfg.SelfExecutionStats()
+		var stageServiceAccounts map[string]string
 		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var parked *statusParkedBacklog
@@ -1569,6 +1571,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
 				selfExecution = status.SelfExecution
+				stageServiceAccounts = status.StageServiceAccounts
 				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
 			}
@@ -1592,6 +1595,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			RefusedWorkflows:       refusedWorkflows,
 			IsolationMandates:      isolationMandates,
 			SelfExecution:          selfExecution,
+			StageServiceAccounts:   stageServiceAccounts,
 			Summary:                fleetSummary,
 			ParkedBacklog:          parked,
 			BaselineBlockers:       baselineBlockers,

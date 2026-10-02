@@ -73,6 +73,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/apireadstore",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cache and filesystem signaling contracts run on Linux unit shards; Windows tests are not selected by the current gate budget."
+    },
+    {
       "package": "internal/app",
       "coverage": "none",
       "category": "not-selected",
@@ -185,6 +191,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/configsignal",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cache and filesystem signaling contracts run on Linux unit shards; Windows tests are not selected by the current gate budget."
     },
     {
       "package": "internal/configsource",
@@ -799,6 +811,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/workerblob",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Endpoint-backed blob transport tests run on Linux unit shards; no Windows-specific seam identified."
+    },
+    {
       "package": "internal/workerhost",
       "coverage": "none",
       "category": "not-selected",
@@ -1073,6 +1091,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "test/soak",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pressure driver is Linux-only; pressure-free planning and fake-driver tests run on Linux unit shards."
     },
     {
       "package": "test/stackparity",

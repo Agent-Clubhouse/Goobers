@@ -80,6 +80,7 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 	deps := map[string]appsv1.Deployment{}
 	var bundle corev1.Secret
 	bindingCount := 0
+	stageAccountFound := false
 	for _, d := range docs {
 		switch d["kind"] {
 		case "Deployment":
@@ -92,21 +93,32 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 			var rb rbacv1.RoleBinding
 			decode(t, d, &rb)
 			bindingCount++
-			if rb.Namespace != o.StageNamespace || len(rb.Subjects) != 1 || rb.Subjects[0].Name != "goobers-worker" || rb.Subjects[0].Namespace != systemNS {
+			for _, subject := range rb.Subjects {
+				if subject.Name == "goobers-stage" {
+					t.Fatal("stage account must have no RoleBinding")
+				}
+			}
+			if (rb.Namespace != o.StageNamespace && (rb.Namespace != systemNS || rb.RoleRef.Name != "goobers-service-addresses")) || len(rb.Subjects) != 1 || rb.Subjects[0].Name != "goobers-worker" || rb.Subjects[0].Namespace != systemNS {
 				t.Fatalf("unexpected authority grant: %+v", rb)
 			}
 		case "ServiceAccount":
 			var sa corev1.ServiceAccount
 			decode(t, d, &sa)
-			if sa.Name == "goobers-api" || sa.Name == "default" {
+			if sa.Name == "goobers-stage" && sa.Namespace == o.StageNamespace {
+				stageAccountFound = true
+			}
+			if sa.Name == "goobers-api" || sa.Name == "default" || sa.Name == "goobers-stage" {
 				if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
 					t.Fatal("API or stage inherited Kubernetes token")
 				}
 			}
 		}
 	}
-	if len(deps) != 2 || bindingCount != 1 {
-		t.Fatalf("want just daemon/worker plus dispatcher grant: %d deployments, %d bindings", len(deps), bindingCount)
+	if !stageAccountFound {
+		t.Fatal("missing unprivileged stage ServiceAccount")
+	}
+	if len(deps) != 2 || bindingCount != 2 {
+		t.Fatalf("want just daemon/worker plus dispatcher and Service-read grants: %d deployments, %d bindings", len(deps), bindingCount)
 	}
 	daemon, worker := deps["goobers-api"], deps["goobers-worker"]
 	if v := volume(t, daemon, "journal"); v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "goobers-journal" {
@@ -260,7 +272,7 @@ func TestPreparedTopologyConfigChangeRollsBothPodsAndDropsRemovedFiles(t *testin
 func TestPreparedTopologyNetworkPoliciesMatchRealStageLabels(t *testing.T) {
 	o := fixture(t)
 	docs := generated(t, o)
-	pod, err := dispatcher.RenderPod(dispatcher.Config{GaggleNamespaces: map[string]string{"demo": o.StageNamespace}}, dispatcher.Attempt{RunID: "run-1", Gaggle: "demo", Stage: "probe", Number: 1}, dispatcher.RunnerSpec{Name: "linux-pod", OS: "linux", Host: o.Image, HostKind: instance.RunnerHostImage, Restrictions: []string{string(runnercap.RestrictionNetworkNone)}})
+	pod, err := dispatcher.RenderPod(dispatcher.Config{GaggleNamespaces: map[string]string{"demo": o.StageNamespace}, WriteAPIBase: apiURL, BlobEndpoint: apiURL, NetworkNoneHostAliases: []corev1.HostAlias{{IP: "10.0.0.2", Hostnames: []string{"goobers-api.goobers-system.svc"}}}}, dispatcher.Attempt{RunID: "run-1", Gaggle: "demo", Stage: "probe", Number: 1}, dispatcher.RunnerSpec{Name: "linux-pod", OS: "linux", Host: o.Image, HostKind: instance.RunnerHostImage, Restrictions: []string{string(runnercap.RestrictionNetworkNone)}})
 	if err != nil {
 		t.Fatal(err)
 	}

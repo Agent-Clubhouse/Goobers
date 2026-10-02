@@ -38,11 +38,10 @@ import (
 // AUTHENTICATION mirrors the credential plane (DS9), not the claims plane:
 // raw content-addressed bytes carry no run scope to compare a pod's token
 // against, so containment cannot be "this run's own claims/journal/credential
-// resolve" — it is "an authenticated stage pod, or refused" full stop. A
-// human OIDC principal, however privileged, is refused: mode 1/2 resolve
-// blobs in-process (StagingArtifacts talks to blobstore.Store directly) and
-// never need this transport, so the loopback null-auth posture's convenience
-// does not extend to it either.
+// resolve" — it admits a stage pod or a dedicated blob-worker principal.
+// Human OIDC principals and config-digest worker credentials are refused,
+// regardless of roles. Resident endpoint workers use a separate signed bearer
+// confined to this plane; the loopback null-auth posture is also refused.
 
 // MaxBlobBytes bounds one blob transfer. blobstore.Store.Put takes the whole
 // blob as []byte — there is no streaming variant — so the body is fully
@@ -168,19 +167,14 @@ func blobPutHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFun
 	}
 }
 
-// requireBlobPodPrincipal enforces the blob plane's fail-closed posture,
-// mirroring the credential plane (DS9): it requires an authenticated POD
-// principal UNCONDITIONALLY. Unlike the claims/journal planes there is no
-// run id in the request to additionally bind the principal to — a digest
-// carries no run scope — so "pod principal, full stop" is the entire
-// containment. A human OIDC principal, however privileged, is refused, and an
-// unauthenticated request under the loopback null-auth posture is refused
-// too: mode 1/2 never call this transport at all.
+// requireBlobPodPrincipal accepts stage pods and dedicated blob-worker
+// principals. Digests have no run scope; human and config-worker identities
+// remain refused even with administrator roles.
 func requireBlobPodPrincipal(w http.ResponseWriter, request *http.Request) bool {
 	principal, authenticated := PrincipalFromRequest(request)
-	if !authenticated || !IsPodPrincipal(principal) {
+	if !authenticated || (!IsPodPrincipal(principal) && principal.Issuer != WorkerBlobPrincipalIssuer) {
 		writeError(w, http.StatusForbidden, "blob_plane_requires_pod_principal",
-			"the blob plane requires an authenticated pod principal; it serves stage pods only")
+			"the blob plane requires an authenticated pod or blob-scoped worker principal")
 		return false
 	}
 	return true

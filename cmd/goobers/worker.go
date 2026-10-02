@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -21,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/internal/workerblob"
 	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -41,9 +41,12 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             deterministic executors (default\n" +
 	"                             $GOOBERS_INSTANCE_ROOT)\n" +
 	"  --blob-store <dir>         directory backing the fleet-wide\n" +
-	"                             content-addressed artifact store; required\n" +
-	"                             for a run whose stages are served by more\n" +
-	"                             than one worker (default $GOOBERS_BLOB_STORE)\n" +
+	"                             content-addressed artifact store (default\n" +
+	"                             $GOOBERS_BLOB_STORE)\n" +
+	"  --blob-endpoint <url>      HTTP(S) blob plane; alternative to --blob-store\n" +
+	"                             (default $GOOBERS_BLOB_ENDPOINT only when no\n" +
+	"                             directory is selected). Instance-backed workers\n" +
+	"                             require exactly one store mode.\n" +
 	"  --task-queue <queue>       task queue to serve; repeatable (default\n" +
 	"                             engine.taskQueue, with env override)\n" +
 	"  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort,\n" +
@@ -150,6 +153,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
+	blobEndpoint := fs.String("blob-endpoint", "", "HTTP(S) artifact plane alternative to --blob-store (default GOOBERS_BLOB_ENDPOINT when no directory is selected)")
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "enables the dispatcher-backed stage-dispatch seam; each stage pod routes to its own gaggle's declared isolation.namespace (#4897), not to this value")
 	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
@@ -166,6 +170,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --config-history-depth must not be negative\n")
 		return 2
 	}
+	resolvedEndpoint, modeErr := workerblob.Resolve(*blobRoot, *blobEndpoint, os.Getenv("GOOBERS_BLOB_ENDPOINT"), *instanceRoot != "")
+	if modeErr != nil {
+		pf(stderr, "error: %v\n", modeErr)
+		return 2
+	}
+	*blobEndpoint = resolvedEndpoint
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
 	var recurringStageSweeper stageOrphanSweeper
@@ -240,26 +250,12 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// identically whether its stage runs in this process or in a pod (#3884).
 	var seams *workerSeams
 	if *instanceRoot != "" {
-		// The fleet's content-addressed store, if one is configured. Without it
-		// a run is only safely served by a SINGLE worker: stage artifacts stay
-		// on the node that produced them, and the first ContextPointer resolved
-		// somewhere else fails closed (#2866). It is constructed HERE, its only
-		// consumer, so an instance-less worker with GOOBERS_BLOB_STORE set (a
-		// fleet-wide env var) does not MkdirAll, emit a store line, or fail
-		// closed on an unwritable path — the mode-1/2 self-only startup shape
-		// stays byte-for-byte unchanged. The --dispatch-namespace path requires
-		// --instance and reads *blobRoot directly (buildStageDispatch), never
-		// this store value.
-		var store blobstore.Store
-		if *blobRoot != "" {
-			dirStore, berr := blobstore.NewDir(*blobRoot)
-			if berr != nil {
-				pf(stderr, "error: %v\n", berr)
-				return 1
-			}
-			store = dirStore
-			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
+		store, berr := openWorkerBlobStore(*instanceRoot, *blobRoot, *blobEndpoint, *dispatchNamespace)
+		if berr != nil {
+			pf(stderr, "error: %v\n", berr)
+			return 1
 		}
+		pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
 		builtSeams, serr := newWorkerSeams(*instanceRoot, store)
 		if serr != nil {
 			pf(stderr, "error: %v\n", serr)

@@ -51,9 +51,11 @@ type restMutationRecorder interface {
 }
 
 // restWorkItemMutator adds the common issue workflow used by shared updates.
-// The HTTP details remain provider-owned.
+// The HTTP details remain provider-owned. restPager reads the comment history
+// an update's operation marker is looked up in (#2657).
 type restWorkItemMutator interface {
 	restMutationRecorder
+	restPager
 	GetWorkItem(context.Context, RepositoryRef, string) (WorkItem, error)
 	applyLabelChanges(context.Context, RepositoryRef, string, []string, []string) error
 	postComment(context.Context, RepositoryRef, string, string) error
@@ -385,93 +387,6 @@ func createRESTWorkItemComment(ctx context.Context, c restMutationRecorder, kind
 	}
 	c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(repo, id), URL: comment.HTMLURL, Operation: "comment"})
 	return mapComment(comment), nil
-}
-
-func updateRESTWorkItem(ctx context.Context, c restWorkItemMutator, kind ProviderKind, baseURL string, req UpdateWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.Milestone != nil && *req.Milestone <= 0 {
-		return WorkItem{}, fmt.Errorf("milestone number must be positive")
-	}
-	before, err := c.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.ExpectedRevision != "" {
-		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	fields := map[string]FieldDigest{}
-	patch := map[string]interface{}{}
-	if req.Title != nil {
-		patch["title"] = *req.Title
-		fields["title"] = FieldDigest{Before: digestString(before.Title), After: digestString(*req.Title)}
-	}
-	if req.Body != nil {
-		patch["body"] = *req.Body
-		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
-	}
-	if req.Assignee != nil {
-		assignees := []string{}
-		if *req.Assignee != "" {
-			assignees = append(assignees, *req.Assignee)
-		}
-		patch["assignees"] = assignees
-		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
-	}
-	if req.Milestone != nil {
-		milestoneBefore := ""
-		if before.Parent != nil && before.Parent.Type == "milestone" {
-			milestoneBefore = before.Parent.ID
-		}
-		milestoneAfter := strconv.Itoa(*req.Milestone)
-		patch["milestone"] = *req.Milestone
-		fields["milestone"] = FieldDigest{Before: digestString(milestoneBefore), After: digestString(milestoneAfter)}
-	}
-	if req.State != "" {
-		state := strings.ToLower(req.State)
-		if state != "open" && state != "closed" {
-			return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-		}
-		patch["state"] = state
-		fields["state"] = FieldDigest{Before: digestString(before.State), After: digestString(state)}
-	}
-	if len(patch) > 0 {
-		endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := c.do(ctx, http.MethodPatch, endpoint, patch, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if req.Comment != "" {
-		if err := c.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-	if labelsChanged(req) {
-		if err := c.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
-			return WorkItem{}, err
-		}
-		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
-		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-	final, err := c.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if len(fields) > 0 {
-		c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(req.Repository, req.ID), URL: final.URL, Operation: updateOperation(req), Fields: fields})
-	}
-	return final, nil
 }
 
 func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, kind ProviderKind, baseURL string, attribution Attribution, req ClaimWorkItemRequest) (WorkItem, error) {

@@ -100,3 +100,22 @@ func TestProbeTCPClassification(t *testing.T) {
 		t.Fatalf("closed port probed %s, want refused", outcome)
 	}
 }
+
+func TestNetworkNoneProofRequiresDNSControl(t *testing.T) {
+	triple := EgressTriple{NetworkNone: true, DeniedHostFromHere: ProbeTimedOut, DeniedHostFromControl: ProbeReachable, AllowedHostFromHere: ProbeReachable}
+	if ok, why := triple.Verdict(); ok || !strings.Contains(why, "DNS denial UNVERIFIED") {
+		t.Fatalf("ok=%v why=%s", ok, why)
+	}
+	triple.DNSFromHere = ProbeTimedOut
+	if ok, _ := triple.Verdict(); ok {
+		t.Fatal("dead DNS server could impersonate policy denial")
+	}
+	triple.DNSFromControl = ProbeReachable
+	if ok, why := triple.Verdict(); !ok {
+		t.Fatal(why)
+	}
+	triple.DNSFromHere = ProbeReachable
+	if ok, _ := triple.Verdict(); ok {
+		t.Fatal("DNS leak accepted")
+	}
+}

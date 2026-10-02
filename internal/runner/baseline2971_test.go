@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/baseline"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
@@ -40,6 +41,14 @@ const baselineCIFailureSummary = "command exited 2"
 
 func runLocalCIFailure(t *testing.T, runID string, health BaselineHealth) (Result, string) {
 	t.Helper()
+	return runLocalCIFailureWith(t, runID, health, baselineCIFailureSummary,
+		"command exited 2; stderr: agent-instructions-validation.test.ts:42 expected 3 sections", nil)
+}
+
+// runLocalCIFailureWith runs the local-ci fixture with the given failure
+// evidence as the stage's summary, error message and result outputs.
+func runLocalCIFailureWith(t *testing.T, runID string, health BaselineHealth, summary, message string, outputs map[string]any) (Result, string) {
+	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -52,12 +61,13 @@ func runLocalCIFailure(t *testing.T, runID string, health BaselineHealth) (Resul
 			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
 				runID + ":" + localCIStageName: {
 					status:  apiv1.ResultFailure,
-					summary: baselineCIFailureSummary,
+					summary: summary,
 					errorInfo: &apiv1.ErrorInfo{
 						Code:      "nonzero_exit",
-						Message:   "command exited 2; stderr: agent-instructions-validation.test.ts:42 expected 3 sections",
+						Message:   message,
 						Retryable: false,
 					},
+					outputs: outputs,
 				},
 			}}, nil
 		},
@@ -152,6 +162,106 @@ func TestSharedBaselineFailureParksTheRun(t *testing.T) {
 	}
 	if got["blocker"] != "acme/web@0f1e2d3c4b5a" {
 		t.Fatalf("annotation blocker = %v, want the shared blocker key", got["blocker"])
+	}
+}
+
+// evaluatorHealth backs the runner seam with a REAL baseline.Evaluator, so a
+// test exercises the production classification rather than a fixed decision.
+type evaluatorHealth struct {
+	baseSHA   string
+	evaluator *baseline.Evaluator
+}
+
+func (h *evaluatorHealth) BaseSHA(context.Context, apiv1.RepoRef, string) (string, error) {
+	return h.baseSHA, nil
+}
+
+func (h *evaluatorHealth) Classify(ctx context.Context, req baseline.Request) (baseline.Decision, error) {
+	return h.evaluator.Classify(ctx, req)
+}
+
+func (h *evaluatorHealth) ReleaseReady(context.Context, apiv1.RepoRef, string) ([]baseline.Waiter, error) {
+	return nil, nil
+}
+
+// streamsProber answers every baseline probe with one fixed red result.
+type streamsProber struct{ stdout, stderr string }
+
+func (p streamsProber) Probe(context.Context, baseline.ProbeTarget, []string) (baseline.ProbeResult, error) {
+	return baseline.ProbeResult{Output: p.stdout, Stderr: p.stderr}, nil
+}
+
+// TestInheritedPlatformDeadcodeFailureParksTheRun is #4477's end-to-end
+// regression through the existing #2971 path: `make ci` fails in its deadcode
+// prerequisite on a Windows-only symbol that the pinned base ALREADY fails on
+// (measured in a different checkout, so every absolute path differs). The run
+// must park as SHARED_BASELINE_FAILURE on attempt one, and the journaled
+// classification must say the inherited failure is platform-specific.
+func TestInheritedPlatformDeadcodeFailureParksTheRun(t *testing.T) {
+	const runID = "run-inherited-deadcode"
+	finding := func(root string) string {
+		return root + "/internal/foo/bar_windows.go:12:6: unreviewed dead code: " +
+			"github.com/goobers/goobers/internal/foo.helper [platforms: windows]"
+	}
+	// make's recipe echo on stdout, the gate's findings on stderr; the stage
+	// result carries exactly what the shell executor derives from them.
+	const stdout = "go run ./test/deadcode -go go\n"
+	stderr := func(root string) string { return finding(root) + "\nexit status 1\nmake: *** [deadcode] Error 1\n" }
+	runStderr := stderr("/work/runs/run-a/repo")
+	message := "command exited 2; failure: " + executor.FailureDiagnostic([]byte(stdout), []byte(runStderr)) +
+		"; 1 distinct failure line(s) recorded in failureDigest"
+	digest, count := executor.FailureDigest([]byte(stdout), []byte(runStderr))
+	outputs := map[string]any{executor.FailureDigestOutput: digest, executor.FailureCountOutput: float64(count)}
+
+	store, err := baseline.OpenStore(filepath.Join(t.TempDir(), "baseline.json"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	health := &evaluatorHealth{
+		baseSHA: "abc123def4567890",
+		evaluator: &baseline.Evaluator{Store: store, Prober: streamsProber{
+			stdout: stdout, stderr: stderr("/tmp/baseline-probe-1234567/checkout"),
+		}},
+	}
+
+	res, runsDir := runLocalCIFailureWith(t, runID, health, message, message, outputs)
+
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated: an inherited failure parks as %s instead of repassing",
+			res.Phase, SharedBaselineFailureCode)
+	}
+	annotations := baselineAnnotations(t, runsDir, runID)
+	if len(annotations) != 1 {
+		t.Fatalf("baseline annotations = %d, want 1", len(annotations))
+	}
+	got := annotations[0]
+	if got["class"] != string(baseline.ClassSharedBaselineFailure) || got["parked"] != true {
+		t.Fatalf("annotation = %+v, want a parked shared-baseline classification", got)
+	}
+	if got["platforms"] != "windows" {
+		t.Fatalf("annotation platforms = %v, want windows recorded as structured context", got["platforms"])
+	}
+	if blockers := store.Blockers("acme/web"); len(blockers) != 1 || len(blockers[0].Waiting) != 1 {
+		t.Fatalf("blockers = %+v, want the run's item parked on one shared blocker", blockers)
+	}
+}
+
+// TestBaselineRequestCarriesTheStageRoster pins the runner's half of #4477:
+// the stage's failure roster, its count and its head-only truncation flags
+// reach the classifier.
+func TestBaselineRequestCarriesTheStageRoster(t *testing.T) {
+	health := &stubBaselineHealth{baseSHA: "abc123def4567890", decision: baseline.Decision{Class: baseline.ClassUnknown}}
+	runLocalCIFailureWith(t, "run-roster-request", health, baselineCIFailureSummary, "command exited 2", map[string]any{
+		executor.FailureDigestOutput:   "x.go:1:2: boom",
+		executor.FailureCountOutput:    float64(1),
+		executor.StderrTruncatedOutput: true,
+	})
+	if len(health.requests) != 1 {
+		t.Fatalf("classify calls = %d, want 1", len(health.requests))
+	}
+	req := health.requests[0]
+	if req.FailureDigest != "x.go:1:2: boom" || req.FailureCount != 1 || !req.OutputTruncated {
+		t.Fatalf("request digest/count/truncated = %q/%d/%v, want the stage's outputs", req.FailureDigest, req.FailureCount, req.OutputTruncated)
 	}
 }
 
