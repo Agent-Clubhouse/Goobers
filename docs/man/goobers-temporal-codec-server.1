@@ -1,0 +1,18 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TEMPORAL CODEC SERVER" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers temporal codec-server \- serve authenticated Temporal payload decoding over TLS
+.SH SYNOPSIS
+\fBgoobers temporal codec-server\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers temporal codec-server --tls-cert <pem> --tls-key <pem> [--listen 127.0.0.1:8444] [--allow-origin https://temporal.example.com] [path]
+
+Requires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POST requires an OIDC bearer token with view permission. Repeat --allow-origin for each exact Web UI origin. No anonymous mode.
+.fi
+.SH EXAMPLES
+.nf
+goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

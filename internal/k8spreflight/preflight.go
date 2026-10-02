@@ -15,6 +15,7 @@ import (
 	"slices"
 	"time"
 
+	"go.temporal.io/sdk/converter"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/goobers/goobers/internal/temporaldial"
@@ -123,7 +124,8 @@ type Options struct {
 	// TemporalTLS is the frontend transport security the namespace check
 	// dials with (#5289); nil dials plaintext. The check reports which
 	// transport it used.
-	TemporalTLS *temporaldial.TLS
+	TemporalTLS           *temporaldial.TLS
+	TemporalDataConverter converter.DataConverter
 	// DialTemporal dials the Temporal frontend; nil uses temporaldial.Dial
 	// with TemporalTLS. Tests
 	// substitute a fake to avoid a live Temporal server.

@@ -20,6 +20,7 @@ import (
 
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -182,7 +183,8 @@ func TestNoDialSiteBypassesTheConstructor(t *testing.T) {
 				return err
 			}
 			text := string(src)
-			if !strings.Contains(text, `"go.temporal.io/sdk/client"`) {
+			if !strings.Contains(text, `"go.temporal.io/sdk/client"
+ "go.temporal.io/sdk/converter"`) {
 				return nil
 			}
 			if strings.Contains(text, "client.Options{") || strings.Contains(text, "client.Dial(") {
@@ -319,4 +321,15 @@ func newKey(t *testing.T) *ecdsa.PrivateKey {
 		t.Fatalf("generate key: %v", err)
 	}
 	return key
+}
+
+func TestOptionsPreservesExplicitConverterWithTLS(t *testing.T) {
+	dc := converter.NewCodecDataConverter(converter.GetDefaultDataConverter(), converter.NewZlibCodec(converter.ZlibCodecOptions{AlwaysEncode: true}))
+	opts, err := Options("h:1", "ns", &TLS{}, dc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.DataConverter != dc || opts.ConnectionOptions.TLS == nil {
+		t.Fatal("converter or TLS dropped")
+	}
 }

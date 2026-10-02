@@ -13,6 +13,7 @@ import (
 	workflowpb "go.temporal.io/api/workflow/v1"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -256,7 +257,7 @@ func TestSweepWorkerStageOrphansReportsDisposal(t *testing.T) {
 func TestSweepWorkerStageOrphansIsNeverFatal(t *testing.T) {
 	t.Run("dial fails", func(t *testing.T) {
 		previous := dialWorkerSweepTemporal
-		dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS) (client.Client, error) {
+		dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 			return nil, errors.New("connection refused")
 		}
 		t.Cleanup(func() { dialWorkerSweepTemporal = previous })
@@ -344,7 +345,7 @@ func (c *sweepStubClient) Close() {}
 func withFakeSweepDial(t *testing.T, describer *fakeSweepDescriber) {
 	t.Helper()
 	previous := dialWorkerSweepTemporal
-	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS) (client.Client, error) {
+	dialWorkerSweepTemporal = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 		return &sweepStubClient{describer: describer}, nil
 	}
 	t.Cleanup(func() { dialWorkerSweepTemporal = previous })
