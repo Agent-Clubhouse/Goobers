@@ -71,7 +71,7 @@ func TestRuntimePreflightMCPUnsupportedAdapterKeepsConfiguration(t *testing.T) {
 			t.Fatalf("unknown is not ready: %+v", row)
 		}
 	}
-	if rows[1].Facts.Server != "external" || rows[1].Facts.RequiredTools[0] != "delete_repository" {
+	if rows[1].Facts.Server != "external" || rows[1].Facts.ToolAllowlist[0] != "delete_repository" || len(rows[1].Facts.RequiredTools) != 0 {
 		t.Fatalf("configured facts lost: %+v", rows[1])
 	}
 }

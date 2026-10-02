@@ -20,6 +20,7 @@ type MCPDiagnostic struct {
 	ConfiguredTransport string   `json:"configuredTransport"`
 	NegotiatedServer    string   `json:"negotiatedServer,omitempty"`
 	IdentitySource      string   `json:"identitySource"`
+	ToolAllowlist       []string `json:"toolAllowlist,omitempty"`
 	RequiredTools       []string `json:"requiredTools"`
 	AvailableTools      []string `json:"availableTools,omitempty"`
 	MissingTools        []string `json:"missingTools,omitempty"`
@@ -35,7 +36,11 @@ func ConfiguredMCPDiagnostics(servers []apiv1.MCPServer, tools []string) []MCPDi
 	result := []MCPDiagnostic{configuredMCPDiagnostic(goobersIOServerName, goobersIOTools)}
 	result[0].ConfiguredTransport = "stdio"
 	for _, server := range servers {
-		row := configuredMCPDiagnostic(server.Name, tools)
+		// The goober allowlist permits tools across the harness and all its
+		// servers; it neither assigns ownership nor requires their presence.
+		// External declarations currently have no per-server required tools.
+		row := configuredMCPDiagnostic(server.Name, nil)
+		row.ToolAllowlist = slices.Clone(tools)
 		row.ConfiguredTransport = "http"
 		if server.Command != "" {
 			row.ConfiguredTransport = "stdio"
@@ -52,9 +57,9 @@ func ConfiguredMCPDiagnostics(servers []apiv1.MCPServer, tools []string) []MCPDi
 	return result
 }
 
-func configuredMCPDiagnostic(name string, tools []string) MCPDiagnostic {
+func configuredMCPDiagnostic(name string, requiredTools []string) MCPDiagnostic {
 	return MCPDiagnostic{MCPReadiness: MCPReadiness{Server: name, Category: "check_unobservable", Source: "adapter-limitation", Connection: "unobservable", Inventory: "unobservable", Authorization: "unobservable"},
-		ConfiguredSource: "compiled-configuration", IdentitySource: "unobservable", RequiredTools: slices.Clone(tools), InventorySource: "unobservable"}
+		ConfiguredSource: "compiled-configuration", IdentitySource: "unobservable", RequiredTools: append([]string{}, requiredTools...), InventorySource: "unobservable"}
 }
 
 func inspectMCPDiagnostics(ctx context.Context, session requiredMCPSession, reports []MCPDiagnostic, eligible []apiv1.MCPServer, settle time.Duration) []MCPDiagnostic {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -173,5 +174,49 @@ func TestMCPDiagnosticsDoesNotInferAliasFromAnotherConfiguredServer(t *testing.T
 	got := observeExternalMCP(ctx, s, reports[1])
 	if got.Category != "required_server_unavailable" {
 		t.Fatalf("unrelated server was treated as alias: %+v", got)
+	}
+}
+
+func TestMCPDiagnosticsSharedAllowlistDoesNotRequireToolsPerServer(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		allowlist   []string
+		inventories map[string][]string
+	}{
+		{"mixed harness and external", []string{"shell", "read-context"}, map[string][]string{"context": {"read-context"}}},
+		{"disjoint external servers", []string{"read-context", "search-docs"}, map[string][]string{"context": {"read-context"}, "docs": {"search-docs"}}},
+		{"allowlist is not a requirement", []string{"optional-tool"}, map[string][]string{"external": {}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var configured []apiv1.MCPServer
+			servers := &rpc.MCPServerList{}
+			for name := range tc.inventories {
+				configured = append(configured, apiv1.MCPServer{Name: name, URL: "https://example.invalid/mcp"})
+				servers.Servers = append(servers.Servers, rpc.MCPServer{Name: name, Status: rpc.MCPServerStatusConnected})
+			}
+			reports := ConfiguredMCPDiagnostics(configured, tc.allowlist)
+			if !slices.Equal(reports[0].RequiredTools, goobersIOTools) {
+				t.Fatal("adapter-owned builtin requirements lost")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			for _, report := range reports[1:] {
+				inventory := &rpc.MCPListToolsResult{}
+				for _, name := range tc.inventories[report.Server] {
+					inventory.Tools = append(inventory.Tools, rpc.MCPTools{Name: name})
+				}
+				session := &diagnosticSession{servers: servers, tools: inventory}
+				got := observeExternalMCP(ctx, session, report)
+				if got.Category != "authorization_unobservable" || got.Inventory != "ready" || len(got.RequiredTools) != 0 || len(got.MissingTools) != 0 {
+					t.Fatalf("shared allowlist became a server requirement: %+v", got)
+				}
+				if !slices.Equal(got.ToolAllowlist, tc.allowlist) || !slices.Equal(got.AvailableTools, tc.inventories[report.Server]) {
+					t.Fatalf("configured policy or observed inventory lost: %+v", got)
+				}
+				if session.probeCalls != 0 || session.modelCalls != 0 {
+					t.Fatal("external inventory check executed a tool or model")
+				}
+			}
+		})
 	}
 }

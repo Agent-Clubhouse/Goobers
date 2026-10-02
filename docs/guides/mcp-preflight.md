@@ -14,6 +14,11 @@ and closes its owned process and removes its temporary files afterwards.
 
 Each row separates the configured server name and transport, required tool
 names, observed registry identity, observed tool inventory, and authorization.
+The built-in server has adapter-owned required tools. External rows retain the
+goober's shared `toolAllowlist` as configuration only: it permits tools across
+the harness and all servers, without requiring every entry on any server.
+External `requiredTools` remains empty because external server declarations do
+not define per-server requirements.
 The registry identity is the adapter's negotiated config key; it is not an
 independent attestation of the remote server's implementation. Sources identify
 compiled configuration, adapter-session observations, and unobservable facts.
