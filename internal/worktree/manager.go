@@ -620,7 +620,17 @@ func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow b
 	if narrow {
 		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
 	}
-	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
+	// --refmap= suppresses the configured remote.origin.fetch for this
+	// invocation so the explicit refspecs are the only mappings. A mirror a
+	// pinned workspace initialized (`init --bare` + `remote add origin`)
+	// carries git's default tracking refmap; combined with a pruned
+	// +refs/*:refs/* refresh, git prunes refs/remotes/origin/* (no source
+	// under the explicit refspec) and then fails its opportunistic tracking
+	// update of the same ref — the pinned-to-unpinned migration failure
+	// (#5647). With the refmap suppressed the prune simply retires those
+	// stale tracking refs, which would otherwise shadow the fresh
+	// refs/heads/<base> for linked worktrees that resolve origin/<base> first.
+	fetchArgs := append([]string{"fetch", "--prune", "--refmap=", "origin"}, refspecs...)
 	for _, ns := range m.runBranchNamespacesSnapshot() {
 		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
 	}
