@@ -2020,7 +2020,7 @@ to the declared result file for a downstream stage's Task.InputsFrom.
 
 Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
 stable branch), base (default GOOBERS_BASE_BRANCH, else "main"), itemID,
-itemTitle, resultFile, timeout. PR metadata is configured through these
+itemTitle, reviewers, resultFile, timeout. PR metadata is configured through these
 workflow inputs — there are no --title/--body flags — and a stage may
 bind them from an upstream stage's declared output with inputsFrom
 rather than a static value:
@@ -2063,6 +2063,15 @@ which that provider would read as one of its own items.
 A workflow that claims no item, or whose journal holds no recognized
 review/local-CI evidence, therefore gets generic metadata unless it sets
 these inputs. That is the fallback working, not a missing feature.
+reviewers (optional) is a comma- or newline-separated list of reviewer
+logins (GitHub/Gitea) or identities (ADO) requested on the PR after it is
+opened. A failed request never fails the stage: the PR stays opened, a
+warning is printed, and the result file records reviewersRequested (the
+list sent, on success) or reviewersRequestError (the failure). Leading
+'@' is stripped and duplicates dropped. Gaggle credentials need the
+provider's pull-request write scope (GitHub's requested_reviewers API
+rejects the PR author as a reviewer — that surfaces as the warning).
+
 Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
 
 ### override
