@@ -145,20 +145,27 @@ func applyBaselineDecision(result apiv1.ResultEnvelope, decision baseline.Decisi
 }
 
 // baselineAnnotation builds the journal event recording one classification.
+// A platform-qualified failure also records which platforms it holds on, so a
+// remediation reader can tell an inherited platform-specific failure (#4477)
+// from an ordinary shared one without re-parsing the reason text.
 func baselineAnnotation(stage string, decision baseline.Decision, parked bool) journal.Event {
+	fields := map[string]any{
+		"kind":        baselineClassificationKind,
+		"class":       string(decision.Class),
+		"baseSha":     decision.BaseSHA,
+		"fingerprint": decision.Fingerprint,
+		"blocker":     decision.BlockerKey,
+		"waiting":     decision.Waiting,
+		"parked":      parked,
+		"reason":      decision.Reason,
+	}
+	if len(decision.Platforms) > 0 {
+		fields["platforms"] = strings.Join(decision.Platforms, ",")
+	}
 	return journal.Event{
-		Type:  journal.EventRunnerAnnotation,
-		Stage: stage,
-		Runner: map[string]any{
-			"kind":        baselineClassificationKind,
-			"class":       string(decision.Class),
-			"baseSha":     decision.BaseSHA,
-			"fingerprint": decision.Fingerprint,
-			"blocker":     decision.BlockerKey,
-			"waiting":     decision.Waiting,
-			"parked":      parked,
-			"reason":      decision.Reason,
-		},
+		Type:   journal.EventRunnerAnnotation,
+		Stage:  stage,
+		Runner: fields,
 	}
 }
 

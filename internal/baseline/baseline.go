@@ -73,6 +73,11 @@ type Decision struct {
 	BaseSHA     string
 	Fingerprint string
 	Signature   string
+	// Platforms names the target platforms the failure's findings are
+	// qualified to (FailurePlatforms), nil when it is not platform-specific.
+	// It is structured context for whoever reads the classification: a
+	// shared failure with Platforms set is an inherited platform-specific one.
+	Platforms []string
 	// BlockerKey names the durable shared blocker this failure belongs to,
 	// set only for ClassSharedBaselineFailure.
 	BlockerKey string
@@ -149,7 +154,10 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	}
 	signature := flake.NormalizeSignature(FailureSignatureText(req.FailureText))
 	fingerprint := Fingerprint(req.Command, signature)
-	decision := Decision{Class: ClassUnknown, BaseSHA: req.BaseSHA, Fingerprint: fingerprint, Signature: signature}
+	decision := Decision{
+		Class: ClassUnknown, BaseSHA: req.BaseSHA, Fingerprint: fingerprint, Signature: signature,
+		Platforms: FailurePlatforms(req.FailureText),
+	}
 	if strings.TrimSpace(req.BaseSHA) == "" || len(req.Command) == 0 {
 		decision.Reason = "no pinned base SHA or command to compare against"
 		return decision, nil
@@ -195,6 +203,9 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	decision.Reason = fmt.Sprintf(
 		"identical failure on the target branch at base %s (%s); shared blocker %s has %d waiting subject(s)",
 		short(req.BaseSHA), observation.Signature, blocker.Key, decision.Waiting)
+	if len(decision.Platforms) > 0 {
+		decision.Reason += fmt.Sprintf("; platform-specific to %s", strings.Join(decision.Platforms, ","))
+	}
 	if !decision.Park {
 		decision.Reason += "; the shared repair lane is enabled, so this branch may carry the repair"
 	}
