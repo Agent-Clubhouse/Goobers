@@ -104,12 +104,8 @@ func (s *skillSnapshot) reserveState(ctx context.Context) error {
 	if !isGitWorkspace(ctx, s.workspace) {
 		return ctx.Err()
 	}
-	tracked, err := skillGit(ctx, s.workspace, "ls-files", "-z", "--", skillStateDir)
-	if err != nil {
+	if err := s.refuseTracked(ctx, skillStateDir); err != nil {
 		return err
-	}
-	if len(tracked) > 0 {
-		return errors.New("repository owns reserved skills state directory")
 	}
 	return gitexclude.Ensure(ctx, s.workspace, gitexclude.Pattern{Line: "/.goobers/"})
 }
@@ -136,9 +132,6 @@ func (s *skillSnapshot) acquire() error {
 }
 
 func (s *skillSnapshot) install(ctx context.Context, directory string, packages map[string][]workflow.SkillFile) error {
-	if err := skillMkdirAll(s.root, directory); err != nil {
-		return err
-	}
 	var targets []string
 	for name := range packages {
 		target := directory + "/" + name
@@ -150,22 +143,16 @@ func (s *skillSnapshot) install(ctx context.Context, directory string, packages 
 	sort.Strings(targets)
 	manifest := skillManifest{ID: rand.Text(), Paths: targets, Git: isGitWorkspace(ctx, s.workspace)}
 	if manifest.Git {
-		out, err := skillGit(ctx, s.workspace, append([]string{"ls-files", "-z", "--"}, targets...)...)
-		if err != nil {
+		if err := s.refuseTracked(ctx, targets...); err != nil {
 			return err
 		}
-		if len(out) > 0 {
-			return errors.New("declared skills collide with tracked repository paths")
-		}
 	}
-	data, err := json.Marshal(manifest)
-	if err != nil {
+	if err := skillMkdirAll(s.root, directory); err != nil {
 		return err
 	}
-	if err := s.root.WriteFile(skillManifestPath, data, 0o600); err != nil {
+	if err := s.writeManifest(manifest); err != nil {
 		return err
 	}
-	s.manifest = manifest
 	if manifest.Git {
 		var patterns []gitexclude.Pattern
 		for _, target := range targets {
@@ -257,10 +244,17 @@ func skillMkdirAll(root *os.Root, relative string) error {
 }
 
 func (s *skillSnapshot) recover() error {
-	data, err := s.root.ReadFile(skillManifestPath)
+	info, err := s.root.Lstat(skillManifestPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("skill manifest is not a regular file")
+	}
+	data, err := s.root.ReadFile(skillManifestPath)
 	if err != nil {
 		return err
 	}
@@ -279,15 +273,6 @@ func (s *skillSnapshot) recover() error {
 		}
 	}
 	manifest.Git = isGitWorkspace(context.Background(), s.workspace)
-	if manifest.Git {
-		tracked, err := skillGit(context.Background(), s.workspace, append([]string{"ls-files", "-z", "--"}, manifest.Paths...)...)
-		if err != nil {
-			return err
-		}
-		if len(tracked) > 0 {
-			return errors.New("stale skills snapshot contains tracked repository paths")
-		}
-	}
 	s.manifest = manifest
 	return s.cleanup()
 }
@@ -295,6 +280,11 @@ func (s *skillSnapshot) recover() error {
 func (s *skillSnapshot) cleanup() error {
 	if s.manifest.ID == "" {
 		return nil
+	}
+	if s.manifest.Git {
+		if err := s.refuseTracked(context.Background(), append([]string{skillStateDir}, s.manifest.Paths...)...); err != nil {
+			return err
+		}
 	}
 	for _, target := range s.manifest.Paths {
 		if err := skillMkdirAll(s.root, path.Dir(target)); err != nil {
