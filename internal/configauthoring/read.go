@@ -284,6 +284,9 @@ func appendDocuments(documents *[]sourceDocument, root, logicalPrefix, stagingPr
 			}
 			return nil
 		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
 		if !safeLogicalPath(logicalPath) {
 			return nil
 		}
