@@ -57,6 +57,8 @@ export const apiRoutes = {
   "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
   "credentialRefresh": { method: "POST", path: "/api/v1/credentials/refresh", actionClass: "workflow-execution" },
   "stageSurrender": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "workflow-execution" },
+  "stageSurrenderGet": { method: "GET", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "read-only-navigation" },
+  "stageSurrenderSeen": { method: "GET", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender/seen", actionClass: "read-only-navigation" },
   "blobGet": { method: "GET", path: "/api/v1/blobs/{digest}", actionClass: "read-only-navigation" },
   "blobPut": { method: "PUT", path: "/api/v1/blobs/{digest}", actionClass: "workflow-execution" },
   "gaggleStateGet": { method: "GET", path: "/api/v1/gaggles/{gaggle}/state/{key}", actionClass: "read-only-navigation" },

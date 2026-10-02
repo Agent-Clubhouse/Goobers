@@ -621,6 +621,28 @@
       "recoverySafe": false
     },
     {
+      "id": "stageSurrenderGet",
+      "method": "GET",
+      "path": "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "stageSurrenderSeen",
+      "method": "GET",
+      "path": "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender/seen",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "blobGet",
       "method": "GET",
       "path": "/api/v1/blobs/{digest}",

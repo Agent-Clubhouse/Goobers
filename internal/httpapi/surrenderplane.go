@@ -40,7 +40,8 @@ type SurrenderService interface {
 	Put(ctx context.Context, runID, stage string, attempt int, data []byte) error
 }
 
-// WithSurrenderService enables the surrender-plane PUT route. Only wired when
+// WithSurrenderService enables surrender writes and, when the backend also
+// implements SurrenderReader, worker-only bounded reads. Only wired when
 // the daemon is configured for mode-3 dispatch (cmd/goobers/workerdispatch.go)
 // — a non-cloud instance never registers this option, so the route never
 // exists for it.
@@ -66,62 +67,67 @@ type surrenderedResultShape struct {
 
 func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
 	plane := config.surrenders
-	router.Handle(apicontract.RouteStageSurrender, func(w http.ResponseWriter, request *http.Request) {
-		if plane == nil {
-			writeError(w, http.StatusServiceUnavailable, "surrender_unavailable", "the surrender plane is not available from this server")
-			return
-		}
-		if status, code, message := validateMutationTransport(request); status != 0 {
-			writeError(w, status, code, message)
-			return
-		}
-		run := request.PathValue("run")
-		if !apiv1.ValidRunID(run) {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
-			return
-		}
-		stage := request.PathValue("stage")
-		if !apiv1.ValidRunID(stage) {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "stage name is not a safe path segment")
-			return
-		}
-		attempt, err := strconv.Atoi(request.PathValue("attempt"))
-		if err != nil || attempt < 1 {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "attempt must be a positive integer")
-			return
-		}
-		// Per-run containment: a pod token proves "I am run X's stage pod",
-		// which authorizes surrendering a result for run X and no other —
-		// the same body-level binding the journal plane applies.
-		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-			if principal.Subject != podPrincipalSubject(run) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
+	router.Handle(apicontract.RouteStageSurrenderSeen, surrenderReadHandler(plane, true, errorLog))
+	router.HandleByMethod(map[string]apicontract.RouteID{
+		http.MethodPost: apicontract.RouteStageSurrender, http.MethodGet: apicontract.RouteStageSurrenderGet,
+	}, map[apicontract.RouteID]http.HandlerFunc{
+		apicontract.RouteStageSurrenderGet: surrenderReadHandler(plane, false, errorLog),
+		apicontract.RouteStageSurrender: func(w http.ResponseWriter, request *http.Request) {
+			if plane == nil {
+				writeError(w, http.StatusServiceUnavailable, "surrender_unavailable", "the surrender plane is not available from this server")
 				return
 			}
-		}
-		defer func() { _ = request.Body.Close() }()
-		body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "request body could not be read")
-			return
-		}
-		if int64(len(body)) > maxSurrenderBody {
-			writeError(w, http.StatusRequestEntityTooLarge, CodeInvalidRequest, "surrendered result body exceeds the size limit")
-			return
-		}
-		var shape surrenderedResultShape
-		if err := json.Unmarshal(body, &shape); err != nil {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid JSON request body")
-			return
-		}
-		if shape.Result.Status == "" {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "surrendered result carries no status")
-			return
-		}
-		if err := plane.Put(request.Context(), run, stage, attempt, body); err != nil {
-			writePlaneError(w, errorLog, "put surrendered result", err)
-			return
-		}
-		writeJSON(w, http.StatusOK, struct{}{})
-	})
+			if status, code, message := validateMutationTransport(request); status != 0 {
+				writeError(w, status, code, message)
+				return
+			}
+			run := request.PathValue("run")
+			if !apiv1.ValidRunID(run) {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
+				return
+			}
+			stage := request.PathValue("stage")
+			if !apiv1.ValidRunID(stage) {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "stage name is not a safe path segment")
+				return
+			}
+			attempt, err := strconv.Atoi(request.PathValue("attempt"))
+			if err != nil || attempt < 1 {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "attempt must be a positive integer")
+				return
+			}
+			// Per-run containment: a pod token proves "I am run X's stage pod",
+			// which authorizes surrendering a result for run X and no other —
+			// the same body-level binding the journal plane applies.
+			if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+				if principal.Subject != podPrincipalSubject(run) {
+					writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only surrender its own run's results")
+					return
+				}
+			}
+			defer func() { _ = request.Body.Close() }()
+			body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
+			if err != nil {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "request body could not be read")
+				return
+			}
+			if int64(len(body)) > maxSurrenderBody {
+				writeError(w, http.StatusRequestEntityTooLarge, CodeInvalidRequest, "surrendered result body exceeds the size limit")
+				return
+			}
+			var shape surrenderedResultShape
+			if err := json.Unmarshal(body, &shape); err != nil {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid JSON request body")
+				return
+			}
+			if shape.Result.Status == "" {
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "surrendered result carries no status")
+				return
+			}
+			if err := plane.Put(request.Context(), run, stage, attempt, body); err != nil {
+				writePlaneError(w, errorLog, "put surrendered result", err)
+				return
+			}
+			writeJSON(w, http.StatusOK, struct{}{})
+		}})
 }

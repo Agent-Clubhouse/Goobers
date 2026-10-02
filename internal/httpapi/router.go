@@ -158,6 +158,9 @@ const WorkerPrincipalIssuer = "goobers/worker"
 // WorkerBlobPrincipalIssuer is a blob-only resident-worker credential.
 const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 
+// WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
+const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
+
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
 // authorizer admits it to the credential refresh route and nothing else.
@@ -405,8 +408,8 @@ func telemetryPlanePath(path string) bool {
 //
 // Resident worker principals use a separate identity and may only GET the
 // config digest or POST their own divergence report. Dedicated blob-worker
-// principals may only GET/PUT blobs. Neither pod scopes nor instance roles
-// broaden either grant.
+// principals may only GET/PUT blobs; surrender-worker principals may only
+// read surrender results and presence. Pod scopes and roles broaden none.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -425,11 +428,11 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("a credential-refresh grant may only call the credential refresh route")
 		}
+		if principal.Issuer == WorkerSurrenderPrincipalIssuer {
+			return authorizeWorkerSurrender(request)
+		}
 		if principal.Issuer == WorkerBlobPrincipalIssuer {
-			if (request.Method == http.MethodGet || request.Method == http.MethodPut) && blobPlanePath(request.URL.Path) {
-				return nil
-			}
-			return errors.New("worker blob principal may only get or put blobs")
+			return authorizeWorkerBlob(request)
 		}
 		if principal.Issuer == WorkerPrincipalIssuer {
 			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {

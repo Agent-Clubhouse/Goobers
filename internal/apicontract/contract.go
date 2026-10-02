@@ -189,7 +189,8 @@ const (
 	// it cannot ride the blob plane below (dispatcher.SurrenderPlane's own
 	// doc comment). Stage pods are the only intended callers, authenticated
 	// as their own run like the credential and journal planes.
-	RunStageSurrenderPath = V1Prefix + "/runs/{run}/stages/{stage}/attempts/{attempt}/surrender"
+	RunStageSurrenderPath     = V1Prefix + "/runs/{run}/stages/{stage}/attempts/{attempt}/surrender"
+	RunStageSurrenderSeenPath = RunStageSurrenderPath + "/seen"
 
 	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
 	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
@@ -328,22 +329,24 @@ const (
 	// mutating a run's runtime state.
 	RouteWorkflowEnabled RouteID = "workflowEnabled"
 
-	RouteClaimAcquire      RouteID = "claimAcquire"
-	RouteClaimRenew        RouteID = "claimRenew"
-	RouteClaimRelease      RouteID = "claimRelease"
-	RouteClaimSettle       RouteID = "claimSettle"
-	RouteClaimList         RouteID = "claimList"
-	RouteClaimVerify       RouteID = "claimVerify"
-	RouteClaimRecover      RouteID = "claimRecover"
-	RouteClaimsActive      RouteID = "claimsActive"
-	RouteTriggerIngest     RouteID = "triggerIngest"
-	RouteTriggerStatus     RouteID = "triggerStatus"
-	RouteResolveEscalation RouteID = "resolveEscalation"
-	RouteCancelRun         RouteID = "cancelRun"
-	RouteJournalEmit       RouteID = "journalEmit"
-	RouteCredentialResolve RouteID = "credentialResolve"
-	RouteCredentialRefresh RouteID = "credentialRefresh"
-	RouteStageSurrender    RouteID = "stageSurrender"
+	RouteClaimAcquire       RouteID = "claimAcquire"
+	RouteClaimRenew         RouteID = "claimRenew"
+	RouteClaimRelease       RouteID = "claimRelease"
+	RouteClaimSettle        RouteID = "claimSettle"
+	RouteClaimList          RouteID = "claimList"
+	RouteClaimVerify        RouteID = "claimVerify"
+	RouteClaimsActive       RouteID = "claimsActive"
+	RouteClaimRecover       RouteID = "claimRecover"
+	RouteTriggerIngest      RouteID = "triggerIngest"
+	RouteTriggerStatus      RouteID = "triggerStatus"
+	RouteResolveEscalation  RouteID = "resolveEscalation"
+	RouteCancelRun          RouteID = "cancelRun"
+	RouteJournalEmit        RouteID = "journalEmit"
+	RouteCredentialResolve  RouteID = "credentialResolve"
+	RouteCredentialRefresh  RouteID = "credentialRefresh"
+	RouteStageSurrender     RouteID = "stageSurrender"
+	RouteStageSurrenderGet  RouteID = "stageSurrenderGet"
+	RouteStageSurrenderSeen RouteID = "stageSurrenderSeen"
 
 	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
 	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
@@ -574,6 +577,8 @@ var v1Routes = []Route{
 	// workflow-execution action class and the standard mutation budget; the
 	// payload is a single small ResultEnvelope, not a mint or a stream.
 	{ID: RouteStageSurrender, Method: http.MethodPost, Path: RunStageSurrenderPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteStageSurrenderGet, Method: http.MethodGet, Path: RunStageSurrenderPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteStageSurrenderSeen, Method: http.MethodGet, Path: RunStageSurrenderSeenPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 
 	// The blob plane (decision 010/012, §2a) is the network transport for the
 	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET
