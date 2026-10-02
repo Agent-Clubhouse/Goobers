@@ -61,6 +61,8 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
+	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
 	InstanceID             string             `json:"instanceId,omitempty"`
 	RunID                  string             `json:"runId"`
 	Gaggle                 string             `json:"gaggle"`
@@ -961,6 +963,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// remediated a branch nobody was reviewing.
 		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
+	if in.SelfExecutionDenied {
+		return runner.SelfExecutionBlockedResult(t.Name), nil
+	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)
 	if t.Type == apiv1.TaskAgentic {
@@ -1098,6 +1103,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// versus the workflow's own — and the self arm's options are the
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
+		if !remote && in.SelfExecutionDenied {
+			return "", nil, GateReviewResult{}, temporal.NewNonRetryableApplicationError((&runner.SelfExecutionRefusal{Stage: g.Name}).Error(), runner.SelfExecutionDeniedCode, nil)
+		}
 		if remote {
 			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		} else {
@@ -1129,17 +1137,25 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// both zero-valued, which disables both short-circuits — precisely the
 		// pre-#3882 behaviour.
 		var review GateReviewResult
+		var reviewerAttempt int
 		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
-			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
-				if err != nil {
-					return err
+			reviewerAttempt++
+			return recordReviewerDispatch(ctx, rec, g, reviewerAttempt, class, &review, func(ctx workflow.Context, class journal.AttemptClass) error {
+				if remote {
+					surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
+					if err != nil {
+						return err
+					}
+					review = GateReviewResult{Verdict: surrendered, Reviewed: true}
+					return nil
 				}
-				review = GateReviewResult{Verdict: surrendered, Reviewed: true}
-				return nil
-			}
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta,
-				g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+				attemptEnv := env
+				if number, ok := reviewerNumber(ctx); ok {
+					attemptEnv.Attempt = int32(number)
+				}
+				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
+					g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
 		}

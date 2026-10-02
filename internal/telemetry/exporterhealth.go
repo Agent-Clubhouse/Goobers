@@ -20,15 +20,19 @@ import (
 
 // ExporterHealth tracks locally observable telemetry exporter health.
 type ExporterHealth struct {
-	name         string
-	destinations map[string]*ExporterHealth
-	mu           sync.Mutex
-	enabled      bool
-	mode         string
-	endpoint     endpointHealth
-	journal      *journal.InstanceLog
-	trace        exporterSignalHealth
-	metric       exporterSignalHealth
+	unavailableReason  string
+	replayRoot         string
+	journalSnapshot    func() JournalExportStats
+	diagnosticSnapshot func() DiagnosticExportStats
+	name               string
+	destinations       map[string]*ExporterHealth
+	mu                 sync.Mutex
+	enabled            bool
+	mode               string
+	endpoint           endpointHealth
+	journal            *journal.InstanceLog
+	trace              exporterSignalHealth
+	metric             exporterSignalHealth
 	// now and refusedWindow are injectable for tests; zero values use the
 	// wall clock and the export error log's suppression window.
 	now           func() time.Time
@@ -43,13 +47,17 @@ type endpointHealth struct {
 // ExporterHealthSnapshot is a scrubbed, bounded health view suitable for
 // daemon-local API and diagnostic surfaces.
 type ExporterHealthSnapshot struct {
-	Destinations  map[string]ExporterHealthSnapshot `json:"destinations,omitempty"`
-	Enabled       bool                              `json:"enabled"`
-	Mode          string                            `json:"mode,omitempty"`
-	EndpointHost  string                            `json:"endpointHost,omitempty"`
-	EndpointClass string                            `json:"endpointClass,omitempty"`
-	Trace         ExporterSignalStatus              `json:"trace"`
-	Metric        ExporterSignalStatus              `json:"metric"`
+	UnavailableReason string                            `json:"unavailableReason,omitempty"`
+	Replay            *ExporterReplayHealthSnapshot     `json:"replay,omitempty"`
+	Journal           *ExporterDeliveryCounters         `json:"journal,omitempty"`
+	Diagnostics       *ExporterDeliveryCounters         `json:"diagnostics,omitempty"`
+	Destinations      map[string]ExporterHealthSnapshot `json:"destinations,omitempty"`
+	Enabled           bool                              `json:"enabled"`
+	Mode              string                            `json:"mode,omitempty"`
+	EndpointHost      string                            `json:"endpointHost,omitempty"`
+	EndpointClass     string                            `json:"endpointClass,omitempty"`
+	Trace             ExporterSignalStatus              `json:"trace"`
+	Metric            ExporterSignalStatus              `json:"metric"`
 }
 
 // ExporterSignalStatus reports health for one telemetry signal.
@@ -402,20 +410,27 @@ func (h *ExporterHealth) Snapshot() ExporterHealthSnapshot {
 	}
 	h.mu.Lock()
 	snapshot := ExporterHealthSnapshot{
-		Enabled:       h.enabled,
-		Mode:          h.mode,
-		EndpointHost:  h.endpoint.host,
-		EndpointClass: h.endpoint.class,
-		Trace:         h.trace.snapshot(),
-		Metric:        h.metric.snapshot(),
+		UnavailableReason: h.unavailableReason,
+		Enabled:           h.enabled,
+		Mode:              h.mode,
+		EndpointHost:      h.endpoint.host,
+		EndpointClass:     h.endpoint.class,
+		Trace:             h.trace.snapshot(),
+		Metric:            h.metric.snapshot(),
 	}
+	replayRoot, journalSnapshot, diagnosticSnapshot := h.replayRoot, h.journalSnapshot, h.diagnosticSnapshot
 	h.mu.Unlock()
+	snapshot.addDestinationEvidence(replayRoot, journalSnapshot, diagnosticSnapshot)
 	children := h.destinationMonitors()
 	if len(children) > 0 {
 		snapshot.Destinations = make(map[string]ExporterHealthSnapshot, len(children))
 	}
 	for name, child := range children {
 		snapshot.Destinations[name] = child.Snapshot()
+	}
+	if len(snapshot.Destinations) > 0 {
+		snapshot.Trace = aggregateDestinationSignal(snapshot.Destinations, false)
+		snapshot.Metric = aggregateDestinationSignal(snapshot.Destinations, true)
 	}
 	return snapshot
 }

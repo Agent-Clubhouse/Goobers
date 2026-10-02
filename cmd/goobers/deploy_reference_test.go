@@ -419,7 +419,7 @@ func TestAPIServerDriftCronJobUsesOnlyItsAuthorizedCheck(t *testing.T) {
 	if err := validateManifestArgs(container.Args[1:], registeredCommandFlagSet(t, "doctor"), []string{"k8s", "checks"}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(container.Args, []string{"doctor", "--k8s", "--checks", "apiserver-ipblock-drift", "--apiserver-endpoint", "https://CHANGE-ME.apiserver.example.com:443", "--report", "json"}) {
+	if !slices.Equal(container.Args, []string{"doctor", "--k8s", "--checks", "apiserver-ipblock-drift", "--apiserver-endpoint", "https://CHANGE-ME.apiserver.example.com:443", "--record-instance", "/var/lib/goobers", "--result-max-age", "2h", "--report", "json"}) {
 		t.Fatalf("monitor runs beyond its NetworkPolicy-only grant: %v", container.Args)
 	}
 	if spec.NodeSelector[corev1.LabelOSStable] != "linux" {

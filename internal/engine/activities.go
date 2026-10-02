@@ -48,9 +48,11 @@ const (
 // it, rather than a panic. The runtime (M8) constructs this with a real
 // invoke.Goober.
 type Activities struct {
-	Goober invoke.Goober
-	Det    invoke.Deterministic
-	Auto   invoke.Automated
+	// AdmitSelfExecution checks current instance policy before any local stage side effect.
+	AdmitSelfExecution func(stage string) error
+	Goober             invoke.Goober
+	Det                invoke.Deterministic
+	Auto               invoke.Automated
 	// Workspaces provisions the fresh working copy each stage attempt runs
 	// in. Required for any stage that executes in a workspace (agentic tasks,
 	// deterministic tasks, agentic reviewer gates); an automated gate's checks
@@ -507,6 +509,15 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 // (TestContinuityPreChangeHistoryReplays). A struct in the second position
 // would fail to decode those payloads.
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (out stageActivityResult, outErr error) {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			var refusal *runner.SelfExecutionRefusal
+			if !errors.As(err, &refusal) {
+				return stageActivityResult{}, classifySeamError(err)
+			}
+			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
+		}
+	}
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -647,6 +658,11 @@ func captureUnpushedDiff(ctx context.Context, ws Workspace, mode apiv1.Workspace
 // commit. Both new arguments are trailing positionals for the replay reason
 // InvokeGoober documents.
 func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, subjectAgentic bool) (GateReviewResult, error) {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			return GateReviewResult{}, classifySelfAdmissionError(err)
+		}
+	}
 	if a.Goober == nil {
 		return GateReviewResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -783,6 +799,15 @@ func captureGateDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode
 // this provisioner too. workspaceDelta is a trailing positional for the
 // replay reason InvokeGoober documents.
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			var refusal *runner.SelfExecutionRefusal
+			if !errors.As(err, &refusal) {
+				return stageActivityResult{}, classifySeamError(err)
+			}
+			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
+		}
+	}
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}

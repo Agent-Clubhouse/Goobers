@@ -22,14 +22,16 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
+const doctorHelp = "Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
 	"                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n" +
 	"                          [--temporal-hostport <host:port>] [--temporal-namespace <name>]\n" +
 	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
 	"                          [--image-pull-policy always|never]\n" +
+	"                          [--record-instance <root>] [--result-max-age <duration>]\n" +
 	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
 	"                          [--psa-namespaces <namespace,...>] [--psa-service-account <name>]\n" +
 	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
+	"       goobers doctor --temporal-codec [--report text|json] [instance-root]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
 	"       goobers doctor --harness-auth [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
@@ -60,6 +62,9 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"Required checks that cannot run report fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"--record-instance persists check outcomes in the instance journal for status.\n" +
+	"--result-max-age sets their freshness window (default 2h); the cluster monitoring\n" +
+	"CronJob owns scheduling. No recording occurs unless --record-instance is set.\n\n" +
 	"--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.\n" +
 	"For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.\n" +
 	"That check inspects only egress policies labeled goobers.dev/apiserver-egress=true.\n" +
@@ -84,6 +89,8 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"silently. This check is API-discovery only; enforcement can only be proven\n" +
 	"by a denied attempt from an in-cluster negative control, never by doctor\n" +
 	"--k8s alone.\n\n" +
+	"--temporal-codec reports per-instance opt-in and strict mode without probing keys.\n" +
+	"--k8s --instance <root> applies the instance Temporal TLS and payload codec.\n\n" +
 	"--repo diffs each configured repo's declared forge-policy manifest\n" +
 	"(<instance-root>/instance.yaml repos[].policy: required merge method,\n" +
 	"merge-queue requirement, required status checks — issue #916, Tier 4 of\n" +
@@ -151,6 +158,8 @@ var doctorKubeClient = func(kubeconfig, contextName string, timeout time.Duratio
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	codecMode := fs.Bool("temporal-codec", false, "report configured Temporal payload codec state")
+	instanceRoot := fs.String("instance", "", "instance config for Kubernetes Temporal checks (--k8s only)")
 	k8sMode := fs.Bool("k8s", false, "preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md")
 	repoMode := fs.Bool("repo", false, "diff declared repo forge-policy manifests against live GitHub state")
 	harnessAuthMode := fs.Bool("harness-auth", false, "report credential-free harness authentication state")
@@ -173,6 +182,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	temporalNamespace := fs.String("temporal-namespace", "", "Temporal namespace to check for (default \"default\")")
 	apiServerEndpoint := fs.String("apiserver-endpoint", "", "API-server comparison URL for egress-policy drift (default: kubeconfig server)")
 	checks := fs.String("checks", "", "comma-separated Kubernetes check IDs (omitted: all checks)")
+	recordRoot := fs.String("record-instance", "", "instance root receiving Kubernetes check results")
+	resultMaxAge := fs.Duration("result-max-age", 2*time.Hour, "recorded Kubernetes result freshness window")
 	timeout := fs.Duration("timeout", k8spreflight.DefaultTimeout, "per-probe timeout")
 	fs.Usage = helpUsage(stderr, "doctor")
 	if !parseFlagsBeforePath(fs, args, stderr) {
@@ -183,14 +194,18 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	modes := 0
-	for _, on := range []bool{*k8sMode, *repoMode, *harnessAuthMode, *avMode} {
+	for _, on := range []bool{*k8sMode, *repoMode, *harnessAuthMode, *avMode, *codecMode} {
 		if on {
 			modes++
 		}
 	}
 	if modes != 1 {
-		pf(stderr, "goobers doctor: exactly one of --k8s, --repo, --harness-auth or --av-exclusions is required\n\n")
+		pf(stderr, "goobers doctor: exactly one of --k8s, --repo, --harness-auth, --av-exclusions or --temporal-codec is required\n\n")
 		fs.Usage()
+		return 2
+	}
+	if err := k8spreflight.ValidateRecordingFlags(fs, *k8sMode, *recordRoot, *resultMaxAge); err != nil {
+		pf(stderr, "goobers doctor: %v\n", err)
 		return 2
 	}
 	checkIDs, err := validateDoctorCheckFlags(fs, *k8sMode, *checks, *apiServerEndpoint)
@@ -222,12 +237,16 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *repoMode || *harnessAuthMode || *avMode {
+	if *instanceRoot != "" && !*k8sMode {
+		pf(stderr, "error: --instance applies to --k8s only\n")
+		return 2
+	}
+	if !*k8sMode {
 		if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
 		}
-		return runDoctorInstanceMode(fs.Arg(0), *reportFormat, *workRoot, *repoMode, *harnessAuthMode, *avMode, stdout, stderr)
+		return runDoctorInstanceMode(fs.Arg(0), *reportFormat, *workRoot, *repoMode, *harnessAuthMode, *avMode, *codecMode, stdout, stderr)
 	}
 
 	if fs.NArg() != 0 {
@@ -238,10 +257,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	client, host, err := doctorKubeClient(*kubeconfig, *kubeContext, *timeout)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		if recordErr := k8spreflight.RecordUnavailable(*recordRoot, checkIDs, *resultMaxAge); recordErr != nil {
+			pf(stderr, "error: record check: %v\n", recordErr)
+		}
 		return 2
 	}
 
-	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
+	opts, err := k8spreflight.ResolveTemporalOptions(*instanceRoot, k8spreflight.Options{
 		Checks:            checkIDs,
 		PSANamespaces:     splitCommaList(*psaNamespaces),
 		PSAServiceAccount: *psaAccount,
@@ -258,9 +280,22 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		TemporalNamespace: *temporalNamespace,
 		Timeout:           *timeout,
 	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	report := k8spreflight.Run(context.Background(), client, opts)
 	report.Target = host
+	if err := k8spreflight.RecordResults(*recordRoot, report, *resultMaxAge); err != nil {
+		pf(stderr, "error: record check: %v\n", err)
+		return 2
+	}
 
-	if *reportFormat == "json" {
+	return writeDoctorKubernetesReport(*reportFormat, report, stdout, stderr)
+}
+
+func writeDoctorKubernetesReport(format string, report k8spreflight.Report, stdout, stderr io.Writer) int {
+	if format == "json" {
 		if err := k8spreflight.WriteJSON(stdout, report); err != nil {
 			pf(stderr, "error: encode report: %v\n", err)
 			return 2
@@ -310,11 +345,13 @@ var newDoctorGitHubProvider = func(token string) providers.PolicyProvider {
 	return providers.NewGitHubProvider(token)
 }
 
-func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnessAuthMode, avMode bool, stdout, stderr io.Writer) int {
+func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnessAuthMode, avMode, codecMode bool, stdout, stderr io.Writer) int {
 	if root == "" {
 		root = "."
 	}
 	switch {
+	case codecMode:
+		return runDoctorTemporalCodec(root, reportFormat, stdout, stderr)
 	case avMode:
 		return runDoctorAVExclusions(root, workRoot, reportFormat, stdout, stderr, realAVExclusionDeps())
 	case harnessAuthMode:

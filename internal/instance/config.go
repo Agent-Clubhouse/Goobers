@@ -94,6 +94,7 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
+	selfExecution *selfExecutionCounters
 	// Cost controls external cost publication by default. Gaggles may override
 	// it; omitted or null enabled preserves the built-in enabled behavior.
 	Cost       *apiv1.CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
@@ -182,6 +183,8 @@ type Config struct {
 	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
 	// is startup-only, so in-flight runs finish against their pinned snapshot.
 	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
+	// Placement governs workflow execution on the daemon host.
+	Placement *PlacementConfig `json:"placement,omitempty" yaml:"placement,omitempty"`
 	// Isolation is the operator's strengthen-only placement floor. It never
 	// grants a runner a protection; runners must already enforce every effect.
 	Isolation *IsolationConfig `json:"isolation,omitempty" yaml:"isolation,omitempty"`
@@ -457,14 +460,14 @@ type APIConfig struct {
 	// Path only; key material never appears in instance.yaml (CFG-009).
 	// Unset keeps the in-memory registry, which is correct whenever daemon
 	// and dispatcher share a process.
-	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty"`
+	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty" credentialPath:"trimmed"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.
 // Paths only — key material never appears in instance.yaml (CFG-009).
 type APITLSConfig struct {
 	CertFile string `json:"certFile" yaml:"certFile"`
-	KeyFile  string `json:"keyFile" yaml:"keyFile"`
+	KeyFile  string `json:"keyFile" yaml:"keyFile" credentialPath:"file"`
 }
 
 // APIAuthConfig selects the daemon API authenticator behind the
@@ -1192,7 +1195,7 @@ type SecretStoreConfig struct {
 	// VaultURI is the https vault endpoint, e.g. "https://acme.vault.azure.net".
 	VaultURI string `json:"vaultURI,omitempty" yaml:"vaultURI,omitempty"`
 	// Directory is an absolute directory of versioned RSA keys for file-key.
-	Directory string `json:"directory,omitempty" yaml:"directory,omitempty"`
+	Directory string `json:"directory,omitempty" yaml:"directory,omitempty" credentialPath:"directory"`
 	// Auth selects how this process authenticates to the store.
 	Auth *SecretStoreAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
 	// CacheTTLSeconds bounds the in-memory cache of resolved secrets so
@@ -1330,6 +1333,9 @@ type AgentModelGitHubAppConfig struct {
 // TelemetryConfig configures the local telemetry rollup store and optional
 // collector push (§8).
 type TelemetryConfig struct {
+	// Exporters are named, independent remote destinations. The legacy single
+	// destination blocks remain supported when this list is empty.
+	Exporters []TelemetryExporterConfig `json:"exporters,omitempty" yaml:"exporters,omitempty"`
 	// Enabled toggles OTel client construction, span emission, local SQLite
 	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
@@ -1480,7 +1486,7 @@ type OTLPTLSConfig struct {
 	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
 	// KeyFile is the PEM private key for CertFile. Requires CertFile; both
 	// or neither.
-	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty"`
+	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty" credentialPath:"file"`
 }
 
 // EngineConfig identifies the Temporal frontend and task queue shared by all

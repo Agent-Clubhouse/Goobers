@@ -211,13 +211,17 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	}
 	attemptEnv := env
 	attemptEnv.Attempt = int32(podAttempt)
+	physicalAttempt := dispatchPodAttempt(ctx, g.Name, podAttempt)
+	if number, ok := reviewerNumber(ctx); ok && physicalAttempt > 0 {
+		attemptEnv.Attempt = int32(number)
+	}
 	var result stageActivityResult
 	// OwningWorkflowID is read here, inside the workflow, for the same reason
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
 	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
-		PodAttempt:       dispatchPodAttempt(ctx, g.Name, podAttempt),
+		PodAttempt:       physicalAttempt,
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
@@ -227,7 +231,11 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		Review:           true,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result)
-	recordGatePlacement(ctx, rec, g.Name, podAttempt, class, result, err)
+	placementAttempt := podAttempt
+	if number, ok := reviewerNumber(ctx); ok {
+		placementAttempt = number
+	}
+	recordGatePlacement(ctx, rec, g.Name, placementAttempt, class, result, err)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
@@ -496,6 +504,11 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 		return err
 	}
 	if input.Placement.Self {
+		if a.AdmitSelfExecution != nil {
+			if err := a.AdmitSelfExecution(input.Envelope.TaskID); err != nil {
+				return classifySelfAdmissionError(err)
+			}
+		}
 		return classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
 	}
 	return nil
@@ -730,10 +743,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		return unconfirmedDispatchFailure(ctx, err, report)
 	}
 	if err == nil && report.Local {
-		// SelectRunner resolved self inside an eligible set the workflow routed
-		// remotely — the pin and the dispatcher disagree. Fail closed rather
-		// than silently executing nothing.
-		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", input.Envelope.TaskID))
+		return stageActivityResult{}, a.refuseLocalDispatch(input.Envelope.TaskID)
 	}
 
 	// ErrStageFailed arrives with surrender CONFIRMED (the dispatcher checks
@@ -1016,4 +1026,14 @@ func renderInputValue(value any) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func (a *Activities) refuseLocalDispatch(stage string) error {
+	if a.AdmitSelfExecution != nil {
+		if err := a.AdmitSelfExecution(stage); err != nil {
+			return classifySelfAdmissionError(err)
+		}
+	}
+	// The pin and dispatcher disagree: never silently execute nothing.
+	return classifySeamError(fmt.Errorf("engine: stage %q resolved to the self runner inside DispatchStage; the pinned placement and the dispatcher's selection disagree (fail closed)", stage))
 }

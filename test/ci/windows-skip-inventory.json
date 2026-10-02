@@ -16,7 +16,7 @@
       "package": "api/schemas",
       "coverage": "partial",
       "category": "seam-selection",
-      "reason": "Only the journal-logs schema tests run, in the 'Windows journal OTLP export' step."
+      "reason": "Journal-logs and named-exporter schema tests run in the 'Windows journal OTLP export' step."
     },
     {
       "package": "api/validate",
@@ -71,6 +71,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/apireadcache",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#5297), whose Windows steps never selected these cache tests; conditional-GET and lock-file contracts run on the Linux unit shards only."
     },
     {
       "package": "internal/apireadstore",
@@ -182,6 +188,12 @@
     },
     {
       "package": "internal/clidocs",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/clustercheck",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -307,6 +319,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/escalationnotify",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#3054), whose Windows steps never selected the terminal-handler tests; the notification policy runs against in-memory fakes on the Linux unit shards only."
+    },
+    {
       "package": "internal/externaltelemetry/adx",
       "coverage": "none",
       "category": "not-selected",
@@ -395,6 +413,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the read-model definition invalidation test runs, in the 'Windows worktree and event stream' step."
+    },
+    {
+      "package": "internal/intervention",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#3066), whose Windows CLI step never selected the intervention tests; no Windows-specific seam identified, runs on the Linux unit shards only."
     },
     {
       "package": "internal/intsplit",
@@ -754,7 +778,7 @@
       "package": "internal/temporalcodec",
       "coverage": "none",
       "category": "not-selected",
-      "reason": "Portable AES-GCM/protobuf codec and HTTP role checks have no Windows-specific seam; tests run in Linux unit shards."
+      "reason": "Portable codec, bounded TLS/OIDC server and ephemeral Temporal history/replay tests run in Linux unit shards; no Windows-specific seam."
     },
     {
       "package": "internal/temporaldial",

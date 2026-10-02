@@ -117,7 +117,10 @@ func appendMutationFact(fact mutationFact) error {
 func appendMutationFactAt(dir string, fact mutationFact) (resultErr error) {
 	// Identity belongs to this durable record, not its semantic contents:
 	// separate attempts may legitimately make identical mutations.
-	fact.ReceiptID = rand.Text()
+	// Lowercase is a one-to-one encoding of rand.Text's base32 alphabet.
+	// Uppercase IDs can resemble AWS keys and be changed by journal scrubbing,
+	// breaking the durable identity used to acknowledge worktree cleanup.
+	fact.ReceiptID = strings.ToLower(rand.Text())
 	data, err := json.Marshal(fact)
 	if err != nil {
 		return err

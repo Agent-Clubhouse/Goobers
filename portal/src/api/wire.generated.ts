@@ -162,6 +162,12 @@ export const goWireFixtures = {
     }
   },
   "health": {
+    "selfExecution": {
+      "policy": "",
+      "observed": false,
+      "placements": 0,
+      "refusals": 0
+    },
     "apiVersion": "v1",
     "schemaVersion": "v1",
     "build": {
@@ -197,8 +203,68 @@ export const goWireFixtures = {
       "checkedAt": "2026-07-18T12:34:56Z"
     },
     "telemetryExporterHealth": {
+      "destinations": {
+        "collector": {
+          "enabled": true,
+          "mode": "otlp",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z",
+            "lastFailureAt": "2026-07-18T12:32:56Z",
+            "lastFailureReason": "collector_unavailable",
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "recoveryTransitions": 1,
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          },
+          "metric": {
+            "configured": true,
+            "state": "unhealthy",
+            "lastFailureAt": "2026-07-18T12:36:56Z",
+            "lastFailureReason": "signal_unimplemented",
+            "consecutiveFailures": 3,
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          }
+        },
+        "tenant": {
+          "replay": {
+            "accountingReady": true,
+            "pendingRecords": 2,
+            "pendingBytes": 1024,
+            "oldestPendingSeconds": 30,
+            "lastSuccess": "2026-07-18T12:32:56Z",
+            "lastFailure": "2026-07-18T12:36:56Z",
+            "failureClass": "rejected",
+            "activeFailure": true
+          },
+          "journal": {
+            "accepted": 12,
+            "dropped": 0,
+            "failures": 0
+          },
+          "diagnostics": {
+            "accepted": 3,
+            "dropped": 0,
+            "failures": 0
+          },
+          "enabled": true,
+          "mode": "azure-monitor",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z"
+          },
+          "metric": {
+            "configured": false,
+            "state": "disabled"
+          }
+        }
+      },
       "enabled": true,
-      "mode": "otlp",
+      "mode": "custom",
       "trace": {
         "configured": true,
         "state": "healthy",
@@ -271,8 +337,68 @@ export const goWireFixtures = {
       "measuredAt": "2026-07-18T12:32:56Z"
     },
     "telemetryExporterHealth": {
+      "destinations": {
+        "collector": {
+          "enabled": true,
+          "mode": "otlp",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z",
+            "lastFailureAt": "2026-07-18T12:32:56Z",
+            "lastFailureReason": "collector_unavailable",
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "recoveryTransitions": 1,
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          },
+          "metric": {
+            "configured": true,
+            "state": "unhealthy",
+            "lastFailureAt": "2026-07-18T12:36:56Z",
+            "lastFailureReason": "signal_unimplemented",
+            "consecutiveFailures": 3,
+            "lastTransitionAt": "2026-07-18T12:36:56Z",
+            "failureTransitions": 1,
+            "suppressedFailureEvents": 2
+          }
+        },
+        "tenant": {
+          "replay": {
+            "accountingReady": true,
+            "pendingRecords": 2,
+            "pendingBytes": 1024,
+            "oldestPendingSeconds": 30,
+            "lastSuccess": "2026-07-18T12:32:56Z",
+            "lastFailure": "2026-07-18T12:36:56Z",
+            "failureClass": "rejected",
+            "activeFailure": true
+          },
+          "journal": {
+            "accepted": 12,
+            "dropped": 0,
+            "failures": 0
+          },
+          "diagnostics": {
+            "accepted": 3,
+            "dropped": 0,
+            "failures": 0
+          },
+          "enabled": true,
+          "mode": "azure-monitor",
+          "trace": {
+            "configured": true,
+            "state": "healthy",
+            "lastSuccessAt": "2026-07-18T12:36:56Z"
+          },
+          "metric": {
+            "configured": false,
+            "state": "disabled"
+          }
+        }
+      },
       "enabled": true,
-      "mode": "otlp",
+      "mode": "custom",
       "trace": {
         "configured": true,
         "state": "healthy",

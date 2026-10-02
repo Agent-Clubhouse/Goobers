@@ -12,7 +12,8 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
-func TestConfiguredDataConverterUsesSelectedFileKey(t *testing.T) {
+func fileCodecConfig(t *testing.T) *instance.Config {
+	t.Helper()
 	root := t.TempDir()
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
@@ -32,6 +33,11 @@ func TestConfiguredDataConverterUsesSelectedFileKey(t *testing.T) {
 		{Name: "local", Kind: instance.SecretStoreKindFileKey, Directory: root},
 		{Name: "unused", Kind: instance.SecretStoreKindKeyVaultKey, VaultURI: "https://unused.vault.azure.net", Auth: &instance.SecretStoreAuthConfig{Kind: instance.SecretStoreAuthWorkloadIdentity}},
 	}, Temporal: &instance.TemporalConfig{PayloadCodec: &instance.PayloadCodecConfig{KeyRef: &instance.KeyRef{Store: "local", Name: "history", Version: "v1"}}}}
+	return cfg
+}
+
+func TestConfiguredDataConverterUsesSelectedFileKey(t *testing.T) {
+	cfg := fileCodecConfig(t)
 	// Construction must not bootstrap the unused workload identity.
 	for _, name := range []string{"AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_FEDERATED_TOKEN_FILE"} {
 		t.Setenv(name, "")

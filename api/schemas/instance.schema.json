@@ -17,6 +17,14 @@
     }
   ],
   "properties": {
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Instance workflow placement policy. Omitted keeps local execution compatible; hosted instances should explicitly deny self execution.",
+      "properties": {
+        "selfExecution": { "type": "string", "enum": ["allow", "deny"], "default": "allow", "description": "allow permits local workflow work (the default); deny refuses every self placement, including agentic reviewer gates." }
+      }
+    },
     "cost": {
       "type": "object",
       "description": "Instance default for external cost publication; local usage accounting remains active.",
@@ -217,7 +225,7 @@
       "$ref": "#/$defs/portal"
     },
     "temporal": {
-      "description": "Temporal payload codec library settings. Runtime client activation is a separate integration step; declaring this block alone currently does not encrypt history.",
+      "description": "Instance-wide Temporal payload encryption. A keyRef enables the shared codec on every client and memo reader; absent keyRef preserves the SDK default and plaintext payload bytes.",
       "type": "object", "additionalProperties": false,
       "properties": {
         "payloadCodec": {
@@ -247,6 +255,125 @@
     }
   },
   "$defs": {
+    "telemetryExporter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One explicitly configured, operator-owned export destination. Azure uses collectionProfile; OTLP preserves its independent journal/trace/metric signals.",
+      "required": [
+        "name",
+        "kind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "description": "Unique stable destination name. Selects an independent replay spool; list reorder preserves identity."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "otlp-grpc",
+            "azuremonitor"
+          ],
+          "description": "Supported native transport. OTLP/HTTP and durable OTLP replay are tracked in https://github.com/Agent-Clubhouse/Goobers/issues/6502."
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Explicit OTLP/gRPC collector endpoint. Named destinations do not inherit environment overrides."
+        },
+        "connection": {
+          "$ref": "#/$defs/tokenRef",
+          "description": "Indirect Application Insights connection-string reference. The resolved secret selects the ingestion endpoint and is never rendered."
+        },
+        "headers": {
+          "$ref": "#/$defs/otlp/properties/headers",
+          "description": "OTLP authentication headers, with indirect TokenRef values only."
+        },
+        "insecure": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use plaintext only for a loopback OTLP collector; conflicts with TLS settings."
+        },
+        "tls": {
+          "$ref": "#/$defs/otlp/properties/tls",
+          "description": "Per-destination OTLP TLS trust and client identity; material is read when the exporter starts."
+        },
+        "journalLogs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include committed journals in this OTLP destination. Trace and metric export remain enabled."
+        },
+        "replay": {
+          "$ref": "#/$defs/telemetry/properties/azureMonitor/properties/replay",
+          "description": "Azure-only durable replay bounds, applied independently to this named destination."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "azuremonitor"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "connection"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "endpoint"
+                  ]
+                },
+                {
+                  "required": [
+                    "headers"
+                  ]
+                },
+                {
+                  "required": [
+                    "insecure"
+                  ]
+                },
+                {
+                  "required": [
+                    "tls"
+                  ]
+                },
+                {
+                  "required": [
+                    "journalLogs"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "endpoint"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "connection"
+                  ]
+                },
+                {
+                  "required": [
+                    "replay"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
     "tokenRef": {
       "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
       "type": "object",
@@ -1190,7 +1317,9 @@
       "description": "Local rollup store, optional collector push, and journal retention.",
       "type": "object",
       "additionalProperties": false,
+      "allOf": [{ "if": { "required": ["exporters"], "properties": { "exporters": { "minItems": 1 } } }, "then": { "not": { "anyOf": [{ "required": ["otlp"] }, { "required": ["azureMonitor"] }] } } }],
       "properties": {
+        "exporters": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/telemetryExporter" }, "description": "Named destination list. Replaces the legacy otlp/azureMonitor blocks; no destination is enabled implicitly. Names must be unique." },
         "enabled": {
           "type": "boolean",
           "default": true,

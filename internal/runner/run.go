@@ -439,6 +439,9 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
+	SelfExecutionDenied bool
+	// SelfExecutionObserved receives true for a refusal, false for actual self work.
+	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
 	ConfigGeneration string
 	// RecoveryEvents supplies verified retained-state observations after a
@@ -4526,8 +4529,14 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	env.Attempt = int32(g.attempt)
-	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
+	if env.Attempt <= 0 {
+		env.Attempt = int32(g.attempt)
+	}
+	class, scoped := gate.ReviewerAttemptClass(ctx)
+	if !scoped {
+		class = journal.AttemptPolicy
+	}
+	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, int(env.Attempt), class)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
@@ -4629,6 +4638,9 @@ type taskFrame struct {
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	if r.cfg.SelfExecutionDenied {
+		return r.refuseSelfTask(tf)
+	}
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	if tf.workspaceRevision != nil {
 		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
@@ -4755,6 +4767,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// this feature existed, and an unconditional per-attempt event would
 		// change every one of them. A journal that cannot be written is fatal
 		// (§2.6), same as stage.started above.
+		r.observeSelfExecution(false)
 		if r.recordsPlacement() {
 			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
 				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
@@ -5853,6 +5866,9 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
 func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, fanIn *parallelExec, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
+	if err := r.admitSelfGate(ctx, jr, in, g); err != nil {
+		return gate.Result{}, err, nil
+	}
 	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
 	// but a stalled-run watchdog request does.
 	ctx = stalledAttemptContext(ctx)
@@ -5865,6 +5881,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	defer span.End()
 
 	gateEval.RecoveryVerdict = recoveryVerdictResolver(jr)
+	gateEval.ReviewerContinuation = reviewerContinuationResolver(jr)
 	if recovered, ok, recoveryErr := gateEval.RecoverInterrupted(g, ""); recoveryErr != nil {
 		err = fmt.Errorf("runner: evaluate gate %q: %w", g.Name, recoveryErr)
 		span.Fail(err)

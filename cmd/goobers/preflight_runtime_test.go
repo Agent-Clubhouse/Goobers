@@ -20,6 +20,7 @@ import (
 func TestRuntimePreflightJSONReportContract(t *testing.T) {
 	root := writeRuntimePreflightFixture(t)
 	t.Setenv("GOOBERS_COPILOT_TOKEN", "super-secret-token")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "repo-secret")
 
 	var stdout, stderr bytes.Buffer
 	code := runRuntimePreflight([]string{
@@ -32,7 +33,7 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 		t.Fatalf("runRuntimePreflight exit %d, want 1 for unsupported worker identity; stderr:\n%s", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, leaked := range []string{"super-secret-token", "SECRET_FROM_INSTRUCTIONS", "GOOBERS_COPILOT_TOKEN"} {
+	for _, leaked := range []string{"super-secret-token", "repo-secret", "SECRET_FROM_INSTRUCTIONS"} {
 		if strings.Contains(output, leaked) {
 			t.Fatalf("JSON report leaked %q:\n%s", leaked, output)
 		}
@@ -117,6 +118,7 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 func TestRuntimePreflightHumanReportRedactsSecrets(t *testing.T) {
 	root := writeRuntimePreflightFixture(t)
 	t.Setenv("GOOBERS_COPILOT_TOKEN", "super-secret-token")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "repo-secret")
 
 	var stdout, stderr bytes.Buffer
 	code := runRuntimePreflight([]string{
@@ -133,15 +135,15 @@ func TestRuntimePreflightHumanReportRedactsSecrets(t *testing.T) {
 		"goober digest: sha256:",
 		"runner: selected selected=linux-pool kind=image",
 		"authentication/authentication_unobservable: unobservable",
-		"cleanup_guarantee/cleanup_guarantee_unsupported: unsupported",
+		"cleanup_guarantee/cleanup_probe_not_requested: unobservable",
 		"capability_mismatch/stage_capability_satisfaction_unobservable: unobservable stage=claim",
-		"no external probes or mutations performed",
+		"credential source metadata only; no external credential or harness subprocess probes",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("human report missing %q:\n%s", want, output)
 		}
 	}
-	for _, leaked := range []string{"super-secret-token", "SECRET_FROM_INSTRUCTIONS", "GOOBERS_COPILOT_TOKEN"} {
+	for _, leaked := range []string{"super-secret-token", "repo-secret", "SECRET_FROM_INSTRUCTIONS"} {
 		if strings.Contains(output, leaked) {
 			t.Fatalf("human report leaked %q:\n%s", leaked, output)
 		}
@@ -287,8 +289,15 @@ func normalizedRuntimePreflightJSON(t *testing.T, report runtimePreflightReport)
 	report.Workflow.Digest = "sha256:<workflow>"
 	report.Workflow.GooberDigest = "sha256:<goober>"
 	report.Execution.Process = runtimeplan.Process{PID: 1, OS: "<host-os>", UID: "<effective-user>", GID: "<effective-group>", Source: runtimeplan.Source{Fidelity: "observed", Detail: "current process OS and effective identity"}}
+	report.Lifecycle.Process = report.Execution.Process
 	for i := range report.Checks {
 		report.Checks[i].Process = &report.Execution.Process
+	}
+	for i := range report.Credentials {
+		report.Credentials[i].Process = report.Execution.Process
+	}
+	for i := range report.Harnesses {
+		report.Harnesses[i].Process = report.Execution.Process
 	}
 	for i := range report.Execution.Plan.Paths {
 		report.Execution.Plan.Paths[i].Path = "<" + report.Execution.Plan.Paths[i].Purpose + ">"
@@ -496,7 +505,7 @@ func TestRuntimePreflightIdentityAndPlanAcrossDSLVersions(t *testing.T) {
 			if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			report, err := buildRuntimePreflightReport(root, "implement", "actual")
+			report, err := buildRuntimePreflightReportWithReadiness(root, "implement", "actual", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -556,7 +565,7 @@ func TestRuntimePreflightResolvesExecutionRunControlPolicy(t *testing.T) {
 				wf.Spec.RunControls = policySet.Workflows[0].Spec.RunControls
 				rewriteRuntimePreflightYAML(t, workflowPath, wf)
 			}
-			got, err := buildRuntimePreflightReport(root, "implement", "actual")
+			got, err := buildRuntimePreflightReportWithReadiness(root, "implement", "actual", false)
 			if err != nil {
 				t.Fatal(err)
 			}

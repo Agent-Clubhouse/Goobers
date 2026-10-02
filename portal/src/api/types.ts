@@ -397,6 +397,8 @@ export interface ConfigAuthoringErrorEnvelope {
 }
 
 export interface Health extends ContractVersion {
+  /** Present on daemons that report the local self-execution policy. */
+  selfExecution?: { policy: string; observed: boolean; placements: number; refusals: number };
   definitionReload?: { appliedDigest: string; observedDigest: string; observedAt: string; watching: boolean; state: string; rejectionReason?: string; candidateWarnings?: ValidationWarning[] };
   startup?: { phase: string; target?: string; since: string };
   build?: BuildMetadata;
@@ -496,6 +498,11 @@ export interface StorageHealthStatus {
 }
 
 export interface TelemetryExporterHealthStatus {
+  destinations?: Record<string, TelemetryExporterHealthStatus>;
+  unavailableReason?: string;
+  replay?: { accountingReady: boolean; pendingRecords: number; pendingBytes: number; oldestPendingSeconds: number; lastSuccess?: string; lastFailure?: string; failureClass?: string; activeFailure: boolean };
+  journal?: { accepted: number; dropped: number; failures: number };
+  diagnostics?: { accepted: number; dropped: number; failures: number };
   enabled: boolean;
   mode?: "disabled" | "local" | "otlp" | "stdout" | "azure-monitor" | "custom" | string;
   endpointHost?: string;

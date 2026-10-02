@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"temporal codec-server": {
+		{name: "listen", takesArg: true, desc: "TLS listener address"},
+		{name: "tls-cert", takesArg: true, desc: "TLS certificate PEM file"},
+		{name: "tls-key", takesArg: true, desc: "TLS private key PEM file"},
+		{name: "allow-origin", takesArg: true, desc: "Exact Temporal Web UI origin"},
+	},
 	"gaggle export": {
 		{name: "output", takesArg: true, desc: "Write the bundle to a file"},
 	},
@@ -161,6 +167,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit the versioned onboarding action envelope"},
 	},
 	"preflight": {
+		{name: "instance", takesArg: true, desc: "Instance root to inspect"},
+		{name: "workflow", takesArg: true, desc: "Workflow name to inspect"},
+		{name: "execution-identity", takesArg: true, values: []string{"actual"}, desc: "Report actual identity boundaries"},
+		{name: "check-readiness", desc: "Run bounded read-only harness probes"},
+		{name: "json", desc: "Emit versioned runtime preflight report"},
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
 	},
@@ -240,8 +251,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "record-instance", takesArg: true, desc: "Instance root receiving Kubernetes check results"},
+		{name: "result-max-age", takesArg: true, desc: "Recorded Kubernetes result freshness window"},
 		{name: "psa-namespaces", takesArg: true, desc: "Namespaces for rendered pod admission checks"},
 		{name: "psa-service-account", takesArg: true, desc: "Stage ServiceAccount for rendered pod admission checks"},
+		{name: "temporal-codec", desc: "Report configured Temporal payload codec"},
+		{name: "instance", takesArg: true, desc: "Instance config for Kubernetes Temporal checks"},
 		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
 		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
@@ -536,6 +551,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"telemetry test": {
+		{name: "destination", takesArg: true, desc: "Named Azure destination to probe"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "timeout", takesArg: true, desc: "Connectivity deadline"},
 	},

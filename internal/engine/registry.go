@@ -116,11 +116,13 @@ func (r *Registry) Latest(name string) (wf.Definition, bool) {
 
 // StartSpec describes a run to start; it is the non-pinned part of a RunInput.
 type StartSpec struct {
-	InstanceID string
-	RunID      string
-	Gaggle     string
-	RepoRef    apiv1.RepoRef
-	Item       *apiv1.BacklogItem
+	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
+	SelfExecutionDenied bool `json:"selfExecutionDenied,omitempty"`
+	InstanceID          string
+	RunID               string
+	Gaggle              string
+	RepoRef             apiv1.RepoRef
+	Item                *apiv1.BacklogItem
 	// TriggerRef identifies the event or item that caused the run (bounded
 	// scheduler metadata, threaded into every stage envelope).
 	TriggerRef string
@@ -265,6 +267,7 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 		GateGooberCapabilities: s.GateGooberCapabilities,
 		LiveJournal:            s.LiveJournal,
 		Placements:             s.Placements,
+		SelfExecutionDenied:    s.SelfExecutionDenied,
 		RunControls:            s.RunControls,
 		GooberDigest:           s.GooberDigest,
 		ConfigGeneration:       s.ConfigGeneration,

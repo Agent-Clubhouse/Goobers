@@ -37,7 +37,7 @@ func (d *repassIdentityAuditDispatcher) Dispatch(ctx context.Context, attempt di
 		surrendered.Result.Artifacts = []apiv1.ArtifactPointer{{Digest: ref.Digest, Path: ref.Path, Size: ref.Size, Integrity: apiv1.IntegrityDerived}}
 	} else {
 		decision := apiv1.VerdictNeedsChanges
-		if attempt.Number > 1 {
+		if attempt.IdentityAttempt() > 1 {
 			decision = apiv1.VerdictPass
 		}
 		surrendered = reviewSurrender(apiv1.Verdict{Decision: decision, Summary: "review"})

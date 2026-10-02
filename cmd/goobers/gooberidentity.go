@@ -209,15 +209,23 @@ func compiledMachinesWithGooberDigests(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	gooberDigests, err := computeMachineGooberDigests(machines, resolvedGoobers, instructions, skillPackagesFor)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return machines, gooberDigests, resolvedGoobers, warnings, nil
+}
+
+func computeMachineGooberDigests(machines map[localscheduler.WorkflowIdentity]*workflow.Machine, resolvedGoobers map[string]apiv1.GooberSpec, instructions map[string]string, skillPackagesFor func(string, map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error)) (map[localscheduler.WorkflowIdentity]string, error) {
 	gooberDigests := make(map[localscheduler.WorkflowIdentity]string, len(machines))
 	for identity, machine := range machines {
 		skillPackages, err := skillPackagesFor(identity.Gaggle, resolvedGoobers)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, err
 		}
 		digest, err := workflow.ComputeGooberDigest(machine.Def, resolvedGoobers, instructions, skillPackages)
 		if err != nil {
-			return nil, nil, nil, nil, &workflowDigestError{
+			return nil, &workflowDigestError{
 				Gaggle:   identity.Gaggle,
 				Workflow: identity.Workflow,
 				Err:      err,
@@ -225,5 +233,5 @@ func compiledMachinesWithGooberDigests(
 		}
 		gooberDigests[identity] = digest
 	}
-	return machines, gooberDigests, resolvedGoobers, warnings, nil
+	return gooberDigests, nil
 }

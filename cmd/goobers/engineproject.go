@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/internal/temporaldial"
 )
 
@@ -78,7 +79,12 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS)
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		pf(stderr, "error: temporal payload codec: %v\n", err)
+		return 2
+	}
+	opts, err := temporaldial.Options(*hostPort, *namespace, engineConfig.TLS, dc)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

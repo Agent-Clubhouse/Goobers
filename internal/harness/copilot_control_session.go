@@ -60,6 +60,7 @@ type copilotControlledRunner struct {
 	deadlineDone    func()
 	readiness       MCPReadiness
 	settleTimeout   time.Duration
+	diagnosticsOnly bool
 }
 
 func (r *copilotControlledRunner) initialize(ctx context.Context, req ProcessRequest) error {
@@ -219,6 +220,10 @@ func (r *copilotControlledRunner) sessionConfig(id string, req ProcessRequest, s
 		SessionID: id, Model: r.model, ReasoningEffort: r.options["reasoningEffort"],
 		WorkingDirectory: req.Dir, MCPServers: servers, AvailableTools: copilotAvailableTools(r.request),
 		OnPermissionRequest: copilotSessionPermissions(r.request, r.permissionRoots),
+	}
+	if r.diagnosticsOnly {
+		config.OnPermissionRequest = diagnosticMCPPermissions()
+		config.DisabledMCPServers = []string{"github-mcp-server"}
 	}
 	if r.options["context"] == "long_context" {
 		config.ContextTier = copilot.ContextTierLongContext
