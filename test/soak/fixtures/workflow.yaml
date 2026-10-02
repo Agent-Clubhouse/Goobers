@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: soak
+spec:
+  gaggle: demo
+  displayName: Offline soak fixture
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 8
+  start: churn
+  tasks:
+    - name: churn
+      type: deterministic
+      goal: Exercise subprocess, file descriptor, temporary file, and git lifecycle.
+      timeoutSeconds: 60
+      inputs:
+        resultFile: result.json
+      run:
+        network: none
+        workspace: scratch
+        command: [sh, fixture.sh, success]

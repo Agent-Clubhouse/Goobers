@@ -1,8 +1,11 @@
 # Design: an e2e soak harness for load-dependent failures
 
-Status: draft — proposed design decision. Filed against #815; splits into #1479 (driver),
-#1480 (isolated environment), #1481 (scheduled workflow). No implementation lands
-until this document does.
+Status: approved — driver implemented for #1479; isolated execution and scheduling remain pending.
+
+Pending-delivery: #1480, #1481
+Scope-delta: #1479 delivers the real CLI driver, offline fixture, typed profiles, staggered admission, sustained replacement, rolling throughput checks, failure classification, and bounded drain. #1480 still owns Docker launch and resource flags, disk-throttle verification, host-OOM attribution, diagnostic capture and evidence packaging; #1481 owns scheduled execution. Driver tests and the pressure-free CLI smoke are not evidence of extended saturation throughput.
+
+Implementation and runtime boundary: [test/soak/README.md](../../test/soak/README.md).
 
 ## 1. Motivation, precisely
 
