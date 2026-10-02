@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS HARNESS AUTH COPILOT LOGIN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers harness auth copilot login \- delegate to the native Copilot login flow
+.SH SYNOPSIS
+\fBgoobers harness auth copilot login\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers harness auth copilot status [path]
+       goobers harness auth copilot login [path]
+       goobers harness auth copilot logout [path]
+
+Inspect or delegate Copilot harness authentication using the same configured
+command, environment policy, model-credential precedence, and launcher
+preflight path used before agentic stages. Status output is credential-free:
+it reports authenticated, signed-out, or unknown with the selected executable,
+version when available, runner, and profile directory. Login delegates to the
+native Copilot CLI login flow. Logout reports unsupported for current direct
+Copilot CLI installations instead of clearing the wrong profile.
+.fi
+.SH EXAMPLES
+.nf
+goobers harness auth copilot login
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

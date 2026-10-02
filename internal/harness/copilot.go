@@ -756,8 +756,95 @@ func copilotAuthProbeError(ctx context.Context, probe string, result ProcessResu
 	case launcherProbe && copilotLauncherAuthProbeLooksTransient(ctx, result, runErr):
 		return preflightProbeError(probe, result, runErr, "a forwarding launcher failed before completing its lightweight authentication check; inspect the launcher/session bootstrap diagnostics")
 	default:
-		return preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+		err := preflightProbeError(probe, result, runErr, "if this is an authentication failure, run the Copilot CLI and sign in")
+		if !copilotAuthProbeLooksLikeCredentialFailure(result.Transcript) {
+			return err
+		}
+		return &AuthRequiredError{Remediation: "goobers harness auth copilot login", Err: err}
 	}
+}
+
+// AuthStatus reports Copilot authentication using the same configured command,
+// environment filtering, launcher contract, and credential precedence as an
+// agentic startup preflight.
+func (c *CopilotAdapter) AuthStatus(ctx context.Context) (AuthInfo, error) {
+	info := AuthInfo{
+		Status:      AuthStatusUnknown,
+		Executable:  strings.Join(resolveHarnessCommand(c.Command), " "),
+		Runner:      c.authRunnerLabel(),
+		Remediation: "goobers harness auth copilot login",
+	}
+	if home, ok := copilotConfigHome(baseEnv(c.ExtraEnvAllowlist, c.EnvUnset)); ok {
+		info.ProfileDir = home
+	}
+	preflight, err := c.Preflight(ctx)
+	if err == nil {
+		info.Status = AuthStatusAuthenticated
+		info.Version = preflight.Version
+		info.Remediation = ""
+		return info, nil
+	}
+	if IsHarnessAuthRequired(err) {
+		info.Status = AuthStatusSignedOut
+		return info, nil
+	}
+	return info, err
+}
+
+func (c *CopilotAdapter) authRunnerLabel() string {
+	if c.RequireLauncherContract {
+		return "configured launcher"
+	}
+	return "local"
+}
+
+// AuthCommand returns the credential-free command and environment for a native
+// Copilot auth lifecycle operation. Direct Copilot login keeps the existing
+// native command; contract-aware launchers must declare equivalent operations
+// explicitly so Goobers never guesses a different executable or profile.
+func (c *CopilotAdapter) AuthCommand(ctx context.Context, operation string) ([]string, []string, error) {
+	if len(c.Command) == 0 {
+		return nil, nil, fmt.Errorf("harness: copilot-cli: no command configured")
+	}
+	command := resolveHarnessCommand(c.Command)
+	env := AuthEnvironment(EnvironmentConfig{ExtraAllowlist: c.ExtraEnvAllowlist, Unset: c.EnvUnset})
+	if !c.RequireLauncherContract {
+		switch operation {
+		case "login":
+			return append(command, "login"), env, nil
+		case "logout":
+			return nil, nil, fmt.Errorf("copilot CLI logout is not supported by this native harness; clear credentials with the vendor-supported mechanism for the selected profile")
+		default:
+			return nil, nil, fmt.Errorf("unsupported Copilot auth operation %q", operation)
+		}
+	}
+	contract, err := c.launcherSessionContract(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if contract.Auth == nil {
+		return nil, nil, fmt.Errorf("configured Copilot launcher does not declare %s auth support; use a contract-aware launcher that exposes auth.%s or run the launcher-specific setup outside Goobers", operation, launcherAuthOperationName(operation))
+	}
+	var op *launcherAuthOp
+	switch operation {
+	case "login":
+		op = contract.Auth.InteractiveLogin
+	case "logout":
+		op = contract.Auth.Logout
+	default:
+		return nil, nil, fmt.Errorf("unsupported Copilot auth operation %q", operation)
+	}
+	if op == nil {
+		return nil, nil, fmt.Errorf("configured Copilot launcher does not support %s auth; use the launcher-supported credential provisioning flow for this profile", operation)
+	}
+	return append(command, op.Args...), env, nil
+}
+
+func launcherAuthOperationName(operation string) string {
+	if operation == "login" {
+		return "interactiveLogin"
+	}
+	return operation
 }
 
 func verifyCopilotSessionTranscript(path string) error {

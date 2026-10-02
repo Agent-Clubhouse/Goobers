@@ -137,13 +137,7 @@ func bashFlagArm(c completionCommand) string {
 func bashCandidateArm(c completionCommand) string {
 	statics := subNames(c)
 	statics = append(statics, c.argValues...)
-	var subDyn []completionCommand
-	for _, s := range c.subs {
-		if s.argKind != "" {
-			subDyn = append(subDyn, s)
-		}
-	}
-	if len(statics) == 0 && c.argKind == "" && len(subDyn) == 0 {
+	if len(statics) == 0 && c.argKind == "" && !hasNestedCandidates(c) {
 		return ""
 	}
 	var parts []string
@@ -158,14 +152,67 @@ func bashCandidateArm(c completionCommand) string {
 		b.WriteString("                dynamic=1\n")
 	}
 	fmt.Fprintf(&b, "                candidates=%q\n", strings.Join(parts, " "))
-	for _, s := range subDyn {
-		fmt.Fprintf(&b, "            elif [[ \"${COMP_WORDS[2]:-}\" == %q ]] && (( COMP_CWORD == 3 )); then\n", s.name)
-		b.WriteString("                dynamic=1\n")
-		fmt.Fprintf(&b, "                candidates=%q\n", completeCall(s.argKind))
-	}
+	b.WriteString(bashNestedCandidateBranches(c))
 	b.WriteString("            fi\n")
 	b.WriteString("            ;;\n")
 	return b.String()
+}
+
+func hasNestedCandidates(c completionCommand) bool {
+	for _, s := range c.subs {
+		if len(subNames(s)) > 0 || len(s.argValues) > 0 || s.argKind != "" || hasNestedCandidates(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func bashNestedCandidateBranches(c completionCommand) string {
+	var b strings.Builder
+	var walk func(completionCommand, []string)
+	walk = func(node completionCommand, path []string) {
+		parts := completionCandidateParts(node)
+		if len(parts) > 0 {
+			fmt.Fprintf(&b, "            elif %s && (( COMP_CWORD == %d )); then\n", bashPathCondition(path), len(path)+2)
+			if node.argKind != "" {
+				b.WriteString("                dynamic=1\n")
+			}
+			fmt.Fprintf(&b, "                candidates=%q\n", strings.Join(parts, " "))
+		}
+		for _, sub := range node.subs {
+			walk(sub, append(append([]string{}, path...), sub.name))
+		}
+	}
+	for _, sub := range c.subs {
+		walk(sub, []string{sub.name})
+	}
+	return b.String()
+}
+
+func fishCandidateParts(c completionCommand) []string {
+	parts := subNames(c)
+	parts = append(parts, c.argValues...)
+	if c.argKind != "" {
+		parts = append(parts, fmt.Sprintf("(__goobers_completion_%s)", c.argKind))
+	}
+	return parts
+}
+
+func bashPathCondition(path []string) string {
+	conds := make([]string, 0, len(path))
+	for i, part := range path {
+		conds = append(conds, fmt.Sprintf(`"${COMP_WORDS[%d]:-}" == %q`, i+2, part))
+	}
+	return "[[ " + strings.Join(conds, " && ") + " ]]"
+}
+
+func completionCandidateParts(c completionCommand) []string {
+	parts := subNames(c)
+	parts = append(parts, c.argValues...)
+	if c.argKind != "" {
+		parts = append(parts, completeCall(c.argKind))
+	}
+	return parts
 }
 
 // --- zsh -------------------------------------------------------------------
@@ -271,13 +318,7 @@ func zshFlagArm(c completionCommand) string {
 func zshCandidateArm(c completionCommand) string {
 	statics := subNames(c)
 	statics = append(statics, c.argValues...)
-	var subDyn []completionCommand
-	for _, s := range c.subs {
-		if s.argKind != "" {
-			subDyn = append(subDyn, s)
-		}
-	}
-	if len(statics) == 0 && c.argKind == "" && len(subDyn) == 0 {
+	if len(statics) == 0 && c.argKind == "" && !hasNestedCandidates(c) {
 		return ""
 	}
 	var b strings.Builder
@@ -293,15 +334,48 @@ func zshCandidateArm(c completionCommand) string {
 	}
 	fmt.Fprintf(&b, "                _describe -V %s candidates\n", zshLabel(c.argKind))
 	b.WriteString("                return\n")
-	for _, s := range subDyn {
-		fmt.Fprintf(&b, "            elif [[ \"${words[3]:-}\" == %q ]] && (( CURRENT == 4 )); then\n", s.name)
-		fmt.Fprintf(&b, "                candidates=(\"${(@f)%s}\")\n", completeCall(s.argKind))
-		fmt.Fprintf(&b, "                _describe -V %s candidates\n", zshLabel(s.argKind))
-		b.WriteString("                return\n")
-	}
+	b.WriteString(zshNestedCandidateBranches(c))
 	b.WriteString("            fi\n")
 	b.WriteString("            ;;\n")
 	return b.String()
+}
+
+func zshNestedCandidateBranches(c completionCommand) string {
+	var b strings.Builder
+	var walk func(completionCommand, []string)
+	walk = func(node completionCommand, path []string) {
+		parts := completionCandidateParts(node)
+		if len(parts) > 0 {
+			fmt.Fprintf(&b, "            elif %s && (( CURRENT == %d )); then\n", zshPathCondition(path), len(path)+3)
+			statics := subNames(node)
+			statics = append(statics, node.argValues...)
+			if len(statics) > 0 {
+				fmt.Fprintf(&b, "                candidates=(%s)\n", strings.Join(statics, " "))
+			} else {
+				b.WriteString("                candidates=()\n")
+			}
+			if node.argKind != "" {
+				fmt.Fprintf(&b, "                candidates+=(\"${(@f)%s}\")\n", completeCall(node.argKind))
+			}
+			fmt.Fprintf(&b, "                _describe -V %s candidates\n", zshLabel(node.argKind))
+			b.WriteString("                return\n")
+		}
+		for _, sub := range node.subs {
+			walk(sub, append(append([]string{}, path...), sub.name))
+		}
+	}
+	for _, sub := range c.subs {
+		walk(sub, []string{sub.name})
+	}
+	return b.String()
+}
+
+func zshPathCondition(path []string) string {
+	conds := make([]string, 0, len(path))
+	for i, part := range path {
+		conds = append(conds, fmt.Sprintf(`[[ "${words[%d]:-}" == %q ]]`, i+3, part))
+	}
+	return strings.Join(conds, " && ")
 }
 
 func zshLabel(argKind string) string {
@@ -390,13 +464,30 @@ func fishCandidateRules(c completionCommand) string {
 		fmt.Fprintf(&b, "complete -c goobers -n '__fish_seen_subcommand_from %s; and test (count (commandline -opc)) -eq 2' -f %s-a '%s'\n",
 			c.name, keepFlag(keep), strings.Join(parts, " "))
 	}
-	// Depth-2 dynamic candidates for subcommands with an arg kind.
-	for _, s := range c.subs {
-		if s.argKind == "" {
-			continue
+	b.WriteString(fishNestedCandidateRules(c))
+	return b.String()
+}
+
+func fishNestedCandidateRules(c completionCommand) string {
+	var b strings.Builder
+	var walk func(completionCommand, []string)
+	walk = func(node completionCommand, path []string) {
+		parts := fishCandidateParts(node)
+		if len(parts) > 0 {
+			conds := []string{"__fish_seen_subcommand_from " + c.name}
+			for _, part := range path {
+				conds = append(conds, "__fish_seen_subcommand_from "+part)
+			}
+			conds = append(conds, fmt.Sprintf("test (count (commandline -opc)) -eq %d", len(path)+2))
+			keep := node.argKind != "" && (len(subNames(node))+len(node.argValues) > 0 || fishKeepOrder(node.argKind))
+			fmt.Fprintf(&b, "complete -c goobers -n '%s' -f %s-a '%s'\n", strings.Join(conds, "; and "), keepFlag(keep), strings.Join(parts, " "))
 		}
-		fmt.Fprintf(&b, "complete -c goobers -n '__fish_seen_subcommand_from %s; and __fish_seen_subcommand_from %s; and test (count (commandline -opc)) -eq 3' -f %s-a '(__goobers_completion_%s)'\n",
-			c.name, s.name, keepFlag(fishKeepOrder(s.argKind)), s.argKind)
+		for _, sub := range node.subs {
+			walk(sub, append(append([]string{}, path...), sub.name))
+		}
+	}
+	for _, sub := range c.subs {
+		walk(sub, []string{sub.name})
 	}
 	return b.String()
 }

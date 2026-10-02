@@ -84,6 +84,9 @@ func isHelpConcept(topic string) bool {
 }
 
 func helpCommand(topic string) (cliCommand, bool) {
+	if isHelpConcept(topic) {
+		return cliCommand{}, false
+	}
 	return findHelpCommand(cliCommands, nil, topic)
 }
 
