@@ -21,6 +21,10 @@ import (
 // and timeout errors are injected at DialContext, without public DNS/network
 // dependencies. This is a correctness test, not a 30-minute platform load test.
 func TestAzureReplayNetworkFaultRecovery(t *testing.T) {
+	wantClass := map[string]string{
+		"429": azureDeliveryRejected, "503": azureDeliveryRejected, "reset": azureDeliveryNetwork,
+		"ambiguous": azureDeliveryNetwork, "dns": azureDeliveryDNS, "timeout": azureDeliveryTimeout,
+	}
 	for _, fault := range []string{"429", "503", "reset", "ambiguous", "dns", "timeout"} {
 		t.Run(fault, func(t *testing.T) {
 			var offline atomic.Bool
@@ -53,8 +57,12 @@ func TestAzureReplayNetworkFaultRecovery(t *testing.T) {
 			if err = spool.drain(t.Context()); err == nil || !isCollectorUnreachable(err) {
 				t.Fatalf("fault not classified as remote delivery failure: %v", err)
 			}
-			if got := spool.stats(); got.PendingRecords != 1 || got.Delivered != 0 || got.Retried == 0 {
-				t.Fatalf("failed delivery was not retained/counted: %+v", got)
+			failed := spool.stats()
+			if failed.PendingRecords != 1 || failed.Delivered != 0 || failed.Retried == 0 {
+				t.Fatalf("failed delivery was not retained/counted: %+v", failed)
+			}
+			if !failed.ActiveFailure || failed.FailureClass != wantClass[fault] || failed.LastFailure.IsZero() || !failed.LastSuccess.IsZero() {
+				t.Fatalf("delivery evidence after %s = %+v, want active %q", fault, failed, wantClass[fault])
 			}
 			second := appinsights.NewTraceTelemetry("fixture-second", appinsights.Information)
 			if err = client.export(t.Context(), []appinsights.Telemetry{second}); err != nil {
@@ -64,8 +72,12 @@ func TestAzureReplayNetworkFaultRecovery(t *testing.T) {
 			if err = spool.drain(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if got := spool.stats(); got.PendingRecords != 0 || got.Delivered != 2 || got.PrunedBytes != 0 || got.Malformed != 0 {
+			got := spool.stats()
+			if got.PendingRecords != 0 || got.Delivered != 2 || got.PrunedBytes != 0 || got.Malformed != 0 {
 				t.Fatalf("recovery accounting: %+v", got)
+			}
+			if got.ActiveFailure || got.LastSuccess.IsZero() || got.FailureClass != wantClass[fault] {
+				t.Fatalf("recovery did not advance last-success and clear the active failure: %+v", got)
 			}
 			receiver.mu.Lock()
 			defer receiver.mu.Unlock()

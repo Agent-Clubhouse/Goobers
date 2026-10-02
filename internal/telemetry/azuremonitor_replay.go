@@ -73,6 +73,20 @@ type AzureReplayStats struct {
 	AccountingReady              bool
 	AdmissionFailures            uint64
 	QueueDropped, ExportFailures uint64
+	// Delivery evidence (#5940). LastSuccess, LastFailure and FailureClass
+	// survive a restart; ActiveFailure means the latest delivery attempt
+	// failed and none has succeeded since. Aggregates take the latest
+	// success, the latest failure with its class, and any active failure.
+	LastSuccess, LastFailure time.Time
+	FailureClass             string
+	ActiveFailure            bool
+}
+
+// mergeDelivery folds one stream's delivery evidence into an aggregate.
+func (s *AzureReplayStats) mergeDelivery(status azureDeliveryStatus, active bool) {
+	merged := azureDeliveryStatus{LastSuccess: s.LastSuccess, LastFailure: s.LastFailure, FailureClass: s.FailureClass}.merge(status)
+	s.LastSuccess, s.LastFailure, s.FailureClass = merged.LastSuccess, merged.LastFailure, merged.FailureClass
+	s.ActiveFailure = s.ActiveFailure || active
 }
 
 var activeAzureReplaySpools = struct {
@@ -120,6 +134,11 @@ func InspectAzureReplayRoot(root string) AzureReplayStats {
 		}
 		result.AccountingReady = result.AccountingReady && complete
 	}
+	for _, stream := range []string{"traces", "journal", "diagnostics"} {
+		if status, err := readAzureDeliveryStatus(root, stream); err == nil {
+			result.mergeDelivery(status, false)
+		}
+	}
 	activeAzureReplaySpools.Lock()
 	for spool := range activeAzureReplaySpools.spools {
 		if filepath.Dir(spool.cfg.dir) != filepath.Clean(root) {
@@ -137,6 +156,7 @@ func InspectAzureReplayRoot(root string) AzureReplayStats {
 			result.QueueDropped += loss.Dropped
 			result.ExportFailures += loss.ExportFailures
 		}
+		result.mergeDelivery(spool.delivery.snapshot())
 	}
 	activeAzureReplaySpools.Unlock()
 	return result
@@ -162,6 +182,7 @@ type azureReplaySpool struct {
 	prunedAge, prunedBytes       atomic.Uint64
 	malformed                    atomic.Uint64
 	admissionFailures            atomic.Uint64
+	delivery                     azureDeliveryState
 }
 
 func (s *azureReplaySpool) ensureIndex() error {
@@ -182,6 +203,9 @@ func newAzureReplaySpool(cfg azureReplayConfig, send func(context.Context, []byt
 		cancel()
 		return nil, err
 	}
+	if status, err := readAzureDeliveryStatus(s.healthRoot(), s.healthStream()); err == nil {
+		s.delivery.restore(status)
+	}
 	activeAzureReplaySpools.Lock()
 	activeAzureReplaySpools.spools[s] = struct{}{}
 	activeAzureReplaySpools.Unlock()
@@ -199,6 +223,11 @@ func (s *azureReplaySpool) submit(ctx context.Context, payload []byte) (submitEr
 	defer func() {
 		if submitErr != nil {
 			s.admissionFailures.Add(uint64(azureReplayRecordCount(payload)))
+			// Admission refused by local storage, not by the destination.
+			// Cancellation and shutdown are not spool evidence.
+			if !s.closed.Load() && !errors.Is(submitErr, context.Canceled) && !errors.Is(submitErr, context.DeadlineExceeded) {
+				s.delivery.failed(s.now(), azureDeliverySpoolIO, false)
+			}
 		}
 	}()
 	if s.closed.Load() {
@@ -322,12 +351,16 @@ func (s *azureReplaySpool) drain(ctx context.Context) error {
 		}
 		batch, err := s.claimBatch(ctx)
 		if err != nil {
+			if ctx.Err() == nil && !errors.Is(err, errAzureReplayLeased) {
+				s.delivery.failed(s.now(), azureDeliverySpoolIO, true)
+			}
 			if ctx.Err() != nil && s.delivered.Load() > initialDelivered {
 				s.signal()
 				return errors.Join(errAzureReplayYield, err)
 			}
 			return err
 		}
+		s.delivery.spoolReadable()
 		if len(batch.files) == 0 {
 			return nil
 		}
@@ -341,9 +374,18 @@ func (s *azureReplaySpool) drain(ctx context.Context) error {
 		cancel()
 		if sendErr != nil {
 			s.retried.Add(1)
+			// A shutdown's last-chance drain has a short budget of its own;
+			// running out of it is not evidence about the destination.
+			if !errors.Is(sendErr, context.Canceled) && !s.closed.Load() {
+				s.delivery.failed(s.now(), classifyAzureDelivery(sendErr), true)
+			}
 			return sendErr
 		}
+		// The destination acknowledged the batch even if the local
+		// acknowledgement below fails and the batch is delivered again.
+		s.delivery.succeeded(s.now())
 		if err != nil {
+			s.delivery.failed(s.now(), azureDeliverySpoolIO, false)
 			return err
 		}
 		s.delivered.Add(uint64(azureReplayRecordCount(batch.payload)))
@@ -563,6 +605,7 @@ func (s *azureReplaySpool) stats() AzureReplayStats {
 	stats.Accepted, stats.Delivered, stats.Retried = s.accepted.Load(), s.delivered.Load(), s.retried.Load()
 	stats.PrunedAge, stats.PrunedBytes, stats.Malformed = s.prunedAge.Load(), s.prunedBytes.Load(), s.malformed.Load()
 	stats.AdmissionFailures = s.admissionFailures.Load()
+	stats.mergeDelivery(s.delivery.snapshot())
 	if source := s.lossSource.Load(); source != nil {
 		loss := source.sample()
 		stats.QueueDropped = loss.Dropped

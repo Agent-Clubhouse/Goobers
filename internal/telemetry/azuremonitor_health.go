@@ -45,6 +45,16 @@ type replayHealthEvent struct {
 	PrunedBytes        uint64             `json:"prunedBytes"`
 	Malformed          uint64             `json:"malformedFiles"`
 	Queue              replayLossCounters `json:"queue"`
+	// Delivery evidence (#5940): fixed failure classes and timestamps only.
+	LastSuccess   *time.Time `json:"lastSuccess,omitempty"`
+	LastFailure   *time.Time `json:"lastFailure,omitempty"`
+	FailureClass  string     `json:"failureClass,omitempty"`
+	ActiveFailure bool       `json:"activeFailure"`
+}
+
+func (e *replayHealthEvent) setDelivery(stats AzureReplayStats) {
+	e.LastSuccess, e.LastFailure = timePtr(stats.LastSuccess), timePtr(stats.LastFailure)
+	e.FailureClass, e.ActiveFailure = stats.FailureClass, stats.ActiveFailure
 }
 
 type replayHealthState struct {
@@ -90,6 +100,9 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 	if loss.CatchupDeferred > h.reportedDeferred {
 		causes = append(causes, "journal_catchup_deferred")
 	}
+	if stats.ActiveFailure {
+		causes = append(causes, "delivery_failure")
+	}
 	if len(causes) > 0 {
 		// Record this even when the warning is rate-limited: delivery before
 		// the latest observed problem cannot prove that problem has cleared.
@@ -104,6 +117,7 @@ func (h *replayHealthState) sample(now time.Time, stats AzureReplayStats, loss r
 		PendingRecords:  stats.PendingRecords, PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
 		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures, Retried: stats.Retried,
 		PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes, Malformed: stats.Malformed, Queue: loss}
+	event.setDelivery(stats)
 	if seconds := elapsed.Seconds(); !h.at.IsZero() && seconds > 0 {
 		event.AdmittedPerSecond = float64(stats.Accepted-h.previous.Accepted) / seconds
 		event.DeliveredPerSecond = float64(stats.Delivered-h.previous.Delivered) / seconds
@@ -149,19 +163,34 @@ func (s *azureReplaySpool) reportHealth(state *replayHealthState) {
 		loss = source.sample()
 	}
 	event := state.sample(time.Now(), s.stats(), loss, s.cfg.maxBytes)
+	s.delivery.persist(s.healthRoot(), s.healthStream())
 	if event == nil {
 		return
 	}
-	event.Stream = s.stream
-	if event.Stream == "" {
-		event.Stream = "export"
-	}
+	event.Stream = s.healthStream()
 	event.PID = os.Getpid()
-	root := s.cfg.root
-	if root == "" {
-		root = s.cfg.dir
+	writeReplayHealth(s.healthRoot(), *event)
+}
+
+func (s *azureReplaySpool) healthStream() string {
+	if s.stream == "" {
+		return "export"
 	}
-	writeReplayHealth(root, *event)
+	return s.stream
+}
+
+func (s *azureReplaySpool) healthRoot() string {
+	if s.cfg.root == "" {
+		return s.cfg.dir
+	}
+	return s.cfg.root
+}
+
+// recordMalformed counts a spooled file that cannot be delivered. It is loss
+// evidence, not an active delivery failure: the stream continues past it.
+func (s *azureReplaySpool) recordMalformed() {
+	s.malformed.Add(1)
+	s.delivery.failed(s.now(), azureDeliveryMalformed, false)
 }
 
 // A final snapshot makes shutdown accounting explicit even when the stream
@@ -172,22 +201,17 @@ func (s *azureReplaySpool) reportShutdownHealth(stats AzureReplayStats) {
 	if source := s.lossSource.Load(); source != nil {
 		loss.CatchupDeferred = source.sample().CatchupDeferred
 	}
-	stream := s.stream
-	if stream == "" {
-		stream = "export"
-	}
-	root := s.cfg.root
-	if root == "" {
-		root = s.cfg.dir
-	}
-	writeReplayHealth(root, replayHealthEvent{
+	s.delivery.persist(s.healthRoot(), s.healthStream())
+	event := replayHealthEvent{
 		Time: time.Now().UTC(), Event: "telemetry.export.health", Status: "shutdown",
-		Stream: stream, PID: os.Getpid(), AccountingReady: stats.AccountingReady, PendingRecords: stats.PendingRecords,
+		Stream: s.healthStream(), PID: os.Getpid(), AccountingReady: stats.AccountingReady, PendingRecords: stats.PendingRecords,
 		PendingFiles: stats.PendingFiles, PendingBytes: stats.PendingBytes,
 		OldestSeconds: stats.OldestPendingAge.Seconds(), AdmissionFailures: stats.AdmissionFailures,
 		Retried: stats.Retried, PrunedAge: stats.PrunedAge, PrunedBytes: stats.PrunedBytes,
 		Malformed: stats.Malformed, Queue: loss,
-	})
+	}
+	event.setDelivery(stats)
+	writeReplayHealth(s.healthRoot(), event)
 }
 
 func writeReplayHealth(root string, event replayHealthEvent) {
