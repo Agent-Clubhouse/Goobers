@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"flag"
 	"io"
 	"time"
 
@@ -25,123 +23,99 @@ var newScheduledTaskManager = func(root string) (scheduledTaskManager, error) {
 }
 
 func runServiceTaskInstall(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseServiceRoot("service task-install", "service task-install", args, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newScheduledTaskManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	status, err := manager.InstallTask(context.Background())
-	if err != nil {
-		pf(stderr, "error: install scheduled task: %v\n", err)
-		return 1
-	}
-	pf(stdout, "scheduled task installed and running as %s\n", status.Account)
-	return 0
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[scheduledTaskManager, service.Status]{
+		Name:       "service task-install",
+		NewManager: newScheduledTaskManager,
+		Before:     prepareServiceRoot,
+		Action: func(ctx context.Context, _ string, manager scheduledTaskManager) (service.Status, error) {
+			return manager.InstallTask(ctx)
+		},
+		ErrorPrefix: "install scheduled task",
+		Success: func(stdout io.Writer, status service.Status) {
+			pf(stdout, "scheduled task installed and running as %s\n", status.Account)
+		},
+	})
 }
 
 func runServiceTaskUninstall(args []string, stdout, stderr io.Writer) int {
-	return runTaskErrorCommand(args, stdout, stderr, "service task-uninstall", func(m scheduledTaskManager) error {
-		return m.UninstallTask(context.Background())
+	return runServiceTaskErrorCommand(args, stdout, stderr, "service task-uninstall", func(ctx context.Context, manager scheduledTaskManager) error {
+		return manager.UninstallTask(ctx)
 	}, "scheduled task uninstalled")
 }
 
 func runServiceTaskStop(args []string, stdout, stderr io.Writer) int {
-	return runTaskErrorCommand(args, stdout, stderr, "service task-stop", func(m scheduledTaskManager) error {
-		return m.StopTask(context.Background())
+	return runServiceTaskErrorCommand(args, stdout, stderr, "service task-stop", func(ctx context.Context, manager scheduledTaskManager) error {
+		return manager.StopTask(ctx)
 	}, "scheduled task stopped")
 }
 
 func runServiceTaskStart(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseServiceRoot("service task-start", "service task-start", args, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newScheduledTaskManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	// A failure line already in the log from an earlier run must not be
-	// reported as the cause of this start; allow a little clock slack.
-	startedAt := time.Now().Add(-time.Second)
-	status, err := manager.StartTask(context.Background())
-	if errors.Is(err, service.ErrNotInstalled) {
-		pln(stdout, "scheduled task is not installed")
-		return 1
-	}
-	if err != nil {
-		layout := instance.NewLayout(root)
-		pf(stderr, "error: start scheduled task: %v", err)
-		if failure := latestServiceSupervisorFailure(layout.DaemonLogFile()); failure.Message != "" && !failure.RecordedAt.Before(startedAt) {
-			pf(stderr, "; %s: %s", serviceSupervisorFailureLabel(failure.Kind), failure.Message)
-		}
-		pf(stderr, "; inspect daemon log %s\n", layout.DaemonLogFile())
-		return 1
-	}
-	pf(stdout, "scheduled task running as %s\n", status.Account)
-	return 0
+	var startedAt time.Time
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[scheduledTaskManager, service.Status]{
+		Name:       "service task-start",
+		NewManager: newScheduledTaskManager,
+		Before: func(root string, stderr io.Writer) int {
+			if exit := prepareServiceRoot(root, stderr); exit != 0 {
+				return exit
+			}
+			// Ignore failure lines from earlier runs while allowing clock slack.
+			startedAt = time.Now().Add(-time.Second)
+			return 0
+		},
+		Action: func(ctx context.Context, _ string, manager scheduledTaskManager) (service.Status, error) {
+			return manager.StartTask(ctx)
+		},
+		Error: func(root string, err error, stderr io.Writer) int {
+			layout := instance.NewLayout(root)
+			pf(stderr, "error: start scheduled task: %v", err)
+			if failure := latestServiceSupervisorFailure(layout.DaemonLogFile()); failure.Message != "" && !failure.RecordedAt.Before(startedAt) {
+				pf(stderr, "; %s: %s", serviceSupervisorFailureLabel(failure.Kind), failure.Message)
+			}
+			pf(stderr, "; inspect daemon log %s\n", layout.DaemonLogFile())
+			return 1
+		},
+		NotInstalled:        func(err error) bool { return errors.Is(err, service.ErrNotInstalled) },
+		NotInstalledMessage: "scheduled task is not installed",
+		NotInstalledExit:    1,
+		Success: func(stdout io.Writer, status service.Status) {
+			pf(stdout, "scheduled task running as %s\n", status.Account)
+		},
+	})
 }
 
 func runServiceTaskStatus(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("service task-status", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	asJSON := fs.Bool("json", false, "render status as JSON")
-	fs.Usage = helpUsage(stderr, "service task-status")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := serviceRootFromFlagSet(fs, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newScheduledTaskManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	status, err := manager.TaskStatus(context.Background())
-	if err != nil {
-		pf(stderr, "error: query scheduled task: %v\n", err)
-		return 1
-	}
-	status = enrichTaskStatusWithSupervisorFailure(root, status)
-	if *asJSON {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(status); err != nil {
-			pf(stderr, "error: encode scheduled task status: %v\n", err)
-			return 1
-		}
-	} else if !status.Installed {
-		pln(stdout, "scheduled task is not installed")
-	} else {
-		pf(stdout, "scheduled task is %s as %s", status.State, status.Account)
-		if status.LastFailure != "" {
-			layout := instance.NewLayout(root)
-			pf(stdout, " (last failure: %s", status.LastFailure)
-			if status.SupervisorFailure != nil {
-				pf(stdout, "; %s: %s", serviceSupervisorFailureLabel(status.SupervisorFailure.Kind), status.SupervisorFailure.Message)
+	return runServiceStatusCommand(args, stdout, stderr, serviceStatusSpec[scheduledTaskManager, service.Status]{
+		Name:       "service task-status",
+		NewManager: newScheduledTaskManager,
+		Status: func(ctx context.Context, manager scheduledTaskManager) (service.Status, error) {
+			return manager.TaskStatus(ctx)
+		},
+		Transform:         enrichTaskStatusWithSupervisorFailure,
+		StatusErrorPrefix: "query scheduled task",
+		EncodeErrorPrefix: "encode scheduled task status",
+		Render: func(root string, stdout io.Writer, status service.Status) {
+			if !status.Installed {
+				pln(stdout, "scheduled task is not installed")
+			} else {
+				pf(stdout, "scheduled task is %s as %s", status.State, status.Account)
+				if status.LastFailure != "" {
+					layout := instance.NewLayout(root)
+					pf(stdout, " (last failure: %s", status.LastFailure)
+					if status.SupervisorFailure != nil {
+						pf(stdout, "; %s: %s", serviceSupervisorFailureLabel(status.SupervisorFailure.Kind), status.SupervisorFailure.Message)
+					}
+					pf(stdout, "; inspect daemon log %s)", layout.DaemonLogFile())
+				}
+				pln(stdout, "")
 			}
-			pf(stdout, "; inspect daemon log %s)", layout.DaemonLogFile())
-		}
-		pln(stdout, "")
-	}
-	if status.Running {
-		return 0
-	}
-	return 1
+		},
+		Exit: func(status service.Status) int {
+			if status.Running {
+				return 0
+			}
+			return 1
+		},
+	})
 }
 
 func enrichTaskStatusWithSupervisorFailure(root string, status service.Status) service.Status {
@@ -161,26 +135,18 @@ func serviceSupervisorFailureLabel(kind string) string {
 	return "last supervisor failure"
 }
 
-func runTaskErrorCommand(args []string, stdout, stderr io.Writer, name string, action func(scheduledTaskManager) error, success string) int {
-	root, ok := parseServiceRoot(name, name, args, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newScheduledTaskManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
-		return 2
-	}
-	if err := action(manager); errors.Is(err, service.ErrNotInstalled) {
-		pln(stdout, "scheduled task is not installed")
-		return 1
-	} else if err != nil {
-		pf(stderr, "error: %s: %v\n", name, err)
-		return 1
-	}
-	pln(stdout, success)
-	return 0
+func runServiceTaskErrorCommand(args []string, stdout, stderr io.Writer, name string, action func(context.Context, scheduledTaskManager) error, success string) int {
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[scheduledTaskManager, struct{}]{
+		Name:       name,
+		NewManager: newScheduledTaskManager,
+		Before:     inspectServiceRoot,
+		Action: func(ctx context.Context, _ string, manager scheduledTaskManager) (struct{}, error) {
+			return struct{}{}, action(ctx, manager)
+		},
+		ErrorPrefix:         name,
+		NotInstalled:        func(err error) bool { return errors.Is(err, service.ErrNotInstalled) },
+		NotInstalledMessage: "scheduled task is not installed",
+		NotInstalledExit:    1,
+		Success:             func(stdout io.Writer, _ struct{}) { pln(stdout, success) },
+	})
 }
