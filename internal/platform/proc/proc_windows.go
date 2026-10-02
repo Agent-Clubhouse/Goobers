@@ -37,6 +37,8 @@ var (
 	restartManagerRegisterResources = restartManagerDLL.NewProc("RmRegisterResources")
 	restartManagerGetList           = restartManagerDLL.NewProc("RmGetList")
 	restartManagerEndSession        = restartManagerDLL.NewProc("RmEndSession")
+	openProcessForTerminate         = windows.OpenProcess
+	terminateTreeJob                = windows.TerminateJobObject
 )
 
 type restartManagerUniqueProcess struct {
@@ -233,7 +235,7 @@ func (t *Tree) kill() error {
 			targets = append(targets, target)
 		}
 	}
-	err := windows.TerminateJobObject(t.job, 1)
+	err := terminateTreeJob(t.job, 1)
 	runtime.SetFinalizer(t, nil)
 	_ = windows.CloseHandle(t.job)
 	t.job = 0
@@ -400,7 +402,7 @@ func terminateIdentity(pid int, started time.Time) error {
 
 func openIdentityForTerminate(identity processIdentity) (terminationTarget, error) {
 	access := uint32(windows.PROCESS_TERMINATE | windows.SYNCHRONIZE | windows.PROCESS_QUERY_LIMITED_INFORMATION)
-	h, err := windows.OpenProcess(access, false, uint32(identity.pid))
+	h, err := openProcessForTerminate(access, false, uint32(identity.pid))
 	if err != nil {
 		if !identity.startTime.IsZero() {
 			state := identityStateForPID(identity.pid, identity.startTime)

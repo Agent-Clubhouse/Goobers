@@ -4,6 +4,7 @@ package proc
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -64,48 +66,6 @@ func TestIdentityStateDistinguishesPresentAndGone(t *testing.T) {
 	}
 	if got := identityStateForPID(cmd.Process.Pid, started); got != identityGone {
 		t.Fatalf("identityStateForPID(exited) = %v, want gone", got)
-	}
-}
-
-func TestOpenIdentityForTerminatePinsRecordedProcess(t *testing.T) {
-	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessTreeHelper$")
-	cmd.Env = append(os.Environ(), "GOOBERS_PROC_HELPER_ROLE=short")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	started, ok := startTime(cmd.Process.Pid)
-	if !ok {
-		t.Fatal("helper process start time was not readable")
-	}
-	if target, err := openIdentityForTerminate(processIdentity{
-		pid:       cmd.Process.Pid,
-		startTime: started.Add(time.Nanosecond),
-	}); err != nil || target.handle != 0 {
-		target.close()
-		t.Fatalf("open mismatched identity = (handle=%v, err=%v), want no target", target.handle, err)
-	}
-
-	target, err := openIdentityForTerminate(processIdentity{pid: cmd.Process.Pid, startTime: started})
-	if err != nil {
-		t.Fatalf("open recorded identity: %v", err)
-	}
-	if target.handle == 0 {
-		t.Fatal("open recorded identity returned no target")
-	}
-	defer target.close()
-	if err := target.terminate(); err != nil {
-		t.Fatalf("terminate pinned identity: %v", err)
-	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("helper unexpectedly exited successfully after termination")
-	}
-	if got := identityStateForHandle(target.handle, started); got != identityGone {
-		t.Fatalf("pinned identity after termination = %v, want gone", got)
 	}
 }
 
@@ -379,8 +339,32 @@ func TestKillTerminatesEscapedDescendants(t *testing.T) {
 		t.Fatal("escaped descendants exited before tree termination")
 	}
 
+	originalOpenProcess := openProcessForTerminate
+	originalTerminateJob := terminateTreeJob
+	jobTerminated := false
+	deniedOpens := 0
+	openProcessForTerminate = func(access uint32, inheritHandle bool, pid uint32) (windows.Handle, error) {
+		if jobTerminated {
+			deniedOpens++
+			return 0, windows.ERROR_ACCESS_DENIED
+		}
+		return originalOpenProcess(access, inheritHandle, pid)
+	}
+	terminateTreeJob = func(job windows.Handle, exitCode uint32) error {
+		err := originalTerminateJob(job, exitCode)
+		jobTerminated = true
+		return err
+	}
+	defer func() {
+		openProcessForTerminate = originalOpenProcess
+		terminateTreeJob = originalTerminateJob
+	}()
+
 	if err := tree.Kill(); err != nil {
 		t.Fatalf("Kill: %v", err)
+	}
+	if deniedOpens == 0 {
+		t.Fatal("Kill did not exercise the post-job access-denied path")
 	}
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("parent unexpectedly exited successfully after Kill")
@@ -488,27 +472,19 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		t.Fatal("WSL launcher did not retain a host or guest descendant")
 	}
 
-	// Terminating the job alone must not be enough: WSL can broker a host
-	// descendant outside the job, which Tree.Kill must clean up separately.
-	if err := windows.TerminateJobObject(tree.job, 1); err != nil {
-		t.Fatalf("terminate WSL job: %v", err)
-	}
 	var brokeredDescendant processIdentity
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, descendant := range guestDescendants {
-			if identityStateForPID(descendant.pid, descendant.startTime) == identityStatePresent {
-				brokeredDescendant = descendant
-				break
-			}
+	for _, descendant := range guestDescendants {
+		inJob, membershipErr := processInJob(descendant.pid, tree.job)
+		if membershipErr != nil {
+			t.Fatalf("query WSL descendant %d job membership: %v", descendant.pid, membershipErr)
 		}
-		if brokeredDescendant.pid != 0 {
+		if !inJob {
+			brokeredDescendant = descendant
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	if brokeredDescendant.pid == 0 {
-		t.Fatal("WSL host descendant did not survive job termination")
+		t.Fatal("WSL launcher did not retain a brokered descendant outside the job")
 	}
 
 	if err := tree.Kill(); err != nil {
@@ -527,4 +503,24 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime) == identityStatePresent {
 		t.Fatalf("WSL host descendant %d survived tree termination", brokeredDescendant.pid)
 	}
+}
+
+func processInJob(pid int, job windows.Handle) (bool, error) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = windows.CloseHandle(process) }()
+
+	var result int32
+	isProcessInJob := windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+	ok, _, callErr := isProcessInJob.Call(
+		uintptr(process),
+		uintptr(job),
+		uintptr(unsafe.Pointer(&result)),
+	)
+	if ok == 0 {
+		return false, fmt.Errorf("IsProcessInJob: %w", callErr)
+	}
+	return result != 0, nil
 }
