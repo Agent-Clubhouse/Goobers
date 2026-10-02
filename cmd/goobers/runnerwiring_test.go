@@ -42,6 +42,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/harness"
@@ -4726,7 +4727,7 @@ func TestFailureRunURLUsesConfiguredPortal(t *testing.T) {
 
 // TestBuildFailedHandlerFirstFailureNoLabels proves a single terminal failure
 // posts a streak comment with count=1 but does NOT apply needs-human. The
-// circuit breaker only fires at failureStreakThreshold (3).
+// circuit breaker only fires at escalationnotify.FailureStreakThreshold (3).
 func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
 	prev := newEscalationPoster
@@ -4798,7 +4799,7 @@ func TestBuildFailedHandlerFirstFailureNoLabels(t *testing.T) {
 }
 
 // TestBuildFailedHandlerCircuitBreakerTripsAtThreshold proves that after
-// failureStreakThreshold consecutive failures, needs-human is applied and ready
+// escalationnotify.FailureStreakThreshold consecutive failures, needs-human is applied and ready
 // is removed — the circuit breaker engages.
 func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	fake := &blockedHandlerFakeCommenter{}
@@ -4824,9 +4825,9 @@ func TestBuildFailedHandlerCircuitBreakerTripsAtThreshold(t *testing.T) {
 	}}
 	h := buildFailedHandler(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{})
 
-	// Simulate failureStreakThreshold failures by calling the handler repeatedly.
+	// Simulate escalationnotify.FailureStreakThreshold failures by calling the handler repeatedly.
 	// Each call reads the streak from prior comments, increments, and upserts.
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		err = h(context.Background(), runner.FailedOutcome{
 			RunID:   "run-trip",
 			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
@@ -4994,7 +4995,7 @@ func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
 		t.Fatal("expected non-nil terminal notifier")
 	}
 
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		if err := h("run-esc", journal.PhaseEscalated, "open-pr-gate"); err != nil {
 			t.Fatalf("call %d: %v", i+1, err)
 		}
@@ -5044,7 +5045,7 @@ func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
 	}}
 	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 
-	for i := 0; i < failureStreakThreshold+1; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold+1; i++ {
 		_ = h("run-ok", journal.PhaseCompleted, "done")
 	}
 
