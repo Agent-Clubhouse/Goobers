@@ -110,7 +110,7 @@ func runPRSelectCore(
 	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
 	authorScope := providerInput("authorScope", authorScopeGoobers)
-	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+	if !validMergeReviewAuthorScope(authorScope) {
 		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
 		return 1
 	}
@@ -294,6 +294,10 @@ func runPRSelectCore(
 	return completePRSelection(root, repo, prs, eligible, completeness, now,
 		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
 		requiredOptInLabel, respectAssignee, selfIdentity, exclusions.summary(), stdout, stderr, &exclusions.report)
+}
+
+func validMergeReviewAuthorScope(authorScope string) bool {
+	return authorScope == authorScopeGoobers || authorScope == authorScopeAny
 }
 
 func targetedPullRequest(prs []providers.PullRequestSummary, targetedPullNumber string, targeted bool) (providers.PullRequestSummary, bool) {
