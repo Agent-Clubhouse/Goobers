@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
+	"sync/atomic"
 	"testing"
 )
 
@@ -16,8 +18,14 @@ type supersededCheckCase struct {
 	// actionsRuns, when set, makes check-runs answer the fine-grained-PAT 403
 	// so checkDetails takes the actions/runs fallback (#2685).
 	actionsRuns []map[string]interface{}
-	wantState   CheckState
-	wantChecks  []CheckDetail
+	// actionsJobs maps a workflow run id to its jobs' conclusions; a run not
+	// listed has one successful job, and a nil entry answers 404.
+	actionsJobs map[int64][]string
+	// wantJobLookups is how many workflow runs' job lists are fetched: only a
+	// passing run newer than a cancelled run of its workflow needs one.
+	wantJobLookups int32
+	wantState      CheckState
+	wantChecks     []CheckDetail
 }
 
 func checkRunFixture(id int64, name string, appID int64, status, conclusion string) map[string]interface{} {
@@ -119,8 +127,9 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
 				actionsRunFixture(202, "CI", 7, "completed", "success"),
 			},
-			wantState:  CheckStatePassing,
-			wantChecks: []CheckDetail{passing("CI")},
+			wantJobLookups: 1,
+			wantState:      CheckStatePassing,
+			wantChecks:     []CheckDetail{passing("CI")},
 		},
 		{
 			name: "actions fallback: cancelled run of another workflow is not superseded",
@@ -130,6 +139,66 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 			},
 			wantState:  CheckStateFailing,
 			wantChecks: []CheckDetail{failing("CI", "cancelled"), passing("CI")},
+		},
+		{
+			name: "skipped check run does not supersede a cancelled one",
+			checkRuns: []map[string]interface{}{
+				checkRunFixture(101, "preflight", actionsAppID, "completed", "cancelled"),
+				checkRunFixture(102, "preflight", actionsAppID, "completed", "skipped"),
+			},
+			wantState:  CheckStateFailing,
+			wantChecks: []CheckDetail{failing("preflight", "cancelled"), {Name: "preflight", State: CheckStatePassing, Conclusion: "skipped"}},
+		},
+		{
+			name: "actions fallback: self-cancelled red run then an all-skipped edit run still fails",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "success"),
+			},
+			actionsJobs:    map[int64][]string{202: {"skipped", "skipped", "skipped"}},
+			wantJobLookups: 1,
+			wantState:      CheckStateFailing,
+			wantChecks:     []CheckDetail{failing("CI", "cancelled"), passing("CI")},
+		},
+		{
+			name: "actions fallback: a run concluded skipped does not supersede",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "skipped"),
+			},
+			wantState:  CheckStateFailing,
+			wantChecks: []CheckDetail{failing("CI", "cancelled"), {Name: "CI", State: CheckStatePassing, Conclusion: "skipped"}},
+		},
+		{
+			name: "actions fallback: a newer run that executed one job supersedes",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "success"),
+			},
+			actionsJobs:    map[int64][]string{202: {"skipped", "success"}},
+			wantJobLookups: 1,
+			wantState:      CheckStatePassing,
+			wantChecks:     []CheckDetail{passing("CI")},
+		},
+		{
+			name: "actions fallback: an unreadable job list fails closed",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "cancelled"),
+				actionsRunFixture(202, "CI", 7, "completed", "success"),
+			},
+			actionsJobs:    map[int64][]string{202: nil},
+			wantJobLookups: 1,
+			wantState:      CheckStateFailing,
+			wantChecks:     []CheckDetail{failing("CI", "cancelled"), passing("CI")},
+		},
+		{
+			name: "actions fallback: no cancelled run means no job lookups",
+			actionsRuns: []map[string]interface{}{
+				actionsRunFixture(201, "CI", 7, "completed", "success"),
+				actionsRunFixture(202, "Docs", 9, "completed", "success"),
+			},
+			wantState:  CheckStatePassing,
+			wantChecks: []CheckDetail{passing("CI"), passing("Docs")},
 		},
 	}
 	for _, tc := range cases {
@@ -149,6 +218,23 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 			mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, _ *http.Request) {
 				writeJSON(t, w, map[string]interface{}{"workflow_runs": tc.actionsRuns})
 			})
+			var jobLookups atomic.Int32
+			mux.HandleFunc("/repos/acme/app/actions/runs/{id}/jobs", func(w http.ResponseWriter, r *http.Request) {
+				jobLookups.Add(1)
+				id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+				conclusions, listed := tc.actionsJobs[id]
+				if !listed {
+					conclusions = []string{"success"}
+				} else if conclusions == nil {
+					http.NotFound(w, r)
+					return
+				}
+				jobs := make([]map[string]interface{}, 0, len(conclusions))
+				for _, c := range conclusions {
+					jobs = append(jobs, map[string]interface{}{"status": "completed", "conclusion": c})
+				}
+				writeJSON(t, w, map[string]interface{}{"total_count": len(jobs), "jobs": jobs})
+			})
 			server := httptest.NewServer(mux)
 			defer server.Close()
 
@@ -162,6 +248,9 @@ func TestGitHubProviderCheckDetailsDropsSupersededCancelledRun(t *testing.T) {
 			}
 			if !reflect.DeepEqual(details, tc.wantChecks) {
 				t.Fatalf("details = %+v, want %+v", details, tc.wantChecks)
+			}
+			if got := jobLookups.Load(); got != tc.wantJobLookups {
+				t.Fatalf("job lookups = %d, want %d", got, tc.wantJobLookups)
 			}
 		})
 	}
