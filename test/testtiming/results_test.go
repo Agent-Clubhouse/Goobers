@@ -12,6 +12,8 @@ import (
 
 const testModule = "example.com/m"
 
+func anyFile(string) bool { return true }
+
 func recordEvents(t *testing.T, events []testEvent) (artifact, *failureRecorder) {
 	t.Helper()
 	var input bytes.Buffer
@@ -63,11 +65,11 @@ func TestAnnotationsNameTheLeafFailureAtItsSourceLine(t *testing.T) {
 	t.Parallel()
 	_, recorder := recordEvents(t, failingRun())
 	var output bytes.Buffer
-	writeAnnotations(&output, recorder.failures, testModule)
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
 	want := []string{
-		"::error file=b/b_test.go,line=3,title=build failed%3A example.com/m/b::# example.com/m/b [example.com/m/b.test]%0Ab/b_test.go:3:27: undefined: undefined%0AFAIL\texample.com/m/b [build failed]",
-		"::error file=a/a_test.go,line=4,title=TestBad/sub failed (example.com/m/a)::    a_test.go:4: boom: 50%25, done%0A        line2",
+		"::error file=b/b_test.go,line=3,title=go test%3A build failed%3A example.com/m/b::# example.com/m/b [example.com/m/b.test]%0Ab/b_test.go:3:27: undefined: undefined%0AFAIL\texample.com/m/b [build failed]",
+		"::error file=a/a_test.go,line=4,title=go test%3A TestBad/sub failed in example.com/m/a::    a_test.go:4: boom: 50%25, done%0A        line2",
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("annotations = %q, want %q", lines, want)
@@ -87,8 +89,8 @@ func TestAnnotationsOmitFileOutsideTheModule(t *testing.T) {
 		{Action: "fail", Package: "other.org/x"},
 	})
 	var output bytes.Buffer
-	writeAnnotations(&output, recorder.failures, testModule)
-	if got := output.String(); got != "::error title=TestX failed (other.org/x)::    x_test.go:9: nope\n" {
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
+	if got := output.String(); got != "::error title=go test%3A TestX failed in other.org/x::    x_test.go:9: nope\n" {
 		t.Fatalf("annotation = %q", got)
 	}
 }
@@ -100,8 +102,8 @@ func TestAnnotationsReportAPackageFailureWithoutAFailingTest(t *testing.T) {
 		{Action: "fail", Package: testModule + "/c"},
 	})
 	var output bytes.Buffer
-	writeAnnotations(&output, recorder.failures, testModule)
-	if got := output.String(); got != "::error title=package failed%3A example.com/m/c::panic: boom in TestMain\n" {
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
+	if got := output.String(); got != "::error title=go test%3A package failed%3A example.com/m/c::panic: boom in TestMain\n" {
 		t.Fatalf("annotation = %q", got)
 	}
 }
@@ -115,7 +117,7 @@ func TestAnnotationsStopAtTheRunnerLimit(t *testing.T) {
 	}
 	_, recorder := recordEvents(t, events)
 	var output bytes.Buffer
-	writeAnnotations(&output, recorder.failures, testModule)
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
 	if len(lines) != maxAnnotations+1 {
 		t.Fatalf("got %d annotation lines, want %d: %q", len(lines), maxAnnotations+1, lines)
@@ -133,7 +135,7 @@ func TestPassingRunAnnotatesNothing(t *testing.T) {
 		{Action: "pass", Package: testModule},
 	})
 	var output bytes.Buffer
-	writeAnnotations(&output, recorder.failures, testModule)
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
 	if output.Len() != 0 || len(recorder.running) != 0 {
 		t.Fatalf("annotations = %q, retained output = %d", output.String(), len(recorder.running))
 	}
@@ -159,8 +161,9 @@ func TestJUnitReportListsEveryCaseWithFailureOutput(t *testing.T) {
 	result, recorder := recordEvents(t, failingRun())
 	path := filepath.Join(t.TempDir(), "results", "unit.junit.xml")
 	var stdout, stderr bytes.Buffer
-	if !writeResults(path, false, result, recorder.failures, &stdout, &stderr) {
-		t.Fatalf("writeResults failed: %s", stderr.String())
+	writeResults(path, false, result, recorder.failures, &stdout, &stderr)
+	if stderr.Len() != 0 {
+		t.Fatalf("writeResults warned: %s", stderr.String())
 	}
 	if strings.Contains(stdout.String(), "::error") {
 		t.Fatalf("annotations printed with annotate=false: %q", stdout.String())
@@ -209,5 +212,88 @@ func TestReadModulePath(t *testing.T) {
 	}
 	if got := readModulePath(dir); got != testModule {
 		t.Fatalf("module = %q", got)
+	}
+}
+
+// A test timeout attributes its panic to the hung test, which never gets a
+// result event; the package failure must carry that output and JUnit must
+// list the test.
+func TestTimeoutKeepsTheHungTestsOutput(t *testing.T) {
+	t.Parallel()
+	const pkg = testModule + "/c"
+	result, recorder := recordEvents(t, []testEvent{
+		{Action: "output", Package: pkg, Test: "TestFast", Output: "=== RUN   TestFast\n"},
+		{Action: "pass", Package: pkg, Test: "TestFast"},
+		{Action: "output", Package: pkg, Test: "TestHang", Output: "=== RUN   TestHang\n"},
+		{Action: "output", Package: pkg, Test: "TestHang", Output: "    c_test.go:4: waiting\n"},
+		{Action: "output", Package: pkg, Test: "TestHang", Output: "panic: test timed out after 2s\n"},
+		{Action: "output", Package: pkg, Test: "TestHang", Output: "\trunning tests:\n\t\tTestHang (2s)\n"},
+		{Action: "output", Package: pkg, Output: "FAIL\t" + pkg + "\t2.0s\n"},
+		{Action: "fail", Package: pkg, Elapsed: 2},
+	})
+	if len(recorder.running) != 0 {
+		t.Fatalf("unfinished output retained: %d records", len(recorder.running))
+	}
+	var output bytes.Buffer
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
+	got := output.String()
+	if !strings.HasPrefix(got, "::error title=go test%3A package failed with unfinished tests%3A example.com/m/c::") ||
+		!strings.Contains(got, "panic: test timed out after 2s") {
+		t.Fatalf("annotation = %q", got)
+	}
+	report := buildJUnit(result, recorder.failures)
+	if report.Tests != 2 || report.Failures != 1 {
+		t.Fatalf("totals = %d tests, %d failures", report.Tests, report.Failures)
+	}
+	hung := report.Suites[0].Cases[1]
+	if hung.Name != "TestHang" || hung.Failure == nil || !strings.Contains(hung.Failure.Output, "test timed out") {
+		t.Fatalf("hung case = %#v", hung)
+	}
+}
+
+func TestOneCompileErrorIsAnnotatedOnce(t *testing.T) {
+	t.Parallel()
+	build := testModule + "/lib"
+	events := []testEvent{
+		{Action: "build-output", ImportPath: build, Output: "lib/lib.go:3:1: syntax error\n"},
+		{Action: "build-fail", ImportPath: build},
+	}
+	for _, pkg := range []string{"/lib", "/p1", "/p2"} {
+		events = append(events, testEvent{Action: "fail", Package: testModule + pkg, FailedBuild: build})
+	}
+	result, recorder := recordEvents(t, events)
+	var output bytes.Buffer
+	writeAnnotations(&output, recorder.failures, testModule, anyFile)
+	if lines := strings.Split(strings.TrimSpace(output.String()), "\n"); len(lines) != 1 {
+		t.Fatalf("annotations = %q, want one", lines)
+	}
+	if report := buildJUnit(result, recorder.failures); report.Failures != 3 {
+		t.Fatalf("junit failures = %d, want one per package", report.Failures)
+	}
+}
+
+func TestAnnotationsOmitALocationThatIsNotARepositoryFile(t *testing.T) {
+	t.Parallel()
+	_, recorder := recordEvents(t, []testEvent{
+		{Action: "output", Package: testModule + "/a", Test: "TestX", Output: "    helper.go:9: from another package\n"},
+		{Action: "fail", Package: testModule + "/a", Test: "TestX"},
+	})
+	var output bytes.Buffer
+	writeAnnotations(&output, recorder.failures, testModule, func(string) bool { return false })
+	if got := output.String(); strings.Contains(got, "file=") {
+		t.Fatalf("annotation = %q", got)
+	}
+}
+
+func TestUnwritableJUnitReportOnlyWarns(t *testing.T) {
+	t.Parallel()
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	writeResults(filepath.Join(blocker, "unit.junit.xml"), false, artifact{}, nil, &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "warning") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

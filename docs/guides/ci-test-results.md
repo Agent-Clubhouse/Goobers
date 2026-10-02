@@ -11,8 +11,8 @@ log:
 
 Both are produced by `test/testtiming capture`, which already parses the
 `go test -json` stream for [test timing](test-timing.md). Producing them never
-changes a job's result: the upload steps run with `if: always()` and
-`continue-on-error: true`.
+changes a job's result: a report that cannot be written is only a warning, and
+the upload steps run with `if: always()` and `continue-on-error: true`.
 
 ## What publishes what
 
@@ -22,11 +22,14 @@ changes a job's result: the upload steps run with `if: always()` and
 | `unit coverage gate (linux)` (`unit-linux-coverage`) | `test-results-Linux` | `unit-Linux.junit.xml` |
 
 `<job-index>` is the matrix index (0-4), so shard `1/5` uploads
-`test-results-race-linux-0`. Each JUnit report has one `<testsuite>` per
-package and one `<testcase>` per test, subtests included. A package that failed
-without a failing test (a compile error, a panic in `TestMain`, a timeout
-outside any test) gets a synthetic `[package]` case carrying the build or
-package output.
+`test-results-race-linux-0`. The macOS nightly (`macos-nightly.yml`) runs the
+same capture, so it also writes `unit-macOS.junit.xml` and annotates failures,
+but it does not upload the report. Each JUnit report has one `<testsuite>` per
+package and one `<testcase>` per test, subtests included. A test still running
+when its package failed (a test timeout, or a crash) is listed as failed with
+the package's output, which includes the timeout panic and stacks. A package
+that failed without any failing test (a compile error, a panic in `TestMain`)
+gets a synthetic `[package]` case carrying the build or package output.
 
 Other jobs (`preflight`, `checks`, `lint`, `shipped`, `integration`,
 `windows-smoke`, `sandbox`, and the rest) do not publish JUnit yet; their logs
@@ -35,23 +38,28 @@ remain the record.
 ## Annotations
 
 On a failing unit job, each failure becomes an `::error` annotation titled
-`<Test> failed (<package>)`, `build failed: <package>`, or
-`package failed: <package>`. Where the failure names a source line (the
-`file_test.go:42:` prefix `t.Error`/`t.Fatal` print, or a compiler diagnostic),
-the annotation points at that repository file and line. The message holds the
-first 50 lines the test printed; the JUnit report has the rest.
+`go test: <Test> failed in <package>`, `go test: build failed: <package>`,
+`go test: package failed with unfinished tests: <package>` (a timeout or
+crash), or `go test: package failed: <package>`. One compile error is annotated
+once, not once per package that could not build because of it.
 
-The hourly `Flake watch` workflow (`test/flakewatch`) reads these annotations
-before it falls back to job logs, so a unit failure is fingerprinted from its
-own output even when parallel tests interleave in the log, and a pull-request
-failure whose annotated file the pull request changed is treated as a
-regression rather than a flake candidate.
+Where the failure names a source line (the `file_test.go:42:` prefix
+`t.Error`/`t.Fatal` print, or a compiler diagnostic), the annotation points at
+that repository file and line, provided the file exists at that path. The
+message holds the first 50 lines the test printed; the JUnit report has the
+rest.
+
+The hourly `Flake watch` workflow (`test/flakewatch`) skips annotations titled
+`go test: ` and keeps fingerprinting these failures from the job log, so
+existing flake-ledger entries keep matching. Moving the ledger onto these
+structured results would re-key fingerprints and is a separate decision.
 
 A failed parent test whose failure comes from a failed subtest is not
 annotated separately: only the most specific failure is. GitHub shows at most
-ten error annotations per step, so the capture stops at ten and adds one
-`More failing tests` notice giving the remaining count. The JUnit artifact is
-always complete.
+ten error annotations per step. Each capture process stops at ten and adds one
+`More failing tests` notice giving the remaining count; a race shard runs
+several capture processes in one step, so there GitHub may drop annotations
+past the first ten without a notice. The JUnit artifacts are always complete.
 
 The capture prints annotations only when `GITHUB_ACTIONS=true`, so local runs
 are unaffected. Pass `-annotations=false` to suppress them in CI, or

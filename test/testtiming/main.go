@@ -138,9 +138,7 @@ func runCapture(args []string, stdout, stderr io.Writer, now func() time.Time) i
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "test timing artifact: %s\n", *output)
-	if !writeResults(*junitOutput, *annotations, result, recorder.failures, stdout, stderr) {
-		return 1
-	}
+	writeResults(*junitOutput, *annotations, result, recorder.failures, stdout, stderr)
 
 	if parseErr != nil {
 		_, _ = fmt.Fprintf(stderr, "testtiming capture: parse go test output: %v\n", parseErr)

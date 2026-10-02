@@ -35,6 +35,11 @@ const (
 	// failed without a failing test (build failure, panic in TestMain, a
 	// timeout outside any test).
 	packageFailureCase = "[package]"
+	// annotationTitlePrefix marks every annotation this capture prints.
+	// test/flakewatch skips annotations carrying it (its own copy of this
+	// prefix) and keeps fingerprinting these failures from the job log, so
+	// publishing annotations does not re-key the flake ledger (#681).
+	annotationTitlePrefix = "go test: "
 )
 
 var (
@@ -54,6 +59,12 @@ type failure struct {
 	File    string // relative to the package directory (tests) or module root (builds)
 	Line    string
 	build   bool
+	// buildID is the FailedBuild import path: one compile error fails every
+	// package whose test binary links the broken package.
+	buildID string
+	// Unfinished names tests still running when their package failed (a
+	// timeout or a crash); their output is folded into Output.
+	Unfinished []string
 }
 
 type outputRecord struct {
@@ -132,18 +143,48 @@ func (r *failureRecorder) observe(event testEvent) {
 	}
 	record := r.running[key]
 	delete(r.running, key)
+	var unfinished []string
+	var unfinishedOutput strings.Builder
+	if event.Test == "" {
+		unfinished = r.takeUnfinished(event.Package, &unfinishedOutput)
+	}
 	if event.Action != "fail" {
 		return
 	}
 	if record == nil {
 		record = &outputRecord{}
 	}
-	recorded := failure{Package: event.Package, Test: event.Test, Output: record.text(), File: record.file, Line: record.line}
+	recorded := failure{
+		Package: event.Package, Test: event.Test,
+		Output: unfinishedOutput.String() + record.text(),
+		File:   record.file, Line: record.line,
+		Unfinished: unfinished,
+	}
 	if build := r.builds[event.FailedBuild]; event.FailedBuild != "" && build != nil {
 		recorded.Output = build.text() + recorded.Output
-		recorded.File, recorded.Line, recorded.build = build.file, build.line, true
+		recorded.File, recorded.Line, recorded.build, recorded.buildID = build.file, build.line, true, event.FailedBuild
 	}
 	r.failures = append(r.failures, recorded)
+}
+
+// takeUnfinished removes the tests of pkg that never reported a result (a
+// test timeout attributes its panic and stack to the hung test, which then
+// gets no terminal event) and returns their names, writing their output to
+// output so the package failure carries it.
+func (r *failureRecorder) takeUnfinished(pkg string, output *strings.Builder) []string {
+	prefix := pkg + "\x00"
+	var names []string
+	for key := range r.running {
+		if test, ok := strings.CutPrefix(key, prefix); ok && test != "" {
+			names = append(names, test)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		output.WriteString(r.running[prefix+name].text())
+		delete(r.running, prefix+name)
+	}
+	return names
 }
 
 // leafFailures drops a failed test whose failure is explained by a failed
@@ -154,6 +195,9 @@ func leafFailures(failures []failure) []failure {
 	for _, candidate := range failures {
 		explained := false
 		for _, other := range failures {
+			if len(candidate.Unfinished) > 0 {
+				break // a timeout or crash is never explained by another failure
+			}
 			if other.Package != candidate.Package || other.Test == candidate.Test || other.Test == "" {
 				continue
 			}
@@ -171,8 +215,10 @@ func leafFailures(failures []failure) []failure {
 
 // writeAnnotations prints GitHub workflow error annotations for the leaf
 // failures, up to the runner's display limit, then a notice for the rest.
-func writeAnnotations(output io.Writer, failures []failure, modulePath string) {
-	leaves := leafFailures(failures)
+// Each capture process applies the limit on its own; a sharded step runs
+// several, and GitHub then keeps only the first ten of the step.
+func writeAnnotations(output io.Writer, failures []failure, modulePath string, fileExists func(string) bool) {
+	leaves := annotatedFailures(failures)
 	for index, current := range leaves {
 		if index == maxAnnotations {
 			_, _ = fmt.Fprintf(output, "::notice title=%s::%s\n",
@@ -181,7 +227,7 @@ func writeAnnotations(output io.Writer, failures []failure, modulePath string) {
 			return
 		}
 		properties := []string{}
-		if file := annotationFile(current, modulePath); file != "" {
+		if file := annotationFile(current, modulePath); file != "" && fileExists(file) {
 			properties = append(properties, "file="+escapeAnnotationProperty(file))
 			if current.Line != "" {
 				properties = append(properties, "line="+escapeAnnotationProperty(current.Line))
@@ -192,14 +238,34 @@ func writeAnnotations(output io.Writer, failures []failure, modulePath string) {
 	}
 }
 
-func annotationTitle(current failure) string {
-	if current.Test == "" {
-		if current.build {
-			return "build failed: " + current.Package
+// annotatedFailures is the leaf failures with repeats of one compile error
+// dropped, so a broken shared package does not fill every annotation slot.
+func annotatedFailures(failures []failure) []failure {
+	builds := make(map[string]bool)
+	var result []failure
+	for _, current := range leafFailures(failures) {
+		if current.buildID != "" {
+			if builds[current.buildID] {
+				continue
+			}
+			builds[current.buildID] = true
 		}
-		return "package failed: " + current.Package
+		result = append(result, current)
 	}
-	return current.Test + " failed (" + current.Package + ")"
+	return result
+}
+
+func annotationTitle(current failure) string {
+	switch {
+	case current.Test != "":
+		return annotationTitlePrefix + current.Test + " failed in " + current.Package
+	case current.build:
+		return annotationTitlePrefix + "build failed: " + current.Package
+	case len(current.Unfinished) > 0:
+		return annotationTitlePrefix + "package failed with unfinished tests: " + current.Package
+	default:
+		return annotationTitlePrefix + "package failed: " + current.Package
+	}
 }
 
 // annotationFile maps a failure location to a repository-relative path, or
@@ -343,8 +409,24 @@ func buildJUnit(result artifact, failures []failure) junitTestSuites {
 		target.Tests++
 		target.Cases = append(target.Cases, current)
 	}
-	for _, current := range leafFailures(failures) {
+	for _, current := range failures {
 		if current.Test != "" {
+			continue
+		}
+		target := suite(current.Package)
+		for _, name := range current.Unfinished {
+			target.Cases = append(target.Cases, junitTestCase{
+				Classname: current.Package,
+				Name:      name,
+				Time:      target.Time,
+				Failure:   &junitFailure{Message: "did not finish before the package failed (timeout or crash)", Output: current.Output},
+			})
+			target.Tests++
+			target.Failures++
+		}
+	}
+	for _, current := range leafFailures(failures) {
+		if current.Test != "" || len(current.Unfinished) > 0 {
 			continue
 		}
 		target := suite(current.Package)
@@ -403,19 +485,26 @@ func secondsText(value float64) string {
 	return fmt.Sprintf("%.3f", value)
 }
 
-// writeResults writes the JUnit report and prints annotations. A failure to
-// write the report fails the capture like a failure to write the timing
-// artifact; annotations are best-effort output.
-func writeResults(junitPath string, annotate bool, result artifact, failures []failure, stdout, stderr io.Writer) bool {
+// writeResults writes the JUnit report and prints annotations. Both are
+// observability only: a report that cannot be written is a warning, never a
+// change to the capture's exit status.
+func writeResults(junitPath string, annotate bool, result artifact, failures []failure, stdout, stderr io.Writer) {
 	if junitPath != "" {
 		if err := writeJUnit(junitPath, buildJUnit(result, failures)); err != nil {
-			_, _ = fmt.Fprintf(stderr, "testtiming capture: write %s: %v\n", junitPath, err)
-			return false
+			_, _ = fmt.Fprintf(stderr, "testtiming capture: warning: write %s: %v\n", junitPath, err)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "test results (JUnit): %s\n", junitPath)
 		}
-		_, _ = fmt.Fprintf(stdout, "test results (JUnit): %s\n", junitPath)
 	}
 	if annotate {
-		writeAnnotations(stdout, failures, readModulePath("."))
+		writeAnnotations(stdout, failures, readModulePath("."), fileExists)
 	}
-	return true
+}
+
+// fileExists reports whether a repository-relative path names a file, so an
+// annotation never points at a path the failure output only implied (a
+// helper's basename printed from another package).
+func fileExists(name string) bool {
+	info, err := os.Stat(filepath.FromSlash(name))
+	return err == nil && !info.IsDir()
 }
