@@ -238,7 +238,7 @@ func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
 	key := apiReadCacheKey(req)
 	if c.snapshotID != "" && isProviderListRequest(req) {
 		snapshotKey := apiReadSnapshotKey(c.snapshotID, key)
-		if entry, hit := c.lookupMemory(snapshotKey); hit {
+		if entry, hit := c.lookup(snapshotKey); hit {
 			return entry.response(req), nil
 		}
 		var (
@@ -528,24 +528,17 @@ func withAPIReadCacheLock(lockPath string, fn func() error) error {
 // lookup loads only the requested response. Memory is bounded independently of
 // the shared cache; a missing/expired body simply falls through to a full GET.
 func (c *apiReadCache) lookup(key string) (apiReadCacheEntry, bool) {
-	if entry, ok := c.lookupMemory(key); ok {
-		return entry, true
-	}
-	entry, ok := c.lookupDisk(key)
-	if ok {
-		c.remember(key, entry)
-	}
-	return entry, ok
-}
-
-func (c *apiReadCache) lookupMemory(key string) (apiReadCacheEntry, bool) {
 	c.mu.Lock()
 	entry, ok := c.mem[key]
 	c.mu.Unlock()
 	if ok && entry.fresh(time.Now()) {
 		return entry, true
 	}
-	return apiReadCacheEntry{}, false
+	entry, ok = c.lookupDisk(key)
+	if ok {
+		c.remember(key, entry)
+	}
+	return entry, ok
 }
 
 func (c *apiReadCache) remember(key string, entry apiReadCacheEntry) {
