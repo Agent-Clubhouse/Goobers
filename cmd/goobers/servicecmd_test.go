@@ -207,6 +207,165 @@ func TestServiceStatusReportsQueryError(t *testing.T) {
 	}
 }
 
+func TestServiceStatusHumanAndJSONOutput(t *testing.T) {
+	status := daemonservice.Status{
+		Platform: "linux", Supervisor: "systemd", Installed: true, Loaded: true, Running: true, State: "active", Account: "alice",
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "human",
+			want: "service is running under systemd as alice\n",
+		},
+		{
+			name: "json",
+			args: []string{"--json"},
+			want: "{\n" +
+				"  \"platform\": \"linux\",\n" +
+				"  \"supervisor\": \"systemd\",\n" +
+				"  \"installed\": true,\n" +
+				"  \"loaded\": true,\n" +
+				"  \"running\": true,\n" +
+				"  \"state\": \"active\",\n" +
+				"  \"account\": \"alice\"\n" +
+				"}\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			useFakeDaemonServiceManager(t, &fakeDaemonServiceManager{status: status})
+			args := append([]string{"service", "status"}, test.args...)
+			args = append(args, root)
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 0 || stdout != test.want || stderr != "" {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceNotInstalledExitCodesAndMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantCode   int
+		wantStdout string
+		wantStderr func(*testing.T, string) string
+	}{
+		{name: "uninstall", command: "uninstall", wantCode: 0, wantStdout: "service is not installed\n"},
+		{name: "stop", command: "stop", wantCode: 1, wantStdout: "service is not installed\n", wantStderr: func(t *testing.T, root string) string {
+			return stoppedStatusRootHeader(t, root, 0)
+		}},
+		{name: "start", command: "start", wantCode: 1, wantStdout: "service is not installed\n", wantStderr: manualServiceRootHeader},
+		{name: "status", command: "status", wantCode: 1, wantStdout: "service is not installed (systemd)\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			manager := &fakeDaemonServiceManager{
+				status:   daemonservice.Status{Platform: "linux", Supervisor: "systemd", State: "not-installed"},
+				stopErr:  daemonservice.ErrNotInstalled,
+				startErr: daemonservice.ErrNotInstalled,
+			}
+			useFakeDaemonServiceManager(t, manager)
+			code, stdout, stderr := runArgs(t, "service", test.command, root)
+			wantStderr := ""
+			if test.wantStderr != nil {
+				wantStderr = test.wantStderr(t, root)
+			}
+			if code != test.wantCode || stdout != test.wantStdout || stderr != wantStderr {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceTaskStatusHumanAndJSONOutput(t *testing.T) {
+	status := daemonservice.Status{
+		Platform: "windows", Supervisor: "scheduled-task", Installed: true, Loaded: true, Running: true,
+		State: "running", Account: `CONTOSO\alice`, Trigger: "logon", TaskName: `\Goobers\daemon`,
+	}
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "human",
+			want: "scheduled task is running as CONTOSO\\alice\n",
+		},
+		{
+			name: "json",
+			args: []string{"--json"},
+			want: "{\n" +
+				"  \"platform\": \"windows\",\n" +
+				"  \"supervisor\": \"scheduled-task\",\n" +
+				"  \"installed\": true,\n" +
+				"  \"loaded\": true,\n" +
+				"  \"running\": true,\n" +
+				"  \"state\": \"running\",\n" +
+				"  \"account\": \"CONTOSO\\\\alice\",\n" +
+				"  \"trigger\": \"logon\",\n" +
+				"  \"taskName\": \"\\\\Goobers\\\\daemon\"\n" +
+				"}\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			manager := identityTaskManager{&fakeDaemonServiceManager{status: status}}
+			useFakeScheduledTaskManager(t, manager)
+			args := append([]string{"service", "task-status"}, test.args...)
+			args = append(args, root)
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 0 || stdout != test.want || stderr != "" {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestServiceTaskNotInstalledExitCodesAndMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		command    string
+		wantStderr func(*testing.T, string) string
+	}{
+		{name: "uninstall", command: "task-uninstall", wantStderr: func(t *testing.T, root string) string {
+			return stoppedStatusRootHeader(t, root, 0)
+		}},
+		{name: "stop", command: "task-stop", wantStderr: func(t *testing.T, root string) string {
+			return stoppedStatusRootHeader(t, root, 0)
+		}},
+		{name: "start", command: "task-start", wantStderr: manualServiceRootHeader},
+		{name: "status", command: "task-status"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := serviceTestInstance(t)
+			manager := identityTaskManager{&fakeDaemonServiceManager{
+				status:       daemonservice.Status{Platform: "windows", Supervisor: "scheduled-task", State: "not-installed"},
+				uninstallErr: daemonservice.ErrNotInstalled,
+				stopErr:      daemonservice.ErrNotInstalled,
+				startErr:     daemonservice.ErrNotInstalled,
+			}}
+			useFakeScheduledTaskManager(t, manager)
+			code, stdout, stderr := runArgs(t, "service", test.command, root)
+			wantStderr := ""
+			if test.wantStderr != nil {
+				wantStderr = test.wantStderr(t, root)
+			}
+			if code != 1 || stdout != "scheduled task is not installed\n" || stderr != wantStderr {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestServiceTaskStatusReportsLastFailureAndDaemonLog(t *testing.T) {
 	root := serviceTestInstance(t)
 	manager := identityTaskManager{&fakeDaemonServiceManager{status: daemonservice.Status{

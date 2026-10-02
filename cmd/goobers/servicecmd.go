@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"runtime"
@@ -100,180 +100,169 @@ func runService(args []string, stdout, stderr io.Writer) int {
 }
 
 func runServiceInstall(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("service install", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	confirm := fs.Bool("confirm-local-system", false, "confirm the interactive LocalSystem service warning")
-	ack := fs.Bool("acknowledge-local-system", false, "acknowledge LocalSystem and its user-resource limitations")
-	fs.Usage = helpUsage(stderr, "service install")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := serviceRootFromFlagSet(fs, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newDaemonServiceManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if runtime.GOOS == "windows" {
-		if _, realManager := manager.(*daemonservice.Manager); realManager && !*confirm && !*ack {
-			pf(stderr, "warning: Windows service install creates a LocalSystem service. LocalSystem cannot inherit the interactive user's GitHub CLI accounts, Copilot/Claude sessions, %%LOCALAPPDATA%%, Credential Manager entries, mapped drives, or user PATH.\n")
-			pf(stderr, "error: rerun interactively with --confirm-local-system or non-interactively with --acknowledge-local-system\n")
-			return 2
-		}
-	}
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	status, err := manager.Install(context.Background())
-	if err != nil {
-		pf(stderr, "error: install service: %v\n", err)
-		return 1
-	}
-	pf(stdout, "service installed and running under %s", status.Supervisor)
-	if status.Account != "" {
-		pf(stdout, " as %s", status.Account)
-	}
-	pln(stdout, "")
-	return 0
-}
-
-func runServiceUninstall(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseServiceRoot("service uninstall", "service uninstall", args, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newDaemonServiceManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	status, err := manager.Status(context.Background())
-	if err != nil {
-		pf(stderr, "error: query service: %v\n", err)
-		return 1
-	}
-	if !status.Installed {
-		pln(stdout, "service is not installed")
-		return 0
-	}
-	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
-		return 2
-	}
-	if err := manager.Uninstall(context.Background()); err != nil {
-		pf(stderr, "error: uninstall service: %v\n", err)
-		return 1
-	}
-	pf(stdout, "service uninstalled from %s\n", status.Supervisor)
-	return 0
-}
-
-func runServiceStop(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseServiceRoot("service stop", "service stop", args, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newDaemonServiceManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
-		return 2
-	}
-	if err := manager.Stop(context.Background()); err != nil {
-		if errors.Is(err, daemonservice.ErrNotInstalled) {
-			pln(stdout, "service is not installed")
-			return 1
-		}
-		pf(stderr, "error: stop service: %v\n", err)
-		return 1
-	}
-	pln(stdout, "service stopped")
-	return 0
-}
-
-func runServiceStart(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseServiceRoot("service start", "service start", args, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newDaemonServiceManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	status, err := manager.Start(context.Background())
-	if err != nil {
-		if errors.Is(err, daemonservice.ErrNotInstalled) {
-			pln(stdout, "service is not installed")
-			return 1
-		}
-		pf(stderr, "error: start service: %v\n", err)
-		return 1
-	}
-	pf(stdout, "service running under %s", status.Supervisor)
-	if status.Account != "" {
-		pf(stdout, " as %s", status.Account)
-	}
-	pln(stdout, "")
-	return 0
-}
-
-func runServiceStatus(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("service status", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	asJSON := fs.Bool("json", false, "render status as JSON")
-	fs.Usage = helpUsage(stderr, "service status")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := serviceRootFromFlagSet(fs, stderr)
-	if !ok {
-		return 2
-	}
-	manager, err := newDaemonServiceManager(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	status, err := manager.Status(context.Background())
-	if err != nil {
-		pf(stderr, "error: query service: %v\n", err)
-		return 1
-	}
-	if *asJSON {
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(status); err != nil {
-			pf(stderr, "error: encode service status: %v\n", err)
-			return 1
-		}
-	} else {
-		switch {
-		case !status.Installed:
-			pf(stdout, "service is not installed (%s)\n", status.Supervisor)
-		case status.Running:
-			pf(stdout, "service is running under %s", status.Supervisor)
+	var confirm, ack bool
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[daemonServiceManager, daemonservice.Status]{
+		Name: "service install",
+		ParseRoot: func(args []string, stderr io.Writer) (string, bool) {
+			fs := newCLIFlagSet("service install", flag.ContinueOnError)
+			fs.SetOutput(stderr)
+			fs.BoolVar(&confirm, "confirm-local-system", false, "confirm the interactive LocalSystem service warning")
+			fs.BoolVar(&ack, "acknowledge-local-system", false, "acknowledge LocalSystem and its user-resource limitations")
+			fs.Usage = helpUsage(stderr, "service install")
+			if err := fs.Parse(args); err != nil {
+				return "", false
+			}
+			return serviceRootFromFlagSet(fs, stderr)
+		},
+		NewManager: newDaemonServiceManager,
+		Check: func(manager daemonServiceManager, stderr io.Writer) int {
+			if runtime.GOOS == "windows" {
+				if _, realManager := manager.(*daemonservice.Manager); realManager && !confirm && !ack {
+					pf(stderr, "warning: Windows service install creates a LocalSystem service. LocalSystem cannot inherit the interactive user's GitHub CLI accounts, Copilot/Claude sessions, %%LOCALAPPDATA%%, Credential Manager entries, mapped drives, or user PATH.\n")
+					pf(stderr, "error: rerun interactively with --confirm-local-system or non-interactively with --acknowledge-local-system\n")
+					return 2
+				}
+			}
+			return 0
+		},
+		Before: prepareServiceRoot,
+		Action: func(ctx context.Context, _ string, manager daemonServiceManager) (daemonservice.Status, error) {
+			return manager.Install(ctx)
+		},
+		ErrorPrefix: "install service",
+		Success: func(stdout io.Writer, status daemonservice.Status) {
+			pf(stdout, "service installed and running under %s", status.Supervisor)
 			if status.Account != "" {
 				pf(stdout, " as %s", status.Account)
 			}
 			pln(stdout, "")
-		default:
-			pf(stdout, "service is installed but %s under %s\n", status.State, status.Supervisor)
-		}
+		},
+	})
+}
+
+func runServiceUninstall(args []string, stdout, stderr io.Writer) int {
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[daemonServiceManager, daemonservice.Status]{
+		Name:       "service uninstall",
+		NewManager: newDaemonServiceManager,
+		Action: func(ctx context.Context, root string, manager daemonServiceManager) (daemonservice.Status, error) {
+			status, err := manager.Status(ctx)
+			if err != nil {
+				return status, fmt.Errorf("query service: %w", err)
+			}
+			if !status.Installed {
+				return status, nil
+			}
+			if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
+				return status, serviceLifecycleDisplayError{err}
+			}
+			if err := manager.Uninstall(ctx); err != nil {
+				return status, fmt.Errorf("uninstall service: %w", err)
+			}
+			return status, nil
+		},
+		Error: func(_ string, err error, stderr io.Writer) int {
+			var displayErr serviceLifecycleDisplayError
+			if errors.As(err, &displayErr) {
+				return 2
+			}
+			pf(stderr, "error: %v\n", err)
+			return 1
+		},
+		Success: func(stdout io.Writer, status daemonservice.Status) {
+			if !status.Installed {
+				pln(stdout, "service is not installed")
+				return
+			}
+			pf(stdout, "service uninstalled from %s\n", status.Supervisor)
+		},
+	})
+}
+
+func runServiceStop(args []string, stdout, stderr io.Writer) int {
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[daemonServiceManager, struct{}]{
+		Name:       "service stop",
+		NewManager: newDaemonServiceManager,
+		Before:     inspectServiceRoot,
+		Action: func(ctx context.Context, _ string, manager daemonServiceManager) (struct{}, error) {
+			return struct{}{}, manager.Stop(ctx)
+		},
+		ErrorPrefix:         "stop service",
+		NotInstalled:        func(err error) bool { return errors.Is(err, daemonservice.ErrNotInstalled) },
+		NotInstalledMessage: "service is not installed",
+		NotInstalledExit:    1,
+		Success:             func(stdout io.Writer, _ struct{}) { pln(stdout, "service stopped") },
+	})
+}
+
+func runServiceStart(args []string, stdout, stderr io.Writer) int {
+	return runServiceLifecycleCommand(args, stdout, stderr, serviceLifecycleSpec[daemonServiceManager, daemonservice.Status]{
+		Name:       "service start",
+		NewManager: newDaemonServiceManager,
+		Before:     prepareServiceRoot,
+		Action: func(ctx context.Context, _ string, manager daemonServiceManager) (daemonservice.Status, error) {
+			return manager.Start(ctx)
+		},
+		ErrorPrefix:         "start service",
+		NotInstalled:        func(err error) bool { return errors.Is(err, daemonservice.ErrNotInstalled) },
+		NotInstalledMessage: "service is not installed",
+		NotInstalledExit:    1,
+		Success: func(stdout io.Writer, status daemonservice.Status) {
+			pf(stdout, "service running under %s", status.Supervisor)
+			if status.Account != "" {
+				pf(stdout, " as %s", status.Account)
+			}
+			pln(stdout, "")
+		},
+	})
+}
+
+func runServiceStatus(args []string, stdout, stderr io.Writer) int {
+	return runServiceStatusCommand(args, stdout, stderr, serviceStatusSpec[daemonServiceManager, daemonservice.Status]{
+		Name:       "service status",
+		NewManager: newDaemonServiceManager,
+		Status: func(ctx context.Context, manager daemonServiceManager) (daemonservice.Status, error) {
+			return manager.Status(ctx)
+		},
+		StatusErrorPrefix: "query service",
+		EncodeErrorPrefix: "encode service status",
+		Render: func(_ string, stdout io.Writer, status daemonservice.Status) {
+			switch {
+			case !status.Installed:
+				pf(stdout, "service is not installed (%s)\n", status.Supervisor)
+			case status.Running:
+				pf(stdout, "service is running under %s", status.Supervisor)
+				if status.Account != "" {
+					pf(stdout, " as %s", status.Account)
+				}
+				pln(stdout, "")
+			default:
+				pf(stdout, "service is installed but %s under %s\n", status.State, status.Supervisor)
+			}
+		},
+		Exit: func(status daemonservice.Status) int {
+			if status.Running {
+				return 0
+			}
+			return 1
+		},
+	})
+}
+
+type serviceLifecycleDisplayError struct{ error }
+
+func prepareServiceRoot(root string, stderr io.Writer) int {
+	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
-	if status.Running {
-		return 0
+	return 0
+}
+
+func inspectServiceRoot(root string, stderr io.Writer) int {
+	if err := displayRootInspection(instance.NewLayout(root), stderr); err != nil {
+		return 2
 	}
-	return 1
+	return 0
 }
 
 func parseServiceRoot(flagName, helpID string, args []string, stderr io.Writer) (string, bool) {
