@@ -1647,6 +1647,11 @@ func testSweepDispatchesAcknowledgedCapacityRequeueAfterClientWait(t *testing.T,
 		t.Fatal("requeued request produced an empty run id")
 	}
 
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("requeued run never entered Start")
+	}
 	if blocking.count() != 2 {
 		t.Fatalf("starter calls after queued dispatch = %d, want occupying run plus one queued dispatch", blocking.count())
 	}
