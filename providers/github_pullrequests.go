@@ -300,36 +300,19 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		body["merge_method"] = string(req.MergeMethod)
 	}
 	var out githubMergeResult
-	repositoryAPIURL, _ := joinURL(p.BaseURL, "repos", strings.ToLower(req.Repository.Owner), strings.ToLower(req.Repository.Name))
-	intent, err := prepareLandingIntent(ctx, p.recorder, ProviderGitHub, repositoryAPIURL, req.PullID, req.ExpectedHeadSHA, "merge")
+	receipt, err := prepareRESTMergeReceipt(ctx, p.recorder, ProviderGitHub, req.Repository, p.BaseURL, req.PullID, req.ExpectedHeadSHA)
 	if err != nil {
 		return MergePullRequestResult{}, err
 	}
 	if err := p.do(ctx, http.MethodPut, endpoint, body, &out); err != nil {
 		return MergePullRequestResult{}, err
 	}
-	number, convErr := strconv.Atoi(req.PullID)
-	if convErr != nil {
-		number = 0
-	}
 	// An accepted HTTP response is not evidence of a completed merge. In
 	// particular, missing/false `merged` must not inflate mutation telemetry.
-	if out.Merged {
-		confirmation := newMergeConfirmation(repositoryAPIURL, req.PullID, out.SHA)
-		if intent != nil {
-			confirmation.IntentID = intent.ID
-		}
-		if err := recordLandingReceipt(ctx, p.recorder, ExternalRef{
-			MergeConfirmation: confirmation,
-			Provider:          ProviderGitHub,
-			Ref:               issueRef(req.Repository, req.PullID),
-			Operation:         "merge",
-			Fields:            map[string]FieldDigest{"state": {After: digestString("merged")}},
-		}); err != nil {
-			return MergePullRequestResult{Number: number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
-		}
+	if err := receipt.record(ctx, out.SHA, out.Merged); err != nil {
+		return MergePullRequestResult{Number: receipt.number, Merged: true, MergeSHA: out.SHA, Message: out.Message}, err
 	}
-	return MergePullRequestResult{Number: number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
+	return MergePullRequestResult{Number: receipt.number, Merged: out.Merged, MergeSHA: out.SHA, Message: out.Message}, nil
 }
 
 // DetectMergePolicy reports req.Branch's active merge policy (issue #758)
