@@ -866,7 +866,8 @@ type ErrorCursor struct {
 }
 
 // Errors returns recent run and instance errors newest first. Run errors carry
-// their run/stage reference; instance errors leave those fields empty.
+// their run/stage reference; instance errors retain a run reference when their
+// scheduler event identifies the affected run.
 // Filtering by ErrorClass also serves the mission brief's
 // "rate-limit events" surface: Errors(ErrorsRequest{ErrorClass:
 // string(telemetry.ErrorClassProviderRateLimit)}).
@@ -974,9 +975,10 @@ const telemetryErrorsCTE = `
 		FROM run_errors e
 		JOIN runs r ON r.run_id = e.run_id
 		UNION ALL
-		SELECT s.seq, s.code, s.error_class, s.message, s.occurred_at, NULL, NULL, NULL,
-		       NULL, NULL
+		SELECT s.seq, s.code, s.error_class, s.message, s.occurred_at, se.run_id, NULL, NULL,
+		       se.workflow, NULL
 		FROM scheduler_errors s
+		JOIN scheduler_events se ON se.seq = s.seq
 	)`
 
 // TopErrorSignatures groups errors by (code, error_class), most frequent
