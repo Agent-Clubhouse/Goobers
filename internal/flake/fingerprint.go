@@ -100,7 +100,7 @@ func RosterLines(text string) []string {
 		if failureBoilerplate(line) {
 			continue
 		}
-		if line = normalizeVolatile(line); line != "" {
+		if line = NormalizeVolatile(line); line != "" {
 			lines = append(lines, line)
 		}
 	}
@@ -192,13 +192,15 @@ func failureBoilerplate(line string) bool {
 }
 
 func normalizeLine(line string) string {
-	return normalizeVolatile(leadingSourceLocation.ReplaceAllString(strings.TrimSpace(line), ""))
+	return NormalizeVolatile(leadingSourceLocation.ReplaceAllString(strings.TrimSpace(line), ""))
 }
 
-// normalizeVolatile reduces every source path to its basename:line and
-// replaces run-specific values, keeping everything else — including a leading
-// source location, which normalizeLine strips first.
-func normalizeVolatile(line string) string {
+// NormalizeVolatile reduces every source path to its basename:line and
+// replaces run-specific values (addresses, durations, temp suffixes, ...),
+// keeping everything else — including a leading source location, which
+// NormalizeSignature strips first. It is the per-line normalization for a
+// caller comparing located failure rosters across checkouts (#4477).
+func NormalizeVolatile(line string) string {
 	line = strings.TrimSpace(line)
 	line = sourceLocation.ReplaceAllString(line, "$1:$2")
 	line = volatileTestFlagValue.ReplaceAllString(line, "${1}${2}<value>")

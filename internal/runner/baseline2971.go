@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/baseline"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -199,6 +200,9 @@ func (r *Runner) classifyBaselineFailure(ctx context.Context, ws *walkState, tas
 		Command:     command,
 		FailureText: baselineFailureText(result),
 		RunID:       ws.in.RunID,
+	}
+	if digest, ok := result.Outputs[executor.FailureDigestOutput].(string); ok {
+		req.FailureDigest = digest
 	}
 	if ws.in.Item != nil {
 		req.Waiter = ws.in.Item.ID
