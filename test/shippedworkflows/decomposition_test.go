@@ -1,6 +1,7 @@
 package shippedworkflows
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -107,6 +108,31 @@ func TestDecompositionWorkflowContract(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(decomposer.Spec.Capabilities, ","), ":write") {
 		t.Fatalf("decomposer has write capability: %v", decomposer.Spec.Capabilities)
+	}
+	assertDecomposerCodeAvailabilityGuidance(t, root)
+}
+
+// assertDecomposerCodeAvailabilityGuidance pins #5255's planning guidance:
+// independent reviewability is not predecessor code availability. Structural
+// plan validation cannot enforce this, so the instructions carry it.
+func assertDecomposerCodeAvailabilityGuidance(t *testing.T, root string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "reference-workflows", "gaggles", "goobers", "goobers", "decomposer", "instructions.md"))
+	if err != nil {
+		t.Fatalf("read decomposer instructions: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"## Dependencies and code availability",
+		"**Producer and consumer.**",
+		"**In review is not merged.**",
+		"**Closed is not proof of code.**",
+		"**Keep unrelated children parallel.**",
+		"**Structure is not semantics.**",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("decomposer instructions missing %q", want)
+		}
 	}
 }
 
