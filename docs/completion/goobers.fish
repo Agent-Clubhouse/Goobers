@@ -316,6 +316,7 @@ complete -c goobers -n '__fish_seen_subcommand_from claims; and __fish_seen_subc
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l api -r -d 'Daemon API base URL for a remote daemon'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l follow -d 'Stream events until the run reaches a terminal phase'
+complete -c goobers -n '__fish_seen_subcommand_from trace' -l after-seq -r -d 'Resume transcript follow after a journal sequence'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l summary -d 'Show run metadata and review verdicts'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l verdicts -d 'Show review verdict content'
 complete -c goobers -n '__fish_seen_subcommand_from trace' -l transcripts -d 'Show every recorded agent-stage transcript'

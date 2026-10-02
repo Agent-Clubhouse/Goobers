@@ -473,6 +473,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "follow", desc: "Stream events until the run reaches a terminal phase"},
+		{name: "after-seq", takesArg: true, desc: "Resume transcript follow after a journal sequence"},
 		{name: "summary", desc: "Show run metadata and review verdicts"},
 		{name: "verdicts", desc: "Show review verdict content"},
 		{name: "transcripts", desc: "Show every recorded agent-stage transcript"},
