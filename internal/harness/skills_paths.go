@@ -6,22 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"strings"
 )
 
-// Query ancestors too: a tracked file or symlink may be absent from the working
-// tree (including via skip-worktree), so filesystem checks alone cannot protect
-// it from being recreated as a snapshot directory. Ignore unrelated descendants
-// of those ancestors, such as another repository-owned skill package.
+// Inspect the index once for the entire target batch, without Git pathspec
+// filtering: its case-sensitive matching can hide absent tracked ancestors or
+// descendants on case-insensitive filesystems. Conservatively protect case-fold
+// aliases on every platform, including Unicode aliases, independently of Git's
+// core.ignoreCase setting. Unrelated sibling packages remain permitted.
 func (s *skillSnapshot) refuseTracked(ctx context.Context, targets ...string) error {
-	args := []string{"--literal-pathspecs", "ls-files", "-z", "--"}
-	for _, target := range targets {
-		for current := target; current != "."; current = path.Dir(current) {
-			args = append(args, current)
-		}
-	}
-	data, err := skillGit(ctx, s.workspace, args...)
+	data, err := skillGit(ctx, s.workspace, "ls-files", "-z")
 	if err != nil {
 		return err
 	}
@@ -30,12 +24,22 @@ func (s *skillSnapshot) refuseTracked(ctx context.Context, targets ...string) er
 			continue
 		}
 		for _, target := range targets {
-			if tracked == target || strings.HasPrefix(tracked, target+"/") || strings.HasPrefix(target, tracked+"/") {
+			if skillPathsOverlap(tracked, target) {
 				return fmt.Errorf("skill snapshot path %q collides with tracked repository path %q", target, tracked)
 			}
 		}
 	}
 	return nil
+}
+
+func skillPathsOverlap(first, second string) bool {
+	left, right := strings.Split(first, "/"), strings.Split(second, "/")
+	for i := range min(len(left), len(right)) {
+		if !strings.EqualFold(left[i], right[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *skillSnapshot) writeManifest(manifest skillManifest) error {

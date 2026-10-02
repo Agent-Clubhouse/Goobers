@@ -121,6 +121,62 @@ func TestSkillsStaleCleanupRejectsTrackedAncestors(t *testing.T) {
 	}
 }
 
+func TestSkillsRejectMixedCaseTrackedAncestors(t *testing.T) {
+	for _, ancestor := range []string{".GitHub", ".github/Skills", ".Goobers", ".goobers/Skills"} {
+		for _, kind := range []string{"file", "symlink"} {
+			t.Run(ancestor+"/"+kind, func(t *testing.T) {
+				workspace := t.TempDir()
+				before := absentTrackedSkillAncestor(t, workspace, ancestor, kind)
+				// Enforce conservative alias protection even when Git is configured
+				// case-sensitively or the test runs on a case-sensitive filesystem.
+				skillTestGit(t, workspace, "config", "core.ignoreCase", "false")
+				if _, err := skillExecutor(apiv1.HarnessCopilot).prepareSkills(context.Background(), workspace); err == nil {
+					t.Fatal("mixed-case tracked ancestor accepted")
+				}
+				assertTrackedSkillAncestorPreserved(t, workspace, ancestor, before)
+				if _, err := os.Lstat(filepath.Join(workspace, strings.ToLower(ancestor))); !os.IsNotExist(err) {
+					t.Fatalf("lowercase alias was recreated: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSkillsStaleCleanupPreservesMixedCaseTrackedPackage(t *testing.T) {
+	workspace := t.TempDir()
+	skillTestGit(t, workspace, "init")
+	tracked := ".GitHub/Skills/Review/SKILL.md"
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(workspace, tracked)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, tracked), []byte("repository skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	skillTestGit(t, workspace, "add", "--", tracked)
+	skillTestGit(t, workspace, "update-index", "--skip-worktree", "--", tracked)
+	before := skillTestGit(t, workspace, "ls-files", "--stage", "-v")
+	if err := os.MkdirAll(filepath.Join(workspace, skillStateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"ID":"stale","Paths":[".github/skills/review"],"Git":true}`
+	if err := os.WriteFile(filepath.Join(workspace, skillManifestPath), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := &Executor{skillsHarness: apiv1.HarnessClaudeCode}
+	if _, err := empty.prepareSkills(context.Background(), workspace); err == nil {
+		t.Fatal("stale cleanup accepted mixed-case tracked package")
+	}
+	for file, want := range map[string]string{tracked: "repository skill", skillManifestPath: manifest} {
+		data, err := os.ReadFile(filepath.Join(workspace, file))
+		if err != nil || string(data) != want {
+			t.Fatalf("cleanup modified %s: %q, %v", file, data, err)
+		}
+	}
+	if after := skillTestGit(t, workspace, "ls-files", "--stage", "-v"); after != before {
+		t.Fatalf("index or flags changed: %q => %q", before, after)
+	}
+}
+
 func TestSkillsCleanupRefusesNewTrackedPathsBeforeDeletingAnything(t *testing.T) {
 	for _, tracked := range []string{skillManifestPath, ".github/skills/review/SKILL.md"} {
 		t.Run(tracked, func(t *testing.T) {
