@@ -346,11 +346,11 @@ func collectAttemptSpans(events []Event) (map[string][]attemptSpan, map[string]u
 	spans := make(map[string][]attemptSpan)
 	latest := make(map[string]uint64)
 	for _, event := range events {
-		if event.Stage == "" || event.Attempt < 1 {
-			continue
-		}
 		switch event.Type {
 		case EventStageStarted:
+			if event.Stage == "" || event.Attempt < 1 {
+				continue
+			}
 			span := attemptSpan{stage: event.Stage, attempt: event.Attempt, startedSeq: event.Seq}
 			spans[event.Stage] = append(spans[event.Stage], span)
 			if event.Seq > latest[event.Stage] {
@@ -370,6 +370,9 @@ func collectAttemptSpans(events []Event) (map[string][]attemptSpan, map[string]u
 				latest[event.Gate] = event.Seq
 			}
 		case EventStageFinished:
+			if event.Stage == "" || event.Attempt < 1 {
+				continue
+			}
 			stageSpans := spans[event.Stage]
 			for i := len(stageSpans) - 1; i >= 0; i-- {
 				if stageSpans[i].attempt != event.Attempt || stageSpans[i].finishedSeq != 0 {
