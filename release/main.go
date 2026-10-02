@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 const versionPkg = "github.com/goobers/goobers/internal/version"
@@ -178,37 +180,79 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return images.finalize(stdout)
 }
 
+// buildReleaseTargets builds, verifies and packages every target concurrently
+// (#5413): each target writes only its own binary, archive and image-context
+// directory, so the targets share no mutable state. Results are reported and
+// returned in target order, and the first failure in that order wins, so the
+// output and the archive list stay deterministic.
 func buildReleaseTargets(opts options, ldflags, releaseDocsDir string, images *imageContexts, stdout io.Writer) ([]string, []string, error) {
+	results := make([]releaseTargetResult, len(opts.targets))
+	slots := make(chan struct{}, releaseBuildParallelism(len(opts.targets)))
+	var wg sync.WaitGroup
+	for i, t := range opts.targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			results[i] = buildReleaseTarget(t, opts, ldflags, releaseDocsDir, images)
+		}()
+	}
+	wg.Wait()
+
 	var archives []string
 	var skipped []string
-	for _, t := range opts.targets {
-		binPath, buildOut, err := buildTarget(t, ldflags, opts.outDir)
-		if err != nil {
-			if opts.skipUnbuildable {
-				_, _ = fmt.Fprintf(stdout, "skip  %-14s (does not compile yet)\n", t)
-				skipped = append(skipped, t.String())
-				continue
-			}
-			return nil, nil, fmt.Errorf("build %s failed — the release matrix requires every "+
-				"target to compile (windows is gated on the #633 CI leg going green); "+
-				"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)
+	for i, t := range opts.targets {
+		result := results[i]
+		switch {
+		case result.err != nil:
+			return nil, nil, result.err
+		case result.skipped:
+			_, _ = fmt.Fprintf(stdout, "skip  %-14s (does not compile yet)\n", t)
+			skipped = append(skipped, t.String())
+		default:
+			archives = append(archives, result.archive)
+			_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(result.archive))
 		}
-		if err := verifyReleaseBinary(binPath, opts.sourceCommit, buildPackage, t); err != nil {
-			return nil, nil, err
-		}
-		archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := images.stage(t, binPath, ldflags, opts); err != nil {
-			return nil, nil, err
-		}
-		_ = os.Remove(binPath) // keep only the archive
-		archives = append(archives, archivePath)
-		_, _ = fmt.Fprintf(stdout, "build %-14s -> %s\n", t, filepath.Base(archivePath))
 	}
-
 	return archives, skipped, nil
+}
+
+type releaseTargetResult struct {
+	archive string
+	skipped bool
+	err     error
+}
+
+// releaseBuildParallelism bounds concurrent target builds by the CPUs
+// available: each `go build` already parallelizes across packages, so running
+// more builds than CPUs only adds memory pressure.
+func releaseBuildParallelism(targets int) int {
+	return max(1, min(targets, runtime.NumCPU()))
+}
+
+func buildReleaseTarget(t Target, opts options, ldflags, releaseDocsDir string, images *imageContexts) releaseTargetResult {
+	binPath, buildOut, err := buildTarget(t, ldflags, opts.outDir)
+	if err != nil {
+		if opts.skipUnbuildable {
+			return releaseTargetResult{skipped: true}
+		}
+		return releaseTargetResult{err: fmt.Errorf("build %s failed — the release matrix requires every "+
+			"target to compile (windows is gated on the #633 CI leg going green); "+
+			"pass -skip-unbuildable to package only what builds:\n%s", t, buildOut)}
+	}
+	if err := verifyReleaseBinary(binPath, opts.sourceCommit, buildPackage, t); err != nil {
+		return releaseTargetResult{err: err}
+	}
+	archivePath, err := packageArchive(t, opts.version, binPath, opts.outDir, releaseDocsDir)
+	if err != nil {
+		return releaseTargetResult{err: err}
+	}
+	if err := images.stage(t, binPath, ldflags, opts); err != nil {
+		return releaseTargetResult{err: err}
+	}
+	_ = os.Remove(binPath) // keep only the archive
+	return releaseTargetResult{archive: archivePath}
 }
 
 func parseFlags(args []string, stderr io.Writer) (options, error) {
