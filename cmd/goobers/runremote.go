@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -157,47 +154,19 @@ func submitRemoteTrigger(
 	endpoint string,
 	input httpapi.TriggerRequest,
 ) (httpapi.TriggerResponse, *apicontract.APIError, error) {
-	route, ok := apicontract.V1Route(apicontract.RouteTriggerIngest)
-	if !ok {
-		return httpapi.TriggerResponse{}, nil, fmt.Errorf("API route %q is not registered", apicontract.RouteTriggerIngest)
-	}
-	body, err := json.Marshal(input)
-	if err != nil {
-		return httpapi.TriggerResponse{}, nil, fmt.Errorf("encode trigger request: %w", err)
-	}
-	request, err := http.NewRequestWithContext(ctx, route.Method, endpoint+route.Path, bytes.NewReader(body))
-	if err != nil {
-		return httpapi.TriggerResponse{}, nil, fmt.Errorf("build trigger request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(httpapi.HeaderIdempotencyKey, input.RequestID)
-	request.Header.Set("Accept", "application/json")
-	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	// A redirect would submit to a target whose root identity was not shown.
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	response, err := client.Do(request)
-	if err != nil {
-		return httpapi.TriggerResponse{}, nil, fmt.Errorf("call daemon API %s: %w", endpoint, err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxRemoteTriggerResponseBody))
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var envelope apicontract.ErrorEnvelope
-		if err := decoder.Decode(&envelope); err != nil {
-			return httpapi.TriggerResponse{}, nil, fmt.Errorf("daemon API returned %s with an invalid error body: %w", response.Status, err)
-		}
-		return httpapi.TriggerResponse{}, &envelope.Error, nil
-	}
-	var decoded httpapi.TriggerResponse
-	if err := decoder.Decode(&decoded); err != nil {
-		return httpapi.TriggerResponse{}, nil, fmt.Errorf("decode daemon trigger response: %w", err)
-	}
-	return decoded, nil, nil
+	return callDaemonJSON[httpapi.TriggerRequest, httpapi.TriggerResponse](daemonJSONCall[httpapi.TriggerRequest]{
+		Context:         ctx,
+		Endpoint:        endpoint,
+		RouteID:         apicontract.RouteTriggerIngest,
+		IdempotencyKey:  input.RequestID,
+		Input:           input,
+		MaxResponseBody: maxRemoteTriggerResponseBody,
+		AcceptJSON:      true,
+		EncodePrefix:    "encode trigger request",
+		BuildPrefix:     "build trigger request",
+		CallPrefix:      "call daemon API " + endpoint,
+		DecodePrefix:    "decode daemon trigger response",
+	})
 }
 
 // newRemoteTriggerRequestID mints the delivery identity the daemon dedupes on.
