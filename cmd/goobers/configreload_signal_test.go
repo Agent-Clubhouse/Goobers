@@ -26,6 +26,8 @@ func TestConfigPollSignalTracksAllDigestInputs(t *testing.T) {
 	write(filepath.Join(home, "external", "body.md"), "instructions")
 	write(filepath.Join(home, "skills", "shared", "SKILL.md"), "skill")
 	write(filepath.Join(root, "goobers", "coder", "assets", "file.txt"), "asset")
+	// Metadata only vouches for inputs that have settled.
+	time.Sleep(2 * configsignal.SettleDelay)
 	var cache configsignal.Cache
 	now := time.Now()
 	calls := 0
