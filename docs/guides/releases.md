@@ -354,9 +354,10 @@ verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
 integrity check is in addition to, not instead of, the Authenticode
-signature below — both `sign-macos` and `sign-windows` recompute this
-manifest after signing, so it always reflects the signed bytes actually
-published.
+signature below — the release workflow's `assemble` job merges the signed
+darwin and Windows archives into the build's asset set and recomputes this
+manifest once, after both signers finish, so it always reflects the signed
+bytes actually published.
 
 ## Verifying a release
 
@@ -527,13 +528,24 @@ publication: Linux AMD64/ARM64, macOS AMD64/ARM64, and Windows AMD64. The
 `native-smoke` matrix uses native hosted runners and consumes the final signed
 artifact set. Linux AMD64 runs the deeper demo and release-document checks in
 `validate-release`, which has only read permission. A failed native smoke blocks
-publication. The separate `verify-and-publish` job independently downloads the
+publication.
+
+`sign-macos` and `sign-windows` run in parallel from the build's upload, and
+each uploads only the archive(s) it re-packed. `assemble` merges them into the
+build's asset set, recomputes `SHA256SUMS` once, and refuses the set unless
+every signed archive changed and every other asset is byte-identical to the
+build. Because signing never touches anything else, `validate-release` and the
+Linux `native-linux-images` legs run on the build's exact upload in parallel
+with signing (#5413), so a content failure surfaces without waiting for either
+signer. Gates that need signed bytes (`native-smoke` and `native-windows-image`)
+and publication use the assembled set. The separate `verify-and-publish` job independently downloads the
 final signer artifact by immutable artifact ID, checks the exact release asset
 set and every checksum, and uploads an explicit file list. It treats the
 validation job’s generated release notes as data and never executes release
-binaries, installers, or build tools with publication permission. Every
-post-signing gate uses that same immutable artifact ID; missing, malformed, or
-multiple IDs fail before download rather than selecting all run artifacts.
+binaries, installers, or build tools with publication permission. Every gate
+downloads by immutable artifact ID (the build's upload or the assembled set);
+missing, malformed, or multiple IDs fail before download rather than selecting
+all run artifacts.
 
 This supersedes the earlier #2039 decision to publish Linux ARM64 and macOS
 AMD64 without execution coverage. Native smoke proves startup and packaged

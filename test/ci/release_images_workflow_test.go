@@ -15,6 +15,8 @@ func TestReleaseBuildExportsOriginalImageInputsAndExactStamps(t *testing.T) {
 		"version":       "${{ steps.archive-build.outputs.version }}",
 		"commit":        "${{ steps.archive-build.outputs.commit }}",
 		"date":          "${{ steps.archive-build.outputs.date }}",
+		// Signing-independent gates pin the exact build upload (#5413).
+		"unsigned-artifact-id": "${{ steps.unsigned-artifacts.outputs.artifact-id }}",
 	}
 	if !maps.Equal(build.Outputs, wantOutputs) {
 		t.Fatalf("image verification must receive the original authorized build identities: %v", build.Outputs)
@@ -47,6 +49,12 @@ func TestReleaseBuildExportsOriginalImageInputsAndExactStamps(t *testing.T) {
 
 func TestReleaseNativeImageJobsImportSignedArtifactsWithoutRebuild(t *testing.T) {
 	workflow := loadReleaseAuthorizationWorkflow(t)
+	// Linux archives are never signed, so those legs import the exact build
+	// upload (#5413); the Windows image embeds the Authenticode-signed exe.
+	archives := map[string]string{
+		"native-linux-images":  "${{ needs.build.outputs.unsigned-artifact-id }}",
+		"native-windows-image": "${{ needs.assemble.outputs.signed-artifact-id }}",
+	}
 	for _, name := range []string{"native-linux-images", "native-windows-image"} {
 		t.Run(name, func(t *testing.T) {
 			job := workflow.Jobs[name]
@@ -65,8 +73,8 @@ func TestReleaseNativeImageJobsImportSignedArtifactsWithoutRebuild(t *testing.T)
 			for _, step := range job.Steps {
 				commands.WriteString(step.Run)
 				key := step.With["name"]
-				if step.With["artifact-ids"] == "${{ needs.sign-windows.outputs.signed-artifact-id }}" && step.With["merge-multiple"] == "true" {
-					key = "dist-signed"
+				if step.With["artifact-ids"] == archives[name] && step.With["merge-multiple"] == "true" {
+					key = "release-archives"
 				}
 				downloads[key] = step.With["path"]
 				if step.Name == "Checkout authorized image tooling" {
@@ -85,7 +93,7 @@ func TestReleaseNativeImageJobsImportSignedArtifactsWithoutRebuild(t *testing.T)
 					uploads = step.If == "always()" && step.With["path"] == "native-image-evidence/"
 				}
 			}
-			if !checkout || downloads["dist-signed"] != "dist" || downloads["original-image-inputs"] != "original-image-inputs" || !retains || !uploads {
+			if !checkout || downloads["release-archives"] != "dist" || downloads["original-image-inputs"] != "original-image-inputs" || !retains || !uploads {
 				t.Fatal("native job must preserve source identity, final signed archives, original operator inputs and failure evidence")
 			}
 			for _, required := range []string{"-image-artifacts dist", "-image-inputs original-image-inputs", "-image-contexts verified-image-contexts", "-build-images -image-prefix", "-version", "-commit", "-date", "-targets", "image-evidence.json", "release-image-verification.txt", "release-source.json"} {

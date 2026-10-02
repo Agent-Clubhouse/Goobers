@@ -107,8 +107,8 @@ Every release tag independently runs the mandatory `native-windows-image` job in
 final Authenticode-signed artifact by its exact artifact ID, rebuilds the Windows
 image through the release engine on `windows-2022`, requires native
 `windows/amd64` evidence for exactly one `goobers-base-windows` image, and retains
-the provenance. Both release validation and `verify-and-publish` depend on this
-job, so a failure prevents GitHub release publication. This is the authoritative
+the provenance. `verify-and-publish` depends on this job, so a failure prevents
+GitHub release publication. This is the authoritative
 publication gate.
 
 ## Additional native evidence for support claims

@@ -25,6 +25,7 @@ jobs:
       version: ${{ steps.archive-build.outputs.version }}
       commit: ${{ steps.archive-build.outputs.commit }}
       date: ${{ steps.archive-build.outputs.date }}
+      unsigned-artifact-id: ${{ steps.unsigned-artifacts.outputs.artifact-id }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -171,7 +172,11 @@ jobs:
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "date=$date" >> "$GITHUB_OUTPUT"
 
+      # Jobs that never consume signed bytes (release-content validation and
+      # the Linux image checks) pin this exact upload so they can start right
+      # after build, in parallel with signing (#5413).
       - name: Upload unsigned artifacts
+        id: unsigned-artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dist-unsigned
@@ -190,8 +195,13 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # The two signers run in parallel (#5413): neither needs the other's output.
+  # Each uploads only the archive(s) it re-packed; `assemble` merges them into
+  # the unsigned set and recomputes SHA256SUMS once, on Linux.
   sign-macos:
     name: Sign and notarize macOS binaries
+    outputs:
+      signed-artifact-id: ${{ steps.signed-darwin-archives.outputs.artifact-id }}
     needs: build
     runs-on: macos-latest
     timeout-minutes: 30
@@ -201,12 +211,6 @@ jobs:
         with:
           name: dist-unsigned
           path: dist
-
-      # Bare-file executable bits (install.sh) aren't guaranteed to survive an
-      # upload/download round-trip; the binaries inside the tar/zip archives
-      # carry their own mode as archive metadata and are unaffected.
-      - name: Restore executable bits
-        run: chmod -R a+x dist
 
       - name: Import Developer ID certificate
         env:
@@ -264,6 +268,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          mkdir signed
           for ARCH in amd64 arm64; do
             ARCHIVE="dist/goobers_${TAG}_darwin_${ARCH}.tar.gz"
             WORKDIR="$RUNNER_TEMP/darwin-${ARCH}"
@@ -290,47 +295,35 @@ jobs:
             # under translation the same as on a real Intel Mac.
             "$WORKDIR/goobers" --version | grep --fixed-strings "$TAG"
 
-            rm -f "$ARCHIVE"
-            tar -czf "$ARCHIVE" -C "$WORKDIR" $(ls -A "$WORKDIR")
+            # Re-package under the same name, outside dist/, so this job's
+            # upload holds only the archives it signed.
+            tar -czf "signed/$(basename "$ARCHIVE")" -C "$WORKDIR" $(ls -A "$WORKDIR")
             rm -rf "$WORKDIR" "$NOTARIZE_ZIP"
           done
-
-      # sha256sum isn't guaranteed on the macOS runner image (GNU coreutils);
-      # shasum always ships. Same "<hex>  <filename>" format as
-      # release/pack.go's checksumsManifest, so the later `sha256sum --check`
-      # on a Linux runner still verifies.
-      - name: Recompute SHA256SUMS
-        run: |
-          set -euo pipefail
-          cd dist
-          files="$(awk '{print $2}' SHA256SUMS)"
-          : > SHA256SUMS.new
-          for f in $files; do
-            shasum -a 256 "$f" >> SHA256SUMS.new
-          done
-          sort SHA256SUMS.new -o SHA256SUMS
-          rm SHA256SUMS.new
 
       - name: Clean up signing keychain
         if: always()
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
-      - name: Upload signed artifacts
+      # The checksum manifest is not touched here: `assemble` recomputes it once
+      # after merging both signers' archives.
+      - name: Upload signed darwin archives
+        id: signed-darwin-archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: dist-signed
-          path: dist/
+          name: dist-signed-darwin
+          path: signed/
           retention-days: 1
           if-no-files-found: error
 
   sign-windows:
     name: Sign Windows binary
     outputs:
-      signed-artifact-id: ${{ steps.final-signed-artifacts.outputs.artifact-id }}
+      signed-artifact-id: ${{ steps.signed-windows-archive.outputs.artifact-id }}
     permissions:
       contents: read
       id-token: write
-    needs: sign-macos
+    needs: build
     runs-on: windows-latest
     timeout-minutes: 30
     # Entra federated identity credentials match the OIDC subject claim
@@ -341,10 +334,10 @@ jobs:
     # setup (repo:Agent-Clubhouse/Clubhouse:environment:release).
     environment: release
     steps:
-      - name: Download signed artifacts
+      - name: Download unsigned artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: dist-signed
+          name: dist-unsigned
           path: dist
 
       # Explicit bash: the Windows runner defaults to PowerShell.
@@ -419,39 +412,167 @@ jobs:
           }
 
       # bash on the windows-latest image has no `zip`; Compress-Archive is
-      # built into Windows and needs no extra install.
+      # built into Windows and needs no extra install. The archive keeps its
+      # name but is written outside dist/, so this job's upload holds only the
+      # archive it signed.
       - name: Repackage signed archive
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          $Archive = "dist\goobers_${env:TAG}_windows_amd64.zip"
-          Remove-Item -ErrorAction SilentlyContinue $Archive
+          New-Item -ItemType Directory -Path signed | Out-Null
+          $Archive = "signed\goobers_${env:TAG}_windows_amd64.zip"
           Compress-Archive -Path (Join-Path winsign '*') -DestinationPath $Archive
           Remove-Item -Recurse -Force winsign
 
-      # --text forces GNU coreutils' non-asterisk "<hex>  <filename>" marker;
-      # its Windows build defaults to binary-mode "<hex> *<filename>", which
-      # breaks the later `grep --fixed-strings "  <filename>"` checks in
-      # "Verify release artifacts" (shasum never adds this marker at all).
-      - name: Recompute SHA256SUMS
+      # The checksum manifest is not touched here: `assemble` recomputes it once
+      # after merging both signers' archives.
+      - name: Upload signed Windows archive
+        id: signed-windows-archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist-signed-windows
+          path: signed/
+          retention-days: 1
+          if-no-files-found: error
+
+  # The single place the final release set is formed (#5413): the exact build
+  # upload plus each signer's exact re-packed archive(s), with SHA256SUMS
+  # recomputed once with GNU sha256sum. Every gate that needs signed bytes, and
+  # publication, pins this job's upload by artifact ID.
+  assemble:
+    name: Assemble signed release artifacts
+    outputs:
+      signed-artifact-id: ${{ steps.final-signed-artifacts.outputs.artifact-id }}
+    needs: [build, sign-macos, sign-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Validate unsigned artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.build.outputs.unsigned-artifact-id }}
         shell: bash
         run: |
           set -euo pipefail
-          if command -v sha256sum >/dev/null 2>&1; then
-            cksum() { sha256sum --text "$1"; }
-          else
-            cksum() { shasum -a 256 "$1"; }
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
           fi
-          cd dist
-          files="$(awk '{print $2}' SHA256SUMS)"
-          : > SHA256SUMS.new
-          for f in $files; do
-            cksum "$f" >> SHA256SUMS.new
-          done
-          sort SHA256SUMS.new -o SHA256SUMS
-          rm SHA256SUMS.new
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.build.outputs.unsigned-artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Validate signed darwin artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-macos.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
+      - name: Download signed darwin archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-macos.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: signed-darwin
+      - name: Validate signed Windows artifact ID
+        env:
+          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
+            exit 1
+          fi
+      - name: Download signed Windows archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          merge-multiple: true
+          path: signed-windows
 
-      - name: Upload fully-signed artifacts
+      # Fail closed on every way the merge could ship something other than
+      # "the build's bytes, with exactly the three signed archives replaced":
+      # a damaged download, a signer delivering a missing/extra/non-regular
+      # file, a signed archive identical to its unsigned input (signing never
+      # happened), or any unsigned asset changing between build and publish.
+      # The last check is what lets the early, signing-independent gates
+      # (validate-release, native-linux-images) vouch for the final release.
+      - name: Merge signed archives and recompute SHA256SUMS
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1" >&2; exit 1; }
+          (cd dist && sha256sum --check --strict --quiet SHA256SUMS)
+          pre_signing="$RUNNER_TEMP/pre-signing-SHA256SUMS"
+          cp dist/SHA256SUMS "$pre_signing"
+
+          declare -A signer=(
+            ["goobers_${TAG}_darwin_amd64.tar.gz"]=signed-darwin
+            ["goobers_${TAG}_darwin_arm64.tar.gz"]=signed-darwin
+            ["goobers_${TAG}_windows_amd64.zip"]=signed-windows
+          )
+          for directory in signed-darwin signed-windows; do
+            expected="$(for name in "${!signer[@]}"; do
+              if [[ "${signer[$name]}" == "$directory" ]]; then echo "$name"; fi
+            done | sort)"
+            actual="$(cd "$directory" && find . -mindepth 1 -printf '%P\n' | sort)"
+            if [[ "$actual" != "$expected" ]]; then
+              fail "$directory must hold exactly [$(tr '\n' ' ' <<<"$expected")], got [$(tr '\n' ' ' <<<"$actual")]"
+            fi
+          done
+
+          declare -A before after
+          while read -r digest name; do before[$name]=$digest; done < "$pre_signing"
+          for name in "${!signer[@]}"; do
+            signed_file="${signer[$name]}/$name"
+            if [[ -L "$signed_file" || ! -f "$signed_file" || ! -s "$signed_file" ]]; then
+              fail "$signed_file is not a non-empty regular file"
+            fi
+            if [[ -z "${before[$name]:-}" || ! -f "dist/$name" ]]; then
+              fail "$name is not part of the unsigned release set"
+            fi
+            cp "$signed_file" "dist/$name"
+          done
+
+          (
+            cd dist
+            awk '{print $2}' "$pre_signing" | xargs sha256sum -- > SHA256SUMS.new
+            sort SHA256SUMS.new -o SHA256SUMS
+            rm SHA256SUMS.new
+          )
+
+          while read -r digest name; do after[$name]=$digest; done < dist/SHA256SUMS
+          if [[ ${#after[@]} -ne ${#before[@]} ]]; then
+            fail "SHA256SUMS changed its asset set while assembling"
+          fi
+          for name in "${!before[@]}"; do
+            if [[ -z "${after[$name]:-}" ]]; then
+              fail "$name dropped out of SHA256SUMS while assembling"
+            elif [[ -n "${signer[$name]:-}" ]]; then
+              if [[ "${after[$name]}" == "${before[$name]}" ]]; then
+                fail "$name is byte-identical to its unsigned build; signing did not change it"
+              fi
+            elif [[ "${after[$name]}" != "${before[$name]}" ]]; then
+              fail "$name changed between build and publish but is never signed"
+            fi
+          done
+          {
+            echo "### Assembled release set"
+            echo "- signed (replaced): ${!signer[*]}"
+            echo "- unsigned assets byte-identical to build: $(( ${#before[@]} - ${#signer[@]} ))"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload final signed artifacts
         id: final-signed-artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -459,11 +580,15 @@ jobs:
           path: dist/
           retention-days: 1
           if-no-files-found: error
-          overwrite: true
 
+  # Executes every published archive on its native OS from the final assembled
+  # set. The linux_arm64 leg stays here rather than moving ahead of signing
+  # (#5413): it shares this job's smoke script, it runs alongside the signed
+  # legs so it never lengthens the critical path, and Linux content is already
+  # exercised before signing by validate-release and native-linux-images.
   native-smoke:
     name: Smoke signed ${{ matrix.target }} artifact
-    needs: sign-windows
+    needs: assemble
     strategy:
       fail-fast: false
       matrix:
@@ -483,7 +608,7 @@ jobs:
     steps:
       - name: Validate final signed artifact ID
         env:
-          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          ARTIFACT_ID: ${{ needs.assemble.outputs.signed-artifact-id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -494,7 +619,7 @@ jobs:
       - name: Download fully signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          artifact-ids: ${{ needs.assemble.outputs.signed-artifact-id }}
           merge-multiple: true
           path: dist
       - name: Execute native release binary
@@ -529,12 +654,17 @@ jobs:
           "./native-smoke/$binary" init --allow-ephemeral --template=quickstart native-smoke/instance
           "./native-smoke/$binary" validate native-smoke/instance
 
-  # Native verification imports the final signed archives and the original
+  # Native verification imports the release archives and the original
   # same-build operator inputs. It never rebuilds product binaries or publishes
   # container images. Distributed/authenticated acceptance remains a separate gate.
+  #
+  # Signing never touches a Linux archive, so the Linux legs import the exact
+  # build upload and run in parallel with signing (#5413). `assemble` proves
+  # every unsigned asset is byte-identical in the final release set, so this
+  # verdict covers what ships. The Windows leg below stays on signed bytes.
   native-linux-images:
-    name: Verify signed inputs in native ${{ matrix.target }} images
-    needs: [build, sign-windows]
+    name: Verify release inputs in native ${{ matrix.target }} images
+    needs: build
     permissions:
       contents: read
     strategy:
@@ -567,9 +697,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Validate final signed artifact ID
+      - name: Validate unsigned artifact ID
         env:
-          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          ARTIFACT_ID: ${{ needs.build.outputs.unsigned-artifact-id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -577,10 +707,10 @@ jobs:
             echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
             exit 1
           fi
-      - name: Download fully signed artifacts
+      - name: Download unsigned artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          artifact-ids: ${{ needs.build.outputs.unsigned-artifact-id }}
           merge-multiple: true
           path: dist
       - name: Download original image inputs
@@ -671,7 +801,7 @@ jobs:
 
   native-windows-image:
     name: Verify signed inputs in native Windows Server 2022 image
-    needs: [build, sign-windows]
+    needs: [build, assemble]
     runs-on: windows-2022
     timeout-minutes: 90
     permissions:
@@ -699,7 +829,7 @@ jobs:
           cache: true
       - name: Validate final signed artifact ID
         env:
-          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          ARTIFACT_ID: ${{ needs.assemble.outputs.signed-artifact-id }}
         shell: pwsh
         run: |
           if ($env:ARTIFACT_ID -cnotmatch '\A[1-9][0-9]*\z') {
@@ -708,7 +838,7 @@ jobs:
       - name: Download fully signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          artifact-ids: ${{ needs.assemble.outputs.signed-artifact-id }}
           merge-multiple: true
           path: dist
       - name: Download original image inputs
@@ -789,12 +919,12 @@ jobs:
           if-no-files-found: error
 
   validate-release:
-    name: Validate signed release ${{ github.ref_name }}
+    name: Validate release content ${{ github.ref_name }}
     outputs:
       notes-artifact-id: ${{ steps.release-notes-upload.outputs.artifact-id }}
     permissions:
       contents: read
-    needs: [sign-windows, native-smoke, native-linux-images, native-windows-image]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       # "Generate release notes" below shells out to real git commands for
@@ -849,9 +979,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Validate final signed artifact ID
+      - name: Validate unsigned artifact ID
         env:
-          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          ARTIFACT_ID: ${{ needs.build.outputs.unsigned-artifact-id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -859,10 +989,10 @@ jobs:
             echo '::error::Expected one positive decimal artifact ID; refusing download-all fallback.'
             exit 1
           fi
-      - name: Download signed artifacts
+      - name: Download unsigned artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          artifact-ids: ${{ needs.build.outputs.unsigned-artifact-id }}
           merge-multiple: true
           path: dist
 
@@ -878,7 +1008,10 @@ jobs:
             -feature-notes dist/RELEASE_NOTES.md \
             -output dist/RELEASE_NOTES.md
 
-      # Native signed artifacts must pass native-smoke before this job starts.
+      # This job validates release content signing never changes, so it runs
+      # on the exact build upload in parallel with signing (#5413); `assemble`
+      # proves those assets are byte-identical in the final release set, and
+      # publication still waits for this job and every signed-byte gate.
       # This leg exercises linux/amd64, the packaged demo, and portal payload.
       - name: Verify release artifacts
         env:
@@ -1061,7 +1194,7 @@ jobs:
     name: Verify and publish ${{ github.ref_name }}
     permissions:
       contents: write
-    needs: [sign-windows, native-smoke, native-linux-images, native-windows-image, validate-release]
+    needs: [assemble, native-smoke, native-linux-images, native-windows-image, validate-release]
     runs-on: ubuntu-latest
     steps:
       # This job never executes downloaded binaries, installers, generated
@@ -1111,7 +1244,7 @@ jobs:
 
       - name: Validate final signed artifact ID
         env:
-          ARTIFACT_ID: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          ARTIFACT_ID: ${{ needs.assemble.outputs.signed-artifact-id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1122,7 +1255,7 @@ jobs:
       - name: Download immutable final signed artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.sign-windows.outputs.signed-artifact-id }}
+          artifact-ids: ${{ needs.assemble.outputs.signed-artifact-id }}
           merge-multiple: true
           path: dist
       - name: Validate generated notes artifact ID
