@@ -170,7 +170,7 @@ func TestKubernetesPodAPIGetPersistentVolumeClaim(t *testing.T) {
 func TestDispatchWithoutGoModCacheClaimCreatesSchedulablePod(t *testing.T) {
 	pods := &fakePodAPI{claimErr: apierrors.NewNotFound(claimResource, goBuildCacheClaim)}
 	d, _, _ := goModCacheDispatcher(t, pods)
-	if _, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
+	if _, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{linuxRunner()}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 	if len(pods.createdSpecs) != 1 {

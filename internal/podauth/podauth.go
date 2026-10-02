@@ -36,6 +36,8 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/launchreceipt"
+	"github.com/goobers/goobers/internal/livejournal"
 )
 
 // tokenPrefix routes bearer tokens to this authenticator: a pod token is
@@ -295,6 +297,20 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 // either reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if strings.HasPrefix(token, livejournal.ControllerJournalTokenPrefix) {
+		return a.authenticateControllerJournal(token)
+	}
+	if strings.HasPrefix(token, launchreceipt.TokenPrefix) {
+		verifier, ok := a.verifier.(launchreceipt.Verifier)
+		if !ok {
+			return nil, launchreceipt.ErrInvalid
+		}
+		grant, err := verifier.VerifyLaunchGrant(token)
+		if err != nil {
+			return nil, err
+		}
+		return &httpapi.Principal{Subject: grant.AttemptID, Issuer: httpapi.LaunchGrantPrincipalIssuer}, nil
+	}
 	if IsCredentialGrant(token) {
 		return a.authenticateGrant(token)
 	}

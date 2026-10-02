@@ -599,6 +599,17 @@
       "recoverySafe": false
     },
     {
+      "id": "launchReceipt",
+      "method": "POST",
+      "path": "/api/v1/runtime/launch-receipts",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "credentialRefresh",
       "method": "POST",
       "path": "/api/v1/credentials/refresh",

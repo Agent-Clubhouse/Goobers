@@ -52,7 +52,7 @@ func (a *Activities) EmitJournal(ctx context.Context, req livejournal.EmitReques
 		return livejournal.EmitResponse{}, classifySeamError(invoke.InfrastructureFailure(
 			fmt.Errorf("run %s requires live journaling but this worker wires no journal emitter: %w", req.RunID, ErrNotConfigured)))
 	}
-	resp, err := a.Journal.Emit(ctx, req)
+	resp, err := emitControllerJournal(ctx, a.Journal, req)
 	if err != nil {
 		return livejournal.EmitResponse{}, classifySeamError(invoke.InfrastructureFailure(err))
 	}
@@ -212,6 +212,12 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 	if err := workflow.ExecuteActivity(emitActivityContext(ctx), ActEmitJournal, req).Get(ctx, &resp); err != nil {
 		return fmt.Errorf("engine: emit journal ops for run %s: %w", r.proj.Identity.RunID, err)
 	}
+	if r.startAcks == nil {
+		r.startAcks = make(map[string]livejournal.StartAcknowledgment)
+	}
+	for _, ack := range resp.Starts {
+		r.startAcks[ack.Key] = ack
+	}
 	r.emitted = pending
 	return nil
 }
@@ -255,4 +261,13 @@ func liveOpFrom(op JournalOp) livejournal.Op {
 		}
 	}
 	return out
+}
+
+func emitControllerJournal(ctx context.Context, emitter JournalEmitter, req livejournal.EmitRequest) (livejournal.EmitResponse, error) {
+	if trusted, ok := emitter.(interface {
+		EmitController(context.Context, livejournal.EmitRequest) (livejournal.EmitResponse, error)
+	}); ok {
+		return trusted.EmitController(ctx, req)
+	}
+	return emitter.Emit(ctx, req)
 }

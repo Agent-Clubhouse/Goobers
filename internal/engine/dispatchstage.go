@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/runner"
 )
 
@@ -80,6 +81,7 @@ func remotePlacementFor(in RunInput, stage string) (PinnedPlacement, bool) {
 // written, and an existing history must replay identically
 // (dispatchone_test.go's recorded-history fixture is the guard).
 type DispatchStageInput struct {
+	LaunchBinding *launchreceipt.Binding `json:"launchBinding,omitempty"`
 	// PodAttempt is the physical dispatch ordinal across task graph visits.
 	// Zero retains the legacy Envelope.Attempt identity. Journal lineage stays
 	// in Envelope.Attempt/Class and is independent of this surrender/pod key.
@@ -220,9 +222,11 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
+	binding := rec.remoteLaunchBinding(ctx, g.Name, true)
 	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+		LaunchBinding:    binding,
 		PodAttempt:       physicalAttempt,
-		Class:            dispatchAttemptClass(ctx, class),
+		Class:            dispatchAttemptClass(ctx, class, binding),
 		Envelope:         attemptEnv,
 		Placement:        placement,
 		Workspace:        workspace,
@@ -347,9 +351,11 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
 		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
+		binding := rec.remoteLaunchBinding(ctx, t.Name, false)
 		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+			LaunchBinding:    binding,
 			PodAttempt:       dispatchPodAttempt(ctx, t.Name, taskDispatches[t.Name]),
-			Class:            dispatchAttemptClass(ctx, class),
+			Class:            dispatchAttemptClass(ctx, class, binding),
 			Envelope:         attemptEnv,
 			Placement:        placement,
 			Run:              t.Run,
@@ -561,6 +567,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		}
 	}
 	attempt := dispatcher.Attempt{
+		LaunchBinding:  input.LaunchBinding,
 		InstanceID:     input.Envelope.InstanceID,
 		RunID:          input.Envelope.RunID,
 		Gaggle:         input.Envelope.Gaggle,

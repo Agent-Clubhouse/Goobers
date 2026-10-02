@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -145,9 +146,10 @@ type runJournal struct {
 	// input, so replay agrees. emitted is the count of ops the live writer has
 	// durably accepted; ordinals drives idempotency-key assignment
 	// (assignEmitKeys). All plain workflow state.
-	live     bool
-	emitted  int
-	ordinals map[string]int
+	live      bool
+	emitted   int
+	ordinals  map[string]int
+	startAcks map[string]livejournal.StartAcknowledgment
 }
 
 // newRunJournal builds the recorder and registers the projection query. The

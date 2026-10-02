@@ -1022,6 +1022,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize pod token verifier: %v\n", perr)
 		return 1
 	}
+	if apiHandlerOpts, err = appendLaunchReceiptHandlerOption(apiHandlerOpts, l.Root, podVerifier); err != nil {
+		return reportDaemonStartupError(stderr, "initialize launch receipts", err)
+	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
 			Issuer:     auth.OIDC.Issuer,

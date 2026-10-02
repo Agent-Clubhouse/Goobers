@@ -1211,6 +1211,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/launchreceipt",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Remote receipt authority (#4768); platform-neutral protocol tests run on Linux; Windows build/vet checks portability."
     }
   ]
 }

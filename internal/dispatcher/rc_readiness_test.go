@@ -50,7 +50,7 @@ func TestDispatchCancellationStillDeletesStageWithBoundedContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := d.Dispatch(ctx, testAttempt(), []RunnerSpec{linuxRunner()})
+	report, err := dispatchFixture(d, ctx, testAttempt(), []RunnerSpec{linuxRunner()})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
@@ -115,7 +115,7 @@ func TestDispatchTemplateSettlesStageWithResidentSidecar(t *testing.T) {
 			}
 			// A completed stage must settle on the first read, before polling again.
 			d.sleep = func(context.Context, time.Duration) error { return context.Canceled }
-			report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+			report, err := dispatchFixture(d, context.Background(), testAttempt(), []RunnerSpec{runner})
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Dispatch error=%v, want %v", err, tc.want)
 			}

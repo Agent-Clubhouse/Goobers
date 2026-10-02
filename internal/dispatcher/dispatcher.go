@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/externaltelemetry"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/runner"
 )
 
@@ -75,6 +76,8 @@ type Config struct {
 	// NetworkNoneHostAliases carries verified Service IPs for pure pod rendering.
 	// The live dispatcher refreshes these from the API server on each dispatch.
 	NetworkNoneHostAliases []corev1.HostAlias
+	// LaunchReceipts must durably accept prepared facts before any pod is created.
+	LaunchReceipts launchreceipt.Recorder
 	// GaggleNamespaces maps each gaggle name this dispatcher serves to the
 	// Kubernetes namespace its stage pods are created in — Gaggle.spec.
 	// isolation.namespace, keyed by gaggle name (#4897). A stage pod's
@@ -287,6 +290,7 @@ func (c Config) linuxScheduleToStart() time.Duration {
 // Attempt is one stage attempt to dispatch: the identity, requirement, and
 // budget facts the pod spec is a pure function of.
 type Attempt struct {
+	LaunchBinding *launchreceipt.Binding
 	// InstanceID belongs to the originating run, not to the dispatch worker.
 	InstanceID string
 	// RunID, Gaggle, Workflow, and Stage identify the attempt; Number is the
@@ -897,8 +901,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// the selected image even when creation fails, without inventing a pod.
 	report.Image = stageContainerImage(pod)
 
-	if err := d.pods.CreatePod(ctx, pod); err != nil {
-		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	if err := d.createPreparedPod(ctx, attempt, pod); err != nil {
+		return report, err
 	}
 	report.Pod = pod.Name
 	report.PodStartedAt = d.now().UTC()

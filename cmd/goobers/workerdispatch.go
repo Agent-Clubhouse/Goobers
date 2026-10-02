@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/version"
 )
@@ -188,7 +189,8 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	build := version.Get()
 	d, err := newStageDispatcher(dispatcher.Config{
 		// Validation guarantees a non-nil signer before it enters the interface.
-		TokenMinter: signed,
+		TokenMinter:    signed,
+		LaunchReceipts: launchreceipt.Client{BaseURL: daemonAPI, Minter: signed},
 		// The kit writer uses the same key and the worker's pinned config
 		// snapshots. A test constructor without seams still refuses agentic
 		// dispatch explicitly instead of creating a pod that would find no kit.

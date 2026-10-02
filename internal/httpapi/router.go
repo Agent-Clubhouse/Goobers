@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
@@ -155,11 +156,17 @@ const PodPrincipalIssuer = "goobers/pod"
 // identity.
 const WorkerPrincipalIssuer = "goobers/worker"
 
+// ControllerJournalPrincipalIssuer confines trusted emission to the journal plane.
+const ControllerJournalPrincipalIssuer = "goobers/controller-journal"
+
 // WorkerBlobPrincipalIssuer is a blob-only resident-worker credential.
 const WorkerBlobPrincipalIssuer = "goobers/worker-blob"
 
 // WorkerSurrenderPrincipalIssuer can only read surrender presence and results.
 const WorkerSurrenderPrincipalIssuer = "goobers/worker-surrender-read"
+
+// LaunchGrantPrincipalIssuer confines a controller grant to one receipt write.
+const LaunchGrantPrincipalIssuer = "goobers/launch-grant"
 
 // CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
 // (Goobers#6120). Such a principal holds no roles and no pod scopes: the
@@ -422,6 +429,12 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == ControllerJournalPrincipalIssuer {
+			return authorizeControllerJournal(request)
+		}
+		if handled, err := authorizeLaunchReceipt(request, principal); handled {
+			return err
+		}
 		if principal.Issuer == CredentialGrantPrincipalIssuer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
 				return nil
@@ -614,6 +627,8 @@ type handlerConfig struct {
 	blobs                   blobstore.Store
 	recovery                RecoveryService
 	surrenders              SurrenderService
+	launchReceipts          LaunchReceiptService
+	controllerJournal       livejournal.ControllerJournalVerifier
 	state                   StateService
 	telemetryDefects        TelemetryDefectAggregateService
 	podRunGaggle            func(context.Context, string) (string, error)
@@ -1182,6 +1197,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		apicontract.RouteRunRecoveryPublish: recoveryPublishHandler(config.recovery, errorLog),
 	})
 	registerSurrenderPlaneRoutes(router, config, errorLog)
+	registerLaunchReceiptRoute(router, config.launchReceipts)
 	registerStatePlaneRoutes(router, config.state, errorLog)
 }
 
