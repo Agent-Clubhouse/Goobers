@@ -7,6 +7,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: tutor
+  annotations:
+    goobers.dev/purpose: "Learns from recent run signals and proposes validated changes to the instance's own workflow configuration as a pull request, so the process improves over time."
 spec:
   gaggle: goobers
   displayName: Tutor (self-improvement loop)

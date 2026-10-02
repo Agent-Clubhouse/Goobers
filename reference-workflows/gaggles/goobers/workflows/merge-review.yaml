@@ -13,6 +13,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: merge-review
+  annotations:
+    goobers.dev/purpose: "Decides the fate of open pull requests by reviewing each one and then merging, queueing or sending it back, so green and approved changes land without a human."
 spec:
   gaggle: goobers
   displayName: Merge review (PR-lifecycle decider)

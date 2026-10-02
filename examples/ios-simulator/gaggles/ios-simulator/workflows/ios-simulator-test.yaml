@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: ios-simulator-test
+  annotations:
+    goobers.dev/purpose: "Example that runs an XCUITest target in the iOS Simulator and publishes the xcresult diagnostics."
 spec:
   gaggle: ios-simulator
   displayName: iOS Simulator XCUITest

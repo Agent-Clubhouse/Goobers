@@ -15,11 +15,11 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 14 |
-| `approved` | 20 |
+| `approved` | 21 |
 | `implemented` | 28 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **72** |
+| **Total** | **73** |
 
 ## `docs/adr/`
 
@@ -65,6 +65,7 @@ word — read the page, not this table, before depending on it.
 | [Mixed-Platform Cloud Nodes — Windows Node Pools & Platform-Labeled Routing](mixed-platform-cloud-nodes.md) | `superseded` | — | — | #659 | — | [`goobernetes-architecture.md`](goobernetes-architecture.md) | — |
 | [Design: Multiple capability-scoped credentials (per-capability token sourcing)](multi-token-credentials.md) | `implemented` | — | — | #822, #823 | — | — | — |
 | [Design: needs-human label taxonomy — decision vs. status](needs-human-taxonomy.md) | `implemented` | — | — | #2028, #1974 | — | — | — |
+| [NetworkPolicy composition — the facts the egress model rests on](networkpolicy-composition.md) | `approved` | — | #4294 | #3568, #4294 | — | — | eedb41ea6 (2026-10-02) |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — | — | — | — |
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: Plan-driven dynamic fan-out](plan-driven-dynamic-fan-out.md) | `draft` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | — |

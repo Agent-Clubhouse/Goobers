@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: curate-resweep
+  annotations:
+    goobers.dev/purpose: "Periodically re-examines already-curated backlog items for drift and unblocked dependencies so stale or newly actionable issues are corrected without claiming forward work."
 spec:
   gaggle: goobers
   displayName: Scheduled backlog re-sweep

@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: self-update
+  annotations:
+    goobers.dev/purpose: "Stages and validates a new Goobers binary and requests a supervised restart so the running instance stays current."
 spec:
   gaggle: goobers
   triggers:

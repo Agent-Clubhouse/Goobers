@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: inline-policy-check
+  annotations:
+    goobers.dev/purpose: "Example of a small policy workflow that checks whether an item carries the required review label and reports whether the policy passed."
 spec:
   gaggle: acme-web
   displayName: Inline label policy check
