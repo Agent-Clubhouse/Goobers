@@ -124,6 +124,78 @@ func TestWorkerGooberPreparationReleaseAndOrder(t *testing.T) {
 	}
 }
 
+func TestWorkerGooberPreparationReleasesOnPanic(t *testing.T) {
+	panicValue := errors.New("setup panic")
+	operations := []struct {
+		name string
+		run  func(workerGoober, apiv1.InvocationEnvelope)
+	}{
+		{
+			name: "Invoke",
+			run: func(goober workerGoober, env apiv1.InvocationEnvelope) {
+				_, _ = goober.Invoke(t.Context(), env)
+			},
+		},
+		{
+			name: "Review",
+			run: func(goober workerGoober, env apiv1.InvocationEnvelope) {
+				_, _ = goober.Review(t.Context(), env)
+			},
+		},
+	}
+	panicStages := []string{"executor", "materialize", "authority"}
+
+	for _, operation := range operations {
+		for _, panicStage := range panicStages {
+			t.Run(operation.name+"/"+panicStage, func(t *testing.T) {
+				var releases int
+				gaggle := &gaggleSeams{
+					cfg: runner.Config{NewAgentic: func(string, runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Goober, error) {
+						if panicStage == "executor" {
+							panic(panicValue)
+						}
+						return &preparationCaptureGoober{dispatch: func() {}}, nil
+					}},
+					runsDir: t.TempDir(),
+				}
+				env := apiv1.InvocationEnvelope{
+					RunID: "run", TaskID: "run:task", Gaggle: "example", WorkflowID: "workflow", Goober: "coder",
+				}
+				adapter := workerGoober{
+					seams: &workerSeams{},
+					acquire: func(context.Context, apiv1.InvocationEnvelope) (*gaggleSeams, func(), error) {
+						return gaggle, func() { releases++ }, nil
+					},
+					materialize: func(context.Context, *gaggleSeams, apiv1.InvocationEnvelope) error {
+						if panicStage == "materialize" {
+							panic(panicValue)
+						}
+						return nil
+					},
+					mergeAuthority: func(ctx context.Context, _ apiv1.InvocationEnvelope) (context.Context, error) {
+						if panicStage == "authority" {
+							panic(panicValue)
+						}
+						return ctx, nil
+					},
+				}
+
+				func() {
+					defer func() {
+						if recovered := recover(); recovered != panicValue {
+							t.Fatalf("recovered %v, want %v", recovered, panicValue)
+						}
+					}()
+					operation.run(adapter, env)
+				}()
+				if releases != 1 {
+					t.Fatalf("release called %d times, want 1", releases)
+				}
+			})
+		}
+	}
+}
+
 type preparationCaptureGoober struct {
 	dispatch func()
 }
