@@ -14,6 +14,7 @@ import (
 // holds the run lock.
 type OperatorMessageJournal interface {
 	AcceptOperatorMessage(apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error)
+	AcknowledgeOperatorMessage(apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error)
 	CompleteOperatorMessage(apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error)
 }
 

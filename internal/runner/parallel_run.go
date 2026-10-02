@@ -94,6 +94,9 @@ func (j *branchJournal) Seq() uint64                 { return j.run.Seq() }
 func (j *branchJournal) AcceptOperatorMessage(request apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error) {
 	return j.run.AcceptOperatorMessage(request)
 }
+func (j *branchJournal) AcknowledgeOperatorMessage(ack apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error) {
+	return j.run.AcknowledgeOperatorMessage(ack)
+}
 func (j *branchJournal) CompleteOperatorMessage(outcome apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error) {
 	return j.run.CompleteOperatorMessage(outcome)
 }

@@ -254,6 +254,7 @@ type executionJournal interface {
 	Dir() string
 	Seq() uint64
 	AcceptOperatorMessage(apiv1.OperatorMessageRequest) (apiv1.OperatorMessageRecord, bool, error)
+	AcknowledgeOperatorMessage(apiv1.OperatorMessageAcknowledgement) (apiv1.OperatorMessageRecord, error)
 	CompleteOperatorMessage(apiv1.OperatorMessageOutcome) (apiv1.OperatorMessageRecord, error)
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)

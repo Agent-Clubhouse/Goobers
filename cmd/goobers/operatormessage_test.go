@@ -398,6 +398,54 @@ func TestDaemonOperatorMessageDeliversNestedSelectionThroughStageTarget(t *testi
 	}
 }
 
+func TestDaemonOperatorMessageRetryResumesAcceptedLiveDelivery(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	startedSeq := seedOperatorMessageLiveAgent(t, layout, crossRunTestGaggle, "target-run", "implement", 1, "agent-a")
+	address := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-a", startedSeq)
+	request := acceptedOperatorMessageRequest("key-resume-accepted", address, invoke.OperatorMessageModeBetweenTurn)
+	seedAcceptedOperatorMessage(t, layout, crossRunTestGaggle, "target-run", request, false)
+	target := registerOperatorMessageTarget(t, address, []string{invoke.OperatorMessageModeBetweenTurn}, nil)
+	service := newDaemonRunJournalService(layout, nil)
+
+	submission := operatorMessageRequest("target-run", "key-resume-accepted",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	submission.TargetAddress = address
+	record, err := service.SubmitOperatorMessage(context.Background(), submission)
+	if err != nil {
+		t.Fatalf("retry accepted live message: %v", err)
+	}
+	if record.Accepted || record.Record.Outcome == nil ||
+		record.Record.Outcome.Status != apiv1.OperatorMessageDelivered ||
+		len(target.deliveries) != 1 {
+		t.Fatalf("resumed accepted record = %+v deliveries = %+v", record, target.deliveries)
+	}
+}
+
+func TestDaemonOperatorMessageRetryCompletesAcknowledgedLiveDeliveryWithoutRedelivery(t *testing.T) {
+	layout := crossRunTestLayout(t)
+	seedOperatorMessageRun(t, layout, crossRunTestGaggle, "target-run")
+	startedSeq := seedOperatorMessageLiveAgent(t, layout, crossRunTestGaggle, "target-run", "implement", 1, "agent-a")
+	address := operatorMessageAgentAddress(t, "target-run", "implement", 1, "agent-a", startedSeq)
+	request := acceptedOperatorMessageRequest("key-resume-ack", address, invoke.OperatorMessageModeBetweenTurn)
+	seedAcceptedOperatorMessage(t, layout, crossRunTestGaggle, "target-run", request, true)
+	target := registerOperatorMessageTarget(t, address, []string{invoke.OperatorMessageModeBetweenTurn}, nil)
+	service := newDaemonRunJournalService(layout, nil)
+
+	submission := operatorMessageRequest("target-run", "key-resume-ack",
+		httpapi.Principal{Subject: "operator", Roles: []httpapi.Role{httpapi.RoleOperate}})
+	submission.TargetAddress = address
+	record, err := service.SubmitOperatorMessage(context.Background(), submission)
+	if err != nil {
+		t.Fatalf("retry acknowledged live message: %v", err)
+	}
+	if record.Accepted || record.Record.Outcome == nil ||
+		record.Record.Outcome.Status != apiv1.OperatorMessageDelivered ||
+		len(target.deliveries) != 0 {
+		t.Fatalf("resumed acknowledged record = %+v deliveries = %+v", record, target.deliveries)
+	}
+}
+
 func TestDaemonOperatorMessageLocalRunnerLifecycle(t *testing.T) {
 	t.Run("between-turn delivery retry termination and continuation", func(t *testing.T) {
 		layout := crossRunTestLayout(t)
@@ -661,6 +709,37 @@ func seedOperatorMessageLiveAgent(t *testing.T, layout instance.Layout, gaggle, 
 		t.Fatalf("append agent lifecycle: %v", err)
 	}
 	return startedSeq
+}
+
+func acceptedOperatorMessageRequest(key, address, mode string) apiv1.OperatorMessageRequest {
+	return apiv1.OperatorMessageRequest{
+		Schema:         apiv1.OperatorMessageRequestSchema,
+		RequestID:      key,
+		IdempotencyKey: key,
+		TargetAddress:  address,
+		PrincipalRef:   "operator",
+		RequestedAt:    time.Now().UTC(),
+		Purpose:        "approval-required",
+		Content:        apiv1.OperatorMessageContent{Text: "please review"},
+		DeliveryMode:   mode,
+	}
+}
+
+func seedAcceptedOperatorMessage(t *testing.T, layout instance.Layout, gaggle, runID string, request apiv1.OperatorMessageRequest, acknowledged bool) {
+	t.Helper()
+	run, _, err := journal.Recover(filepath.Join(layout.ForGaggle(gaggle).RunsDir(), runID))
+	if err != nil {
+		t.Fatalf("recover run %s: %v", runID, err)
+	}
+	defer func() { _ = run.Close() }()
+	if _, accepted, err := run.AcceptOperatorMessage(request); err != nil || !accepted {
+		t.Fatalf("AcceptOperatorMessage = accepted %v, err %v", accepted, err)
+	}
+	if acknowledged {
+		if _, err := run.AcknowledgeOperatorMessage(operatorMessageAcknowledgement(request)); err != nil {
+			t.Fatalf("AcknowledgeOperatorMessage: %v", err)
+		}
+	}
 }
 
 type fakeOperatorMessageTarget struct {

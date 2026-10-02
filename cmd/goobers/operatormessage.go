@@ -64,7 +64,7 @@ func (s *daemonRunJournalService) SubmitOperatorMessage(ctx context.Context, req
 	if err != nil {
 		return httpapi.OperatorMessageSubmissionResponse{}, err
 	}
-	if accepted {
+	if accepted || shouldResumeOperatorMessageDelivery(record) {
 		record, err = s.deliverAcceptedOperatorMessage(ctx, request.Gaggle, request.RunID, record)
 		if err != nil {
 			return httpapi.OperatorMessageSubmissionResponse{}, err
@@ -167,6 +167,9 @@ func operatorMessageTargetAddressLiveInRunDir(runDir, targetAddress string) bool
 }
 
 func (s *daemonRunJournalService) deliverAcceptedOperatorMessage(ctx context.Context, gaggle, runID string, record apiv1.OperatorMessageRecord) (apiv1.OperatorMessageRecord, error) {
+	if record.Outcome != nil {
+		return record, nil
+	}
 	request := record.Request
 	if request.DeliveryMode != invoke.OperatorMessageModeBetweenTurn && request.DeliveryMode != invoke.OperatorMessageModeInterruptAndContinue {
 		return record, nil
@@ -187,6 +190,9 @@ func (s *daemonRunJournalService) deliverAcceptedOperatorMessage(ctx context.Con
 		recoveredRunDir = recovered.Dir()
 		run = recovered
 	}
+	if record.Acknowledgement != nil {
+		return run.CompleteOperatorMessage(operatorMessageOutcome(request, apiv1.OperatorMessageDelivered, "", ""))
+	}
 	target, ok := runner.DefaultOperatorMessageDeliveryRegistry.Resolve(request.TargetAddress)
 	if !ok && !active && operatorMessageTargetAddressLiveInRunDir(recoveredRunDir, request.TargetAddress) {
 		target, ok = runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisit(request.TargetAddress)
@@ -201,6 +207,9 @@ func (s *daemonRunJournalService) deliverAcceptedOperatorMessage(ctx context.Con
 		TargetAddress: request.TargetAddress,
 	})
 	if err == nil {
+		if _, ackErr := run.AcknowledgeOperatorMessage(operatorMessageAcknowledgement(request)); ackErr != nil {
+			return apiv1.OperatorMessageRecord{}, ackErr
+		}
 		return run.CompleteOperatorMessage(operatorMessageOutcome(request, apiv1.OperatorMessageDelivered, "", ""))
 	}
 	code := "delivery_failed"
@@ -208,6 +217,29 @@ func (s *daemonRunJournalService) deliverAcceptedOperatorMessage(ctx context.Con
 		code = "delivery_canceled"
 	}
 	return run.CompleteOperatorMessage(operatorMessageOutcome(request, apiv1.OperatorMessageFailed, code, err.Error()))
+}
+
+func shouldResumeOperatorMessageDelivery(record apiv1.OperatorMessageRecord) bool {
+	if record.Outcome != nil {
+		return false
+	}
+	switch record.Request.DeliveryMode {
+	case invoke.OperatorMessageModeBetweenTurn, invoke.OperatorMessageModeInterruptAndContinue:
+		_, err := journal.ParseAgentAddress(record.Request.TargetAddress)
+		return err == nil
+	default:
+		return false
+	}
+}
+
+func operatorMessageAcknowledgement(request apiv1.OperatorMessageRequest) apiv1.OperatorMessageAcknowledgement {
+	return apiv1.OperatorMessageAcknowledgement{
+		Schema:         apiv1.OperatorMessageAcknowledgementSchema,
+		RequestID:      request.RequestID,
+		IdempotencyKey: request.IdempotencyKey,
+		PrincipalRef:   request.PrincipalRef,
+		AcknowledgedAt: time.Now().UTC(),
+	}
 }
 
 func operatorMessageOutcome(request apiv1.OperatorMessageRequest, status apiv1.OperatorMessageOutcomeStatus, code, detail string) apiv1.OperatorMessageOutcome {
