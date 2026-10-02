@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -500,7 +499,7 @@ func (a *Activities) validateStageDispatch(input DispatchStageInput) error {
 	if input.Placement.Self {
 		if a.AdmitSelfExecution != nil {
 			if err := a.AdmitSelfExecution(input.Envelope.TaskID); err != nil {
-				return temporal.NewNonRetryableApplicationError(err.Error(), runner.SelfExecutionDeniedCode, err)
+				return classifySelfAdmissionError(err)
 			}
 		}
 		return classifySeamError(fmt.Errorf("engine: stage %q placement resolved to self; self placements execute on the local path, never via DispatchStage (fail closed)", input.Envelope.TaskID))
@@ -738,7 +737,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	if err == nil && report.Local {
 		if a.AdmitSelfExecution != nil {
 			if err := a.AdmitSelfExecution(input.Envelope.TaskID); err != nil {
-				return stageActivityResult{}, temporal.NewNonRetryableApplicationError(err.Error(), runner.SelfExecutionDeniedCode, err)
+				return stageActivityResult{}, classifySelfAdmissionError(err)
 			}
 		}
 		// SelectRunner resolved self inside an eligible set the workflow routed

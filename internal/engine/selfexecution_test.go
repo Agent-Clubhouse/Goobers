@@ -80,3 +80,15 @@ func TestSelfExecutionDeniedDispatchBoundary(t *testing.T) {
 		t.Fatalf("dispatch self selection lost policy classification: %v", err)
 	}
 }
+
+func TestSelfExecutionUnavailableIsNotPolicyRefusal(t *testing.T) {
+	acts := &Activities{AdmitSelfExecution: func(string) error { return ErrNotConfigured }}
+	_, err := acts.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{}, "", "", apiv1.WorkspaceRepo, "")
+	if err == nil || IsSelfExecutionDenied(err) {
+		t.Fatalf("configuration error mislabeled as policy: %v", err)
+	}
+	_, err = acts.ReviewGoober(context.Background(), apiv1.InvocationEnvelope{}, "", "", apiv1.WorkspaceRepo, "", false)
+	if err == nil || IsSelfExecutionDenied(err) {
+		t.Fatalf("review configuration error mislabeled as policy: %v", err)
+	}
+}

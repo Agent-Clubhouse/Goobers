@@ -556,6 +556,10 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			var refusal *runner.SelfExecutionRefusal
+			if !errors.As(err, &refusal) {
+				return stageActivityResult{}, classifySeamError(err)
+			}
 			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
 		}
 	}
@@ -691,7 +695,7 @@ func captureUnpushedDiff(ctx context.Context, ws Workspace, mode apiv1.Workspace
 func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, subjectAgentic bool) (GateReviewResult, error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
-			return GateReviewResult{}, temporal.NewNonRetryableApplicationError(err.Error(), runner.SelfExecutionDeniedCode, err)
+			return GateReviewResult{}, classifySelfAdmissionError(err)
 		}
 	}
 	if a.Goober == nil {
@@ -832,6 +836,10 @@ func captureGateDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
+			var refusal *runner.SelfExecutionRefusal
+			if !errors.As(err, &refusal) {
+				return stageActivityResult{}, classifySeamError(err)
+			}
 			return stageActivityResult{ResultEnvelope: runner.SelfExecutionBlockedResult(env.TaskID)}, nil
 		}
 	}

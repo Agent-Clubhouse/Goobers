@@ -19,3 +19,11 @@ func IsSelfExecutionDenied(err error) bool {
 	}
 	return false
 }
+
+func classifySelfAdmissionError(err error) error {
+	var refusal *runner.SelfExecutionRefusal
+	if errors.As(err, &refusal) {
+		return temporal.NewNonRetryableApplicationError(err.Error(), runner.SelfExecutionDeniedCode, err)
+	}
+	return classifySeamError(err)
+}

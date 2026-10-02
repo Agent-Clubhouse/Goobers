@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -435,9 +436,12 @@ func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string,
 }
 
 func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
-	seams.snapshot.Load().cfg.StartSelfExecutionAccounting()
 	deps.AdmitSelfExecution = func(stage string) error {
-		cfg := seams.snapshot.Load().cfg
+		snapshot := seams.snapshot.Load()
+		if snapshot == nil || snapshot.cfg == nil {
+			return engine.ErrNotConfigured
+		}
+		cfg := snapshot.cfg
 		denied := cfg.SelfExecutionDenied()
 		cfg.ObserveSelfExecution(denied)
 		if denied {

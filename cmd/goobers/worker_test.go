@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,12 @@ func TestWireWorkerRuntimeSeamsAssignsLiveScrubber(t *testing.T) {
 	seams := &workerSeams{shared: registry, scrubber: scrubber}
 	var deps bootstrap.EngineDeps
 	wireWorkerRuntimeSeams(&deps, seams, t.TempDir())
+	if deps.AdmitSelfExecution == nil {
+		t.Fatal("missing current-policy admission guard")
+	}
+	if err := deps.AdmitSelfExecution("run:task"); !errors.Is(err, engine.ErrNotConfigured) {
+		t.Fatalf("missing worker snapshot admitted local work: %v", err)
+	}
 	registry.Register([]byte(secret))
 
 	got := deps.Scrubber.Scrub([]byte("worker result: " + secret))
