@@ -130,7 +130,11 @@ func TestMutationReceiptIdentityAllowsCleanupWithScrubbedLiveJournal(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer writer.Close()
+			t.Cleanup(func() {
+				if err := writer.Close(); err != nil {
+					t.Errorf("close journal: %v", err)
+				}
+			})
 			if err := writer.Append(journal.WithMutationOutcome(journal.Event{
 				Type: journal.EventRefTouched, ExternalRef: &journal.ExternalRef{Provider: fact.Provider, Kind: fact.Kind, ID: fact.ID},
 				Runner: providers.MutationReceiptRunnerFields(fact.ReceiptID, fact.Operation, nil, nil, nil),
