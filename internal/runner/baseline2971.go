@@ -207,6 +207,11 @@ func (r *Runner) classifyBaselineFailure(ctx context.Context, ws *walkState, tas
 	if count, ok := result.Outputs[executor.FailureCountOutput].(float64); ok {
 		req.FailureCount = int(count)
 	}
+	for _, key := range []string{executor.StdoutTruncatedOutput, executor.StderrTruncatedOutput} {
+		if truncated, _ := result.Outputs[key].(bool); truncated {
+			req.OutputTruncated = true
+		}
+	}
 	if ws.in.Item != nil {
 		req.Waiter = ws.in.Item.ID
 	}

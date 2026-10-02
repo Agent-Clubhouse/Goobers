@@ -375,6 +375,48 @@ func TestLongInheritedGoTestFailureStillMatches(t *testing.T) {
 	}
 }
 
+// TestDigestCutMidLineIsIncomplete: the executor bounds the digest at 8 KiB
+// and can cut inside the last failure line. Two rosters differing only past
+// that cut must not read as complete and equal.
+func TestDigestCutMidLineIsIncomplete(t *testing.T) {
+	findings := func(last string) string {
+		var b strings.Builder
+		for i := 0; b.Len() < 8192-56-75; i++ {
+			fmt.Fprintf(&b, "internal/p/f%03d.go:%d:6: unreviewed dead code: example.com/p.sym%03d\n", i, i+1, i)
+		}
+		b.WriteString("internal/zz/z.go:1:1: unreviewed dead code: example.com/zz.averyveryveryveryverylongprefix" + last + "\n")
+		return b.String() + "make: *** [deadcode] Error 1\n"
+	}
+	digest, count := executor.FailureDigest(nil, []byte(findings("Alpha")))
+	if !strings.Contains(digest, executor.FailureEvidenceTruncatedMarker) {
+		t.Fatal("fixture digest was not cut; want the size-bound case")
+	}
+	if _, complete := failureRoster(digest, count); complete {
+		t.Fatal("a digest cut mid-line read as a complete roster")
+	}
+	decision := classifyStreams(t, []string{"make", "ci"}, "", findings("Alpha"), "", findings("Bravo"))
+	if decision.Class == ClassSharedBaselineFailure || decision.Park {
+		t.Fatalf("class = %q park = %v, want rosters differing past the cut never parked", decision.Class, decision.Park)
+	}
+}
+
+// TestHeadOnlyRunOutputIsUnknown: a stage that kept only the head of its
+// output is blind to failures past it — everything it derived, roster
+// included, may omit the branch's own.
+func TestHeadOnlyRunOutputIsUnknown(t *testing.T) {
+	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: failureText}})
+	decision, err := e.Classify(context.Background(), Request{
+		Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"make", "ci"},
+		FailureText: failureText, OutputTruncated: true,
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if decision.Class != ClassUnknown || decision.Park {
+		t.Fatalf("class = %q park = %v, want %q", decision.Class, decision.Park, ClassUnknown)
+	}
+}
+
 // TestBoilerplateOnlyFailureIsUnknown: a bare package verdict has no stable
 // signature, so a base failing one package cannot excuse another.
 func TestBoilerplateOnlyFailureIsUnknown(t *testing.T) {

@@ -1068,7 +1068,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Artifacts = append(result.Artifacts, refToPointer(stdoutRef, "text/plain"))
 	if stdout.Truncated() {
-		result.Outputs["stdoutTruncated"] = true
+		result.Outputs[StdoutTruncatedOutput] = true
 	}
 
 	stderrRef, err := e.Journal.RecordArtifact(env.TaskID+"/stderr.log", errBytes)
@@ -1077,7 +1077,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	result.Artifacts = append(result.Artifacts, refToPointer(stderrRef, "text/plain"))
 	if stderr.Truncated() {
-		result.Outputs["stderrTruncated"] = true
+		result.Outputs[StderrTruncatedOutput] = true
 	}
 
 	if timedOut {

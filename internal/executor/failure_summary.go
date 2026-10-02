@@ -164,6 +164,20 @@ const (
 	FailureCountOutput  = "failureCount"
 )
 
+// StdoutTruncatedOutput and StderrTruncatedOutput are the result outputs a
+// shell stage sets when it kept only the head of that stream. Everything a
+// stage derives from the stream — its diagnostic, digest and count — then
+// describes that head only.
+const (
+	StdoutTruncatedOutput = "stdoutTruncated"
+	StderrTruncatedOutput = "stderrTruncated"
+)
+
+// FailureEvidenceTruncatedMarker is the line that follows failure evidence
+// (a context window, or the digest itself) cut at its size bound. The line
+// before it may be a partial one.
+const FailureEvidenceTruncatedMarker = "... (failure evidence truncated; see output artifacts)"
+
 // FailureDigest is the full failure roster a failing stage records as its
 // failureDigest output, and the count of distinct failure lines it records as
 // failureCount, derived exactly as the shell executor derives them. The

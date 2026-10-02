@@ -89,8 +89,16 @@ func reducedSignature(reduced string, truncated bool) string {
 // all. A context window cut short inside the digest does not make it
 // incomplete: the failure lines come from a full scan of the output.
 func failureRoster(digest string, count int) (string, bool) {
+	lines := strings.Split(digest, "\n")
 	raw := make(map[string]bool)
-	for _, line := range strings.Split(digest, "\n") {
+	for index, line := range lines {
+		// Evidence cut at its size bound is followed by the marker line, and
+		// the cut can fall mid-line: the line just before a marker may be a
+		// fragment, which must neither count toward completeness nor stand in
+		// for the whole line.
+		if index+1 < len(lines) && strings.TrimSpace(lines[index+1]) == executor.FailureEvidenceTruncatedMarker {
+			continue
+		}
 		if line = strings.TrimSpace(line); executor.IsFailureLine(line) {
 			raw[line] = true
 		}
@@ -98,14 +106,14 @@ func failureRoster(digest string, count int) (string, bool) {
 	if len(raw) == 0 || len(raw) < count {
 		return "", false
 	}
-	lines := make([]string, 0, len(raw))
+	roster := make([]string, 0, len(raw))
 	for line := range raw {
-		lines = append(lines, flake.NormalizeVolatile(line))
+		roster = append(roster, flake.NormalizeVolatile(line))
 	}
-	slices.Sort(lines)
-	lines = slices.Compact(lines)
-	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
-	return fmt.Sprintf("%d:%x", len(lines), sum[:8]), true
+	slices.Sort(roster)
+	roster = slices.Compact(roster)
+	sum := sha256.Sum256([]byte(strings.Join(roster, "\n")))
+	return fmt.Sprintf("%d:%x", len(roster), sum[:8]), true
 }
 
 // truncatedSignatureSuffix marks a signature derived from a truncated
