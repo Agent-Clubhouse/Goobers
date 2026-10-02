@@ -69,6 +69,9 @@ func (s recoveryDeliveryService) PublishRecovery(ctx context.Context, runID, key
 			InventoryRoot: root, CleanupRoots: []string{manager.Root},
 			MaxSnapshots: recoveryCfg.MaxSnapshotsEffective(), MaxArchiveBytes: recoveryCfg.MaxArchiveBytesEffective(),
 			EvictFull: recoveryEvictFunc(s.layout, cfg, manager, key),
+			EnsureBase: func(ctx context.Context, repository, sha, ref string) error {
+				return manager.FetchRecoveryBase(ctx, url, repository, sha, ref)
+			},
 		}, recoveryPublicationAck{ctx: ctx, service: s, runID: runID, key: key, issue: issue, runDir: runDir, recoveryConfig: recoveryCfg})
 		return err
 	})
@@ -122,7 +125,10 @@ func (a recoveryPublicationAck) withCurrentRetention(event journal.Event) (journ
 	if err != nil || len(records) != 1 || records[0].RepositoryKey != a.key {
 		return journal.Event{}, fmt.Errorf("publication acknowledgement identity mismatch")
 	}
-	entries, err := recovery.ReadInventory(a.ctx, filepath.Join(a.service.layout.Root, "recovery"), a.recoveryConfig.MaxSnapshotsEffective())
+	// Tolerant: a publish killed mid-transfer (e.g. by the pod's deadline)
+	// leaves a reservation with no record. A strict read would fail every
+	// later acknowledgement on the instance for debris unrelated to this one.
+	entries, _, err := recovery.ReadInventoryTolerant(a.ctx, filepath.Join(a.service.layout.Root, "recovery"), recovery.MaxInventoryEntries)
 	if err != nil {
 		return journal.Event{}, err
 	}

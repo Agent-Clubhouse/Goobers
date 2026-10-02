@@ -38,6 +38,13 @@ type RetentionRequest struct {
 	// full, so this capture is not refused when reclaimable capacity exists
 	// (#4823). Nil disables eviction; a full inventory then still refuses.
 	EvictFull EvictFunc
+	// EnsureBase optionally makes a delta archive's base commit present and
+	// reachable from its base ref in Repository before import (#6306). A
+	// pure-pod gaggle's host mirror is never fetched by a host stage, so the
+	// base may be absent or newer than the mirror's copy of the base ref,
+	// which would force a full-history host bundle. Nil keeps the
+	// self-contained, no-fetch behaviour.
+	EnsureBase func(ctx context.Context, repository, sha, ref string) error
 	// OverflowRoot enables the overflow tier (#5370): when the inventory is
 	// still full after every reclamation has run, the snapshot is published
 	// here as a ref-backed record with no bundle instead of refusing the
