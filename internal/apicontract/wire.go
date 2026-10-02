@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/prqueue"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -175,7 +176,7 @@ func telemetryRetentionWireFixture(startedAt, finishedAt time.Time) *readservice
 }
 
 func telemetryExporterHealthWireFixture(startedAt, finishedAt time.Time) *readservice.TelemetryExporterHealthStatus {
-	return &readservice.TelemetryExporterHealthStatus{
+	result := &readservice.TelemetryExporterHealthStatus{
 		Enabled: true, Mode: "otlp",
 		Trace: readservice.TelemetryExporterSignalState{
 			Configured: true, State: "healthy", LastSuccessAt: &finishedAt, LastFailureAt: &startedAt,
@@ -188,6 +189,13 @@ func telemetryExporterHealthWireFixture(startedAt, finishedAt time.Time) *readse
 			ConsecutiveFailures: 3, FailureTransitions: 1, SuppressedFailureEvents: 2,
 		},
 	}
+	collector := *result
+	result.Mode = "custom"
+	result.Destinations = map[string]*readservice.TelemetryExporterHealthStatus{
+		"collector": &collector,
+		"tenant":    {Enabled: true, Mode: "azure-monitor", Trace: readservice.TelemetryExporterSignalState{Configured: true, State: "healthy", LastSuccessAt: &finishedAt}, Metric: readservice.TelemetryExporterSignalState{State: "disabled"}, Journal: &telemetry.ExporterDeliveryCounters{Accepted: 12}, Diagnostics: &telemetry.ExporterDeliveryCounters{Accepted: 3}, Replay: &telemetry.ExporterReplayHealthSnapshot{AccountingReady: true, PendingRecords: 2, PendingBytes: 1024, OldestPendingSeconds: 30, LastSuccess: &startedAt, LastFailure: &finishedAt, FailureClass: "rejected", ActiveFailure: true}},
+	}
+	return result
 }
 
 func wireFixtureTimes() (time.Time, time.Time, time.Time) {

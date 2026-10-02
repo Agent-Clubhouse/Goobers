@@ -109,15 +109,20 @@ next planned stable release line, reviewed like any other change
 `TestDSLMatrixAgainstNextPlannedRelease`). Bump it when the plan changes; a PR
 that writes a lifecycle transition the declared release can't ship fails
 immediately, on that PR, rather than only at tag time (#4709).
-The declared version must remain later than the newest published stable tag;
-the same test names both values when the constant needs a post-release bump.
+Bump the constant after each stable release. Its freshness is checked at
+release time, not on every PR (#5852): the release workflow refuses to build a
+tag whose release line is later than the `NextPlannedRelease` declared on the
+tagged commit (`TestReleaseTagWithinNextPlannedRelease`, run with
+`GOOBERS_RELEASE_TAG` set), so bump it on the commit you tag. A pushed tag
+never turns unrelated in-flight PRs red.
 
 A staged lifecycle transition also constrains release ordering. Because the
 matrix's declared level must match its last history transition, merging a
 transition effective in (for example) `v0.5.0` prevents an intermediate
 `v0.4.x` patch from passing release validation. If that hotfix must ship first,
 prepare its branch from the intended release base and edit the support matrix
-there to remove the not-yet-effective transition, then validate and publish the
+there to remove the not-yet-effective transition, set `NextPlannedRelease` on
+that branch to no earlier than the patch being cut, then validate and publish the
 patch from that branch. Do not rewrite the already-merged transition on the
 main development line merely to cut the hotfix.
 
@@ -354,9 +359,10 @@ verifies on every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
 [Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
 integrity check is in addition to, not instead of, the Authenticode
-signature below — both `sign-macos` and `sign-windows` recompute this
-manifest after signing, so it always reflects the signed bytes actually
-published.
+signature below — the release workflow's `assemble` job merges the signed
+darwin and Windows archives into the build's asset set and recomputes this
+manifest once, after both signers finish, so it always reflects the signed
+bytes actually published.
 
 ## Verifying a release
 
@@ -527,13 +533,27 @@ publication: Linux AMD64/ARM64, macOS AMD64/ARM64, and Windows AMD64. The
 `native-smoke` matrix uses native hosted runners and consumes the final signed
 artifact set. Linux AMD64 runs the deeper demo and release-document checks in
 `validate-release`, which has only read permission. A failed native smoke blocks
-publication. The separate `verify-and-publish` job independently downloads the
+publication.
+
+`sign-macos` and `sign-windows` run in parallel from the build's upload, and
+each uploads only the archive(s) it re-packed. `assemble` merges them into the
+build's asset set, recomputes `SHA256SUMS` once, and refuses the set unless
+every signed archive changed and every other asset is byte-identical to the
+build. Because signing never touches anything else, `validate-release` and the
+Linux `native-linux-images` legs run on the build's exact upload in parallel
+with signing (#5413), so a content failure surfaces without waiting for either
+signer. Gates that need signed bytes (`native-smoke` and `native-windows-image`)
+and publication use the assembled set. Within the build job, `go run ./release`
+builds targets concurrently, by default half the runner's CPUs (at least 1, at
+most 4); set `GOOBERS_RELEASE_BUILD_PARALLELISM` to a positive integer to
+override it. The separate `verify-and-publish` job independently downloads the
 final signer artifact by immutable artifact ID, checks the exact release asset
 set and every checksum, and uploads an explicit file list. It treats the
 validation job’s generated release notes as data and never executes release
-binaries, installers, or build tools with publication permission. Every
-post-signing gate uses that same immutable artifact ID; missing, malformed, or
-multiple IDs fail before download rather than selecting all run artifacts.
+binaries, installers, or build tools with publication permission. Every gate
+downloads by immutable artifact ID (the build's upload or the assembled set);
+missing, malformed, or multiple IDs fail before download rather than selecting
+all run artifacts.
 
 This supersedes the earlier #2039 decision to publish Linux ARM64 and macOS
 AMD64 without execution coverage. Native smoke proves startup and packaged

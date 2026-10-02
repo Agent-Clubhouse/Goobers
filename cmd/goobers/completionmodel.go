@@ -543,6 +543,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"telemetry test": {
+		{name: "destination", takesArg: true, desc: "Named Azure destination to probe"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "timeout", takesArg: true, desc: "Connectivity deadline"},
 	},

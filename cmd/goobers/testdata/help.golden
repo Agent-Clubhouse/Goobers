@@ -3083,7 +3083,7 @@ A run that used multiple grouped agent cohorts appears in each.
 Exit codes: 0 = OK, 2 = usage/IO error.
 
 ### telemetry test
-Usage: goobers telemetry test [--json] [--timeout DURATION] [path]
+Usage: goobers telemetry test [--destination NAME] [--json] [--timeout DURATION] [path]
 
 Resolve the configured connection-string reference and send one fixed,
 identity-free connectivity record directly to Application Insights. The probe

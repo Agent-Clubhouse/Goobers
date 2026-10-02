@@ -165,12 +165,17 @@ func telemetryIngestStatus(ctx context.Context, store *rollup.DB) *TelemetryInge
 // delivery health. The endpoint fields retain only a host and bounded host
 // class, never headers, credentials, paths, query strings, prompts, or source.
 type TelemetryExporterHealthStatus struct {
-	Enabled       bool                         `json:"enabled"`
-	Mode          string                       `json:"mode,omitempty"`
-	EndpointHost  string                       `json:"endpointHost,omitempty"`
-	EndpointClass string                       `json:"endpointClass,omitempty"`
-	Trace         TelemetryExporterSignalState `json:"trace"`
-	Metric        TelemetryExporterSignalState `json:"metric"`
+	Destinations      map[string]*TelemetryExporterHealthStatus `json:"destinations,omitempty"`
+	UnavailableReason string                                    `json:"unavailableReason,omitempty"`
+	Replay            *telemetry.ExporterReplayHealthSnapshot   `json:"replay,omitempty"`
+	Journal           *telemetry.ExporterDeliveryCounters       `json:"journal,omitempty"`
+	Diagnostics       *telemetry.ExporterDeliveryCounters       `json:"diagnostics,omitempty"`
+	Enabled           bool                                      `json:"enabled"`
+	Mode              string                                    `json:"mode,omitempty"`
+	EndpointHost      string                                    `json:"endpointHost,omitempty"`
+	EndpointClass     string                                    `json:"endpointClass,omitempty"`
+	Trace             TelemetryExporterSignalState              `json:"trace"`
+	Metric            TelemetryExporterSignalState              `json:"metric"`
 }
 
 // TelemetryExporterSignalState reports one signal's current local delivery
@@ -211,8 +216,12 @@ func telemetryExporterHealthStatus(snapshot func() telemetry.ExporterHealthSnaps
 	if snapshot == nil {
 		return nil
 	}
-	health := snapshot()
-	return &TelemetryExporterHealthStatus{
+	return telemetryExporterHealthSnapshotStatus(snapshot())
+}
+
+func telemetryExporterHealthSnapshotStatus(health telemetry.ExporterHealthSnapshot) *TelemetryExporterHealthStatus {
+	status := &TelemetryExporterHealthStatus{
+		UnavailableReason: health.UnavailableReason, Replay: health.Replay, Journal: health.Journal, Diagnostics: health.Diagnostics,
 		Enabled:       health.Enabled,
 		Mode:          health.Mode,
 		EndpointHost:  health.EndpointHost,
@@ -220,6 +229,13 @@ func telemetryExporterHealthStatus(snapshot func() telemetry.ExporterHealthSnaps
 		Trace:         telemetryExporterSignalState(health.Trace),
 		Metric:        telemetryExporterSignalState(health.Metric),
 	}
+	if len(health.Destinations) > 0 {
+		status.Destinations = make(map[string]*TelemetryExporterHealthStatus, len(health.Destinations))
+	}
+	for name, destination := range health.Destinations {
+		status.Destinations[name] = telemetryExporterHealthSnapshotStatus(destination)
+	}
+	return status
 }
 
 func telemetryExporterSignalState(signal telemetry.ExporterSignalStatus) TelemetryExporterSignalState {

@@ -23,8 +23,8 @@ type lineageDispatcher struct {
 
 func (d *lineageDispatcher) Dispatch(ctx context.Context, attempt dispatcher.Attempt, eligible []dispatcher.RunnerSpec) (dispatcher.Report, error) {
 	report, err := d.fakeStageDispatcher.Dispatch(ctx, attempt, eligible)
-	if attempt.Number <= len(d.failures) {
-		return dispatcher.Report{}, d.failures[attempt.Number-1]
+	if attempt.IdentityAttempt() <= len(d.failures) {
+		return dispatcher.Report{}, d.failures[attempt.IdentityAttempt()-1]
 	}
 	return report, err
 }
@@ -127,15 +127,18 @@ func TestRemoteReviewerRetryAndRepassTransportAttemptLineage(t *testing.T) {
 	}}
 	executeForProjection(t, in, &Activities{Goober: refusingReviewer(t), Det: det, Workspaces: testWorkspaces(t), Dispatcher: d, Surrenders: store}, false)
 	attempts, _ := d.recorded()
-	assertDispatchedClasses(t, attempts, []journal.AttemptClass{"", journal.AttemptInfra, journal.AttemptPolicy})
+	assertDispatchedClasses(t, attempts, []journal.AttemptClass{"", journal.AttemptInfra, ""})
+	if got := []int{attempts[0].Number, attempts[1].Number, attempts[2].Number}; !reflect.DeepEqual(got, []int{1, 2, 1}) {
+		t.Fatalf("logical attempt numbers=%v", got)
+	}
 }
 
 func assertDispatchedClasses(t *testing.T, attempts []dispatcher.Attempt, want []journal.AttemptClass) {
 	t.Helper()
 	var got []journal.AttemptClass
 	for i, attempt := range attempts {
-		if attempt.Number != i+1 {
-			t.Fatalf("attempt number = %d at dispatch %d", attempt.Number, i+1)
+		if attempt.IdentityAttempt() != i+1 {
+			t.Fatalf("physical attempt number = %d at dispatch %d", attempt.IdentityAttempt(), i+1)
 		}
 		got = append(got, attempt.Class)
 	}

@@ -195,6 +195,7 @@ func renderSchedulerStatusSignals(
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
 	text.WriteString(telemetryIngestStatusLine(status, now))
+	text.WriteString(telemetryDestinationStatusLines(status.TelemetryExporterHealth))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
 	clustercheck.WriteStatus(text, status.ClusterChecks)
@@ -398,20 +399,21 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
-	ClusterChecks          []clustercheck.Result                      `json:"clusterChecks,omitempty"`
-	Root                   *statusRootIdentity                        `json:"root,omitempty"`
-	QueueEligibility       *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
-	EngineFallbacks        []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
-	Warnings               []validate.CodedWarning                    `json:"warnings"`
-	TimeToFirstPR          *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
-	DaemonRestart          *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
-	StageServiceAccounts   map[string]string                          `json:"stageServiceAccounts,omitempty"`
-	IsolationMandates      map[string][]string                        `json:"isolationMandates,omitempty"`
-	Maintenance            *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
-	WorkerConfigDivergence []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
-	TelemetryRetention     *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
-	JournalHealth          *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
-	StorageHealth          *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
+	TelemetryExporterHealth *readservice.TelemetryExporterHealthStatus `json:"telemetryExporterHealth,omitempty"`
+	ClusterChecks           []clustercheck.Result                      `json:"clusterChecks,omitempty"`
+	Root                    *statusRootIdentity                        `json:"root,omitempty"`
+	QueueEligibility        *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
+	EngineFallbacks         []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
+	Warnings                []validate.CodedWarning                    `json:"warnings"`
+	TimeToFirstPR           *telemetry.TimeToFirstPRMetric             `json:"timeToFirstPR,omitempty"`
+	DaemonRestart           *readservice.DaemonRestartStatus           `json:"daemonRestart,omitempty"`
+	StageServiceAccounts    map[string]string                          `json:"stageServiceAccounts,omitempty"`
+	IsolationMandates       map[string][]string                        `json:"isolationMandates,omitempty"`
+	Maintenance             *readservice.MaintenanceStatus             `json:"maintenance,omitempty"`
+	WorkerConfigDivergence  []readservice.WorkerConfigDivergenceStatus `json:"workerConfigDivergence,omitempty"`
+	TelemetryRetention      *readservice.TelemetryRetentionStatus      `json:"telemetryRetention,omitempty"`
+	JournalHealth           *readservice.JournalHealthStatus           `json:"journalHealth,omitempty"`
+	StorageHealth           *readservice.StorageHealthStatus           `json:"storageHealth,omitempty"`
 	// RefusedWorkflows are the workflows the startup constraint solve marked
 	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
 	// checkpoint 3) — the scripting-side counterpart of the text renderer's
@@ -1549,6 +1551,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
 		var maintenance *readservice.MaintenanceStatus
+		var telemetryExporterHealth *readservice.TelemetryExporterHealthStatus
 		var telemetryRetention *readservice.TelemetryRetentionStatus
 		var journalHealth *readservice.JournalHealthStatus
 		var storageHealth *readservice.StorageHealthStatus
@@ -1567,6 +1570,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
 				maintenance = status.Maintenance
+				telemetryExporterHealth = status.TelemetryExporterHealth
 				telemetryRetention = status.TelemetryRetention
 				journalHealth = status.JournalHealth
 				storageHealth = status.StorageHealth
@@ -1583,26 +1587,27 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		}
 		baselineBlockers := optionalStatusBaselineBlockers(l)
 		output := statusJSONOutput{
-			ClusterChecks:          clusterChecks,
-			Root:                   optionalStatusRoot(supportsWatch, l, now),
-			QueueEligibility:       optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
-			EngineFallbacks:        engineFallbacks,
-			WorkerConfigDivergence: workerConfigDivergence,
-			Warnings:               warnings,
-			TimeToFirstPR:          timeToFirstPR,
-			DaemonRestart:          daemonRestart,
-			Maintenance:            maintenance,
-			TelemetryRetention:     telemetryRetention,
-			JournalHealth:          journalHealth,
-			StorageHealth:          storageHealth,
-			RefusedWorkflows:       refusedWorkflows,
-			IsolationMandates:      isolationMandates,
-			StageServiceAccounts:   stageServiceAccounts,
-			Summary:                fleetSummary,
-			ParkedBacklog:          parked,
-			BaselineBlockers:       baselineBlockers,
-			Collection:             runLoader.collectionStatus(),
-			Runs:                   statusRecoverySummaries(l, runs, now),
+			TelemetryExporterHealth: telemetryExporterHealth,
+			ClusterChecks:           clusterChecks,
+			Root:                    optionalStatusRoot(supportsWatch, l, now),
+			QueueEligibility:        optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
+			EngineFallbacks:         engineFallbacks,
+			WorkerConfigDivergence:  workerConfigDivergence,
+			Warnings:                warnings,
+			TimeToFirstPR:           timeToFirstPR,
+			DaemonRestart:           daemonRestart,
+			Maintenance:             maintenance,
+			TelemetryRetention:      telemetryRetention,
+			JournalHealth:           journalHealth,
+			StorageHealth:           storageHealth,
+			RefusedWorkflows:        refusedWorkflows,
+			IsolationMandates:       isolationMandates,
+			StageServiceAccounts:    stageServiceAccounts,
+			Summary:                 fleetSummary,
+			ParkedBacklog:           parked,
+			BaselineBlockers:        baselineBlockers,
+			Collection:              runLoader.collectionStatus(),
+			Runs:                    statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)
