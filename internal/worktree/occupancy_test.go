@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBranchOccupanciesReportsAndReleasesActiveOwner(t *testing.T) {
@@ -28,8 +29,9 @@ func TestBranchOccupanciesReportsAndReleasesActiveOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := occupancies[branch]; !ok || got.OwnerRunID != owner || got.Status != BranchOccupancyActive {
-		t.Fatalf("occupancy = %+v, want branch %q owned by %q with active status", occupancies, branch, owner)
+	if got, ok := occupancies[branch]; !ok || got.OwnerRunID != owner ||
+		got.Status != BranchOccupancyActive || !got.OwnerProcessLive {
+		t.Fatalf("occupancy = %+v, want branch %q owned by live process for %q with active status", occupancies, branch, owner)
 	}
 
 	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
@@ -41,6 +43,80 @@ func TestBranchOccupanciesReportsAndReleasesActiveOwner(t *testing.T) {
 	}
 	if _, ok := occupancies[branch]; ok {
 		t.Fatalf("released branch remains occupied: %+v", occupancies[branch])
+	}
+}
+
+func TestBranchOccupanciesReportsDeadAndReusedOwnersNotLive(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe func(marker)
+	}{
+		{
+			name: "dead",
+			probe: func(marker) {
+				processAlive = func(int) bool { return false }
+			},
+		},
+		{
+			name: "reused",
+			probe: func(mk marker) {
+				processAlive = func(int) bool { return true }
+				processStartTime = func(int) (time.Time, bool) {
+					return mk.PIDStartedAt.Add(pidReusedTolerance + time.Second), true
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			repo := newSourceRepo(t)
+			manager := newTestManager(t)
+			wt, err := manager.Create(ctx, CreateOptions{
+				RepoURL: repo, RunID: "implementation-stage", OwnerRunID: "implementation-run",
+				BaseRef: "main", Branch: "goobers/implementation/live-run",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = wt.Remove(ctx, RemoveOptions{}) })
+
+			mk, err := readMarker(manager.markerPath(wt.key, wt.RunID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mk.PIDStartedAt.IsZero() {
+				mk.PIDStartedAt = time.Now().UTC()
+				ownershipPath := manager.ownershipPath(wt.key, filepath.Base(wt.Path))
+				ownership, readErr := readMarker(ownershipPath)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				ownership.PIDStartedAt = mk.PIDStartedAt
+				if err := writeMarker(ownershipPath, ownership); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeMarker(manager.markerPath(wt.key, wt.RunID), mk); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			previousAlive := processAlive
+			previousStartTime := processStartTime
+			tt.probe(mk)
+			t.Cleanup(func() {
+				processAlive = previousAlive
+				processStartTime = previousStartTime
+			})
+
+			occupancies, err := manager.BranchOccupancies(ctx, repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := occupancies[mk.Branch]; got.OwnerProcessLive {
+				t.Fatalf("occupancy = %+v, want %s owner reported not live", got, tt.name)
+			}
+		})
 	}
 }
 

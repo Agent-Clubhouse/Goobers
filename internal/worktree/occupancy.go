@@ -11,8 +11,9 @@ import (
 // BranchOccupancy describes the durable owner of a branch currently checked
 // out in a managed worktree.
 type BranchOccupancy struct {
-	OwnerRunID string
-	Status     BranchOccupancyStatus
+	OwnerRunID       string
+	Status           BranchOccupancyStatus
+	OwnerProcessLive bool
 }
 
 // BranchOccupancyStatus is the durable lifecycle state recorded for an
@@ -106,8 +107,9 @@ func (m *Manager) branchOccupanciesFromEntries(
 			return nil, fmt.Errorf("worktree: branch %q has multiple registered occupants", branch)
 		}
 		occupancies[branch] = BranchOccupancy{
-			OwnerRunID: primary.OwnerRunID,
-			Status:     BranchOccupancyStatus(primary.Status),
+			OwnerRunID:       primary.OwnerRunID,
+			Status:           BranchOccupancyStatus(primary.Status),
+			OwnerProcessLive: primary.Status == statusActive && processAlive(primary.PID) && !pidReused(primary),
 		}
 	}
 	return occupancies, nil

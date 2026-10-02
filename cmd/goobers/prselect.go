@@ -710,7 +710,9 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 		}
 		for branch, occupancy := range found {
 			if existing, duplicate := occupancies[branch]; duplicate &&
-				(existing.OwnerRunID != occupancy.OwnerRunID || existing.Status != occupancy.Status) {
+				(existing.OwnerRunID != occupancy.OwnerRunID ||
+					existing.Status != occupancy.Status ||
+					existing.OwnerProcessLive != occupancy.OwnerProcessLive) {
 				return nil, fmt.Errorf("branch %q has conflicting occupancy records across workcopies roots", branch)
 			}
 			occupancies[branch] = occupancy
@@ -720,7 +722,7 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 }
 
 func prSelectOccupancyHasLiveOwner(root string, occupancy worktree.BranchOccupancy, occupied bool) (bool, error) {
-	if !occupied || occupancy.Status != worktree.BranchOccupancyActive {
+	if !occupied || occupancy.Status != worktree.BranchOccupancyActive || !occupancy.OwnerProcessLive {
 		return false, nil
 	}
 	runDir, err := instance.NewLayout(root).FindRunDir(occupancy.OwnerRunID)

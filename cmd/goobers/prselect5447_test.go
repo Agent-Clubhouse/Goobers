@@ -37,6 +37,32 @@ func TestPRSelectSelectsStaleActiveBranchFromSettledRun(t *testing.T) {
 	testPRSelectBranchOccupancy(t, false, "active", "terminal", false)
 }
 
+func TestPRSelectDoesNotDeferActiveRunningOccupancyWithDeadProcess(t *testing.T) {
+	root := initDemo(t)
+	layout := layoutFor(root)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		RunID: "implementation-run", Workflow: "implementation",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	live, err := prSelectOccupancyHasLiveOwner(root, worktree.BranchOccupancy{
+		OwnerRunID:       "implementation-run",
+		Status:           worktree.BranchOccupancyActive,
+		OwnerProcessLive: false,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live {
+		t.Fatal("active occupancy with running journal and dead owner process reported live")
+	}
+}
+
 func testPRSelectBranchOccupancy(t *testing.T, pinned bool, occupancyStatus, ownerState string, wantDeferred bool) {
 	t.Helper()
 	root := initDemo(t)
