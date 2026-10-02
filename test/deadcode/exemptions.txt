@@ -319,3 +319,23 @@ github.com/goobers/goobers/internal/secretstore.validateKeyOperation # Explicitl
 # capture activation before all three approved slices land. Remove on activation.
 github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
 github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
+# Inactive Temporal payload codec library; runtime wiring follows in #5288 part 2.
+github.com/goobers/goobers/internal/temporalcodec.New # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.Encode # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.Decode # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.EncodeContext # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.DecodeContext # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.transform # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.validateBatch # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.encode # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.decode # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.Codec.payloadRef # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.hasCodecMetadata # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.metadataAAD # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.dataCipher # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.DataConverter # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.FromConfig # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.NewHTTPHandler # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.httpHandler.ServeHTTP # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.httpHandler.cors # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.
+github.com/goobers/goobers/internal/temporalcodec.httpHandler.transform # Inert codec/HTTP library in #5288 part 1, exercised by hermetic crypto and OIDC tests; remove upon part 2 runtime activation.

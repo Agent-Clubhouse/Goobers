@@ -5,6 +5,7 @@ package executiondeadline
 import (
 	"context"
 	"crypto/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +29,9 @@ func WithRecorder(ctx context.Context, recorder any, stage string, attempt int) 
 		attempt = 1
 	}
 	return invoke.WithExecutionDeadlineObserver(ctx, func(deadline time.Time) func() {
-		id := rand.Text()
+		// Preserve correlation across journal scrubbing: uppercase random IDs
+		// can accidentally resemble credential patterns such as AWS keys.
+		id := strings.ToLower(rand.Text())
 		appendEvent := func(state string) {
 			_ = writer.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Attempt: attempt, Time: time.Now().UTC(), Runner: map[string]any{"kind": Kind, "executionId": id, "deadline": deadline.UTC().Format(time.RFC3339Nano), "executionState": state}})
 		}

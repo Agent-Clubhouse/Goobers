@@ -20,13 +20,15 @@ import (
 
 // ExporterHealth tracks locally observable telemetry exporter health.
 type ExporterHealth struct {
-	mu       sync.Mutex
-	enabled  bool
-	mode     string
-	endpoint endpointHealth
-	journal  *journal.InstanceLog
-	trace    exporterSignalHealth
-	metric   exporterSignalHealth
+	name         string
+	destinations map[string]*ExporterHealth
+	mu           sync.Mutex
+	enabled      bool
+	mode         string
+	endpoint     endpointHealth
+	journal      *journal.InstanceLog
+	trace        exporterSignalHealth
+	metric       exporterSignalHealth
 	// now and refusedWindow are injectable for tests; zero values use the
 	// wall clock and the export error log's suppression window.
 	now           func() time.Time
@@ -41,12 +43,13 @@ type endpointHealth struct {
 // ExporterHealthSnapshot is a scrubbed, bounded health view suitable for
 // daemon-local API and diagnostic surfaces.
 type ExporterHealthSnapshot struct {
-	Enabled       bool                 `json:"enabled"`
-	Mode          string               `json:"mode,omitempty"`
-	EndpointHost  string               `json:"endpointHost,omitempty"`
-	EndpointClass string               `json:"endpointClass,omitempty"`
-	Trace         ExporterSignalStatus `json:"trace"`
-	Metric        ExporterSignalStatus `json:"metric"`
+	Destinations  map[string]ExporterHealthSnapshot `json:"destinations,omitempty"`
+	Enabled       bool                              `json:"enabled"`
+	Mode          string                            `json:"mode,omitempty"`
+	EndpointHost  string                            `json:"endpointHost,omitempty"`
+	EndpointClass string                            `json:"endpointClass,omitempty"`
+	Trace         ExporterSignalStatus              `json:"trace"`
+	Metric        ExporterSignalStatus              `json:"metric"`
 }
 
 // ExporterSignalStatus reports health for one telemetry signal.
@@ -126,6 +129,9 @@ func (h *ExporterHealth) AttachInstanceLog(log *journal.InstanceLog) {
 	events := h.pendingTransitionEventsLocked()
 	h.mu.Unlock()
 	appendExporterHealthTransitions(log, events)
+	for _, child := range h.destinationMonitors() {
+		child.AttachInstanceLog(log)
+	}
 }
 
 // DisabledExporterHealthSnapshot reports an explicit disabled state without a
@@ -378,6 +384,9 @@ func (h *ExporterHealth) refusedEventLocked(signalName string, signal *exporterS
 		Error:  &journal.ErrorDetail{Code: exporterHealthRefusedCode, Message: signal.lastFailureReason},
 		Runner: runner,
 	}
+	if h.name != "" {
+		event.Runner["destination"] = h.name
+	}
 	signal.lastRefusedAt, signal.refusedRepeats = now, 0
 	if h.journal == nil {
 		signal.pendingRefused = event
@@ -392,8 +401,7 @@ func (h *ExporterHealth) Snapshot() ExporterHealthSnapshot {
 		return DisabledExporterHealthSnapshot()
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return ExporterHealthSnapshot{
+	snapshot := ExporterHealthSnapshot{
 		Enabled:       h.enabled,
 		Mode:          h.mode,
 		EndpointHost:  h.endpoint.host,
@@ -401,6 +409,15 @@ func (h *ExporterHealth) Snapshot() ExporterHealthSnapshot {
 		Trace:         h.trace.snapshot(),
 		Metric:        h.metric.snapshot(),
 	}
+	h.mu.Unlock()
+	children := h.destinationMonitors()
+	if len(children) > 0 {
+		snapshot.Destinations = make(map[string]ExporterHealthSnapshot, len(children))
+	}
+	for name, child := range children {
+		snapshot.Destinations[name] = child.Snapshot()
+	}
+	return snapshot
 }
 
 func (s exporterSignalHealth) snapshot() ExporterSignalStatus {
@@ -564,6 +581,9 @@ func (h *ExporterHealth) transitionEventLocked(signalName, state, reason string,
 		"state":      state,
 		"mode":       h.mode,
 	}
+	if h.name != "" {
+		runner["destination"] = h.name
+	}
 	if reason != "" {
 		runner["reason"] = reason
 	}
@@ -614,7 +634,7 @@ func (e observedSpanExporter) Shutdown(ctx context.Context) error {
 	err := e.next.Shutdown(ctx)
 	if err != nil {
 		e.health.recordTraceExporterFailure(e.exporter, err)
-	} else {
+	} else if e.health == nil || e.health.name == "" {
 		e.health.recordTraceExporterSuccess(e.exporter)
 	}
 	return err
@@ -648,7 +668,7 @@ func (e observedMetricExporter) ForceFlush(ctx context.Context) error {
 	err := e.next.ForceFlush(ctx)
 	if err != nil {
 		e.health.recordMetricExporterFailure(e.exporter, err)
-	} else {
+	} else if e.health == nil || e.health.name == "" {
 		e.health.recordMetricExporterSuccess(e.exporter)
 	}
 	return err
@@ -658,7 +678,7 @@ func (e observedMetricExporter) Shutdown(ctx context.Context) error {
 	err := e.next.Shutdown(ctx)
 	if err != nil {
 		e.health.recordMetricExporterFailure(e.exporter, err)
-	} else {
+	} else if e.health == nil || e.health.name == "" {
 		e.health.recordMetricExporterSuccess(e.exporter)
 	}
 	return err

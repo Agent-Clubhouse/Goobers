@@ -79,6 +79,7 @@ func CheckWarnings(def Definition) []string {
 		warnings = append(warnings, overPrivilegeWarnings(task)...)
 	}
 	warnings = append(warnings, uncappedWaitBudgetWarnings(def)...)
+	warnings = append(warnings, parallelWarnings(def)...)
 	return warnings
 }
 

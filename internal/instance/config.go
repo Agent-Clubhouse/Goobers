@@ -126,6 +126,8 @@ type Config struct {
 	Webhook          WebhookConfig   `json:"webhook,omitempty" yaml:"webhook,omitempty"`
 	Portal           PortalConfig    `json:"portal,omitempty" yaml:"portal,omitempty"`
 	Telemetry        TelemetryConfig `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	// Temporal declares opt-in payload codec library settings.
+	Temporal *TemporalConfig `json:"temporal,omitempty" yaml:"temporal,omitempty"`
 	// Engine configures the tier-3 Temporal runner. Nil keeps the local daemon's
 	// projection loop disabled; standalone engine commands still use defaults.
 	Engine                  *EngineConfig `json:"engine,omitempty" yaml:"engine,omitempty"`
@@ -2577,6 +2579,9 @@ func (c *Config) Validate() error {
 	// Store declarations must validate before any section checks a store-backed token.
 	stores, err := c.validateSecretStores()
 	if err != nil {
+		return err
+	}
+	if err := c.validateTemporalPayloadCodec(); err != nil {
 		return err
 	}
 	return c.validateConfigSections(stores)

@@ -216,6 +216,29 @@
       "description": "Operator-supplied dashboard co-branding. Cosmetic only — nothing here affects scheduling or credentials.",
       "$ref": "#/$defs/portal"
     },
+    "temporal": {
+      "description": "Temporal payload codec library settings. Runtime client activation is a separate integration step; declaring this block alone currently does not encrypt history.",
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "payloadCodec": {
+          "description": "Opt-in sealed payload codec library. An absent keyRef keeps the default converter when explicitly constructed.",
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "keyRef": {
+              "description": "Typed wrapping key reference. Must name a keyvault-key or file-key store, never a secret-fetching store.",
+              "type": "object", "additionalProperties": false, "required": ["store", "name"],
+              "properties": {
+                "store": {"type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "description": "Declared key store name."},
+                "name": {"type": "string", "pattern": "^[a-zA-Z0-9-]{1,127}$", "description": "Backend wrapping key name."},
+                "version": {"type": "string", "pattern": "^[a-zA-Z0-9-]{0,127}$", "description": "Optional backend version used for new wraps. Historical payloads retain their original backend version."}
+              }
+            },
+            "strict": {"type": "boolean", "description": "Reject legacy plaintext on decode. Requires keyRef; default false allows mixed histories."}
+          },
+          "allOf": [{"if": {"properties": {"strict": {"const": true}}, "required": ["strict"]}, "then": {"required": ["keyRef"]}}]
+        }
+      }
+    },
     "timezone": {
       "type": "string",
       "minLength": 1,
