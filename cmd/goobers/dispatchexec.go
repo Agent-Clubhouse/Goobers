@@ -129,7 +129,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// the only copy of reviewed implementation work. Surrender must follow the
 	// host's durable custody acknowledgment, even when the stage was canceled.
 	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), dispatchRecoveryCustodyTimeout())
-	recoveryErr := publishPodRecoveryWithTrace(recoveryCtx, ".", func(phase string, elapsed time.Duration, err error) {
+	recoveryErr := publishPodRecovery(recoveryCtx, ".", func(phase string, elapsed time.Duration, err error) {
 		if err != nil {
 			pf(stderr, "dispatch-exec: recovery phase %s failed after %s: %v\n", phase, elapsed.Round(time.Millisecond), err)
 			return
