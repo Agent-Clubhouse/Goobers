@@ -1347,10 +1347,13 @@ func TestBacklogCurationClaimRunsMetadataReconciliationBeforeSelection(t *testin
 			if code != 0 {
 				t.Fatalf("backlog-query: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 			}
-			if !strings.Contains(stdout, "no work: no eligible item to claim") {
-				t.Fatalf("stdout = %q, want no-work after reconciliation leaves no claimable item", stdout)
+			if strings.Contains(stdout, "no work:") {
+				t.Fatalf("stdout = %q, forward curation must continue after reconciliation", stdout)
 			}
-			assertNoWorkCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
+			if !strings.Contains(stdout, "continuing curation with empty claimed-items artifact") {
+				t.Fatalf("stdout = %q, want empty-artifact continuation after reconciliation", stdout)
+			}
+			assertEmptyCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
 			assertFakeIssueLabels(t, server, 7, []string{providers.LabelReady}, []string{providers.LabelClaimed})
 			assertFakeIssueLabels(t, server, 8, []string{providers.LabelNeedsHuman}, []string{providers.LabelReady})
 		})
