@@ -103,3 +103,29 @@ func fingerprintShape(value string) bool {
 	}
 	return true
 }
+
+// The failures behind #4230 (#4128, #4140) as the stress workflow recorded
+// them: the go tool's header survives, the diagnostics do not.
+func TestBuildBreakSignatureGroupsHeaderOnlyIncidentFailures(t *testing.T) {
+	releaseDocs := "main_test.go:92: run: build release docs generator: exit status 1\n" +
+		"# github.com/goobers/goobers/cmd/goobers\n2026-09-01T06:05:53.3006594Z\nstderr:"
+	validator := "main_test.go:123: build validator: exit status 1\n# github.com/goobers/goobers/cmd/goobers\nFAIL"
+	first, ok := BuildBreakSignature(releaseDocs)
+	if !ok {
+		t.Fatal("#4128 failure was not recognized as a build break")
+	}
+	second, ok := BuildBreakSignature(validator)
+	if !ok {
+		t.Fatal("#4140 failure was not recognized as a build break")
+	}
+	if first != second || first != "build failed: # github.com/goobers/goobers/cmd/goobers" {
+		t.Fatalf("#4128 and #4140 signatures = %q, %q; want one signature naming the broken package", first, second)
+	}
+	if other, _ := BuildBreakSignature(strings.ReplaceAll(validator, "cmd/goobers", "internal/runner")); other == first {
+		t.Fatal("breaks in different packages share a header-only signature")
+	}
+	// A markdown-style heading is not a go tool header.
+	if signature, ok := BuildBreakSignature("    # step one\n    testdata/a.go:3:1: syntax error"); ok {
+		t.Fatalf("markdown heading read as a build break: %q", signature)
+	}
+}

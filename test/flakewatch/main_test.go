@@ -122,6 +122,10 @@ func TestScanDispatchesKnownFilesNovelAndExcludesCorrelatedRegression(t *testing
 		result.Novel[1].Test != "TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees" {
 		t.Fatalf("novel = %+v, want timeout and deterministic-assert failures from default branch", result.Novel)
 	}
+	// Each failure carries the commit its run built, not the watcher's own.
+	if result.Novel[0].SHA != "branch-sha" || result.Novel[1].SHA != "branch-sha" {
+		t.Fatalf("novel SHAs = %q, %q; want the scanned run's head commit", result.Novel[0].SHA, result.Novel[1].SHA)
+	}
 	assertionText := `worktreelifecycle_test.go:105: state = "active", want "finalized"`
 	assertionFingerprint := flake.Fingerprint(
 		"./cmd/goobers",
@@ -640,6 +644,28 @@ func TestLedgerPaginatesIssues(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[1].Issue != 2 || entries[1].Package != "./internal/runner" {
 		t.Fatalf("entries = %+v, want both pages", entries)
+	}
+}
+
+func TestLedgerRoutesSupersededIssueToGroupedBuildBreak(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", jsonHandler([]ledgerIssue{{
+		Number: 4128,
+		Body: "<!-- goobers-flake-fingerprint:" + strings.Repeat("a", 64) + " -->\n- **Package:** `./release`\n\n" +
+			"<!-- goobers-flake-superseded-by:4300 -->",
+	}}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	entries, err := (&githubClient{
+		base: server.URL, repository: "acme/app", token: "test", http: server.Client(),
+	}).ledger(context.Background())
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Issue != 4300 || entries[0].Fingerprint != strings.Repeat("a", 64) {
+		t.Fatalf("entries = %+v, want the superseded fingerprint handed to grouped #4300", entries)
 	}
 }
 

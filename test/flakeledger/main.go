@@ -38,13 +38,18 @@ const (
 	cloudLabelColor     = "1D76DB"
 	cloudDescription    = "Claim-partition: issue belongs to the cloud (Goobernetes) instance"
 	snippetLimit        = 8 * 1024
-	signatureLimit      = 1024
-	stateOpen           = "open"
-	stateClosed         = "closed"
+	// buildBreakMarker tags a grouped build-break issue's body (#4230).
+	buildBreakMarker = "<!-- goobers-flake-build-break -->"
+	signatureLimit   = 1024
+	stateOpen        = "open"
+	stateClosed      = "closed"
 )
 
 var (
 	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// supersededPattern finds the marker a grouped build break leaves on each
+	// per-package issue it closed as a duplicate of itself (#4230).
+	supersededPattern = regexp.MustCompile(`(?m)^<!-- goobers-flake-superseded-by:(\S+) -->$`)
 	// runnerFlagEcho matches a normalized signature segment that is only the Go
 	// test runner repeating one of its own flags, such as `-test.shuffle
 	// <value>`. A signature made of nothing else names no failure.
@@ -454,7 +459,7 @@ func affectedPackages(members []testFailure) []string {
 func supersededIssues(failure testFailure, existing map[string]providers.WorkItem) []string {
 	var ids []string
 	for _, member := range failure.members {
-		if item, found := existing[member.Fingerprint]; found && !isClosed(item) && !slices.Contains(ids, item.ID) {
+		if item, found := existing[member.Fingerprint]; found && supersedable(item, "") && !slices.Contains(ids, item.ID) {
 			ids = append(ids, item.ID)
 		}
 	}
@@ -481,22 +486,33 @@ func supersedeMembers(
 	closed := 0
 	for _, member := range failure.members {
 		item, found := existing[member.Fingerprint]
-		if !found || isClosed(item) || item.ID == grouped.ID {
+		if !found || !supersedable(item, grouped.ID) {
 			continue
 		}
+		// The marker in the body is what makes this one-time: from now on the
+		// fingerprint resolves to the grouped issue (see indexIssues), so an
+		// operator who reopens this issue is not overruled on the next run.
+		body := strings.TrimRight(item.Body, "\n") + "\n\n" + supersededMarker(grouped.ID)
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 			Repository: repository,
 			ID:         item.ID,
+			Body:       &body,
 			State:      stateClosed,
 			Comment:    supersededComment(grouped.ID, failure),
 		}); err != nil {
 			return closed, fmt.Errorf("close issue %s as duplicate of %s: %w", item.ID, grouped.ID, err)
 		}
-		item.State = stateClosed
-		existing[member.Fingerprint] = item
+		existing[member.Fingerprint] = grouped
 		closed++
 	}
 	return closed, nil
+}
+
+// supersedable reports whether an issue is an open per-package issue a
+// grouped build break may close as its duplicate. Another grouped issue (an
+// earlier commit's view of the same break) is never closed this way.
+func supersedable(item providers.WorkItem, groupedID string) bool {
+	return !isClosed(item) && item.ID != groupedID && !strings.Contains(item.Body, buildBreakMarker)
 }
 
 func supersededComment(groupedID string, failure testFailure) string {
@@ -531,7 +547,28 @@ func indexIssues(items []providers.WorkItem) (map[string]providers.WorkItem, err
 			result[fingerprint] = item
 		}
 	}
+	// A per-package issue superseded by a grouped build break answers for its
+	// fingerprint through the grouped issue: a later recurrence refreshes (or
+	// reopens) the issue that tracks the break, rather than reopening a closed
+	// duplicate.
+	byID := make(map[string]providers.WorkItem, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	for fingerprint, item := range result {
+		match := supersededPattern.FindStringSubmatch(item.Body)
+		if len(match) != 2 {
+			continue
+		}
+		if grouped, found := byID[match[1]]; found {
+			result[fingerprint] = grouped
+		}
+	}
 	return result, nil
+}
+
+func supersededMarker(groupedID string) string {
+	return "<!-- goobers-flake-superseded-by:" + singleLine(groupedID) + " -->"
 }
 
 // distinguishingSignature reports whether a normalized signature carries
@@ -601,6 +638,7 @@ func issueBody(run runMetadata, failure testFailure, superseded []string) string
 func groupedIssueBody(run runMetadata, failure testFailure, superseded []string) string {
 	lines := []string{
 		fingerprintMarker(failure.Fingerprint),
+		buildBreakMarker,
 		"",
 		"## Build break identity",
 		"",

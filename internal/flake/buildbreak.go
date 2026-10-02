@@ -14,8 +14,11 @@ const buildBreakMessageLimit = 10
 
 var (
 	// compileHeader is the "# import/path" line the go tool prints before the
-	// diagnostics of a package that failed to build or vet.
-	compileHeader = regexp.MustCompile(`^#\s+\S+`)
+	// diagnostics of a package that failed to build or vet; a test build adds
+	// " [import/path.test]". The path must look like an import path (carry a
+	// dot or slash) so a markdown-style "# heading" in test output does not
+	// read as one.
+	compileHeader = regexp.MustCompile(`^#\s+(\S*[./]\S*)(?:\s+\[\S+\])?$`)
 	// compileDiagnostic is a compiler diagnostic: file.go:line:column: message.
 	// The column is what separates it from a t.Log/t.Error line, which the
 	// testing package prints as file.go:line: message.
@@ -31,29 +34,35 @@ var (
 // file base name and the compiler's message — and drops the package path,
 // relative path, line and column that differ from one consumer to the next,
 // so the same break observed from many packages yields one signature.
+//
+// A test that shells out to `go build` often reports only the go tool's
+// "# import/path" header, its diagnostics lost to a separate stream (the
+// failures behind #4230 looked like this). The signature then falls back to
+// the broken package's import path, which is likewise the same from every
+// consumer.
 func BuildBreakSignature(text string) (string, bool) {
-	headed := false
-	seen := make(map[string]bool)
-	var diagnostics []string
+	var headers, diagnostics []string
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if compileHeader.MatchString(line) {
-			headed = true
+		if match := compileHeader.FindStringSubmatch(line); len(match) == 2 {
+			if header := "# " + match[1]; !slices.Contains(headers, header) {
+				headers = append(headers, header)
+			}
 			continue
 		}
-		if !headed {
+		if len(headers) == 0 {
 			continue
 		}
 		match := compileDiagnostic.FindStringSubmatch(line)
 		if len(match) != 3 {
 			continue
 		}
-		diagnostic := match[1] + ": " + normalizeLine(match[2])
-		if seen[diagnostic] {
-			continue
+		if diagnostic := match[1] + ": " + normalizeLine(match[2]); !slices.Contains(diagnostics, diagnostic) {
+			diagnostics = append(diagnostics, diagnostic)
 		}
-		seen[diagnostic] = true
-		diagnostics = append(diagnostics, diagnostic)
+	}
+	if len(diagnostics) == 0 {
+		diagnostics = headers
 	}
 	if len(diagnostics) == 0 {
 		return "", false

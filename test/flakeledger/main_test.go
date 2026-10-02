@@ -663,17 +663,21 @@ func TestPublishGroupsOneBuildBreakAcrossThirteenPackagesIntoOneIssue(t *testing
 	}
 	for index, id := range []string{"4128", "4129"} {
 		update := provider.updates[index]
-		if update.ID != id || update.State != stateClosed || !strings.Contains(update.Comment, "Duplicate of #99.") {
-			t.Fatalf("update %d = %+v, want %s closed as a duplicate of #99", index, update, id)
+		if update.ID != id || update.State != stateClosed || !strings.Contains(update.Comment, "Duplicate of #99.") ||
+			update.Body == nil || !strings.HasSuffix(*update.Body, supersededMarker("99")) {
+			t.Fatalf("update %d = %+v, want %s closed as a duplicate of #99 and marked superseded", index, update, id)
 		}
+	}
+	if !strings.Contains(create.Body, buildBreakMarker) {
+		t.Fatalf("grouped issue is not tagged as a build break:\n%s", create.Body)
 	}
 
 	// Re-publishing the same report is a no-op: the grouped issue already
 	// carries this occurrence and its superseded issues are already closed.
 	provider.items = []providers.WorkItem{
 		{ID: "99", State: stateOpen, Body: create.Body},
-		{ID: "4128", State: stateClosed, Body: fingerprintMarker(failures[0].Fingerprint)},
-		{ID: "4129", State: stateClosed, Body: fingerprintMarker(failures[1].Fingerprint)},
+		{ID: "4128", State: stateClosed, Body: *provider.updates[0].Body},
+		{ID: "4129", State: stateClosed, Body: *provider.updates[1].Body},
 		{ID: "4130", State: stateClosed, Body: fingerprintMarker(failures[2].Fingerprint)},
 	}
 	provider.creates, provider.updates = nil, nil
@@ -683,6 +687,59 @@ func TestPublishGroupsOneBuildBreakAcrossThirteenPackagesIntoOneIssue(t *testing
 	}
 	if len(provider.creates) != 0 || len(provider.updates) != 0 || again != (publishResult{}) {
 		t.Fatalf("re-publish result = %+v, creates = %d, updates = %+v", again, len(provider.creates), provider.updates)
+	}
+
+	// Later, one superseded package recurs on its own (no group to join).
+	// The recurrence lands on the grouped issue, not on the closed duplicate,
+	// and an operator's reopen of the duplicate is not overruled.
+	provider.items[1].State = stateOpen
+	provider.creates, provider.updates = nil, nil
+	recurrence := failures[0]
+	recurrence.LastSeenRun = "777"
+	later, err := publish(context.Background(), provider, providers.RepositoryRef{Owner: "acme", Name: "app"}, failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "777", RunAttempt: "1", SHA: "fedcba9876543210fedcba9876543210fedcba98"},
+		Failures:      []testFailure{recurrence},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if later.Refreshed != 1 || later.Superseded != 0 || len(provider.creates) != 0 ||
+		len(provider.updates) != 1 || provider.updates[0].ID != "99" || provider.updates[0].State != "" {
+		t.Fatalf("recurrence result = %+v, updates = %+v; want one refresh of grouped #99", later, provider.updates)
+	}
+}
+
+func TestPublishGroupsHeaderOnlyBuildBreakFromIncident(t *testing.T) {
+	// The #4128..#4140 shape: each consumer reports its own wrapper and only
+	// the go tool's header for the broken package.
+	var failures []testFailure
+	for index := range 13 {
+		pkg := fmt.Sprintf("./consumer%02d", index)
+		text := fmt.Sprintf("main_test.go:%d: build tool %d: exit status 1\n# github.com/goobers/goobers/cmd/goobers\nFAIL", 90+index, index)
+		signature := flake.NormalizeSignature(text)
+		failures = append(failures, testFailure{
+			Fingerprint:      flake.Fingerprint(pkg, "TestBuild", signature),
+			Package:          pkg,
+			Test:             "TestBuild",
+			FailureSignature: signature,
+			FailureText:      text,
+			LastSeenRun:      "1",
+			LastSeenAt:       time.Date(2026, 9, 1, 10, 33, 46, 0, time.UTC),
+			Occurrences:      1,
+		})
+	}
+	provider := &fakeLedgerProvider{}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{Owner: "acme", Name: "app"}, failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "1", SHA: "0123456789abcdef0123456789abcdef01234567"},
+		Failures:      failures,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 1 || !strings.Contains(provider.creates[0].Title, "in 13 package(s): build failed: # github.com/goobers/goobers/cmd/goobers") {
+		t.Fatalf("result = %+v, creates = %+v; want one grouped issue for the cmd/goobers break", result, provider.creates)
 	}
 }
 
