@@ -101,7 +101,7 @@ type claimedItem struct {
 // claimedItemsForRun resolves every item runID's claim ledger entries name,
 // paired with the repository identity recordItemRepository recorded for
 // each at selection time. This is the circuit breaker's and terminal
-// notifier's own lookup (applyCircuitBreaker, resetCircuitBreaker) — a
+// notifier's own lookup (escalationnotify.State.ClaimedItems) — a
 // separate, richer sibling of claimedItemIDsForRun (whose plain []string
 // contract other callers, e.g. runner.Config.ClaimedItems and
 // implementcontext.go, still want unchanged). Fails closed with

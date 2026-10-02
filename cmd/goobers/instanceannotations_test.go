@@ -83,15 +83,3 @@ func TestHotAnnotationReadsCostDoesNotGrowWithInstanceHistory(t *testing.T) {
 		t.Fatalf("hot annotation reads parsed %d bytes with short history and %d with 10x history", short, long)
 	}
 }
-
-// itemRepoAnnotationEvent builds a journal.EventRunnerAnnotation the fold's
-// itemRepositories records, used below as the vehicle for exercising the
-// fold's generic reset/compaction/restart behavior (any annotation kind the
-// fold understands would do; failure-streak moved off this fold entirely
-// onto the scheduler-state KV plane per Goobers#3025).
-func itemRepoAnnotationEvent(runID, itemID string, repo providers.RepositoryRef) journal.Event {
-	return journal.Event{Type: journal.EventRunnerAnnotation, RunID: runID, Runner: map[string]any{
-		"annotation": itemRepoAnnotation, "key": itemRepoKey(runID, itemID), "itemId": itemID,
-		"provider": string(repo.Provider), "owner": repo.Owner, "name": repo.Name, "kind": "issue",
-	}}
-}
