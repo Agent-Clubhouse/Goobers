@@ -1398,6 +1398,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 ["Goobers Instance", state.instancePath],
                 ["Executable", state.executable],
                 ["Validated interactive identity", state.runtimeIdentity],
+                ...(validationPassed
+                  ? ([
+                      [
+                        "Harness and repository checks",
+                        `Passed under ${state.runtimeIdentity}`,
+                      ],
+                    ] as Array<[string, string]>)
+                  : []),
                 [
                   "Harness authentication",
                   modelTokenEnv.trim()

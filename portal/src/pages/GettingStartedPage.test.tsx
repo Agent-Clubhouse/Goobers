@@ -817,6 +817,8 @@ describe("GettingStartedPage", () => {
       screen.getByRole("heading", { name: "Choose how Goobers will run" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /Run in the foreground now/ })).toBeChecked();
+    expect(screen.getByText("Harness and repository checks")).toBeInTheDocument();
+    expect(screen.getByText("Passed under CONTOSO\\alice")).toBeInTheDocument();
     expect(screen.getAllByText("CONTOSO\\alice").length).toBeGreaterThan(0);
     expect(screen.getByText(/task-install/i)).toBeInTheDocument();
     expect(screen.queryByText(/close this browser window/i)).not.toBeInTheDocument();
