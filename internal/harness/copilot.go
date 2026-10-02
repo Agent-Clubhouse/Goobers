@@ -1219,6 +1219,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 	// A native-log read/write failure observed during this process is not a
 	// missing completion contract. Preserve it and do not launch recovery.
 	processErr = errors.Join(processErr, nativeCheckpoints.worker.observedError())
+	// #6358: name an enterprise customization lockdown when the CLI's own log
+	// shows it refused goobers-io before the pre-model probe failed.
+	processErr = classifyCopilotEnterpriseBlock(processErr, captures.mcpLogPath)
 	runErr = processErr
 	var payload []byte
 	var invalidCompletionPayload []byte

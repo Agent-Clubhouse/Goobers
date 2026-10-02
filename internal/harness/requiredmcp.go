@@ -24,7 +24,44 @@ const ErrorCodeRequiredMCPRejected = "HARNESS_REQUIRED_MCP_REJECTED"
 // the whole diagnosis.
 const ErrorCodeRequiredMCPUnavailable = "HARNESS_REQUIRED_MCP_UNAVAILABLE"
 
+// ErrorCodeRequiredMCPEnterpriseBlocked is the failure code for a stage whose
+// required goobers-io server the CLI refused under an enterprise customization
+// lockdown that permits only plugin or managed MCP servers (#6358).
+//
+// Running goobers-io under that lockdown is unsupported. The code is distinct
+// from the third-party policy code because there is no organization setting
+// to enable here, and distinct from the availability code because retrying
+// cannot help: the lockdown refuses the server on every attempt.
+const ErrorCodeRequiredMCPEnterpriseBlocked = "HARNESS_REQUIRED_MCP_ENTERPRISE_BLOCKED"
+
 var errRequiredMCPUnavailable = errors.New("required MCP server unavailable")
+
+// errRequiredMCPEnterpriseBlocked marks a required-MCP run error whose cause
+// the CLI's own log names as an enterprise customization lockdown (#6358).
+var errRequiredMCPEnterpriseBlocked = errors.New("required MCP server blocked by enterprise policy")
+
+// requiredMCPEnterpriseBlockedDetail is the stage error text for #6358. It
+// says what happened, that the configuration is unsupported, and where to go.
+var requiredMCPEnterpriseBlockedDetail = fmt.Sprintf(
+	"this stage requires the %s MCP server for artifact and context I/O, and "+
+		"the Copilot CLI refused it under an enterprise customization lockdown that permits only plugin or "+
+		"managed MCP servers. Running %s under that lockdown is unsupported; run this stage on an adapter "+
+		"or account where the lockdown does not apply (see docs/guides/goobers-io-mcp.md).",
+	goobersIOServerName, goobersIOServerName)
+
+// classifyCopilotEnterpriseBlock names an enterprise customization lockdown as
+// the cause of a required-MCP run error when the CLI's own log for this
+// invocation shows goobers-io refused that way (#6358). Any other error, or a
+// log that does not show the refusal, is returned unchanged.
+func classifyCopilotEnterpriseBlock(runErr error, logDir string) error {
+	if !errors.Is(runErr, errRequiredMCPRejected) && !errors.Is(runErr, errRequiredMCPUnavailable) {
+		return runErr
+	}
+	if !copilotMCPLogShowsEnterpriseBlock(logDir, goobersIOServerName) {
+		return runErr
+	}
+	return fmt.Errorf("%w: %s: %w", errRequiredMCPEnterpriseBlocked, requiredMCPEnterpriseBlockedDetail, runErr)
+}
 
 func requiredMCPInfrastructureFailure(failures []MCPServerFailure) error {
 	for _, failure := range failures {
@@ -79,6 +116,16 @@ func refuseWhenRequiredMCPUnavailable(result *apiv1.ResultEnvelope, failures []M
 	result.Outputs["requiredMCPStatus"] = status
 	result.Status = apiv1.ResultFailure
 
+	if status == copilotMCPStatusEnterpriseBlocked {
+		result.Error = &apiv1.ErrorInfo{
+			Code: ErrorCodeRequiredMCPEnterpriseBlocked,
+			// Not retryable: the lockdown refuses the server on every attempt.
+			Retryable: false,
+			Message:   "blocked by enterprise policy: " + requiredMCPEnterpriseBlockedDetail,
+		}
+		result.Summary = "required " + goobersIOServerName + " MCP server blocked by enterprise policy"
+		return
+	}
 	if status == copilotMCPStatusPolicyRejected {
 		result.Error = &apiv1.ErrorInfo{
 			Code: ErrorCodeRequiredMCPRejected,

@@ -865,6 +865,10 @@ func classifyHarnessRunError(runErr, wrapped error) error {
 	switch {
 	case errors.Is(runErr, ErrTimeout):
 		return invoke.Timeout(wrapped)
+	case errors.Is(runErr, errRequiredMCPEnterpriseBlocked):
+		// Checked before the generic rejection it wraps (#6358): the lockdown
+		// refuses the server on every attempt, so this is never infra.
+		return executor.StageFailure(ErrorCodeRequiredMCPEnterpriseBlocked, wrapped)
 	case errors.Is(runErr, errRequiredMCPRejected):
 		return executor.StageFailure(ErrorCodeRequiredMCPRejected, wrapped)
 	case errors.Is(runErr, errRequiredMCPUnavailable):
