@@ -25,7 +25,6 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readmodel/projector"
-	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -39,20 +38,12 @@ import (
 
 const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle layout"
 
-// schedulerSetup bundles everything both `up` and `run` need to build a
-// localscheduler.Scheduler over an instance's config: per-gaggle runners and
-// worktree managers, the
-// telemetry client both the runner and the scheduler span through, the
-// telemetry rollup every dispatched run incrementally ingests into (issue
-// #127), the instance
-// log, and one WorkflowEntry per configured workflow. Factored out so both
-// commands construct it identically (issue #134: `run` used to build its own
-// bare *runner.Runner and skip the scheduler/conditions/journal/lock
-// entirely — the two commands must agree on this construction, not maintain
-// two divergent copies of it). The caller owns calling Telemetry.Shutdown and
-// RollupDB.Close once it's done driving runs, exactly as it did before this
-// seam existed.
+// schedulerSetup exposes the daemon's assembled dependencies to up and run.
+// Observation and runtime own resource cleanup; the remaining fields are views
+// used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
+	observation  *schedulerObservation
+	runtime      *schedulerRuntime
 	Generations  *configgeneration.Retainer
 	Root         string
 	Runner       *runner.Runner
@@ -273,38 +264,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// stage before the workflows are compiled, so the runner executes the
 	// gaggle's own suite in place of the stage's declared `make ci` default.
 	instance.ApplyGaggleCICommand(set)
-	// RRQ-1/#1101, revised for fleets (#2860): a gaggle/stage requiring a runner
-	// capability nothing claims is REPORTED at startup, not fatal.
-	//
-	// It used to return an error and kill the daemon. That was defensible when a
-	// runner was a single process whose capabilities could not change while it
-	// ran. It stopped being defensible once stages can be placed on OTHER
-	// workers: the daemon is then admitting on behalf of a fleet it cannot
-	// enumerate, and "no runner claims os=windows" may simply mean the Windows
-	// worker has not started yet. The sibling provider-capability check below
-	// says as much in its own comment — a missing runner capability CAN
-	// self-heal at runtime, which is exactly why it must not be terminal.
-	//
-	// Nothing is lost by downgrading it. localscheduler already enforces the
-	// same invariant per entry at dispatch (scheduler.go, ReasonMissingCapability):
-	// the run is refused, journalled as tick.skipped with the missing capability
-	// named, and marked Blocked in telemetry. That path is per-run, self-healing,
-	// and describes itself as the seam a multi-runner router grows from. The
-	// startup check was an eager, whole-instance, fatal copy of it.
-	//
-	// So: one unsatisfiable stage no longer takes the whole instance down, and
-	// every OTHER gaggle keeps running.
-	//
-	// Zero-declaration instances only: with a declared runners: inventory
-	// this whole-gaggle self-claims union would mis-warn about capabilities
-	// another declared runner provides, so the per-workflow constraint solve
-	// (placementRefusals, checkpoint 3 of dsl-3.0.md §5) replaces it there —
-	// same never-fatal posture, per-workflow diagnostics, journaled as
-	// workflow.refused. That solve is substrate-aware
-	// (runnersolve.SolveExecutable): a stage needing a capability only a
-	// remote runner claims still surfaces as a boot refusal naming the
-	// capability and the remote-only placement, so the operator signal for
-	// the capability axis survives on declared inventories too.
+	// Missing runner capabilities can heal as workers join, so warn here and
+	// let per-run admission refuse affected workflows. Declared inventories
+	// instead use the per-workflow placement solve during definition building.
 	if len(cfg.Runners) == 0 {
 		if err := instance.CheckCapabilityRequirements(cfg.SelfRunnerCapabilities(), set); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v; affected runs are refused at schedule time with the capability named, other gaggles are unaffected\n", err)
@@ -331,7 +293,6 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err := migrateLegacyRemediationNoopState(l); err != nil {
 		return nil, err
 	}
-	claimProviders := claimProvidersByGaggle(set)
 	// This daemon owns identity creation (workers and telemetry observers do
 	// not). Publish it before any exporter or scheduler journal captures its
 	// identity: creating it later in runner construction left first-boot
@@ -341,226 +302,48 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("initialize daemon instance identity: %w", err)
 	}
 
-	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
-	// #129). tel/rollupDB stay nil in that case — every downstream use
-	// already tolerates nil: buildRunnerConfig only sets
-	// runner.Config.Telemetry when tel != nil, telemetryingest.RunTelemetry
-	// no-ops on a nil *rollup.DB, and SchedulerOptions/Shutdown below no-op too. A nil
-	// *telemetry.Client must never reach localscheduler.WithTelemetry
-	// directly — that would wrap it in a non-nil SpanStarter interface value
-	// (Go's typed-nil-in-interface trap), making localscheduler's own
-	// `s.telemetry == nil` guard wrongly evaluate false and panic on first
-	// use; SchedulerOptions is the one place that decision is made.
-	// One instance-global registry, fed by every run's resolved credentials (via
-	// the teeRegistrar in buildRunnerConfig) and chained before the pattern net.
-	// It is what lets the span exporter and instance log — both instance-lifetime,
-	// outliving any single run — redact resolver-issued secrets by exact value,
-	// not just by shape (#117 Piece B). Registry redaction is concurrent-safe and
-	// keyed by digest, so many runs feeding it is fine.
+	// Share credential redaction across instance-lifetime telemetry and journals.
 	sharedReg := journal.NewRegistryScrubber()
 	sharedScrubber := journal.Chain(sharedReg, journal.NewPatternScrubber())
 	terminalNotifier, err := buildTerminalNotifier(ctx, l, cfg, sharedScrubber, options)
 	if err != nil {
 		return nil, err
 	}
-	var tel *telemetry.Client
-	var rollupDB *rollup.DB
-	var readModel *readmodel.Store
-	var readModelEpoch string
-	var watermarks *intake.Store
-	var stopProjector func()
-	var retentionStats func() readmodel.RetentionStats
-	var projectorStats func() projector.Stats
-	var projectorRestartComplete bool
-	var instanceLog *journal.InstanceLog
-	telemetryExporterHealth := newTelemetryExporterHealth(cfg)
-	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
-	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
-	// logged once instanceLog opens below, not returned as a setup failure:
-	// a CA path typo degrades to local-only telemetry rather than failing
-	// daemon start (#3804) — the daemon's job is not observability.
-	var telemetryOTLPDegradeErr error
+	observation, err := openSchedulerObservation(ctx, l, cfg, sharedScrubber, sharedReg, secretStores, options)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
-		if err == nil {
-			return
-		}
-		if tel != nil {
-			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = tel.Shutdown(flush)
-			cancel()
-		}
-		if rollupDB != nil {
-			_ = rollupDB.Close()
-		}
-		// Same order as schedulerSetup.Shutdown: stop the projector before
-		// closing the store its commit loop writes through, then release the
-		// read model and intake stores. A setup failure between these opening
-		// (line ~291 onward) and this function's success return used to leak
-		// both handles — invisible on POSIX (an unlinked-but-open file is
-		// fine), but on Windows the open handle keeps the underlying temp
-		// dir's *.db files locked, so a caller's t.TempDir() cleanup fails
-		// outright with "The process cannot access the file because it is
-		// being used by another process."
-		if stopProjector != nil {
-			stopProjector()
-		}
-		if readModel != nil {
-			_ = readModel.Close()
-		}
-		if watermarks != nil {
-			_ = watermarks.Close()
-		}
-		if instanceLog != nil {
-			_ = instanceLog.Close()
+		if err != nil {
+			_ = observation.Close()
 		}
 	}()
-	if cfg.TelemetryEnabled() {
-		reportStartupProgress(options.startupProgress, "opening telemetry state")
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, telemetryExporterHealth, options.telemetryReplayStart)
-		if err != nil {
-			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
-				return nil, err
-			}
-			// tel is still a valid, usable client (local-only — see
-			// ErrOTLPUnavailable's doc); warn now on stderr — the daemon has
-			// no instance log open yet, and `kubectl logs` is the only place
-			// an operator watching a rollout will see this — then park the
-			// cause to also log loudly once instanceLog opens, matching the
-			// other non-fatal degrades in this function.
-			fmt.Fprintf(os.Stderr, "warning: otlp telemetry unavailable, continuing local-only: %v\n", err)
-			telemetryOTLPDegradeErr = err
-			err = nil
-		}
-		rollupDB, err = rollup.Open(l.TelemetryDB())
-		if err != nil {
-			return nil, err
-		}
-	}
-	// Construct read.db alongside the existing store (design §6.6 step 1).
-	// Nothing reads it yet: the transition is deliberately additive so that
-	// rollback at this stage is deleting a file. The projector, the change
-	// feed, and the cutover flag land in later slices.
-	//
-	// A failure here does NOT fail daemon start. The read model is derived and
-	// not yet load-bearing, so refusing to start over a store nothing reads
-	// would be an outage caused by an optimization.
-	// A failure here must NOT fail daemon start. Nothing reads read.db yet
-	// (§6.6 step 1), so refusing to start over a store no request touches
-	// would be an outage caused by an optimization — and the daemon's own
-	// tests caught exactly that when an earlier version returned an error.
-	//
-	// The state read uses Background rather than the setup context for the
-	// same reason Open's migration does: it is a startup smoke check, not
-	// request-scoped work, and a caller whose context is already done must
-	// not turn "the store is fine" into "the daemon cannot start".
-	// Discard any half-built epoch left by a rebuild that was killed
-	// mid-flight (#1925, §6.5). The change-retention pin must release on
-	// EVERY terminal outcome — success, abort, discard, and an orphan found
-	// at startup. Without this last case an interrupted rebuild blocks change
-	// pruning indefinitely and the feed grows without bound for a reason
-	// nobody is looking at.
-	//
-	// Deliberately NOT gated on cfg.TelemetryEnabled() (#2036): read.db answers
-	// the portal's run listing, a core feature independent of telemetry, so
-	// telemetry.enabled: false must not silently disable it too. Only the
-	// measurement population filters below need rollupDB, and that dependency
-	// is already an explicit nil check, not this block's gate.
-	if discarded, discardErr := readmodel.DiscardStaleRebuilds(filepath.Dir(l.ReadDB())); discardErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: discard stale read-model rebuilds: %v\n", discardErr)
-	} else if discarded > 0 {
-		fmt.Fprintf(os.Stderr, "discarded %d orphaned read-model rebuild(s)\n", discarded)
-	}
-	reportStartupProgress(options.startupProgress, "opening read-model state")
-	if readStore, readErr := readmodel.Open(l.ReadDB()); readErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: open read model: %v\n", readErr)
-	} else if state, stateErr := readStore.State(context.Background()); stateErr != nil {
-		// Reading the state back turns "the file opened" into "the schema is
-		// at the version this build expects and the store has an epoch",
-		// which is the difference between finding a broken store now and
-		// finding it on the first read after the projector lands.
-		fmt.Fprintf(os.Stderr, "warning: read model state: %v\n", stateErr)
-		_ = readStore.Close()
-	} else {
-		// Measurement flags (#1782). The four population filters are derived
-		// from the telemetry rollup, which no journal event carries, so the
-		// read model needs a source for them or `population=` can only ever
-		// match nothing.
-		//
-		// Attached before the first projection rather than after: a run
-		// projected without a source has its flags cleared, and nothing later
-		// re-projects it. A nil rollupDB detaches, which is correct for a
-		// telemetry-disabled instance -- there, the population filters have no
-		// data to be right about.
-		if rollupDB != nil {
-			readStore.WithMeasurement(readservice.NewTelemetryMeasurement(rollupDB))
-		}
-		// §6.6 step 2: build it by rebuild-from-journals on first start.
-		// A completed store is kept and updated incrementally by the writer
-		// seam; an unready store is rebuilt synchronously before attachment.
-		if err := buildReadModelIfNeeded(ctx, readStore, state, l); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: build read model: %v\n", err)
-			_ = readStore.Close()
-		} else {
-			readModelEpoch = state.Epoch
-			readModel = readStore
-
-			// The projector (#1923). Opening intake and starting the commit loop
-			// is what inverts the coupling: from here the writer records a
-			// watermark and forgets, and this owns discovery and application.
-			if intakeStore, intakeErr := intake.Open(l.IntakeDB()); intakeErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
-			} else {
-				watermarks = intakeStore
-				stopProjector, retentionStats, projectorStats, projectorRestartComplete = startProjector(ctx, readStore, intakeStore, l, cfg)
-			}
-		}
-	}
-
-	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber), journal.WithInstanceAppendDropObserver(tel))
-	if err != nil {
-		return nil, fmt.Errorf("open instance log: %w", err)
-	}
-	telemetryExporterHealth.AttachInstanceLog(instanceLog)
-	if telemetryOTLPDegradeErr != nil {
-		logTelemetryOTLPUnavailable(instanceLog, telemetryOTLPDegradeErr)
-	}
-	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
+	if err := journalLegacyRuntimeMigration(l, observation.instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
 	}
 	reportStartupProgress(options.startupProgress, "recovering scheduler claims")
-	recoveredClaims, err := recoverSchedulerClaims(l, options.claimRecoveryGate, instanceLog, claimProviders)
+	claimState, err := openSchedulerClaimState(schedulerClaimInput{Layout: l, RecoveryGate: options.claimRecoveryGate, InstanceLog: observation.instanceLog, Providers: claimProvidersByGaggle(set)})
 	if err != nil {
 		return nil, err
 	}
 	reportStartupProgress(options.startupProgress, "scheduler claims recovered")
 
-	// #712: shared with the Scheduler via SchedulerOptions below — see
-	// schedulerSetup.ProviderQuota's doc comment for why a shared pointer,
-	// not a Scheduler-owned field, is needed here.
-	providerQuota := localscheduler.NewProviderQuotaState()
-	runnerRegistry := newDaemonRunnerRegistry()
-	generations, err := newExecutionGenerationRetainer(l)
+	runtime, err := openSchedulerRuntime(schedulerDefinitionsInput{
+		Layout: l, Config: cfg, Definitions: set, Validation: report,
+		WaitGroup: wg, Telemetry: observation.tel, RollupDB: observation.rollupDB,
+		Watermarks: observation.watermarks, InstanceLog: observation.instanceLog,
+		SharedRegistry: sharedReg, TerminalNotifier: terminalNotifier,
+		CredentialStores: secretStores, StartupProgress: options.startupProgress,
+	})
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if err != nil {
-			_ = generations.Close()
+			_ = runtime.Close()
 		}
 	}()
-	definitions, err := buildSchedulerDefinitions(l, cfg, set, report, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, nil, providerQuota, terminalNotifier, secretStores, options.startupProgress, generations)
-	if err != nil {
-		return nil, err
-	}
-	runnerRegistry.Replace(definitions.Runners)
-	reportStartupProgress(options.startupProgress, "initializing retained legacy runtime")
-	legacyRunner, legacyWorktrees, err := buildRetainedLegacyRunner(
-		l, cfg, set, definitions.Goobers, tel, instanceLog, sharedReg, providerQuota, watermarks, terminalNotifier, definitions.HarnessPreflight, secretStores,
-	)
-	if err != nil {
-		return nil, err
-	}
-	interventionRegistry := newInterventionDefinitionRegistry(interventionDefinitions(definitions, legacyRunner))
+	definitions := runtime.definitions
 	stableDigest, err := configDirectoryDigest(l.ConfigDir())
 	if err != nil || stableDigest != configDigest {
 		if err != nil {
@@ -569,29 +352,30 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("config directory changed during daemon setup; retry startup")
 	}
 
-	runnerRegistry.setGenerationResolver(definitions.GenerationResolver)
 	return &schedulerSetup{
-		Generations:              generations,
+		observation:              observation,
+		runtime:                  runtime,
+		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
 		Runners:                  definitions.Runners,
-		LegacyRunner:             legacyRunner,
-		Telemetry:                tel,
+		LegacyRunner:             runtime.legacyRunner,
+		Telemetry:                observation.tel,
 		TelemetryReplayStart:     options.telemetryReplayStart,
-		RollupDB:                 rollupDB,
-		ReadModel:                readModel,
-		Watermarks:               watermarks,
-		ProjectorRestartComplete: projectorRestartComplete,
-		StopProjector:            stopProjector,
-		RetentionStats:           retentionStats,
-		ProjectorStats:           projectorStats,
-		ReadModelEpoch:           readModelEpoch,
+		RollupDB:                 observation.rollupDB,
+		ReadModel:                observation.readModel,
+		Watermarks:               observation.watermarks,
+		ProjectorRestartComplete: observation.projectorRestartComplete,
+		StopProjector:            observation.stopProjector,
+		RetentionStats:           observation.retentionStats,
+		ProjectorStats:           observation.projectorStats,
+		ReadModelEpoch:           observation.readModelEpoch,
 		Config:                   cfg,
 		Definitions:              definitions.Set,
 		Worktrees:                definitions.Worktrees,
 		WorktreesByGaggle:        definitions.WorktreesByGaggle,
-		LegacyWorktrees:          legacyWorktrees,
-		InstanceLog:              instanceLog,
+		LegacyWorktrees:          runtime.legacyWorktrees,
+		InstanceLog:              observation.instanceLog,
 		Entries:                  definitions.Entries,
 		Machines:                 definitions.Machines,
 		GooberDigests:            definitions.GooberDigests,
@@ -599,16 +383,16 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		RunConditions:            cfg.RunConditions,
 		Validation:               definitions.Validation,
 		ConfigDigest:             configDigest,
-		RecoveredClaims:          recoveredClaims,
+		RecoveredClaims:          claimState.recovered,
 		OpenPRRefresher:          definitions.OpenPRRefresher,
 		EngineRuntime:            definitions.EngineRuntime,
-		ProviderQuota:            providerQuota,
+		ProviderQuota:            runtime.providerQuota,
 		SharedRegistry:           sharedReg,
 		TerminalNotifier:         terminalNotifier,
-		RunnerRegistry:           runnerRegistry,
-		Interventions:            interventionRegistry,
+		RunnerRegistry:           runtime.runnerRegistry,
+		Interventions:            runtime.interventions,
 		SecretStores:             secretStores,
-		TelemetryExporterHealth:  telemetryExporterHealth,
+		TelemetryExporterHealth:  observation.telemetryExporterHealth,
 	}, nil
 }
 
@@ -653,47 +437,6 @@ func legacyRuntimeMigrationEvent(migration instance.RuntimeMigration) journal.Ev
 			"movedDirectories": migration.MovedDirs,
 		},
 	}
-}
-
-func recoverSchedulerClaims(
-	l instance.Layout,
-	recoveryGate *localscheduler.RecoveryGate,
-	instanceLog *journal.InstanceLog,
-	claimProviders map[string]apiv1.Provider,
-) ([]localscheduler.ClaimEntry, error) {
-	var recoveredClaims []localscheduler.ClaimEntry
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationMigration, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(instanceLog),
-		)
-		if err != nil {
-			return err
-		}
-		// DS6 (distributed-state-and-coordination.md §10): a daemon start must
-		// rebuild its renewal set from ledger + liveness BEFORE any reap runs,
-		// so `goobers up` closes this gate and reaps in its own startup recovery
-		// pass after the rebuild. One-shot callers do the same when `engine:` is
-		// configured; only a pure mode-1 one-shot passes no gate and keeps
-		// reaping here as before.
-		if recoveryGate.RecoveryPermitted() {
-			recoveredClaims, err = ledger.RecoverExpired(time.Now())
-			if err != nil {
-				return err
-			}
-		}
-		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
-			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
-			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
-				instanceLog.AppendBestEffort(journal.Event{
-					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
-					Error: journal.ErrorDetailFor("legacy_claim_ownership_unresolved", resolveErr),
-				})
-			}
-			return namespace, resolveErr
-		})
-	})
-	return recoveredClaims, err
 }
 
 func legacyClaimNamespace(l instance.Layout, providers map[string]apiv1.Provider, entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
@@ -781,34 +524,18 @@ func webhookTriggerSignalsAndBackoff(workflowName string, trigger apiv1.Trigger)
 	return sigs, backoff, nil
 }
 
-func buildSchedulerDefinitions(
-	l instance.Layout,
-	cfg *instance.Config,
-	set *instance.ConfigSet,
-	report *validate.Report,
-	wg *sync.WaitGroup,
-	runnerRegistry *daemonRunnerRegistry,
-	tel *telemetry.Client,
-	rollupDB *rollup.DB,
-	watermarks *intake.Store,
-	instanceLog *journal.InstanceLog,
-	sharedReg *journal.RegistryScrubber,
-	wtManagers map[string]*worktree.Manager,
-	providerQuota *localscheduler.ProviderQuotaState,
-	terminalNotifier runner.TerminalNotifier,
-	stores credentials.StoreResolver,
-	startupProgress func(string),
-	retainers ...*configgeneration.Retainer,
-) (*schedulerDefinitions, error) {
-	l, generation, err := retainOptionalExecutionGeneration(l, retainers)
+func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefinitions, error) {
+	l := input.Layout
+
+	l, generation, err := retainOptionalExecutionGeneration(l, input.Generations)
 	if err != nil {
 		return nil, err
 	}
 	// Resolve gaggle CI commands on every compilation path.
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
-	goobers := goobersByName(set)
-	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
+	instance.ApplyGaggleCICommand(input.Definitions)
+	instance.ApplyGaggleOutboxMirror(input.Definitions)
+	goobers := goobersByName(input.Definitions)
+	if err := validateStoredCopilotAuthBoundaries(input.Config, input.Definitions, goobers); err != nil {
 		return nil, err
 	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
@@ -816,55 +543,55 @@ func buildSchedulerDefinitions(
 		return nil, err
 	}
 	// Admission and the sign-in preflight share this credential source (#4292).
-	modelCredential, _, err := agentModelCredentialResolver(cfg, stores, "")
+	modelCredential, _, err := agentModelCredentialResolver(input.Config, input.CredentialStores, "")
 	if err != nil {
 		return nil, err
 	}
 	machines, gooberDigests, resolvedGoobers, harnessWarnings, err := compileSchedulerMachinesWithProgress(
-		l, cfg, set, goobers, instructions, modelCredential, startupProgress,
+		l, input.Config, input.Definitions, goobers, instructions, modelCredential, input.StartupProgress,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := appendGooberHarnessWarnings(report, harnessWarnings); err != nil {
+	if _, err := appendGooberHarnessWarnings(input.Validation, harnessWarnings); err != nil {
 		return nil, fmt.Errorf("append harness validation warnings: %w", err)
 	}
-	harnessInfo, harnessRefusals, err := preflightSchedulerHarnessesWithProgress(cfg, set, goobers, stores, startupProgress)
+	harnessInfo, harnessRefusals, err := preflightSchedulerHarnessesWithProgress(input.Config, input.Definitions, goobers, input.CredentialStores, input.StartupProgress)
 	if err != nil {
 		return nil, err
 	}
-	repoRefs, err := repoRefsByWorkflow(set)
+	repoRefs, err := repoRefsByWorkflow(input.Definitions)
 	if err != nil {
 		return nil, err
 	}
 
-	wtManagers = clonedWorktreeManagers(wtManagers)
-	branchNamespaces := branchNamespacesByGaggle(set)
-	selfIdentities := selfIdentitiesByGaggle(cfg, set)
-	requireLabelsDefaults := requireLabelsByGaggle(set)
-	backlogLabelsDefaults := backlogLabelsByGaggle(set)
-	backlogLabelPredicateDefaults, ownershipDefaults := backlogLabelPredicatesByGaggle(set), issueOwnershipDefaultsByGaggle(set)
+	input.WorktreeManagers = clonedWorktreeManagers(input.WorktreeManagers)
+	branchNamespaces := branchNamespacesByGaggle(input.Definitions)
+	selfIdentities := selfIdentitiesByGaggle(input.Config, input.Definitions)
+	requireLabelsDefaults := requireLabelsByGaggle(input.Definitions)
+	backlogLabelsDefaults := backlogLabelsByGaggle(input.Definitions)
+	backlogLabelPredicateDefaults, ownershipDefaults := backlogLabelPredicatesByGaggle(input.Definitions), issueOwnershipDefaultsByGaggle(input.Definitions)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
 	// entry here, so its runner falls back to the first repo's token unchanged.
-	gaggleProjects := make(map[string]apiv1.RepoRef, len(set.Gaggles))
-	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(set.Gaggles))
-	workcopyLayouts := make(map[string]instance.Layout, len(set.Gaggles))
-	workcopyRoots := make(map[string]workcopyRootClaim, len(set.Gaggles))
-	for i := range set.Gaggles {
-		gaggle := &set.Gaggles[i]
+	gaggleProjects := make(map[string]apiv1.RepoRef, len(input.Definitions.Gaggles))
+	gaggleAdditionalRepos := make(map[string][]apiv1.RepoRef, len(input.Definitions.Gaggles))
+	workcopyLayouts := make(map[string]instance.Layout, len(input.Definitions.Gaggles))
+	workcopyRoots := make(map[string]workcopyRootClaim, len(input.Definitions.Gaggles))
+	for i := range input.Definitions.Gaggles {
+		gaggle := &input.Definitions.Gaggles[i]
 		gaggleProjects[gaggle.Name] = gaggle.Spec.Project
 		gaggleAdditionalRepos[gaggle.Name] = gaggle.Spec.AdditionalRepos
-		scoped, layoutErr := instance.EffectiveWorkcopiesLayout(l.ForGaggle(gaggle.Name), cfg, gaggle)
+		scoped, layoutErr := instance.EffectiveWorkcopiesLayout(l.ForGaggle(gaggle.Name), input.Config, gaggle)
 		if layoutErr != nil {
 			return nil, fmt.Errorf("gaggle %s: %w", gaggle.Name, layoutErr)
 		}
 		managerRoot := scoped.WorkcopiesDir()
-		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+		if configuredProject, ok := configuredRepoForProject(input.Config, gaggle.Spec.Project); ok && configuredProject.Pinned() {
 			managerRoot = scoped.WorkcopiesBaseDir()
 		}
-		alternateRoot := cfg.Workcopies != nil && cfg.Workcopies.Root != ""
+		alternateRoot := input.Config.Workcopies != nil && input.Config.Workcopies.Root != ""
 		if gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
 			alternateRoot = true
 		}
@@ -873,51 +600,66 @@ func buildSchedulerDefinitions(
 		}
 		workcopyLayouts[gaggle.Name] = scoped
 	}
-	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
+	sandboxPostures := sandboxPosturesByGaggle(input.Config, input.Definitions)
 	runners := make(map[string]*runner.Runner)
 	engineHooks := make(map[string]*engineTerminalHooks)
-	for _, gaggle := range configuredGaggleNames(set) {
-		reportStartupProgress(startupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
+	for _, gaggle := range configuredGaggleNames(input.Definitions) {
+		reportStartupProgress(input.StartupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
-		rn, manager, hooks, err := buildRuntimeRunner(
-			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleBacklogRef(set, gaggle), gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], backlogLabelsDefaults[gaggle], backlogLabelPredicateDefaults[gaggle], ownershipDefaults.assignees[gaggle], ownershipDefaults.unassigned[gaggle], generation,
-		)
+		rn, manager, hooks, err := buildRuntimeRunner(runtimeRunnerInput{
+			Layout:                       scoped,
+			Config:                       input.Config,
+			Goobers:                      resolvedGoobers,
+			InstructionsByGoober:         instructions,
+			Telemetry:                    input.Telemetry,
+			InstanceLog:                  input.InstanceLog,
+			SharedRegistry:               input.SharedRegistry,
+			WorktreeManager:              input.WorktreeManagers[gaggle],
+			ProviderQuota:                input.ProviderQuota,
+			Watermarks:                   input.Watermarks,
+			TerminalNotifier:             input.TerminalNotifier,
+			BranchNamespaces:             branchNamespaces,
+			GaggleProject:                gaggleProjects[gaggle],
+			GaggleBacklog:                gaggleBacklogRef(input.Definitions, gaggle),
+			AdditionalRepos:              gaggleAdditionalRepos[gaggle],
+			HarnessInfo:                  harnessInfo,
+			CredentialStores:             input.CredentialStores,
+			SandboxPosture:               sandboxPostures[gaggle],
+			SelfIdentity:                 selfIdentities[gaggle],
+			RequireLabelsDefault:         requireLabelsDefaults[gaggle],
+			BacklogLabelsDefault:         backlogLabelsDefaults[gaggle],
+			BacklogLabelPredicateDefault: backlogLabelPredicateDefaults[gaggle],
+			OwnershipAssigneesDefault:    ownershipDefaults.assignees[gaggle],
+			OwnershipUnassignedDefault:   ownershipDefaults.unassigned[gaggle],
+			Generations:                  []string{generation},
+		})
 		if err != nil {
 			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
 		}
-		wtManagers[gaggle] = manager
+		input.WorktreeManagers[gaggle] = manager
 		runners[gaggle] = rn
 		engineHooks[gaggle] = hooks
-		reportStartupProgress(startupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
+		reportStartupProgress(input.StartupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(cfg, set.Workflows, gaggleProjects, sharedReg, branchNamespaces, l.SchedulerDir(), stores)
+	openPRRefresher, err := buildOpenPRRefresher(input.Config, input.Definitions.Workflows, gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores)
 	if err != nil {
 		return nil, err
 	}
-	loc, err := cfg.Location()
+	loc, err := input.Config.Location()
 	if err != nil {
 		return nil, err
 	}
-	credResolver, _, err := buildCredentials(cfg, stores, "", "", nil, sharedReg)
+	credResolver, _, err := buildCredentials(input.Config, input.CredentialStores, "", "", nil, input.SharedRegistry)
 	if err != nil {
 		return nil, err
 	}
 
-	gagglesByName := indexedGaggles(set)
+	gagglesByName := indexedGaggles(input.Definitions)
 
-	// #3876 (decision 005 D1): decide, PER ENTRY, whether this lane dispatches
-	// onto the tier-3 engine. See selectEngineForEntry for the predicate and
-	// why it cannot be a daemon-wide switch.
-	//
-	// Computed BEFORE checkpoint 3 (#3987), because checkpoint 3's answer
-	// depends on it: the boot refusal is a statement about the substrate the
-	// DAEMON executes on, and an engine-selected lane never touches it. The
-	// order is safe and cannot cycle — engineSelections reads cfg, set and the
-	// compiled machines only, and never consults a refusal.
-	selections, err := engineSelections(cfg, set, machines)
+	// Select each lane's substrate before solving placement: engine lanes do
+	// not execute on the daemon host. Selection only reads config and machines.
+	selections, err := engineSelections(input.Config, input.Definitions, machines)
 	if err != nil {
 		return nil, err
 	}
@@ -927,7 +669,7 @@ func buildSchedulerDefinitions(
 	// refused with a named diagnostic — journaled and refused per-run by the
 	// scheduler — while the daemon and every other workflow keep serving.
 	// Empty on a zero-declaration instance (see placementrefusal.go).
-	placement, err := placementRefusals(cfg, set, goobers, machines, selections)
+	placement, err := placementRefusals(input.Config, input.Definitions, goobers, machines, selections)
 	if err != nil {
 		return nil, err
 	}
@@ -948,21 +690,15 @@ func buildSchedulerDefinitions(
 	// it once both exist.
 	engineRuntimeHolder := &engineRuntime{}
 
-	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
-	for i := range set.Workflows {
-		wf := &set.Workflows[i]
+	entries := make([]localscheduler.WorkflowEntry, 0, len(input.Definitions.Workflows))
+	for i := range input.Definitions.Workflows {
+		wf := &input.Definitions.Workflows[i]
 		identity := localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}
 		machine := machines[identity]
 		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
 		// never the Manifest's or its gaggle's.
 		allowPreviewFeatures := workflow.PreviewFeaturesEnabled(wf.Annotations)
-		// #341: a workflow may declare more than one schedule-type trigger
-		// (e.g. a weekday cadence and a separate weekend one) — collect all
-		// of them rather than stopping at the first; Scheduler.Tick fires if
-		// any is due. #342: also collect every signal-type trigger's name —
-		// previously compiled nowhere, so a type=signal trigger declared in
-		// config did nothing at runtime; Scheduler.Signal fires every
-		// workflow subscribed to a received signal name.
+		// Collect every schedule and signal subscription for this workflow.
 		var scheds []localscheduler.Schedule
 		var scheduleBackoffs []localscheduler.IdleBackoffConfig
 		webhookBackoff, _ := localscheduler.ParseIdleBackoff(nil)
@@ -1007,7 +743,7 @@ func buildSchedulerDefinitions(
 		}
 		if len(scheds) > 0 {
 			project := gaggleProjects[wf.Spec.Gaggle]
-			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project, gaggleBacklogRef(set, wf.Spec.Gaggle)); err != nil {
+			if err := validateScheduledWorkflowCredentialEnvironment(machine, input.Config, project, gaggleBacklogRef(input.Definitions, wf.Spec.Gaggle)); err != nil {
 				return nil, err
 			}
 		}
@@ -1016,7 +752,7 @@ func buildSchedulerDefinitions(
 			switch {
 			case repoRefs[identity].Provider != apiv1.ProviderGitHub:
 				pollFallbackCause = "repository provider does not support GitHub webhook delivery"
-			case !cfg.WebhookSecretConfigured():
+			case !input.Config.WebhookSecretConfigured():
 				pollFallbackCause = "webhook listener is disabled because webhook.secret is not configured"
 			default:
 				pollFallbackCause = "no usable webhook delivery was available"
@@ -1030,24 +766,24 @@ func buildSchedulerDefinitions(
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
 		// Shared with `goobers engine-start` so the two starters cannot pin
 		// different budgets for the same workflow (#3820).
-		controls, err := resolveWorkflowRunControls(cfg, repoRefs[identity], gagglesByName[wf.Spec.Gaggle], *wf)
+		controls, err := resolveWorkflowRunControls(input.Config, repoRefs[identity], gagglesByName[wf.Spec.Gaggle], *wf)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
 		}
-		backlogCounter, err := buildBacklogCounter(cfg, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(), providerQuota, l.Root)
+		backlogCounter, err := buildBacklogCounter(input.Config, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(), input.ProviderQuota, l.Root)
 		if err != nil {
 			return nil, err
 		}
 		refillDemandCounter, err := buildRefillDemandCounter(
-			cfg,
+			input.Config,
 			gagglesByName[wf.Spec.Gaggle],
 			wf,
 			repoRefs[identity],
 			credResolver,
-			sharedReg,
+			input.SharedRegistry,
 			l.SchedulerDir(),
 			selfIdentities[wf.Spec.Gaggle],
-			providerQuota,
+			input.ProviderQuota,
 		)
 		if err != nil {
 			return nil, err
@@ -1066,15 +802,15 @@ func buildSchedulerDefinitions(
 			BacklogCounter:      backlogCounter,
 			RefillDemandCounter: refillDemandCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
-				cfg, wf, repoRefs[identity], credResolver, sharedReg, l.SchedulerDir(),
-				branchNamespaces[wf.Spec.Gaggle], providerQuota,
+				input.Config, wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(),
+				branchNamespaces[wf.Spec.Gaggle], input.ProviderQuota,
 			),
 			// The current provider-backed demand counters use GitHub; charge the
 			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
 			Starter: selectEntryStarter(entryStarterInput{
-				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, watermarks: watermarks, log: instanceLog, runners: runnerRegistry},
+				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: input.WaitGroup, l: l.ForGaggle(wf.Spec.Gaggle), tel: input.Telemetry, rollupDB: input.RollupDB, watermarks: input.Watermarks, log: input.InstanceLog, runners: input.RunnerRegistry},
 				selection:     selections[identity],
 				runtime:       engineRuntimeHolder,
 				hooks:         engineHooks[wf.Spec.Gaggle],
@@ -1082,20 +818,20 @@ func buildSchedulerDefinitions(
 				def:           machine.Def,
 				spec: engineRunRequest{
 					configGeneration: generation,
-					cfg:              cfg,
-					set:              set,
+					cfg:              input.Config,
+					set:              input.Definitions,
 					gaggle:           wf.Spec.Gaggle,
 					project:          repoRefs[identity],
 					def:              machine.Def,
 				},
 				layout:               l.ForGaggle(wf.Spec.Gaggle),
-				log:                  instanceLog,
-				telemetry:            tel,
-				rollupDB:             rollupDB,
-				watermarks:           watermarks,
+				log:                  input.InstanceLog,
+				telemetry:            input.Telemetry,
+				rollupDB:             input.RollupDB,
+				watermarks:           input.Watermarks,
 				allowPreviewFeatures: allowPreviewFeatures,
-				liveJournal:          cfg.EngineProjectionEnabled(),
-				wg:                   wg,
+				liveJournal:          input.Config.EngineProjectionEnabled(),
+				wg:                   input.WaitGroup,
 			}),
 			RepoRef: repoRefs[identity],
 			// Only runner-driven entries execute on the scheduler's self host.
@@ -1112,14 +848,19 @@ func buildSchedulerDefinitions(
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}
 
-	firstRunner, firstWorktrees := firstGaggleRuntime(set, runners, wtManagers)
-	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(retainers), func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
-		return buildSchedulerDefinitions(pinned, cfg, pinnedSet, pinnedReport, wg, runnerRegistry, tel, rollupDB, watermarks, instanceLog, sharedReg, wtManagers, providerQuota, terminalNotifier, stores, nil, retainers...)
+	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
+	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+		pinnedInput := input
+		pinnedInput.Layout = pinned
+		pinnedInput.Definitions = pinnedSet
+		pinnedInput.Validation = pinnedReport
+		pinnedInput.StartupProgress = nil
+		return buildSchedulerDefinitions(pinnedInput)
 	})
 	return &schedulerDefinitions{
 		GenerationResolver: resolveGeneration,
-		Set:                set,
-		Validation:         report,
+		Set:                input.Definitions,
+		Validation:         input.Validation,
 		HarnessPreflight:   harnessInfo,
 		Runner:             firstRunner,
 		Runners:            runners,
@@ -1131,7 +872,7 @@ func buildSchedulerDefinitions(
 		OpenPRRefresher:    openPRRefresher,
 		EngineRuntime:      engineRuntimeHolder,
 		Worktrees:          firstWorktrees,
-		WorktreesByGaggle:  wtManagers,
+		WorktreesByGaggle:  input.WorktreeManagers,
 	}, nil
 }
 
@@ -1313,40 +1054,46 @@ func staticallyRequiredWorkflowStates(graph workflow.Graph) map[string]bool {
 	return required
 }
 
-func buildRetainedLegacyRunner(
-	l instance.Layout,
-	cfg *instance.Config,
-	set *instance.ConfigSet,
-	goobers map[string]apiv1.GooberSpec,
-	tel *telemetry.Client,
-	instanceLog *journal.InstanceLog,
-	sharedReg *journal.RegistryScrubber,
-	providerQuota *localscheduler.ProviderQuotaState,
-	watermarks *intake.Store,
-	terminalNotifier runner.TerminalNotifier,
-	harnessInfo harnessPreflightInfo,
-	stores credentials.StoreResolver,
-) (*runner.Runner, *worktree.Manager, error) {
-	retained, err := retainedLegacyRuntimeExists(l)
+func buildRetainedLegacyRunner(input retainedLegacyRunnerInput) (*runner.Runner, *worktree.Manager, error) {
+	retained, err := retainedLegacyRuntimeExists(input.Layout)
 	if err != nil || !retained {
 		return nil, nil, err
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(input.Layout.ConfigDir(), input.Goobers)
 	if err != nil {
 		return nil, nil, err
 	}
-	rn, manager, _, err := buildRuntimeRunner(
-		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, harnessInfo, stores,
+	rn, manager, _, err := buildRuntimeRunner(runtimeRunnerInput{
+		Layout:               input.Layout,
+		Config:               input.Config,
+		Goobers:              input.Goobers,
+		InstructionsByGoober: instructions,
+		Telemetry:            input.Telemetry,
+		InstanceLog:          input.InstanceLog,
+		SharedRegistry:       input.SharedRegistry,
+		WorktreeManager:      nil,
+		ProviderQuota:        input.ProviderQuota,
+		Watermarks:           input.Watermarks,
+		TerminalNotifier:     input.TerminalNotifier,
+		BranchNamespaces:     branchNamespacesByGaggle(input.Definitions),
+		GaggleProject:        apiv1.RepoRef{},
+		GaggleBacklog:        apiv1.BacklogRef{},
+		AdditionalRepos:      nil,
+		HarnessInfo:          input.HarnessInfo,
+		CredentialStores:     input.CredentialStores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
-		instance.EffectiveAgenticSandbox(cfg, nil),
-		instance.EffectiveSelfIdentity(cfg, nil),
+		SandboxPosture: instance.EffectiveAgenticSandbox(input.Config, nil),
+		SelfIdentity:   instance.EffectiveSelfIdentity(input.Config, nil),
 		// Same reasoning: no gaggle to consult for a RequireLabels default.
-		"", "", "", "", "",
-	)
+		RequireLabelsDefault:         "",
+		BacklogLabelsDefault:         "",
+		BacklogLabelPredicateDefault: "",
+		OwnershipAssigneesDefault:    "",
+		OwnershipUnassignedDefault:   "",
+	})
 	return rn, manager, err
 }
 
@@ -1366,77 +1113,53 @@ func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
 	return false, nil
 }
 
-func buildRuntimeRunner(
-	l instance.Layout,
-	cfg *instance.Config,
-	goobers map[string]apiv1.GooberSpec,
-	instructions map[string]string,
-	tel *telemetry.Client,
-	instanceLog *journal.InstanceLog,
-	sharedReg *journal.RegistryScrubber,
-	manager *worktree.Manager,
-	providerQuota *localscheduler.ProviderQuotaState,
-	watermarks *intake.Store,
-	terminalNotifier runner.TerminalNotifier,
-	branchNamespaces map[string]string,
-	gaggleProject apiv1.RepoRef,
-	gaggleBacklog apiv1.BacklogRef,
-	additionalRepos []apiv1.RepoRef,
-	harnessInfo harnessPreflightInfo,
-	stores credentials.StoreResolver,
-	sandboxPosture instance.SandboxPosture,
-	selfIdentity string,
-	requireLabelsDefault string,
-	backlogLabelsDefault string,
-	backlogLabelPredicateDefault string,
-	ownershipAssigneesDefault string,
-	ownershipUnassignedDefault string,
-	generations ...string,
-) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
-	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir(), l.Gaggle())
+func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
+	manager := input.WorktreeManager
+
+	appliedConfigDigest, err := deterministicStageConfigDigest(input.Layout.ConfigDir(), input.Layout.Gaggle())
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	var generation string
-	if len(generations) > 0 {
-		generation = generations[0]
+	if len(input.Generations) > 0 {
+		generation = input.Generations[0]
 	}
 	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
 		ConfigGeneration:     generation,
-		Layout:               l,
-		Config:               cfg,
-		Goobers:              goobers,
-		InstructionsByGoober: instructions,
-		Telemetry:            tel,
-		SharedRegistry:       sharedReg,
+		Layout:               input.Layout,
+		Config:               input.Config,
+		Goobers:              input.Goobers,
+		InstructionsByGoober: input.InstructionsByGoober,
+		Telemetry:            input.Telemetry,
+		SharedRegistry:       input.SharedRegistry,
 		WorktreeManager:      manager,
-		BranchNamespaces:     branchNamespaces,
-		GaggleProject:        gaggleProject,
-		GaggleBacklog:        gaggleBacklog,
-		AdditionalRepos:      additionalRepos,
-		HarnessInfo:          harnessInfo,
-		CredentialStores:     stores,
-		SandboxPosture:       sandboxPosture,
-		ProviderQuota:        providerQuota,
+		BranchNamespaces:     input.BranchNamespaces,
+		GaggleProject:        input.GaggleProject,
+		GaggleBacklog:        input.GaggleBacklog,
+		AdditionalRepos:      input.AdditionalRepos,
+		HarnessInfo:          input.HarnessInfo,
+		CredentialStores:     input.CredentialStores,
+		SandboxPosture:       input.SandboxPosture,
+		ProviderQuota:        input.ProviderQuota,
 		AppliedConfigDigest:  appliedConfigDigest,
 	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	runnerCfg.BacklogQueryAssignedTo = selfIdentity
+	runnerCfg.BacklogQueryAssignedTo = input.SelfIdentity
 	// The daemon owns root identity creation; tier-3 workers must not create
 	// independent identities while loading a copied configuration tree.
-	runnerCfg.InstanceID, err = l.EnsureIdentity(context.Background())
+	runnerCfg.InstanceID, err = input.Layout.EnsureIdentity(context.Background())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
 	}
-	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
-	runnerCfg.BacklogQueryBacklogLabels = backlogLabelsDefault
-	runnerCfg.BacklogQueryLabelPredicate = backlogLabelPredicateDefault
-	runnerCfg.IssueOwnershipAssignees = ownershipAssigneesDefault
-	runnerCfg.IssueOwnershipUnassigned = ownershipUnassignedDefault
-	runnerCfg.JournalAdvancedContext = telemetryingest.RunIntakeObserverContext(watermarks, instanceLog)
-	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
+	runnerCfg.BacklogQueryRequireLabels = input.RequireLabelsDefault
+	runnerCfg.BacklogQueryBacklogLabels = input.BacklogLabelsDefault
+	runnerCfg.BacklogQueryLabelPredicate = input.BacklogLabelPredicateDefault
+	runnerCfg.IssueOwnershipAssignees = input.OwnershipAssigneesDefault
+	runnerCfg.IssueOwnershipUnassigned = input.OwnershipUnassignedDefault
+	runnerCfg.JournalAdvancedContext = telemetryingest.RunIntakeObserverContext(input.Watermarks, input.InstanceLog)
+	prepareTerminal, err := buildTerminalBranchPreparer(input.Layout, input.Config, input.GaggleProject, input.SharedRegistry, input.CredentialStores)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1446,15 +1169,15 @@ func buildRuntimeRunner(
 	// issue-close-out (the `no-work` outcome short-circuits straight to
 	// completed) cannot leave claims.json and the provider disagreeing until
 	// the next backlog-curation cycle.
-	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(l, cfg, gaggleProject, sharedReg, stores)
+	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(input.Layout, input.Config, input.GaggleProject, input.SharedRegistry, input.CredentialStores)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
-		return finalizeTerminalRunWithClaimMarkers(l, instanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
+		return finalizeTerminalRunWithClaimMarkers(input.Layout, input.InstanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
 	}
-	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
-	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, terminalNotifier)
+	runnerCfg.RateLimited = buildRateLimitedHandler(input.ProviderQuota)
+	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, input.TerminalNotifier)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1466,9 +1189,9 @@ func buildRuntimeRunner(
 	// claim D1's parity rests on.
 	hooks := &engineTerminalHooks{
 		selfExecutionObserved: runnerCfg.SelfExecutionObserved,
-		layout:                l,
-		log:                   instanceLog,
-		repoRef:               gaggleProject,
+		layout:                input.Layout,
+		log:                   input.InstanceLog,
+		repoRef:               input.GaggleProject,
 		existingFix:           runnerCfg.ExistingFix,
 		blocked:               runnerCfg.Blocked,
 		failed:                runnerCfg.Failed,
@@ -1630,34 +1353,19 @@ func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
 	if s.RollupDB != nil {
 		steps = append(steps, shutdownStep{"scheduler telemetry ingest", func() error { return s.ingestSchedulerLog(ctx) }})
 	}
-	// Keep the metric provider alive through every best-effort journal append
-	// above. In particular, a failed final ingest can itself fail to append its
-	// diagnostic; AppendBestEffort must notify telemetry before its final flush.
-	if s.Telemetry != nil {
-		steps = append(steps, shutdownStep{"telemetry client", func() error { return s.Telemetry.Shutdown(ctx) }})
+	observation := s.observation
+	if observation == nil {
+		// Compatibility for callers assembling a setup directly.
+		observation = &schedulerObservation{tel: s.Telemetry, rollupDB: s.RollupDB,
+			stopProjector: s.StopProjector, readModel: s.ReadModel, watermarks: s.Watermarks, instanceLog: s.InstanceLog}
 	}
-	if s.RollupDB != nil {
-		steps = append(steps, shutdownStep{"telemetry rollup database", s.RollupDB.Close})
+	steps = append(steps, observation.closeSteps(ctx)...)
+	runtime := s.runtime
+	if runtime == nil {
+		runtime = &schedulerRuntime{generations: s.Generations}
 	}
-	// The projector stops BEFORE its store closes. Its commit loop holds the
-	// only writable handle, so closing read.db underneath a commit in flight
-	// would fail that projection — and the failure would look like corruption
-	// rather than shutdown. Stop is synchronous: it waits for the loop to drain.
-	if s.StopProjector != nil {
-		steps = append(steps, shutdownStep{"read model projector", func() error { s.StopProjector(); return nil }})
-	}
-	if s.ReadModel != nil {
-		steps = append(steps, shutdownStep{"read model store", s.ReadModel.Close})
-	}
-	if s.Watermarks != nil {
-		steps = append(steps, shutdownStep{"source watermark store", s.Watermarks.Close})
-	}
-	if s.InstanceLog != nil {
-		steps = append(steps, shutdownStep{"instance log", s.InstanceLog.Close})
-	}
-	if s.Generations != nil {
-		steps = append(steps, shutdownStep{"config generation leases", s.Generations.Close})
-	}
+	steps = append(steps, shutdownStep{"config generation leases", runtime.Close})
+
 	return steps
 }
 
@@ -2130,4 +1838,70 @@ func warnUnresolvableResume(log *journal.InstanceLog, id journal.RunIdentity, mi
 			},
 		})
 	}
+}
+
+// schedulerDefinitionsInput names the dependencies for this construction boundary.
+type schedulerDefinitionsInput struct {
+	Layout           instance.Layout
+	Config           *instance.Config
+	Definitions      *instance.ConfigSet
+	Validation       *validate.Report
+	WaitGroup        *sync.WaitGroup
+	RunnerRegistry   *daemonRunnerRegistry
+	Telemetry        *telemetry.Client
+	RollupDB         *rollup.DB
+	Watermarks       *intake.Store
+	InstanceLog      *journal.InstanceLog
+	SharedRegistry   *journal.RegistryScrubber
+	WorktreeManagers map[string]*worktree.Manager
+	ProviderQuota    *localscheduler.ProviderQuotaState
+	TerminalNotifier runner.TerminalNotifier
+	CredentialStores credentials.StoreResolver
+	StartupProgress  func(string)
+	Generations      []*configgeneration.Retainer
+}
+
+// retainedLegacyRunnerInput names the dependencies for this construction boundary.
+type retainedLegacyRunnerInput struct {
+	Layout           instance.Layout
+	Config           *instance.Config
+	Definitions      *instance.ConfigSet
+	Goobers          map[string]apiv1.GooberSpec
+	Telemetry        *telemetry.Client
+	InstanceLog      *journal.InstanceLog
+	SharedRegistry   *journal.RegistryScrubber
+	ProviderQuota    *localscheduler.ProviderQuotaState
+	Watermarks       *intake.Store
+	TerminalNotifier runner.TerminalNotifier
+	HarnessInfo      harnessPreflightInfo
+	CredentialStores credentials.StoreResolver
+}
+
+// runtimeRunnerInput names the dependencies for this construction boundary.
+type runtimeRunnerInput struct {
+	Layout                       instance.Layout
+	Config                       *instance.Config
+	Goobers                      map[string]apiv1.GooberSpec
+	InstructionsByGoober         map[string]string
+	Telemetry                    *telemetry.Client
+	InstanceLog                  *journal.InstanceLog
+	SharedRegistry               *journal.RegistryScrubber
+	WorktreeManager              *worktree.Manager
+	ProviderQuota                *localscheduler.ProviderQuotaState
+	Watermarks                   *intake.Store
+	TerminalNotifier             runner.TerminalNotifier
+	BranchNamespaces             map[string]string
+	GaggleProject                apiv1.RepoRef
+	GaggleBacklog                apiv1.BacklogRef
+	AdditionalRepos              []apiv1.RepoRef
+	HarnessInfo                  harnessPreflightInfo
+	CredentialStores             credentials.StoreResolver
+	SandboxPosture               instance.SandboxPosture
+	SelfIdentity                 string
+	RequireLabelsDefault         string
+	BacklogLabelsDefault         string
+	BacklogLabelPredicateDefault string
+	OwnershipAssigneesDefault    string
+	OwnershipUnassignedDefault   string
+	Generations                  []string
 }
