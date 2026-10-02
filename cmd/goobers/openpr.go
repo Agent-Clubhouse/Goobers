@@ -145,7 +145,7 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
 	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"), itemID,\n" +
-	"itemTitle, resultFile, timeout. PR metadata is configured through these\n" +
+	"itemTitle, reviewers, resultFile, timeout. PR metadata is configured through these\n" +
 	"workflow inputs — there are no --title/--body flags — and a stage may\n" +
 	"bind them from an upstream stage's declared output with inputsFrom\n" +
 	"rather than a static value:\n\n" +
@@ -185,6 +185,14 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"A workflow that claims no item, or whose journal holds no recognized\n" +
 	"review/local-CI evidence, therefore gets generic metadata unless it sets\n" +
 	"these inputs. That is the fallback working, not a missing feature.\n" +
+	"reviewers (optional) is a comma- or newline-separated list of reviewer\n" +
+	"logins (GitHub/Gitea) or identities (ADO) requested on the PR after it is\n" +
+	"opened. A failed request never fails the stage: the PR stays opened, a\n" +
+	"warning is printed, and the result file records reviewersRequested (the\n" +
+	"list sent, on success) or reviewersRequestError (the failure). Leading\n" +
+	"'@' is stripped and duplicates dropped. Gaggle credentials need the\n" +
+	"provider's pull-request write scope (GitHub's requested_reviewers API\n" +
+	"rejects the PR author as a reviewer — that surfaces as the warning).\n\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
 func openPRIssueWithFallbackReason(root, runID string) (id, title string, ok bool, fallbackReason string, err error) {
@@ -447,7 +455,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 				issueID, repositoryDisplayName(issuesRepo), checkErr)
 		case item.State != "" && !strings.EqualFold(item.State, "open"):
 			pf(stdout, "issue #%s is no longer open (state %q) since it was claimed — aborting without opening a PR (#947)\n", issueID, item.State)
-			if err := writeOpenPRResult(resultFile, false, 0, ""); err != nil {
+			if err := writeOpenPRResult(resultFile, false, 0, "", nil); err != nil {
 				pf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -500,7 +508,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL); err != nil {
+	extras := requestOpenPRReviewers(ctx, provider, repo, result, parseReviewers(providerInput("reviewers", "")), stderr)
+
+	if err := writeOpenPRResult(resultFile, true, result.Number, result.URL, extras); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -589,8 +599,11 @@ func runBranchFromJournal(root, runID string) (string, bool) {
 // `opened` flag the open-pr-gate routes on (#947); prNumber/pull-request-url
 // are present only on the opened path (ci-poll reads them via inputsFrom, and
 // ci-poll only runs when opened=true).
-func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string) error {
+func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string, extras map[string]string) error {
 	out := map[string]string{"opened": strconv.FormatBool(opened)}
+	for k, v := range extras {
+		out[k] = v
+	}
 	if opened {
 		out["prNumber"] = strconv.Itoa(prNumber)
 		out["pull-request-url"] = url
@@ -603,4 +616,51 @@ func writeOpenPRResult(resultFile string, opened bool, prNumber int, url string)
 		return fmt.Errorf("write %s: %w", resultFile, err)
 	}
 	return nil
+}
+
+// openPRReviewRequester is the optional provider surface open-pr uses to
+// request reviewers after the PR is open. Every shipped RepoProvider (GitHub,
+// Gitea, ADO) satisfies it.
+type openPRReviewRequester interface {
+	RequestReview(context.Context, providers.ReviewRequest) error
+}
+
+// parseReviewers normalizes the `reviewers` input: comma/newline separated,
+// leading '@' stripped, blanks and case-insensitive duplicates dropped.
+func parseReviewers(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range parseDocsRoots(raw) {
+		r = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(r), "@"))
+		if r == "" || seen[strings.ToLower(r)] {
+			continue
+		}
+		seen[strings.ToLower(r)] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// requestOpenPRReviewers requests reviewers on an already-opened PR. It is
+// best-effort by design: a failure warns and is recorded in the returned
+// result-file fields, never failing the stage after a successful PR open.
+func requestOpenPRReviewers(ctx context.Context, provider any, repo providers.RepositoryRef, pr providers.PullRequestResult, reviewers []string, stderr io.Writer) map[string]string {
+	if len(reviewers) == 0 {
+		return nil
+	}
+	requester, ok := provider.(openPRReviewRequester)
+	if !ok {
+		pf(stderr, "warning: provider does not support requesting reviewers on pr #%d — skipped\n", pr.Number)
+		return map[string]string{"reviewersRequestError": "provider does not support reviewer requests"}
+	}
+	pullID := pr.ID
+	if pullID == "" {
+		pullID = strconv.Itoa(pr.Number)
+	}
+	if err := requester.RequestReview(ctx, providers.ReviewRequest{Repository: repo, PullID: pullID, Reviewers: reviewers}); err != nil {
+		pf(stderr, "warning: could not request review from %s on pr #%d (%v) — the pr is open without them\n",
+			strings.Join(reviewers, ","), pr.Number, err)
+		return map[string]string{"reviewersRequestError": err.Error()}
+	}
+	return map[string]string{"reviewersRequested": strings.Join(reviewers, ",")}
 }
