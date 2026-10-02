@@ -179,6 +179,22 @@ github.com/goobers/goobers/internal/runner/run.go:14.1,16.2 2 0
 	}
 }
 
+// TestDefaultExcludeAdmitsPackagesExtractedFromCmd pins the coverage floor for
+// logic moved out of cmd/goobers by the decomposition program (#5297, #4226):
+// once a file leaves /cmd/ for internal/, the default exclusion must no longer
+// drop it, so the package counts against COVERAGE_THRESHOLD.
+func TestDefaultExcludeAdmitsPackagesExtractedFromCmd(t *testing.T) {
+	t.Parallel()
+	exclude := regexp.MustCompile(defaultExclude)
+	for _, line := range []string{
+		"github.com/goobers/goobers/internal/apireadcache/cache.go:10.1,12.2 2 1",
+	} {
+		if exclude.MatchString(line) {
+			t.Errorf("defaultExclude %q drops extracted package entry %q from the coverage denominator", defaultExclude, line)
+		}
+	}
+}
+
 func TestFilterProfileRejectsMalformedInput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

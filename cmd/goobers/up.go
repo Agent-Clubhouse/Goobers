@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
@@ -84,8 +85,8 @@ var delegationSweepInterval = 2 * time.Second
 var heartbeatInterval = time.Minute
 
 // apiReadCacheLockSweepInterval bounds how often a running daemon re-sweeps
-// stale api-read-cache per-list-key lock files (cleanStaleAPIReadCacheLocks,
-// apireadcache.go). Well under apiReadCacheStaleLockAge (24h) so a lock
+// stale api-read-cache per-list-key lock files (apireadcache.CleanStaleLocks).
+// Well under the cache's 24h stale-lock age so a lock
 // crosses the staleness cutoff and gets reclaimed within one interval of
 // becoming eligible, rather than waiting on incidental re-construction of the
 // cache from an unrelated poller (#4251). Var, not const, so tests can shrink
@@ -210,14 +211,14 @@ func sweepOrphanedEphemeralTmp(cfg *instance.Config, log *journal.InstanceLog) {
 // api-read-cache per-list-key lock files and returns the channel that closes
 // once its goroutine has stopped (for the shutdown join in runUpContext).
 //
-// #4251: cleanStaleAPIReadCacheLocks no longer gates itself to once per
-// process (apireadcache.go), so this ticker is what actually makes that
+// #4251: apireadcache.CleanStaleLocks no longer gates itself to once per
+// process, so this ticker is what actually makes that
 // removal matter for a daemon whose own cache-construction call sites
 // (stage dispatch, open-PR polling, counter evaluation) might otherwise go
-// quiet for longer than apiReadCacheStaleLockAge between calls. Same
+// quiet for longer than the cache's stale-lock age between calls. Same
 // never-write-to-stdout footing as the other periodic sweeps in
 // runUpContext; the sweep itself is fail-open with no error to report
-// (apireadcache.go's own doc: "must never fail cache construction").
+// (CleanStaleLocks' own doc: "must never fail cache construction").
 func startAPIReadCacheLockSweepTicker(ctx context.Context, l instance.Layout) <-chan struct{} {
 	ticker := time.NewTicker(apiReadCacheLockSweepInterval)
 	done := make(chan struct{})
@@ -229,7 +230,7 @@ func startAPIReadCacheLockSweepTicker(ctx context.Context, l instance.Layout) <-
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				cleanStaleAPIReadCacheLocks(l.SchedulerDir())
+				apireadcache.CleanStaleLocks(l.SchedulerDir())
 			}
 		}
 	}()
