@@ -58,7 +58,7 @@ internal/runner/run.go	(*Runner).runTask	48
 !entry-justification	internal/runner/run.go	(*Runner).taskOutcome	52	#5107 adds the no-work repass gate-routing decision (extracted into noWorkRepassOutcome, but the call site itself still adds one branch)
 internal/runner/run.go	(*Runner).taskOutcome	52
 internal/runner/run.go	(*Runner).walk	93
-internal/runner/run.go	parseReceiptInputInspection	43
+internal/runner/run_evidence.go	parseReceiptInputInspection	43
 internal/telemetry/rollup/ingest.go	insertEvents	49
 internal/workflow/ir/ir.go	Validate	68
 internal/workflow/v_2_0/calibratedsimulation.go	SimulateGraph	40
