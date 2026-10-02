@@ -69,7 +69,9 @@ const (
 	// actually being cut). A PR that writes a lifecycle transition
 	// unshippable in this declared version fails on that PR, not at tag
 	// time. Reviewed and bumped like any other change; documented in
-	// docs/guides/releases.md.
+	// docs/guides/releases.md. Its freshness (no tag past it) is enforced at
+	// release time by TestReleaseTagWithinNextPlannedRelease in release.yml,
+	// never per PR, so a pushed tag cannot redden in-flight branches (#5852).
 	NextPlannedRelease = "v0.5.0"
 )
 
