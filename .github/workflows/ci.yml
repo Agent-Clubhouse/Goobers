@@ -1469,7 +1469,7 @@ jobs:
         run: go test ./internal/executor
 
       - name: Windows credential files
-        run: go test ./internal/credentials
+        run: go test ./internal/credentials ./internal/fleet
 
       - name: Windows Azure CLI credential diagnostics
         env:
