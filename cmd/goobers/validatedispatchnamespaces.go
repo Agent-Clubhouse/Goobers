@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -54,7 +55,7 @@ func checkGaggleDispatchNamespaces(root, configDir string, set *instance.ConfigS
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dispatchNamespacePreflightTimeout)
 	defer cancel()
-	results, err := preflightGaggleNamespaces(ctx, client, gaggleNamespaces)
+	results, err := preflightGaggleNamespaces(ctx, client, gaggleNamespaces, dispatcher.ServiceAccounts(set.Gaggles))
 	if err != nil {
 		pf(stdout, "dispatch namespace preflight incomplete: %v\n", err)
 	}
@@ -67,7 +68,7 @@ func checkGaggleDispatchNamespaces(root, configDir string, set *instance.ConfigS
 			continue
 		}
 		message := fmt.Sprintf("gaggle %q declares isolation.namespace %q, which the current dispatch configuration cannot honor "+
-			"(does not exist, or this worker's credentials lack the RBAC grants dispatch needs there); provision it before enabling or "+
+			"(namespace/account missing, account automount enabled, unsupported server, or missing worker RBAC grants); provision it before enabling or "+
 			"expanding mode-3 dispatch into this gaggle", gaggle, namespace)
 		pln(stdout, "GNS001: "+message)
 		diagnostics.add(diagnosticFile(root, configDir), "/gaggles/"+gaggle+"/spec/isolation/namespace",

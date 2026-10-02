@@ -183,7 +183,7 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 	// depends on — never discover a Forbidden after a stage was already
 	// claimed from the backlog.
 	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), dispatchNamespacePreflightTimeout)
-	_, preflightErr := preflightGaggleNamespaces(preflightCtx, client, gaggleNamespaces)
+	_, preflightErr := preflightGaggleNamespaces(preflightCtx, client, gaggleNamespaces, dispatcher.ServiceAccounts(set.Gaggles))
 	cancelPreflight()
 	if preflightErr != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: gaggle namespace preflight: %w", preflightErr)
@@ -195,14 +195,15 @@ func buildStageDispatch(instanceRoot, daemonAPI, blobRoot, owner string, seams *
 		// The kit writer uses the same key and the worker's pinned config
 		// snapshots. A test constructor without seams still refuses agentic
 		// dispatch explicitly instead of creating a pod that would find no kit.
-		KitWriter:        agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
-		GaggleNamespaces: gaggleNamespaces,
-		InstanceID:       instanceID,
-		Owner:            owner,
-		EmbeddedCommit:   build.Commit,
-		EmbeddedVersion:  build.Version,
-		BlobEndpoint:     blobEndpoint,
-		WriteAPIBase:     daemonAPI,
+		KitWriter:             agenticKitWriterFor(instanceRoot, seams, blobEndpoint, signed),
+		GaggleNamespaces:      gaggleNamespaces,
+		GaggleServiceAccounts: dispatcher.ServiceAccounts(set.Gaggles),
+		InstanceID:            instanceID,
+		Owner:                 owner,
+		EmbeddedCommit:        build.Commit,
+		EmbeddedVersion:       build.Version,
+		BlobEndpoint:          blobEndpoint,
+		WriteAPIBase:          daemonAPI,
 		// The same operator-declared passthrough list the local executor gets
 		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
 		// runner class enforcing env:default-deny keeps the vars an operator

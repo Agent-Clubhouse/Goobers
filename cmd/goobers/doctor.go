@@ -28,6 +28,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"                          [--overlay-dir <dir>] [--image-runtime docker|podman]\n" +
 	"                          [--image-pull-policy always|never]\n" +
 	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
+	"                          [--psa-namespaces <namespace,...>] [--psa-service-account <name>]\n" +
 	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
 	"       goobers doctor --harness-auth [--report text|json] [instance-root]\n" +
@@ -36,6 +37,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"infrastructure shape (docs/design/k8s-infra-shape.md) before installing\n" +
 	"Goobers on it — the install-time enforcement of that document (#668).\n\n" +
 	"The --k8s check set, each row citing the shape-doc section it enforces:\n\n" +
+	"  pod-security-admission optional #5284 rendered Linux/Windows stage pods (server dry-run)\n" +
 	"  cluster-version    required  §1     cluster reachable, supported version\n" +
 	"  networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)\n" +
 	"  rbac-install       required  §1/§3  permissions to install goobers-system\n" +
@@ -53,8 +55,8 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"  overlay-pin-agreement required* #4298 remote base, image, and runner pins agree\n" +
 	"  overlay-image-contract required* #4298 binary stamp, executable, PATH, and CA checks\n\n" +
 	"Checks marked required* apply when their probe target is configured; left\n" +
-	"unconfigured they report a skipped warn. Cluster checks are read-only: nothing is\n" +
-	"created on the cluster, and a check that cannot run reports fail with the\n" +
+	"unconfigured they report a skipped warn. Checks persist no cluster resources.\n" +
+	"Required checks that cannot run report fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
 	"--checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.\n" +
@@ -63,6 +65,11 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"--apiserver-endpoint overrides the comparison endpoint when in-cluster service IPs\n" +
 	"differ from the actual control-plane endpoint used by the network policy. It does\n" +
 	"not change the authenticated Kubernetes client address.\n\n" +
+	"pod-security-admission is informational: --psa-namespaces selects targets (default:\n" +
+	"namespaces labeled goobers.dev/gaggle); --psa-service-account defaults to goobers-stage.\n" +
+	"Each Linux/Windows dispatcher image pod is submitted with dryRun=All. The report\n" +
+	"names current enforcement and admission errors. Baseline acceptance does not prove\n" +
+	"restricted compatibility; custom templates need a separate dry-run.\n\n" +
 	"--overlay-dir additionally renders the consumer overlay with kubectl and pulls\n" +
 	"its pinned images using --image-runtime (default docker). Image checks run\n" +
 	"temporary network-isolated containers and remove them afterwards. Use trusted\n" +
@@ -148,6 +155,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	harnessAuthMode := fs.Bool("harness-auth", false, "report credential-free harness authentication state")
 	avMode := fs.Bool("av-exclusions", false, "list the directories Goobers writes then reads and verify antivirus exclusions (advisory)")
 	workRoot := fs.String("work-root", "", "worker work root to enumerate with --av-exclusions (default: the worker's own default)")
+	psaNamespaces := fs.String("psa-namespaces", "", "comma-separated namespaces for informational stage-pod admission dry-runs (default: namespaces labeled goobers.dev/gaggle)")
+	psaAccount := fs.String("psa-service-account", "", "stage ServiceAccount for admission probes (default: goobers-stage)")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (default: the standard loading rules)")
 	kubeContext := fs.String("context", "", "kubeconfig context (default: the current context)")
 	overlayDir := fs.String("overlay-dir", "", "consumer kustomization directory for pin and image checks (--k8s only)")
@@ -233,6 +242,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 
 	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
 		Checks:            checkIDs,
+		PSANamespaces:     splitCommaList(*psaNamespaces),
+		PSAServiceAccount: *psaAccount,
 		OverlayDir:        *overlayDir,
 		ImageRuntime:      *imageRuntime,
 		ImagePullPolicy:   *imagePullPolicy,
@@ -559,6 +570,9 @@ func validateDoctorCheckFlags(fs *flag.FlagSet, k8sMode bool, raw, endpoint stri
 	}
 	if supplied["apiserver-endpoint"] && (!k8sMode || strings.TrimSpace(endpoint) == "") {
 		return nil, fmt.Errorf("--apiserver-endpoint requires --k8s and a nonempty URL")
+	}
+	if !k8sMode && (supplied["psa-namespaces"] || supplied["psa-service-account"]) {
+		return nil, fmt.Errorf("--psa-namespaces and --psa-service-account require --k8s")
 	}
 	if err := k8spreflight.ValidateChecks(ids); err != nil {
 		return nil, err

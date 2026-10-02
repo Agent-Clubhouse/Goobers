@@ -54,8 +54,7 @@ spec:
               active mode-3 worker routes every stage pod for this gaggle into its
               declared isolation.namespace, and verifies that namespace's existence and
               this worker's RBAC access to it before polling or dispatching any work
-              (#4897). IdentityRef is not yet consumed — every gaggle's stage pods still
-              run under their namespace's default ServiceAccount.
+              (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
             properties:
               additionalRepos:
                 description: |-
@@ -283,8 +282,7 @@ spec:
                     description: |-
                       IdentityRef names the target per-gaggle Azure workload identity
                       (managed-identity federation). The active dispatcher does not consume
-                      it yet — every gaggle's stage pods still run under their namespace's
-                      default ServiceAccount (#4897 scoped namespace routing only).
+                      it yet; ServiceAccount selects the Kubernetes account independently.
                     type: string
                   namespace:
                     description: |-
@@ -296,6 +294,11 @@ spec:
                       credentials hold the RBAC grants dispatch needs there (#4897). Two
                       gaggles may declare the SAME namespace deliberately; that shared
                       topology is supported.
+                    type: string
+                  serviceAccount:
+                    description: |-
+                      ServiceAccount selects the stage pod account. Empty defaults to goobers-stage;
+                      default is an explicit opt-out. The account must disable token automount.
                     type: string
                 required:
                 - namespace

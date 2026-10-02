@@ -2,6 +2,8 @@ package readservice
 
 import (
 	"context"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"reflect"
 	"testing"
 
@@ -23,5 +25,21 @@ func TestIsolationMandatesStatusUsesConfiguredFloorWithoutSharingSlices(t *testi
 	second, err := service.SchedulerStatus(context.Background())
 	if err != nil || !reflect.DeepEqual(second.IsolationMandates, want) {
 		t.Fatalf("aliased policy: %+v, %v", second, err)
+	}
+}
+
+func TestStageServiceAccountsStatus(t *testing.T) {
+	defs := testDefinitions()
+	defs.Gaggles = []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "alpha"}}, {ObjectMeta: metav1.ObjectMeta{Name: "beta"}, Spec: apiv1.GaggleSpec{Isolation: apiv1.GaggleIsolation{ServiceAccount: "default"}}}}
+	service, err := NewLocal(LocalSources{Definitions: defs}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(status.StageServiceAccounts, map[string]string{"alpha": "goobers-stage", "beta": "default"}) {
+		t.Fatalf("accounts=%v", status.StageServiceAccounts)
 	}
 }

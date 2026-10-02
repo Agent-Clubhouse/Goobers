@@ -692,6 +692,8 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 			RestartPolicy:                corev1.RestartPolicyNever,
 			ActiveDeadlineSeconds:        ptr.To(activeDeadlineSeconds(cfg, attempt)),
 			AutomountServiceAccountToken: ptr.To(false),
+			ServiceAccountName:           cfg.serviceAccountFor(attempt.Gaggle),
+			OS:                           &corev1.PodOS{Name: corev1.OSName(nodeSelectorOS(runner.OS))},
 			NodeSelector:                 map[string]string{NodeSelectorOSKey: nodeSelectorOS(runner.OS)},
 		},
 	}
@@ -770,6 +772,9 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	// whose template/SA leaves automount on yields a stage pod with a live
 	// token, silently defeating the invariant the image path asserts.
 	spec.AutomountServiceAccountToken = ptr.To(false)
+	spec.ServiceAccountName = cfg.serviceAccountFor(attempt.Gaggle)
+	spec.DeprecatedServiceAccount = ""
+	spec.OS = &corev1.PodOS{Name: corev1.OSName(nodeSelectorOS(runner.OS))}
 	if spec.NodeSelector == nil {
 		spec.NodeSelector = map[string]string{}
 	}

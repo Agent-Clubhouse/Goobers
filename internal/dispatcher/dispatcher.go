@@ -82,6 +82,8 @@ type Config struct {
 	// silently placing a pod in the wrong gaggle's namespace is exactly the
 	// isolation break this map exists to close.
 	GaggleNamespaces map[string]string
+	// GaggleServiceAccounts overrides the default unprivileged stage account per gaggle.
+	GaggleServiceAccounts map[string]string
 	// InstanceID is the durable identity of the Goobers instance. It scopes
 	// orphan sweeps across worker generations without crossing into another
 	// instance that happens to share a Kubernetes namespace.

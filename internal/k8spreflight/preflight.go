@@ -73,6 +73,10 @@ const DefaultTimeout = 10 * time.Second
 // Options carries the operator-supplied probe targets. The zero value runs
 // the cluster-only checks and reports the network probes as skipped warns.
 type Options struct {
+	// PSANamespaces overrides discovery of namespaces labeled goobers.dev/gaggle.
+	PSANamespaces []string
+	// PSAServiceAccount selects the account for the representative rendered stage probes.
+	PSAServiceAccount string
 	// Checks limits execution to these check IDs. Empty runs the full preflight.
 	Checks []string
 	// OverlayDir is the consumer kustomization directory. Empty means the
@@ -164,6 +168,7 @@ type checkDefinition struct {
 func checkDefinitions() []checkDefinition {
 	return []checkDefinition{
 		{"cluster-version", checkClusterVersion},
+		{"pod-security-admission", checkPodSecurityAdmission},
 		{"networkpolicy-api", checkNetworkPolicySupport},
 		{"apiserver-ipblock-drift", checkAPIServerIPBlockDrift},
 		{"rbac-install", checkInstallRBAC},
