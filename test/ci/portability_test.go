@@ -756,7 +756,16 @@ func TestScheduledVulnerabilityWorkflowUsesMakeTarget(t *testing.T) {
 	}
 	workflow := string(data)
 
-	for _, want := range []string{"schedule:", "workflow_dispatch:", "run: make vulncheck", "npm --prefix portal audit --audit-level=low"} {
+	// #4578: every non-Go dependency surface CI, samples or deployment ship
+	// must stay audited, so dropping one of these scans fails here.
+	for _, want := range []string{
+		"schedule:", "workflow_dispatch:", "run: make vulncheck", "npm --prefix portal audit --audit-level=low",
+		"npm --prefix samples/getting-started-task-api audit --audit-level=low",
+		"pip-audit --strict --require-hashes --disable-pip -r evals/requirements.txt",
+		"pip-audit --strict --require-hashes --disable-pip -r deploy/monitoring/requirements.txt",
+		"--lockfile=test/e2e/testdata/javaservice/pom.xml",
+		"dotnet list DotnetService.sln package --vulnerable --include-transitive",
+	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("scheduled vulnerability workflow must contain %q", want)
 		}
