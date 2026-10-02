@@ -2177,6 +2177,8 @@ With --check-readiness, also run bounded read-only harness version/authenticatio
 probes in the reporting process. Source presence is not authentication; local
 observations do not prove daemon or worker readiness. Unsupported probes remain
 explicitly unobservable. No configured model credential is resolved.
+Supported MCP control sessions inspect server/tool inventory and execute only
+the built-in goobers-io get_run_info; external tool authorization is unobservable.
 
 On Windows, verify that the selected or default WSL distro can run the full
 isolated Goobers workflow. Readiness requires WSL 2, a runnable distro, a Linux

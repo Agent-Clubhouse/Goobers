@@ -30,6 +30,7 @@ type runtimePreflightReport struct {
 	Execution        runtimePreflightExecution     `json:"execution"`
 	Stages           []runtimePreflightStage       `json:"stages"`
 	Checks           []runtimePreflightCheck       `json:"checks"`
+	MCP              []runtimePreflightMCP         `json:"mcp,omitempty"`
 	Credentials      []runtimeplan.CredentialCheck `json:"credentials,omitempty"`
 	Harnesses        []runtimePreflightHarness     `json:"harnesses,omitempty"`
 	MutationBoundary []string                      `json:"mutationBoundary"`
@@ -263,6 +264,8 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 		return runtimePreflightReport{}, err
 	}
 	checks := runtimePreflightChecks(stages)
+	mcp, mcpChecks := runtimePreflightMCPChecks(context.Background(), cfg, resolvedGoobers, stages, process, probe)
+	checks = append(checks, mcpChecks...)
 	for _, stage := range stages {
 		checks = append(checks, runtimePreflightCheck{Category: "execution_identity", Code: stage.Identity.Code, Outcome: stage.Identity.Outcome, Stage: stage.Name, Detail: stage.Identity.Detail, Source: runtimePreflightFactSrc(stage.Identity.Source)})
 	}
@@ -296,6 +299,7 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 		Credentials: credentialChecks,
 		Harnesses:   harnessChecks,
 		Checks:      checks,
+		MCP:         mcp,
 		MutationBoundary: []string{
 			"loaded instance.yaml",
 			"loaded config directory",
@@ -704,7 +708,7 @@ func runtimePreflightRunnerSummary(runner runtimePreflightRunner) string {
 
 func runtimeReadinessBoundary(probe bool) string {
 	if probe {
-		return "bounded read-only harness probes requested in reporting process; no model session or provider mutation"
+		return "bounded read-only harness/MCP probes requested in reporting process; no model execution or provider mutation"
 	}
 	return "credential source metadata only; no external credential or harness subprocess probes"
 }
