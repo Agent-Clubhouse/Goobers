@@ -8,7 +8,8 @@ import (
 
 // WithAsyncAppendObserver maintains one coalesced derived-state watermark per
 // open run. The callback never runs under the journal mutex. Its context is
-// canceled with the owning runner and every individual observation is bounded.
+// canceled with the owning runner and each observation receives a five-second
+// deadline. The callback must honor that context, including during shutdown.
 // The callback owns failure reporting; the durable journal remains repairable.
 func WithAsyncAppendObserver(ctx context.Context, observe func(context.Context, string, uint64)) Option {
 	return func(c *config) {
@@ -37,6 +38,7 @@ func (r *Run) configureObserver(c config) {
 	}
 	o := &appendObserver{ctx: ctx, runID: r.id.RunID, observe: c.asyncObserver, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	r.pendingObserver = o
+	r.observerStartSeq = r.seq
 	r.observer = o.enqueue
 	go o.run()
 }
