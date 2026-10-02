@@ -39,6 +39,11 @@ func TestRefreshADONormalizesAndUsesProviderRequestShape(t *testing.T) {
 			if !strings.Contains(request["query"], "ORDER BY [System.Id] ASC") {
 				t.Errorf("WIQL query does not request stable order: %q", request["query"])
 			}
+			// A busy live project has more open items than the listing
+			// limit; only the fixture tag keeps the seeded item in view.
+			if !strings.Contains(request["query"], "[System.Tags] CONTAINS '"+ADOFixtureTag+"'") {
+				t.Errorf("WIQL query is not scoped to the fixture tag: %q", request["query"])
+			}
 			round++
 			writeADOJSON(t, w, map[string]any{
 				"asOf": fmt.Sprintf("2026-07-%02dT00:00:00Z", round),
@@ -190,7 +195,7 @@ func liveADOWorkItem(round int) map[string]any {
 			"System.Title":        "Stable fixture work item",
 			"System.Description":  "Stable fixture body.",
 			"System.State":        "Active",
-			"System.Tags":         "goobers:ready",
+			"System.Tags":         "goobers-fixture",
 			"System.CreatedDate":  fmt.Sprintf("2026-07-%02dT01:02:03Z", round),
 			"System.ChangedDate":  fmt.Sprintf("2026-07-%02dT04:05:06Z", round),
 			"System.AssignedTo": map[string]any{

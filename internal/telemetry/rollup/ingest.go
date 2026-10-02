@@ -1095,6 +1095,88 @@ func writeSpansCursor(ctx context.Context, tx *sql.Tx, byteOffset int64) error {
 
 const defaultSchedulerIngestTimeout = 5 * time.Second
 
+// SchedulerIngestHealth is the durable health of scheduler-log ingestion
+// (#5562): whether it is failing now, and how many corrupt records it has
+// skipped. Both live in telemetry.db rather than only in the scheduler log,
+// because a stalled ingest is exactly the case where that log is not read.
+type SchedulerIngestHealth struct {
+	// FailingSince is the first failure after the last successful ingest;
+	// nil while ingestion is succeeding.
+	FailingSince  *time.Time
+	LastFailureAt *time.Time
+	LastFailure   string
+	// SkippedRecords counts every corrupt scheduler-log line skipped since
+	// telemetry.db was created; LastSkip is the newest skip's example error.
+	SkippedRecords int64
+	LastSkipAt     *time.Time
+	LastSkip       string
+}
+
+// SchedulerIngestHealth reads the scheduler-ingest health row. A store that
+// has never ingested reports the zero value.
+func (db *DB) SchedulerIngestHealth(ctx context.Context) (SchedulerIngestHealth, error) {
+	var failingSince, lastFailureAt, lastSkipAt sql.NullString
+	var health SchedulerIngestHealth
+	err := db.readDB().QueryRowContext(ctx, `
+		SELECT failing_since, last_failure_at, last_failure, skipped_records, last_skip_at, last_skip
+		FROM scheduler_ingest_health WHERE id = 1`).
+		Scan(&failingSince, &lastFailureAt, &health.LastFailure, &health.SkippedRecords, &lastSkipAt, &health.LastSkip)
+	if err == sql.ErrNoRows {
+		return SchedulerIngestHealth{}, nil
+	}
+	if err != nil {
+		return SchedulerIngestHealth{}, fmt.Errorf("rollup: read scheduler ingest health: %w", err)
+	}
+	health.FailingSince = parseOptionalTime(failingSince)
+	health.LastFailureAt = parseOptionalTime(lastFailureAt)
+	health.LastSkipAt = parseOptionalTime(lastSkipAt)
+	return health, nil
+}
+
+func parseOptionalTime(value sql.NullString) *time.Time {
+	parsed, err := parseTime(value)
+	if err != nil || parsed.IsZero() {
+		return nil
+	}
+	return &parsed
+}
+
+// writeSchedulerIngestSuccess clears a recorded failure and accumulates any
+// skipped records, inside the ingest transaction. It writes only when there
+// is something to change, so a steady-state ingest adds no health write.
+func writeSchedulerIngestSuccess(ctx context.Context, tx *sql.Tx, skipped jsonlSkips, now time.Time) error {
+	if skipped.count > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO scheduler_ingest_health (id, skipped_records, last_skip_at, last_skip)
+			VALUES (1, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET skipped_records = skipped_records + excluded.skipped_records,
+				last_skip_at = excluded.last_skip_at, last_skip = excluded.last_skip`,
+			skipped.count, formatTime(now), capMessage(telemetry.Redact(skipped.first.Error()))); err != nil {
+			return fmt.Errorf("rollup: record skipped scheduler records: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE scheduler_ingest_health SET failing_since = NULL
+		WHERE id = 1 AND failing_since IS NOT NULL`); err != nil {
+		return fmt.Errorf("rollup: clear scheduler ingest failure: %w", err)
+	}
+	return nil
+}
+
+// recordSchedulerIngestFailure is best-effort: the ingest has already failed,
+// and a second failure recording it must not replace the first error.
+func (db *DB) recordSchedulerIngestFailure(cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), db.schedulerIngestTimeout)
+	defer cancel()
+	now := formatTime(time.Now())
+	_, _ = db.sql.ExecContext(ctx, `
+		INSERT INTO scheduler_ingest_health (id, failing_since, last_failure_at, last_failure)
+		VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET failing_since = COALESCE(failing_since, excluded.failing_since),
+			last_failure_at = excluded.last_failure_at, last_failure = excluded.last_failure`,
+		now, now, capMessage(telemetry.Redact(cause.Error())))
+}
+
 var errSchedulerIngestInProgress = errors.New("rollup: scheduler ingest already in progress")
 
 // IngestSchedulerLog rolls up the instance journal (claim transitions,
@@ -1123,7 +1205,16 @@ func (db *DB) IngestSchedulerLog(ctx context.Context, schedulerDir string) error
 		return errSchedulerIngestInProgress
 	}
 	defer db.schedulerMu.Unlock()
-	return db.ingestSchedulerLog(ctx, schedulerDir)
+	err := db.ingestSchedulerLog(ctx, schedulerDir)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		// A cancelled context is the caller stopping (daemon shutdown), not
+		// ingestion failing; recording it would leave a false warning.
+		// The daemon also journals this failure, but into the scheduler log
+		// this ingest is failing to read (#5562); telemetry.db is where an
+		// operator, and `goobers status`, can see it.
+		db.recordSchedulerIngestFailure(err)
+	}
+	return err
 }
 
 func (db *DB) rebuildSchedulerLog(ctx context.Context, schedulerDir string) error {
@@ -1137,7 +1228,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	events, newGen, newOffset, _, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
+	events, newGen, newOffset, _, eventSkips, err := readInstanceEventsFrom(schedulerDir, cursor.generation, cursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1145,7 +1236,7 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	if err != nil {
 		return err
 	}
-	spans, newSpanOffset, _, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
+	spans, newSpanOffset, _, spanSkips, err := readSchedulerSpansFrom(schedulerDir, spanCursor.byteOffset)
 	if err != nil {
 		return err
 	}
@@ -1213,7 +1304,12 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 	// a duplicate-key error.
 	for _, span := range spans {
 		if span.TraceID == "" {
-			return fmt.Errorf("rollup: scheduler span %s has no trace id", span.SpanID)
+			// Decodable but unusable — the same class as an undecodable line
+			// (#5562): failing here would pin the cursor in front of it.
+			spanSkips = spanSkips.add(jsonlSkips{
+				count: 1, first: fmt.Errorf("rollup: scheduler span %q has no trace id", span.SpanID),
+			})
+			continue
 		}
 		if err := deleteSpan(ctx, tx, span.TraceID, span.SpanID); err != nil {
 			return err
@@ -1226,6 +1322,9 @@ func (db *DB) ingestSchedulerLog(ctx context.Context, schedulerDir string) error
 		return err
 	}
 	if err := writeSpansCursor(ctx, tx, newSpanOffset); err != nil {
+		return err
+	}
+	if err := writeSchedulerIngestSuccess(ctx, tx, eventSkips.add(spanSkips), time.Now()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

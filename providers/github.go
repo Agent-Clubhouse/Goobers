@@ -529,7 +529,10 @@ type githubCheckRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
-	Output     struct {
+	App        struct {
+		ID int64 `json:"id"`
+	} `json:"app"`
+	Output struct {
 		Summary string `json:"summary"`
 	} `json:"output"`
 }
@@ -541,6 +544,7 @@ type githubActionsRunsResponse struct {
 type githubActionsRun struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
+	WorkflowID int64  `json:"workflow_id"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`

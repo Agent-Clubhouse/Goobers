@@ -33,6 +33,9 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	if slices.Contains(os.Args, slowExitProbeArg) {
+		runSlowExitProbeFixture()
+	}
 	if slices.Contains(os.Args, preflightArgsLauncherArg) {
 		switch {
 		case slices.Contains(os.Args, launcherContractFlag):

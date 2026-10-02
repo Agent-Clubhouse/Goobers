@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"sort"
@@ -33,7 +34,17 @@ type CausalOptions struct {
 	Since         time.Time
 	Until         time.Time
 	WorkflowGraph *workflow.Graph
+	// MaxRuns bounds how many terminal runs one CausalCredit call reads
+	// (#4568). Zero means defaultCausalMaxRuns. When the window holds more,
+	// only the newest MaxRuns are read and every estimate reports it through
+	// WindowTruncated and its Caveat, so a narrowed window is never silent.
+	MaxRuns int
 }
+
+// defaultCausalMaxRuns caps CausalCredit's scan so a long-retention or
+// high-throughput instance cannot turn one telemetry request into an
+// unbounded materialization of run, run_node and run_node_parent rows.
+const defaultCausalMaxRuns = 10000
 
 // CausalIdentification explains how an effect was identified.
 type CausalIdentification string
@@ -76,6 +87,12 @@ type CausalNodeCredit struct {
 	// be zero, or parse Caveat's prose to tell "never versioned" apart from
 	// "versioned but unidentifiable".
 	HasCohortData bool `json:"hasCohortData"`
+	// WindowTruncated is true when the requested window held more terminal
+	// runs than CausalOptions.MaxRuns and the estimate was computed from the
+	// newest MaxRuns only (#4568). Caveat names the effective window start,
+	// and a truncated estimate is never PromotionEligible. A node routed only
+	// in the unread older runs has no estimate at all.
+	WindowTruncated bool `json:"windowTruncated,omitempty"`
 }
 
 type causalRunFact struct {
@@ -101,85 +118,14 @@ type causalNodeFact struct {
 // not route through it form the control cohort. When a workflow always routes
 // through the node, the pre/post contrast is retained only as an explicitly
 // ineligible correlational fallback. The projection is read-only.
+//
+// The scan is bounded (#4568): at most CausalOptions.MaxRuns of the newest
+// matching terminal runs, with their nodes and parents, are read. A truncated
+// window is reported on every estimate rather than silently narrowed.
 func (s *Store) CausalCredit(ctx context.Context, options CausalOptions) ([]CausalNodeCredit, error) {
-	predicates := []string{"r.terminal = 1"}
-	var args []any
-	if options.Gaggle != "" {
-		predicates = append(predicates, "r.gaggle = ?")
-		args = append(args, options.Gaggle)
-	}
-	if options.Workflow != "" {
-		predicates = append(predicates, "r.workflow = ?")
-		args = append(args, options.Workflow)
-	}
-	if !options.Since.IsZero() {
-		predicates = append(predicates, "r.started_at >= ?")
-		args = append(args, formatTime(options.Since))
-	}
-	if !options.Until.IsZero() {
-		predicates = append(predicates, "r.started_at <= ?")
-		args = append(args, formatTime(options.Until))
-	}
-	query := `SELECT r.run_id, r.started_at, COALESCE(r.outcome_target, ''),
-		COALESCE(r.outcome_verdict, ''), r.workflow_version,
-		COALESCE(r.workflow_digest, ''), COALESCE(r.gaggle, ''),
-		COALESCE(r.workflow, ''), COALESCE(r.trigger_kind, ''),
-		COALESCE(r.trigger_ref, ''), COALESCE(r.goober_digest, ''),
-		COALESCE(rn.kind, ''), COALESCE(rn.name, ''), COALESCE(rn.identity, ''),
-		COALESCE(rn.randomized, 0), COALESCE(rn.arm, '')
-		FROM run r LEFT JOIN run_node rn ON rn.run_id = r.run_id
-		WHERE ` + strings.Join(predicates, " AND ") + `
-		ORDER BY r.started_at ASC, r.run_id ASC`
-	db, release, err := s.readHandle()
+	scope := newCausalRunScope(options)
+	runs, truncated, err := s.loadCausalScope(ctx, scope)
 	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: causal projection: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var runs []*causalRunFact
-	byRun := map[string]*causalRunFact{}
-	for rows.Next() {
-		var id, started, target, verdict, workflowDigest, gaggle, workflow, triggerKind, triggerRef, gooberDigest, kind, name, identity, arm string
-		var randomized int
-		var workflowVersion int
-		if err := rows.Scan(&id, &started, &target, &verdict, &workflowVersion,
-			&workflowDigest, &gaggle, &workflow, &triggerKind, &triggerRef, &gooberDigest, &kind, &name, &identity, &randomized, &arm); err != nil {
-			return nil, fmt.Errorf("readmodel: scan causal projection: %w", err)
-		}
-		at, err := time.Parse(timeFormat, started)
-		if err != nil {
-			return nil, fmt.Errorf("readmodel: causal run time %q: %w", started, err)
-		}
-		run := byRun[id]
-		if run == nil {
-			run = &causalRunFact{
-				id: id, gaggle: gaggle, workflow: workflow,
-				started: at, target: target, verdict: verdict,
-				workflowVersion: workflowVersion, workflowDigest: workflowDigest,
-				triggerKind: triggerKind, triggerRef: triggerRef,
-				gooberDigest: gooberDigest,
-				nodes:        map[string]causalNodeFact{},
-			}
-			byRun[id] = run
-			runs = append(runs, run)
-		}
-		if kind != "" && name != "" {
-			node := kind + ":" + name
-			run.nodes[node] = causalNodeFact{
-				identity: identity, randomized: randomized != 0,
-				arm: strings.ToLower(strings.TrimSpace(arm)),
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: causal projection rows: %w", err)
-	}
-	if err := s.loadNodeParents(ctx, runs, predicates, args); err != nil {
 		return nil, err
 	}
 
@@ -313,10 +259,166 @@ func (s *Store) CausalCredit(ctx context.Context, options CausalOptions) ([]Caus
 	}
 	result := append(unavailable, estimated...)
 	sort.Slice(result, func(i, j int) bool { return result[i].Node < result[j].Node })
+	if truncated && len(runs) > 0 {
+		markCausalWindowTruncated(result, scope.maxRuns, runs[0].started)
+	}
 	return result, nil
 }
 
-func (s *Store) loadNodeParents(ctx context.Context, runs []*causalRunFact, predicates []string, args []any) error {
+// markCausalWindowTruncated makes a capped scan explicit on every estimate
+// (#4568): the cohorts were drawn from the newest maxRuns runs, starting at
+// from, not from the whole requested window.
+func markCausalWindowTruncated(result []CausalNodeCredit, maxRuns int, from time.Time) {
+	note := fmt.Sprintf("window truncated to the newest %d runs (from %s); older runs in the requested window were not read, "+
+		"nodes routed only in them are absent, and the estimate is not eligible for promotion",
+		maxRuns, from.UTC().Format(time.RFC3339))
+	for i := range result {
+		result[i].WindowTruncated = true
+		// The cross-run rollup a promotion is weighed against still covers
+		// the whole requested window; an estimate from a narrower one is
+		// reported, never promoted.
+		result[i].PromotionEligible = false
+		if result[i].Caveat == "" {
+			result[i].Caveat = note
+		} else {
+			result[i].Caveat += "; " + note
+		}
+	}
+}
+
+// causalRunScope is the bounded run set CausalCredit and loadNodeParents read:
+// the newest maxRuns terminal runs matching the options' filters.
+type causalRunScope struct {
+	predicates []string
+	args       []any
+	maxRuns    int
+}
+
+func newCausalRunScope(options CausalOptions) causalRunScope {
+	scope := causalRunScope{predicates: []string{"r.terminal = 1"}, maxRuns: options.MaxRuns}
+	if scope.maxRuns <= 0 {
+		scope.maxRuns = defaultCausalMaxRuns
+	}
+	if options.Gaggle != "" {
+		scope.predicates = append(scope.predicates, "r.gaggle = ?")
+		scope.args = append(scope.args, options.Gaggle)
+	}
+	if options.Workflow != "" {
+		scope.predicates = append(scope.predicates, "r.workflow = ?")
+		scope.args = append(scope.args, options.Workflow)
+	}
+	if !options.Since.IsZero() {
+		scope.predicates = append(scope.predicates, "r.started_at >= ?")
+		scope.args = append(scope.args, formatTime(options.Since))
+	}
+	if !options.Until.IsZero() {
+		scope.predicates = append(scope.predicates, "r.started_at <= ?")
+		scope.args = append(scope.args, formatTime(options.Until))
+	}
+	return scope
+}
+
+// cte returns a "scoped" common table expression selecting at most limit of
+// the newest matching run IDs, with its bound arguments.
+func (scope causalRunScope) cte(limit int) (string, []any) {
+	query := `WITH scoped AS (SELECT r.run_id FROM run r WHERE ` + strings.Join(scope.predicates, " AND ") + `
+		ORDER BY r.started_at DESC, r.run_id DESC LIMIT ?)`
+	return query, append(append([]any(nil), scope.args...), limit)
+}
+
+// loadCausalRuns reads the scoped runs and their nodes, oldest first. It asks
+// for one run beyond the cap so a full window is told apart from a truncated
+// one; truncated reports that the extra (oldest) run existed and was dropped.
+// loadCausalScope reads the scoped runs and their parents in one read
+// transaction, so both queries see the same snapshot: a run projected between
+// them cannot shift the newest-maxRuns window and leave a kept run without
+// its parents.
+func (s *Store) loadCausalScope(ctx context.Context, scope causalRunScope) ([]*causalRunFact, bool, error) {
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("readmodel: begin causal read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	runs, truncated, err := loadCausalRuns(ctx, tx, scope)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := loadNodeParents(ctx, tx, runs, scope); err != nil {
+		return nil, false, err
+	}
+	return runs, truncated, nil
+}
+
+func loadCausalRuns(ctx context.Context, tx *sql.Tx, scope causalRunScope) ([]*causalRunFact, bool, error) {
+	cte, args := scope.cte(scope.maxRuns + 1)
+	query := cte + ` SELECT r.run_id, r.started_at, COALESCE(r.outcome_target, ''),
+		COALESCE(r.outcome_verdict, ''), r.workflow_version,
+		COALESCE(r.workflow_digest, ''), COALESCE(r.gaggle, ''),
+		COALESCE(r.workflow, ''), COALESCE(r.trigger_kind, ''),
+		COALESCE(r.trigger_ref, ''), COALESCE(r.goober_digest, ''),
+		COALESCE(rn.kind, ''), COALESCE(rn.name, ''), COALESCE(rn.identity, ''),
+		COALESCE(rn.randomized, 0), COALESCE(rn.arm, '')
+		FROM scoped JOIN run r ON r.run_id = scoped.run_id
+		LEFT JOIN run_node rn ON rn.run_id = r.run_id
+		ORDER BY r.started_at ASC, r.run_id ASC`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("readmodel: causal projection: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var runs []*causalRunFact
+	byRun := map[string]*causalRunFact{}
+	for rows.Next() {
+		var id, started, target, verdict, workflowDigest, gaggle, workflow, triggerKind, triggerRef, gooberDigest, kind, name, identity, arm string
+		var randomized int
+		var workflowVersion int
+		if err := rows.Scan(&id, &started, &target, &verdict, &workflowVersion,
+			&workflowDigest, &gaggle, &workflow, &triggerKind, &triggerRef, &gooberDigest, &kind, &name, &identity, &randomized, &arm); err != nil {
+			return nil, false, fmt.Errorf("readmodel: scan causal projection: %w", err)
+		}
+		at, err := time.Parse(timeFormat, started)
+		if err != nil {
+			return nil, false, fmt.Errorf("readmodel: causal run time %q: %w", started, err)
+		}
+		run := byRun[id]
+		if run == nil {
+			run = &causalRunFact{
+				id: id, gaggle: gaggle, workflow: workflow,
+				started: at, target: target, verdict: verdict,
+				workflowVersion: workflowVersion, workflowDigest: workflowDigest,
+				triggerKind: triggerKind, triggerRef: triggerRef,
+				gooberDigest: gooberDigest,
+				nodes:        map[string]causalNodeFact{},
+			}
+			byRun[id] = run
+			runs = append(runs, run)
+		}
+		if kind != "" && name != "" {
+			node := kind + ":" + name
+			run.nodes[node] = causalNodeFact{
+				identity: identity, randomized: randomized != 0,
+				arm: strings.ToLower(strings.TrimSpace(arm)),
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("readmodel: causal projection rows: %w", err)
+	}
+	if len(runs) > scope.maxRuns {
+		// The scoped set is the newest maxRuns+1, read oldest first, so the
+		// single extra run is runs[0].
+		return runs[1:], true, nil
+	}
+	return runs, false, nil
+}
+
+func loadNodeParents(ctx context.Context, tx *sql.Tx, runs []*causalRunFact, scope causalRunScope) error {
 	if len(runs) == 0 {
 		return nil
 	}
@@ -324,15 +426,13 @@ func (s *Store) loadNodeParents(ctx context.Context, runs []*causalRunFact, pred
 	for _, run := range runs {
 		byRun[run.id] = run
 	}
-	query := `SELECT p.run_id, p.kind, p.name, p.identity, p.parent_kind, p.parent_name
-		FROM run_node_parent p JOIN run r ON r.run_id = p.run_id
-		WHERE ` + strings.Join(predicates, " AND ")
-	db, release, err := s.readHandle()
-	if err != nil {
-		return err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, query, args...)
+	// Bounded to the same newest-maxRuns scope as the run read (#4568), not
+	// to every parent row in the window; parents of a run the run read did
+	// not keep are skipped below.
+	cte, args := scope.cte(scope.maxRuns)
+	query := cte + ` SELECT p.run_id, p.kind, p.name, p.identity, p.parent_kind, p.parent_name
+		FROM scoped JOIN run_node_parent p ON p.run_id = scoped.run_id`
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("readmodel: causal parent projection: %w", err)
 	}

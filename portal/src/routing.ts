@@ -84,15 +84,27 @@ export function parseRoute(hash = window.location.hash): Route {
       : { page: "run", id };
   }
   if (area === "work-items") {
+    // #/work-items/<provider>/<repository segments…>/<kind>/<id>. The repository
+    // has as many segments as its provider scopes it by: GitHub "<owner>/<repo>",
+    // an Azure Boards work item "<org>/<project>", an Azure Repos pull request
+    // "<org>/<project>/<repo>". Kind and id are read from the end so the
+    // repository can be any depth.
     const segments = path.split("/");
-    const detailKind = segments[4] === "pr" || segments[4] === "issue" ? segments[4] : undefined;
-    if (first && second && segments[3] && detailKind && segments[5]) {
+    const detailKind = segments.at(-2);
+    const repositorySegments = segments.slice(2, -2);
+    if (
+      first &&
+      repositorySegments.length >= 2 &&
+      repositorySegments.every(Boolean) &&
+      (detailKind === "pr" || detailKind === "issue") &&
+      segments.at(-1)
+    ) {
       return {
         page: "work-items",
         provider: decodeURIComponent(first),
-        repository: `${decodeURIComponent(second)}/${decodeURIComponent(segments[3])}`,
+        repository: repositorySegments.map(decodeURIComponent).join("/"),
         kind: detailKind,
-        id: decodeURIComponent(segments[5]),
+        id: decodeURIComponent(segments.at(-1) ?? ""),
       };
     }
     const filterKind = optionalQuery(search, "kind");
@@ -168,9 +180,10 @@ export function routeHash(route: Route): string {
   }
   if (route.page === "work-items") {
     if (route.provider && route.repository && route.kind && route.id) {
-      const [owner, name] = route.repository.split("/", 2);
-      if (owner && name) {
-        return `#/work-items/${encodeURIComponent(route.provider)}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${route.kind}/${encodeURIComponent(route.id)}`;
+      const repositorySegments = route.repository.split("/");
+      if (repositorySegments.length >= 2 && repositorySegments.every(Boolean)) {
+        const repository = repositorySegments.map(encodeURIComponent).join("/");
+        return `#/work-items/${encodeURIComponent(route.provider)}/${repository}/${route.kind}/${encodeURIComponent(route.id)}`;
       }
     }
     const search = new URLSearchParams();

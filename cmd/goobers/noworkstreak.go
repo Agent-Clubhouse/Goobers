@@ -36,12 +36,24 @@ const noWorkStreakThreshold = 3
 // selector, so a re-claim — and hence a second park — is unlikely.
 const noWorkParkMarker = "<!-- goobers:no-work-park -->"
 
+// noWorkVerdictMarker prefixes the comment recording each no-work verdict
+// below the park threshold (#5643), and noWorkContradictionMarker the comment
+// flagging a later run that disagreed with a recorded verdict. Locators only,
+// like noWorkParkMarker.
+const (
+	noWorkVerdictMarker       = "<!-- goobers:no-work-verdict -->"
+	noWorkContradictionMarker = "<!-- goobers:no-work-verdict-contradicted -->"
+)
+
 // noWorkTerminal describes a completed run that ended on a no-work verdict:
-// which stage declined, and the rationale it recorded (empty when the stage
-// journaled none).
+// which stage declined, the rationale it recorded, its own classification of
+// the verdict (for example "already-fixed") and the evidence it cited (for
+// example an existing commit). Each is empty when the stage journaled none.
 type noWorkTerminal struct {
-	stage  string
-	reason string
+	stage    string
+	reason   string
+	verdict  string
+	evidence string
 }
 
 // noWorkTerminalForRun reports whether a COMPLETED run ended because its
@@ -99,7 +111,12 @@ func noWorkTerminalForRun(l instance.Layout, runID, finalState string) (noWorkTe
 		if event.Stage != finalState || event.Status != string(apiv1.ResultNoWork) {
 			continue
 		}
-		found = noWorkTerminal{stage: event.Stage, reason: noWorkReasonFromOutputs(event.Outputs)}
+		found = noWorkTerminal{
+			stage:    event.Stage,
+			reason:   noWorkReasonFromOutputs(event.Outputs),
+			verdict:  stringOutput(event.Outputs, "status"),
+			evidence: stringOutput(event.Outputs, "existingCommit"),
+		}
 		ok = true
 	}
 	return found, ok, nil
@@ -110,18 +127,21 @@ func noWorkTerminalForRun(l instance.Layout, runID, finalState string) (noWorkTe
 // (cmd/goobers/backlogquery.go's writeNoWorkResult), and internal/diagnostics
 // already allowlists it for surfacing, so an agentic stage that emits the same
 // key is picked up by both without further plumbing.
+//
+// An agentic stage that names its rationale "reason" instead (#5643's
+// already-fixed verdicts did) is read as a fallback, so the verdict it wrote
+// is not discarded for using the other spelling.
 func noWorkReasonFromOutputs(outputs map[string]any) string {
-	if outputs == nil {
-		return ""
+	if reason := stringOutput(outputs, "noWorkReason"); reason != "" {
+		return reason
 	}
-	raw, present := outputs["noWorkReason"]
-	if !present {
-		return ""
-	}
-	text, isString := raw.(string)
-	if !isString {
-		return ""
-	}
+	return stringOutput(outputs, "reason")
+}
+
+// stringOutput returns a stage output's trimmed string value, "" when the key
+// is absent or not a string.
+func stringOutput(outputs map[string]any, key string) string {
+	text, _ := outputs[key].(string)
 	return strings.TrimSpace(text)
 }
 
@@ -163,7 +183,7 @@ func settleNoWorkStreak(
 	if isNoWork {
 		return applyNoWorkStreak(ctx, poster, l, runID, terminal, runURL)
 	}
-	return resetNoWorkStreaks(ctx, l, runID)
+	return resetNoWorkStreaks(ctx, poster, l, runID, runURL)
 }
 
 // applyNoWorkStreak increments the repeated-no-work counter for every item the
@@ -213,14 +233,23 @@ func applyNoWorkStreak(
 		return nil
 	}
 	repoRef, itemID := items[0].Repo, items[0].ItemID
-	count, reason, err := incrementNoWorkStreak(ctx, l, repoRef, itemID, runID, terminal.stage, terminal.reason)
+	recorded, previous, err := incrementNoWorkStreak(ctx, l, repoRef, itemID, runID, terminal)
 	if err != nil {
 		return fmt.Errorf("persist no-work streak on %s#%s: %w", repoRef.Name, itemID, err)
 	}
-	if count < noWorkStreakThreshold {
+	contradiction := noWorkVerdictConflict(previous, recorded)
+	if recorded.Count < noWorkStreakThreshold {
+		// #5643: every verdict below the park threshold is written to the
+		// issue too, so it is never left looking like an item nobody read.
+		comment := noWorkVerdictComment(recorded, contradiction, runID, runURL)
+		if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repoRef, ID: itemID, Comment: comment,
+		}); err != nil {
+			return fmt.Errorf("record no-work verdict on %s#%s: %w", repoRef.Name, itemID, err)
+		}
 		return nil
 	}
-	comment := noWorkParkComment(count, terminal.stage, reason, runID, runURL)
+	comment := noWorkParkComment(recorded, contradiction, runID, runURL)
 	if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository:   repoRef,
 		ID:           itemID,
@@ -233,24 +262,56 @@ func applyNoWorkStreak(
 	return nil
 }
 
+// noWorkVerdictConflict renders the line flagging a no-work verdict that
+// disagrees with the one recorded before it (#5643), "" when they agree or
+// either side did not classify its verdict.
+func noWorkVerdictConflict(previous, recorded noWorkStreakRecord) string {
+	if previous.Count == 0 || previous.Verdict == "" || recorded.Verdict == "" || previous.Verdict == recorded.Verdict {
+		return ""
+	}
+	return fmt.Sprintf("**This verdict contradicts the previous one:** run `%s` recorded `%s`, this run recorded `%s`.",
+		previous.RunID, previous.Verdict, recorded.Verdict)
+}
+
 // resetNoWorkStreaks clears the repeated-no-work counter for every item a
 // PRODUCTIVE completion held.
 //
-// This deliberately performs NO provider call. #5379's scope decision requires
-// that "productive completion resets the correct streaks even when provider
-// notifications fail", and the only way to guarantee that is for the reset to
-// depend on nothing but the state plane. A stale park comment left on an item
-// is cosmetic; a streak that failed to reset would eventually park an item that
-// is demonstrably producing work.
-func resetNoWorkStreaks(ctx context.Context, l instance.Layout, runID string) error {
+// The reset itself depends on nothing but the state plane. #5379's scope
+// decision requires that "productive completion resets the correct streaks
+// even when provider notifications fail", so the one provider call here — the
+// #5643 contradiction comment — runs only after every reset has landed, and
+// its failure is reported without undoing any of them. That failure is not
+// retried: a replayed notification finds the record already cleared, so the
+// flag is lost rather than ever blocking or repeating a reset. A stale park comment
+// left on an item is cosmetic; a streak that failed to reset would eventually
+// park an item that is demonstrably producing work.
+func resetNoWorkStreaks(ctx context.Context, poster gate.Commenter, l instance.Layout, runID, runURL string) error {
 	items, err := claimedItemsForRun(l, runID)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, item := range items {
-		if err := resetNoWorkStreakState(ctx, l, item.Repo, item.ItemID, runID); err != nil {
+	contradicted := map[int]noWorkStreakRecord{}
+	for i, item := range items {
+		cleared, err := resetNoWorkStreakState(ctx, l, item.Repo, item.ItemID, runID)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("reset no-work streak on %s#%s: %w", item.Repo.Name, item.ItemID, err))
+		} else if cleared.Count > 0 {
+			contradicted[i] = cleared
+		}
+	}
+	// #5643: a run that completed without a no-work verdict disagrees with the
+	// verdict it just cleared, so say so on the issue — after every reset has
+	// landed, so a provider outage can never block one. Single-item runs only,
+	// for applyNoWorkStreak's reason: a batch run's completion says nothing
+	// about any one member.
+	if len(items) == 1 && len(contradicted) == 1 {
+		item := items[0]
+		comment := noWorkContradictionComment(contradicted[0], runID, runURL)
+		if _, err := poster.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: item.Repo, ID: item.ItemID, Comment: comment,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("flag contradicted no-work verdict on %s#%s: %w", item.Repo.Name, item.ItemID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -260,29 +321,83 @@ func resetNoWorkStreaks(ctx context.Context, l instance.Layout, runID string) er
 // on an explicit question because a parked item's comment is the only thing
 // standing between a human and an item that silently left the ready pool —
 // the same contract issuecloseout.go enforces for its own park comments.
-func noWorkParkComment(count int, stage, reason, runID, runURL string) string {
+func noWorkParkComment(recorded noWorkStreakRecord, contradiction, runID, runURL string) string {
 	var b strings.Builder
 	b.WriteString(noWorkParkMarker)
 	b.WriteString("\n\n**Parked after ")
-	fmt.Fprintf(&b, "%d `no-work` verdicts with no productive run in between.**\n\n", count)
+	fmt.Fprintf(&b, "%d `no-work` verdicts with no productive run in between.**\n\n", recorded.Count)
 	fmt.Fprintf(&b, "This item was claimed and the `%s` stage concluded there was nothing to do, "+
 		"%d times, with no run producing work in between. Each time the item was released still "+
 		"carrying `%s` and became immediately claimable again. Removing `%s` stops that loop.\n\n",
-		stage, count, providers.LabelReady, providers.LabelReady)
-	if reason != "" {
-		b.WriteString("Last recorded reason:\n\n> ")
-		b.WriteString(strings.ReplaceAll(reason, "\n", "\n> "))
-		b.WriteString("\n\n")
-	} else {
-		b.WriteString("The stage recorded no reason for the verdict, so there is no rationale to quote here.\n\n")
-	}
-	if runURL != "" {
-		fmt.Fprintf(&b, "Most recent run: %s\n\n", runURL)
-	} else if runID != "" {
-		fmt.Fprintf(&b, "Most recent run: `%s`\n\n", runID)
-	}
+		recorded.Stage, recorded.Count, providers.LabelReady, providers.LabelReady)
+	writeNoWorkVerdictDetail(&b, recorded, contradiction)
+	writeNoWorkRunLink(&b, "Most recent run", runID, runURL)
 	b.WriteString("Is this item actually actionable? If it is, correct or clarify it and re-add `")
 	b.WriteString(providers.LabelReady)
 	b.WriteString("`; if it is not, please close it.")
 	return b.String()
+}
+
+// noWorkVerdictComment records one no-work verdict on the issue (#5643), so a
+// verdict below the park threshold is auditable where the next decision-maker
+// looks instead of living only in one run's journal.
+func noWorkVerdictComment(recorded noWorkStreakRecord, contradiction, runID, runURL string) string {
+	var b strings.Builder
+	b.WriteString(noWorkVerdictMarker)
+	fmt.Fprintf(&b, "\n\n**The `%s` stage concluded there is nothing to do on this item", recorded.Stage)
+	if recorded.Verdict != "" {
+		fmt.Fprintf(&b, " (`%s`)", recorded.Verdict)
+	}
+	b.WriteString(".**\n\n")
+	writeNoWorkVerdictDetail(&b, recorded, contradiction)
+	writeNoWorkRunLink(&b, "Run", runID, runURL)
+	fmt.Fprintf(&b, "This is `no-work` verdict %d of %d before the item is parked for a human. "+
+		"The next run on this item is handed this verdict; a run that disagrees with it is flagged here.",
+		recorded.Count, noWorkStreakThreshold)
+	return b.String()
+}
+
+// noWorkContradictionComment flags a run that completed without a no-work
+// verdict on an item whose last recorded verdict said there was nothing to do
+// (#5643). One of the two conclusions is wrong, and nothing else would show it.
+func noWorkContradictionComment(cleared noWorkStreakRecord, runID, runURL string) string {
+	var b strings.Builder
+	b.WriteString(noWorkContradictionMarker)
+	b.WriteString("\n\n**A later run contradicted a recorded `no-work` verdict on this item.**\n\n")
+	fmt.Fprintf(&b, "Run `%s` had concluded at the `%s` stage that there was nothing to do", cleared.RunID, cleared.Stage)
+	if cleared.Verdict != "" {
+		fmt.Fprintf(&b, " (`%s`)", cleared.Verdict)
+	}
+	b.WriteString(". This run then completed without a `no-work` verdict, so the two runs disagree about whether this item needed a change.\n\n")
+	writeNoWorkVerdictDetail(&b, cleared, "")
+	writeNoWorkRunLink(&b, "Contradicting run", runID, runURL)
+	b.WriteString("Check which conclusion was right: if the earlier verdict was a false negative, nothing further is needed here.")
+	return b.String()
+}
+
+// writeNoWorkVerdictDetail writes a recorded verdict's reason, evidence and
+// any contradiction line.
+func writeNoWorkVerdictDetail(b *strings.Builder, recorded noWorkStreakRecord, contradiction string) {
+	if recorded.Reason != "" {
+		b.WriteString("Last recorded reason:\n\n> ")
+		b.WriteString(strings.ReplaceAll(recorded.Reason, "\n", "\n> "))
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString("The stage recorded no reason for the verdict, so there is no rationale to quote here.\n\n")
+	}
+	if recorded.Evidence != "" {
+		fmt.Fprintf(b, "Cited evidence: `%s`\n\n", recorded.Evidence)
+	}
+	if contradiction != "" {
+		b.WriteString(contradiction)
+		b.WriteString("\n\n")
+	}
+}
+
+func writeNoWorkRunLink(b *strings.Builder, label, runID, runURL string) {
+	if runURL != "" {
+		fmt.Fprintf(b, "%s: %s\n\n", label, runURL)
+	} else if runID != "" {
+		fmt.Fprintf(b, "%s: `%s`\n\n", label, runID)
+	}
 }

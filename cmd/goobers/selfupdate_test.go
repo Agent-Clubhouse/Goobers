@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/selfupdate"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestSelfUpdateCommandRoutesManualTarget(t *testing.T) {
@@ -359,6 +360,60 @@ func TestSelfUpdateEscalatorRequiresConfiguredGitHubRepo(t *testing.T) {
 	err := escalator.Escalate(context.Background(), request, "smoke check failed")
 	if err == nil || !strings.Contains(err.Error(), "requires a GitHub repository configured") {
 		t.Fatalf("error = %v, want a clear message that no GitHub repo is configured for the rollback notification", err)
+	}
+}
+
+// TestSelfUpdateEscalatorFilesRollbackWithIssuesWriteToken pins the success
+// path (#6348): the rollback work item is created on the configured workload
+// repository with the github:issues:write grant's token, not the repository's
+// own (broader or narrower) token.
+func TestSelfUpdateEscalatorFilesRollbackWithIssuesWriteToken(t *testing.T) {
+	root := t.TempDir()
+	raw := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\n" +
+		"repos:\n  - provider: github\n    owner: acme\n    name: goobers\n" +
+		"    token:\n      env: SELF_UPDATE_REPO_TOKEN\n" +
+		"credentials:\n  - capability: " + string(capability.GitHubIssuesWrite) + "\n" +
+		"    token:\n      env: SELF_UPDATE_ISSUES_TOKEN\n"
+	if err := os.WriteFile(instance.NewLayout(root).ConfigFile(), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SELF_UPDATE_REPO_TOKEN", "repo-token")
+	t.Setenv("SELF_UPDATE_ISSUES_TOKEN", "issues-write-token")
+
+	server := newFakeGitHubServer(t, "acme", "goobers")
+	var tokens []string
+	prev := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		tokens = append(tokens, token)
+		return server.newGitHubProvider(token, opts...)
+	}
+	t.Cleanup(func() { newGitHubProvider = prev })
+
+	request := selfupdate.Request{
+		Owner: selfupdate.DefaultProductOwner, Repository: selfupdate.DefaultProductRepository,
+		Target: "v1.2.3", RunID: "self-update-run-1",
+	}
+	if err := (selfUpdateEscalator{root: root}).Escalate(context.Background(), request, "smoke check failed"); err != nil {
+		t.Fatalf("Escalate: %v", err)
+	}
+
+	if len(tokens) != 1 || tokens[0] != "issues-write-token" {
+		t.Fatalf("provider tokens = %q, want exactly the issues-write token", tokens)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.issues) != 1 {
+		t.Fatalf("issues created = %d, want 1 rollback work item", len(server.issues))
+	}
+	for _, issue := range server.issues {
+		if issue.title != "Self-update rolled back: v1.2.3" {
+			t.Fatalf("issue title = %q, want the rollback title", issue.title)
+		}
+		for _, want := range []string{"@v1.2.3", "Reason: smoke check failed", "self-update-run-1"} {
+			if !strings.Contains(issue.body, want) {
+				t.Fatalf("issue body = %q, want it to contain %q", issue.body, want)
+			}
+		}
 	}
 }
 

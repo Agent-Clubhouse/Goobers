@@ -903,4 +903,19 @@ WHERE EXISTS (
 		AND json_extract(gate_verdicts.runner_json, '$.reason') = 'POLLING_BUDGET_EXHAUSTED'
 );
 `,
+	// v31 (#5562): durable scheduler-ingest health. A failing scheduler
+	// ingest used to report only into the scheduler log it could not read,
+	// so a stall was invisible; this single row (id pinned to 1) records the
+	// current failure streak and the corrupt records skipped.
+	`
+CREATE TABLE IF NOT EXISTS scheduler_ingest_health (
+	id              INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	failing_since   TEXT,
+	last_failure_at TEXT,
+	last_failure    TEXT NOT NULL DEFAULT '',
+	skipped_records INTEGER NOT NULL DEFAULT 0,
+	last_skip_at    TEXT,
+	last_skip       TEXT NOT NULL DEFAULT ''
+);
+`,
 }

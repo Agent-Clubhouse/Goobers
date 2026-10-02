@@ -217,6 +217,19 @@ func TestInitStandardADORefusesWorkNomination(t *testing.T) {
 	}
 }
 
+func TestInitStandardADOUnsupportedServerURL(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "ado")
+	code, _, stderr := runArgs(t, "init", "--template=standard", "--provider=ado",
+		"--repo", "https://ado.example.invalid/tfs/DefaultCollection/Qualification/_git/fixture",
+		"--pr-ci", root)
+	if code != 2 || !strings.Contains(stderr, "Azure DevOps") || strings.Contains(stderr, "github.com") {
+		t.Fatalf("unsupported ADO Server URL: code=%d stderr=%s", code, stderr)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("refused init wrote destination: %v", err)
+	}
+}
+
 func TestInitStandardMatchesGuidedOutput(t *testing.T) {
 	tests := []struct {
 		name string

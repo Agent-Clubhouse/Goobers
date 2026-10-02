@@ -618,6 +618,7 @@ func detectCandidateFindingsWithCausalCredit(
 		if creditErr != nil {
 			return candidateFindingsArtifact{}, fmt.Errorf("credit assignment: %w", creditErr)
 		}
+		qualifying := make([]readmodel.NodeCredit, 0, len(credits))
 		for _, credit := range credits {
 			if credit.RoutedRuns < thresholds.MinCreditRuns {
 				continue
@@ -630,12 +631,19 @@ func detectCandidateFindingsWithCausalCredit(
 			if previous, ok := correlationalValues[node]; !ok || failureShare > previous {
 				correlationalValues[node] = failureShare
 			}
-			runIDs, runErr := creditStore.CreditAssignmentRunIDs(ctx, readmodel.CreditOptions{
-				Gaggle: gaggle, Since: since,
-			}, credit, thresholds.MaxFlaggedRuns)
-			if runErr != nil {
-				return candidateFindingsArtifact{}, fmt.Errorf("credit assignment evidence: %w", runErr)
-			}
+			qualifying = append(qualifying, credit)
+		}
+		// One grouped evidence query for every qualifying node, not one per
+		// node (#4572).
+		evidence, runErr := creditStore.CreditAssignmentRunIDs(ctx, readmodel.CreditOptions{
+			Gaggle: gaggle, Since: since,
+		}, qualifying, thresholds.MaxFlaggedRuns)
+		if runErr != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("credit assignment evidence: %w", runErr)
+		}
+		for _, credit := range qualifying {
+			failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
+			runIDs := evidence[credit.Key()]
 			flaggedRuns := make([]rollup.JournalPointer, 0, len(runIDs))
 			for _, runID := range runIDs {
 				flaggedRuns = append(flaggedRuns, rollup.JournalPointer{RunID: runID})

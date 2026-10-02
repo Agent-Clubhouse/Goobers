@@ -25,6 +25,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/configtree"
@@ -110,7 +111,10 @@ const (
 	// WarningSiblingLabelOverlap identifies a gaggle whose declared sibling
 	// (MIRC-2, #1901) targets the same repo and has an effective
 	// requireLabels scope that is not disjoint from this gaggle's own, or this
-	// gaggle has no effective requireLabels partition at all. Non-fatal: it
+	// gaggle has no effective requireLabels partition at all, or a claiming
+	// task's requireLabels override drops the gaggle's partition label, or
+	// its require set is disjoint from the sibling's without excluding the
+	// sibling's label (#3286). Non-fatal: it
 	// does not change any two instances' actual runtime behavior by itself,
 	// it only surfaces the misconfiguration risk before it produces a live
 	// claim collision.
@@ -302,6 +306,16 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WarningProviderInputDefaulted identifies a built-in provider stage that
+	// leaves unset an input whose command falls back to a policy default
+	// (providerstage.Input.UnsetDefault) — e.g. a remediation-checkpoint
+	// per-cause budget, which defaults to 2 (#2737). The stage runs fine on
+	// the default, so this is a warning: it surfaces the implicit policy
+	// choice without failing a config that validated cleanly before.
+	// STRICT-NEUTRAL for the same reason: a workflow that omitted the
+	// already-optional humanCommentBudget validated green under --strict and
+	// must not turn red purely on upgrade.
+	WarningProviderInputDefaulted WarningCode = "WF027"
 	// WarningSecretShapedInput identifies a stage `inputs:` literal (or an
 	// experiment arm's `variant:` overlay of one) that is shaped like a
 	// credential. Stage inputs are HISTORY-RESIDENT: they are merged into the
@@ -343,6 +357,7 @@ const (
 	errorWorkcopiesRoot           WarningCode = "CFG008"
 	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
+	errorGaggleGitHubBaseURL      WarningCode = "CFG013"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1174,6 +1189,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// non-ADO mismatch (e.g. GitHub project, Gitea backlog) is warned, not
 	// refused, so no existing non-ADO config breaks.
 	ix.checkGaggleProviderTopology(r)
+	// GitHub Enterprise Server is unsupported: a github ref takes no baseUrl (#6347).
+	ix.checkGaggleGitHubBaseURL(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1798,38 +1815,30 @@ func (ix *index) checkGaggleBranchNamespace(r *Report) {
 // regardless of label similarity. Warn-only: this never fails validation,
 // since the sibling's declared scope is this instance's own trusted
 // assertion about another instance it cannot directly observe.
+//
+// Two further partition traps are flagged per claiming task (#3286): a task
+// whose own requireLabels override drops the gaggle's partition label (the
+// override replaces the default, never merges with it), and a task whose
+// require set is merely disjoint from the sibling's. requireLabels is an AND
+// filter, so disjoint sets still both match an item carrying both labels;
+// only an exclusion of the sibling's label partitions the backlog.
 func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 	for name, g := range ix.gaggles {
 		if len(g.Spec.Siblings) == 0 {
 			continue
 		}
 		file := ix.gaggleFile[name]
-
-		type scope struct {
-			workflow string
-			labels   []string
+		scopes := ix.siblingClaimScopes(name, g)
+		sharesRepo := false
+		for _, sib := range g.Spec.Siblings {
+			sharesRepo = sharesRepo || sameRepo(sib.Project, g.Spec.Project)
 		}
-		var scopes []scope
-		for identity, indexed := range ix.workflows {
-			if identity.gaggle != name {
-				continue
+		for _, sc := range scopes {
+			if sharesRepo && len(sc.dropped) > 0 {
+				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+					"workflow %q task %q overrides requireLabels to %v, which replaces (never merges with) the gaggle's spec.requireLabels %v and drops partition label(s) %v — the task claims outside the partition its declared siblings rely on; add %v to its requireLabels",
+					sc.workflow, sc.task, sc.labels, g.Spec.RequireLabels, sc.dropped, sc.dropped)
 			}
-			for _, task := range indexed.definition.Spec.Tasks {
-				if !isBacklogQueryTask(task) {
-					continue
-				}
-				labels := g.Spec.RequireLabels
-				if v, overridden := task.Inputs["requireLabels"]; overridden {
-					labels = splitLabelInput(v)
-				}
-				scopes = append(scopes, scope{workflow: identity.name, labels: labels})
-			}
-		}
-		if len(scopes) == 0 {
-			// No backlog-query task anywhere in this gaggle yet — still check
-			// the bare gaggle-level default so a sibling misconfiguration
-			// surfaces before any workflow adopts it.
-			scopes = append(scopes, scope{labels: g.Spec.RequireLabels})
 		}
 
 		for _, sib := range g.Spec.Siblings {
@@ -1837,30 +1846,153 @@ func (ix *index) checkGaggleSiblingLabelOverlap(r *Report) {
 				continue
 			}
 			for _, sc := range scopes {
-				siblingDesc := sib.Label
-				if siblingDesc == "" {
-					siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
-				}
-				where := "spec.requireLabels"
-				if sc.workflow != "" {
-					where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
-				}
-				if len(sc.labels) == 0 {
-					r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
-						"%s is empty, so this gaggle has no label partition from declared sibling %q — both target %s/%s/%s, allowing either instance to claim the same item",
-						where, siblingDesc, sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
-					continue
-				}
-				overlap := intersectLabels(sc.labels, sib.RequireLabels)
-				if len(overlap) == 0 {
-					continue
-				}
-				r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
-					"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
-					where, sc.labels, siblingDesc, sib.RequireLabels, overlap, sib.Project.Provider, sib.Project.Owner, sib.Project.Name, overlap)
+				checkSiblingScope(r, file, name, sib, sc)
 			}
 		}
 	}
+}
+
+// siblingClaimScope is one claiming task's effective backlog selection, as
+// SIB001 compares it against a declared sibling.
+type siblingClaimScope struct {
+	workflow string
+	task     string
+	// labels is the task's effective requireLabels: its own override, else
+	// the gaggle default.
+	labels []string
+	// dropped lists gaggle-level requireLabels a task override omits.
+	dropped []string
+	// filter is the task's full runtime label selection (effective require
+	// set plus spec.backlog.labels, its excludeLabels and the conjoined
+	// labelPredicates), or nil when no claiming task backs this scope.
+	filter *labelpredicate.Predicate
+}
+
+// siblingClaimScopes resolves every backlog-query task in gaggle name to its
+// effective claim filter. With no such task it returns the bare gaggle-level
+// default, so a sibling misconfiguration surfaces before any workflow adopts
+// it.
+func (ix *index) siblingClaimScopes(name string, g apiv1.Gaggle) []siblingClaimScope {
+	var scopes []siblingClaimScope
+	for identity, indexed := range ix.workflows {
+		if identity.gaggle != name {
+			continue
+		}
+		for _, task := range indexed.definition.Spec.Tasks {
+			if !isBacklogQueryTask(task) {
+				continue
+			}
+			sc := siblingClaimScope{workflow: identity.name, task: task.Name, labels: g.Spec.RequireLabels}
+			// spec.backlog.labels always conjoin onto the task's selector
+			// (backlogdefaults.ApplyBacklogScope), whatever it overrides.
+			if v, overridden := task.Inputs["requireLabels"]; overridden {
+				sc.labels = splitLabelInput(v)
+				sc.dropped = missingLabels(g.Spec.RequireLabels, append(append([]string(nil), sc.labels...), g.Spec.Backlog.Labels...))
+			}
+			required := append(append([]string(nil), sc.labels...), g.Spec.Backlog.Labels...)
+			expression := backlogdefaults.LabelPredicateConjunction(g.Spec.Backlog.LabelPredicate, task.Inputs["labelPredicate"])
+			// An uncompilable predicate is already reported by
+			// checkLabelPredicates; a nil filter is simply not judged here.
+			sc.filter, _ = labelpredicate.Compile(expression, required, splitLabelInput(task.Inputs["excludeLabels"]))
+			scopes = append(scopes, sc)
+		}
+	}
+	if len(scopes) == 0 {
+		scopes = append(scopes, siblingClaimScope{labels: g.Spec.RequireLabels})
+	}
+	return scopes
+}
+
+// checkSiblingScope reports one claiming scope's SIB001 finding against one
+// same-repo sibling: an empty partition, a shared required label, or a
+// disjoint require set that still matches the sibling's items because
+// nothing excludes them.
+func checkSiblingScope(r *Report, file, name string, sib apiv1.GaggleSibling, sc siblingClaimScope) {
+	siblingDesc := sib.Label
+	if siblingDesc == "" {
+		siblingDesc = fmt.Sprintf("%s/%s/%s", sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+	}
+	where := "spec.requireLabels"
+	if sc.workflow != "" {
+		where = fmt.Sprintf("workflow %q's effective requireLabels", sc.workflow)
+	}
+	if len(sc.labels) == 0 {
+		r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+			"%s is empty, so this gaggle has no label partition from declared sibling %q — both target %s/%s/%s, allowing either instance to claim the same item",
+			where, siblingDesc, sib.Project.Provider, sib.Project.Owner, sib.Project.Name)
+		return
+	}
+	overlap := intersectLabels(sc.labels, sib.RequireLabels)
+	if len(overlap) > 0 {
+		r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+			"%s %v overlaps declared sibling %q's requireLabels %v on shared label(s) %v — both target %s/%s/%s, so an item carrying %v could be independently claimed by either instance",
+			where, sc.labels, siblingDesc, sib.RequireLabels, overlap, sib.Project.Provider, sib.Project.Owner, sib.Project.Name, overlap)
+		return
+	}
+	if sc.filter == nil || len(sib.RequireLabels) == 0 {
+		return
+	}
+	contested, ok := contestedItem(sc.filter, sib.RequireLabels)
+	if !ok {
+		return
+	}
+	r.addWarning(WarningSiblingLabelOverlap, file, name, "Gaggle", name,
+		"workflow %q task %q requireLabels %v is disjoint from declared sibling %q's requireLabels %v, but requireLabels is an AND filter, so an item carrying %v is claimable by both instances — disjoint is not partitioned: add excludeLabels: %q to this task, and have the sibling exclude %v",
+		sc.workflow, sc.task, sc.labels, siblingDesc, sib.RequireLabels, contested, strings.Join(sib.RequireLabels, ","), sc.labels)
+}
+
+// maxContestedExtraLabels caps the predicate-referenced labels
+// contestedItem combines (2^n candidate items).
+const maxContestedExtraLabels = 8
+
+// contestedItem searches for an item that satisfies the sibling's AND
+// filter (it carries every sibling label) and that filter also accepts. The
+// candidates are both sides' required labels plus every combination of the
+// other labels filter's labelPredicate references, so a predicate that also
+// requires, say, a readiness label is still judged on an item carrying it.
+func contestedItem(filter *labelpredicate.Predicate, siblingLabels []string) ([]string, bool) {
+	base := append(filter.RequiredLabels(), siblingLabels...)
+	inBase := make(map[string]bool, len(base))
+	for _, label := range base {
+		inBase[label] = true
+	}
+	var extra []string
+	for _, label := range filter.Labels() {
+		if !inBase[label] {
+			extra = append(extra, label)
+		}
+	}
+	if len(extra) > maxContestedExtraLabels {
+		extra = extra[:maxContestedExtraLabels]
+	}
+	for mask := 0; mask < 1<<len(extra); mask++ {
+		item := append([]string(nil), base...)
+		for i, label := range extra {
+			if mask&(1<<i) != 0 {
+				item = append(item, label)
+			}
+		}
+		if matched, err := filter.Matches(item); err == nil && matched {
+			return item, true
+		}
+	}
+	return nil, false
+}
+
+// missingLabels returns the labels in want that are absent from have, sorted.
+func missingLabels(want, have []string) []string {
+	present := make(map[string]bool, len(have))
+	for _, label := range have {
+		present[label] = true
+	}
+	var out []string
+	for _, label := range want {
+		if !present[label] {
+			out = append(out, label)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sameRepo reports whether a and b identify the same target repository —
@@ -2008,6 +2140,38 @@ func (ix *index) checkGaggleProviderTopology(r *Report) {
 					"provider than the project is not supported between these providers, and backlog stages "+
 					"query the project provider",
 				backlog, project)
+		}
+	}
+}
+
+// checkGaggleGitHubBaseURL refuses (CFG013) a baseUrl on any github repository
+// or backlog reference. GitHub Enterprise Server is out of scope (#6347): clone
+// URLs and git-auth matchers always address github.com, so a baseUrl there
+// would be silently ignored. The schema rejects it too, but a JSON-Schema
+// `not` renders only as "not failed"; this names the field and the reason.
+func (ix *index) checkGaggleGitHubBaseURL(r *Report) {
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec
+		var fields []string
+		if spec.Project.Provider == apiv1.ProviderGitHub && spec.Project.BaseURL != "" {
+			fields = append(fields, "spec.project.baseUrl")
+		}
+		if spec.Backlog.Provider == apiv1.ProviderGitHub && spec.Backlog.BaseURL != "" {
+			fields = append(fields, "spec.backlog.baseUrl")
+		}
+		for i, repo := range spec.AdditionalRepos {
+			if repo.Provider == apiv1.ProviderGitHub && repo.BaseURL != "" {
+				fields = append(fields, fmt.Sprintf("spec.additionalRepos[%d].baseUrl", i))
+			}
+		}
+		for i, sib := range spec.Siblings {
+			if sib.Project.Provider == apiv1.ProviderGitHub && sib.Project.BaseURL != "" {
+				fields = append(fields, fmt.Sprintf("spec.siblings[%d].project.baseUrl", i))
+			}
+		}
+		for _, field := range fields {
+			r.add(errorGaggleGitHubBaseURL, Error, ix.gaggleFile[name], "Gaggle", name,
+				"%s: %s", field, apiv1.GitHubBaseURLUnsupported)
 		}
 	}
 }
@@ -2470,6 +2634,9 @@ func checkProviderInputsTimeoutsAndLifecycle(r *Report, def wf.Definition, file 
 	// must be rejected here before the stage can claim work and fail a run.
 	for _, msg := range wf.CheckProviderStageInputs(def) {
 		r.add(errorProviderStageInput, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	for _, msg := range wf.CheckProviderStageUnsetDefaults(def) {
+		r.addWarning(WarningProviderInputDefaulted, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	checkLifecycleLabelContracts(r, w, file)
 	// Bounded waits must finish before the executor can terminate their stage;

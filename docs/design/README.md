@@ -38,7 +38,7 @@ word — read the page, not this table, before depending on it.
 | [Design: Backlog curation engine — continuous, reliable, agile-inspired](backlog-curation-engine.md) | `implemented` | — | — | #983, #1003 | — | — | 09db115bb (2026-09-06) |
 | [Design: Claim visibility - local by default, shared by opt-in](claim-visibility.md) | `approved` | — | — | — | — | — | — |
 | [Design: Dashboard co-branding and support hooks](cobrand.md) | `implemented` | — | — | #1381 | — | — | — |
-| [Credit graph contract](credit-graph.md) | `implemented` | — | — | #4077, #4078 | — | — | — |
+| [Credit graph contract](credit-graph.md) | `implemented` | — | — | #4077, #4078, #6355 | — | — | 324c31ac6 (2026-10-02) |
 | [Cross-Platform Support — Linux & Windows nodes](cross-platform-support.md) | `approved` | — | — | #639, #643, #647, #651 | #3151, #2440 | — | b1d7b362c (2026-09-07) |
 | [Daemon identity on multi-owner instances](daemon-identity-multi-owner.md) | `implemented` | — | — | #3414, #3415, #4527 | — | — | — |
 | [Design: Dashboard / Portal - calm operations workbench over the daemon API](dashboard.md) | `approved` | — | — | — | — | — | — |
@@ -57,7 +57,7 @@ word — read the page, not this table, before depending on it.
 | [Goobernetes v1 — decision record](goobernetes-decisions.md) | `approved` | — | — | — | — | — | — |
 | [Goobernetes deployment shape and the image contract](goobernetes-deployment-images.md) | `approved` | — | — | — | — | — | — |
 | [Goobernetes dispatcher — the pod-per-stage substrate (infra-facing design)](goobernetes-dispatcher.md) | `draft` | — | — | — | — | — | — |
-| [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | — | — | #3516, #3568, #4540 | — | — | — |
+| [Goobernetes restrictions — the effect-based isolation model](goobernetes-restrictions.md) | `approved` | — | — | #3516, #3568, #4540 | — | — | 53566d5a9 (2026-10-02) |
 | [Goobernetes smoke — the distributed-shape v1 exit](goobernetes-smoke.md) | `approved` | — | — | — | — | — | — |
 | [Design: Human-in-the-Loop — escalation visibility & intervention](human-in-the-loop.md) | `implemented` | — | — | #3876, #3877, #3883 | — | — | 09db115bb (2026-09-06) |
 | [Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster](k8s-infra-shape.md) | `approved` | — | — | — | — | — | — |

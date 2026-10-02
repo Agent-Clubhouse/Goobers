@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -104,6 +107,97 @@ func TestRunCancelPreservesRetryIdentityOnUnknownResponse(t *testing.T) {
 				t.Fatalf("missing reconciliation guidance: %q", stderr)
 			}
 		})
+	}
+}
+
+func shortenCancelReconcile(t *testing.T) {
+	t.Helper()
+	window, interval := cancelReconcileWindow, cancelReconcileInterval
+	cancelReconcileWindow, cancelReconcileInterval = 300*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { cancelReconcileWindow, cancelReconcileInterval = window, interval })
+}
+
+// TestRunCancelConfirmsLandedCancellationAfterLostResponse (#5118): the first
+// response is lost although the daemon cancelled the run. Re-asking under the
+// same key (first in flight, then complete) reports the real outcome instead
+// of "outcome may be unknown".
+func TestRunCancelConfirmsLandedCancellationAfterLostResponse(t *testing.T) {
+	if !cancelAnswerMayBeLost(&url.Error{Op: "Post", Err: context.DeadlineExceeded}) {
+		t.Fatal("a client timeout must be reconciled")
+	}
+	if cancelAnswerMayBeLost(&url.Error{Op: "Post", Err: &net.OpError{Op: "dial", Err: errors.New("refused")}}) {
+		t.Fatal("a failed dial never sent the request")
+	}
+	t.Setenv(remoteDaemonAPIEnv, "")
+	shortenCancelReconcile(t)
+	var (
+		mu    sync.Mutex
+		calls int
+		keys  = map[string]bool{}
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
+		mu.Lock()
+		calls++
+		call := calls
+		keys[r.Header.Get(httpapi.HeaderIdempotencyKey)] = true
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch call {
+		case 1:
+			// Landed, but the connection drops before any answer.
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+		case 2:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"code":"cancel_outcome_unknown","message":"cancellation is in progress"}}`))
+		default:
+			_ = json.NewEncoder(w).Encode(httpapi.CancelRunResult{Code: httpapi.CancelCodeAborted, Phase: "aborted"})
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	code, stdout, stderr := runArgs(t, "run", "cancel", "--api", server.URL, "--request-id", "lost-answer", "run-1")
+	if code != 0 || !strings.Contains(stdout, "cancelled run run-1") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, "may be unknown") || !strings.Contains(stderr, "confirming cancellation outcome") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// net/http may itself replay the dropped first delivery (it carries an
+	// idempotency key), so count at least the three distinct answers.
+	if calls < 3 || len(keys) != 1 || !keys["lost-answer"] {
+		t.Fatalf("calls=%d keys=%v; want >=3 calls under one key", calls, keys)
+	}
+}
+
+// TestRunCancelStillInFlightAfterWindowReportsUnknown: a cancel the daemon is
+// still executing when the reconcile window closes stays "unknown", with the
+// same retry identity.
+func TestRunCancelStillInFlightAfterWindowReportsUnknown(t *testing.T) {
+	t.Setenv(remoteDaemonAPIEnv, "")
+	shortenCancelReconcile(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveRemoteRootFixture(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"cancel_outcome_unknown","message":"cancellation is in progress"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	code, _, stderr := runArgs(t, "run", "cancel", "--api", server.URL, "--request-id", "slow", "run-1")
+	if code != 2 || !strings.Contains(stderr, "may be unknown") || !strings.Contains(stderr, `--request-id="slow"`) {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }
 

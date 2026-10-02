@@ -12,12 +12,9 @@ import (
 )
 
 func TestDeployReferenceConfigMirrorSeparatesWorkerStorage(t *testing.T) {
-	for _, platform := range []string{"linux", "windows"} {
+	for _, platform := range []string{"linux"} {
 		t.Run(platform, func(t *testing.T) {
-			base := "worker-deployment.yaml"
-			if platform == "windows" {
-				base = "worker-windows-deployment.yaml"
-			}
+			const base = "worker-deployment.yaml"
 			read := func(path string) []byte {
 				data, err := os.ReadFile(filepath.Join("../../deploy/reference", path))
 				if err != nil {

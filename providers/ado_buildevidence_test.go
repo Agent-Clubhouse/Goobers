@@ -2,7 +2,9 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +30,8 @@ type adoBuildFake struct {
 	statuses    []map[string]interface{}
 	listBuilds  []map[string]interface{}
 	failPaths   map[string]int
+	// detail, when set, replaces the standard pull request detail handler.
+	detail http.HandlerFunc
 
 	mu       sync.Mutex
 	requests []*http.Request
@@ -46,7 +50,11 @@ func newADOBuildFake(t *testing.T) *adoBuildFake {
 
 func (f *adoBuildFake) serve() (*ADOProvider, func()) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", prDetailHandler(f.t, nil))
+	detail := f.detail
+	if detail == nil {
+		detail = prDetailHandler(f.t, nil)
+	}
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", detail)
 	mux.HandleFunc("/org/project/_apis/policy/evaluations", policyEvaluationsHandler(f.t, f.evaluations))
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullRequests/42/statuses", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(f.t, w, map[string]interface{}{"value": f.statuses})
@@ -103,6 +111,19 @@ func (f *adoBuildFake) requested(path string) *http.Request {
 		}
 	}
 	return nil
+}
+
+// count is how many requests reached path.
+func (f *adoBuildFake) count(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.requests {
+		if r.URL.Path == path {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *adoBuildFake) collect(t *testing.T, provider *ADOProvider) []CIFailureDetail {
@@ -542,5 +563,428 @@ func TestADOHasPullRequestCIFailuresReadsNoBuilds(t *testing.T) {
 				t.Errorf("PullRequestCIFailures = %+v, disagrees with HasPullRequestCIFailures", failures)
 			}
 		})
+	}
+}
+
+// definitionPolicy is a rejected build policy that names its definition but
+// not the build it evaluated.
+func definitionPolicy(settings map[string]interface{}) map[string]interface{} {
+	ev := typedPolicy(adoPolicyTypeBuild, "Build", "rejected")
+	ev["configuration"].(map[string]interface{})["settings"] = settings
+	return ev
+}
+
+// statusPolicy is a rejected status policy requiring genre/name.
+func statusPolicy(genre, name string) map[string]interface{} {
+	ev := typedPolicy(adoPolicyTypeStatus, "Status", "rejected")
+	ev["configuration"].(map[string]interface{})["settings"] = map[string]interface{}{"statusGenre": genre, "statusName": name}
+	return ev
+}
+
+// Each way locating the evaluated build can fail is graded with its reason:
+// a build policy naming neither a build nor a definition reads nothing, and a
+// failed build lookup or status read is failed evidence naming the read.
+func TestADOCIEvidenceLocatingTheBuildFailsExplicitly(t *testing.T) {
+	cases := map[string]struct {
+		mutate  func(*adoBuildFake)
+		want    CIEvidenceState
+		note    string
+		noReads []string
+	}{
+		"build policy names no build and no definition": {
+			mutate: func(f *adoBuildFake) {
+				f.evaluations = []map[string]interface{}{definitionPolicy(map[string]interface{}{})}
+			},
+			want: CIEvidencePartialProvider, note: "the evaluation names no build and the policy names no build definition",
+			noReads: []string{"/org/project/_apis/build/builds"},
+		},
+		"build lookup by definition fails": {
+			mutate: func(f *adoBuildFake) {
+				f.evaluations = []map[string]interface{}{definitionPolicy(map[string]interface{}{"buildDefinitionId": 12})}
+				f.failPaths["/org/project/_apis/build/builds"] = http.StatusBadRequest
+			},
+			want: CIEvidenceFailed, note: "build lookup failed",
+			noReads: []string{"/org/project/_apis/build/builds/314"},
+		},
+		"status read fails": {
+			mutate: func(f *adoBuildFake) {
+				f.evaluations = []map[string]interface{}{statusPolicy("pipelines", "validate")}
+				f.failPaths["/org/project/_apis/git/repositories/repo/pullRequests/42/statuses"] = http.StatusBadRequest
+			},
+			want: CIEvidenceFailed, note: "pull request status read failed",
+			noReads: []string{"/org/project/_apis/build/builds/314"},
+		},
+		"status policy with no matching status": {
+			mutate: func(f *adoBuildFake) {
+				f.evaluations = []map[string]interface{}{statusPolicy("pipelines", "validate")}
+			},
+			want: CIEvidenceUnsupported, note: `no pull request status "pipelines/validate" was found`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := rejectedBuildFake(t, "head-sha", 6)
+			tc.mutate(f)
+			provider, done := f.serve()
+			defer done()
+
+			got := f.collect(t, provider)
+			if len(got) != 1 {
+				t.Fatalf("failures = %+v, want the one failing policy", got)
+			}
+			if got[0].Evidence != tc.want || !strings.Contains(got[0].Summary, tc.note) {
+				t.Errorf("evidence = %q summary = %q, want %q naming %q", got[0].Evidence, got[0].Summary, tc.want, tc.note)
+			}
+			if len(got[0].Annotations) != 0 {
+				t.Errorf("annotations = %+v, want none without a located build", got[0].Annotations)
+			}
+			for _, path := range tc.noReads {
+				if f.requested(path) != nil {
+					t.Errorf("read %s, want no read once the build cannot be located", path)
+				}
+			}
+		})
+	}
+}
+
+// An authentication failure while locating the build is an error, never
+// failed evidence.
+func TestADOCIEvidenceAuthenticationFailureLocatingTheBuildIsAnError(t *testing.T) {
+	cases := map[string]func(*adoBuildFake){
+		"build lookup": func(f *adoBuildFake) {
+			f.evaluations = []map[string]interface{}{definitionPolicy(map[string]interface{}{"buildDefinitionId": 12})}
+			f.failPaths["/org/project/_apis/build/builds"] = http.StatusUnauthorized
+		},
+		"status read": func(f *adoBuildFake) {
+			f.evaluations = []map[string]interface{}{statusPolicy("pipelines", "validate")}
+			f.failPaths["/org/project/_apis/git/repositories/repo/pullRequests/42/statuses"] = http.StatusUnauthorized
+		},
+		"log catalog": func(f *adoBuildFake) {
+			f.failPaths["/org/project/_apis/build/builds/314/logs"] = http.StatusUnauthorized
+		},
+		"log read": func(f *adoBuildFake) {
+			f.failPaths["/org/project/_apis/build/builds/314/logs/7"] = http.StatusUnauthorized
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := rejectedBuildFake(t, "head-sha", 6)
+			mutate(f)
+			provider, done := f.serve()
+			defer done()
+
+			got, err := provider.PullRequestCIFailures(context.Background(), RepositoryRef{Name: "repo", Project: "project"}, "42")
+			if err == nil || !IsAuthenticationError(err) || !strings.Contains(err.Error(), "collect CI evidence for") {
+				t.Fatalf("PullRequestCIFailures = %+v, %v; want the authentication error, not graded evidence", got, err)
+			}
+		})
+	}
+}
+
+// The pull request statuses are read once per collection however many status
+// policies consult them.
+func TestADOCIEvidenceReadsStatusesOncePerCollection(t *testing.T) {
+	f := newADOBuildFake(t)
+	f.evaluations = []map[string]interface{}{statusPolicy("ext-ci", "lint"), statusPolicy("ext-ci", "test")}
+	f.statuses = []map[string]interface{}{
+		{"id": 1, "targetUrl": "https://ci.example.com/lint", "context": map[string]string{"genre": "ext-ci", "name": "lint"}},
+		{"id": 2, "targetUrl": "https://ci.example.com/test", "context": map[string]string{"genre": "ext-ci", "name": "test"}},
+	}
+	provider, done := f.serve()
+	defer done()
+
+	got := f.collect(t, provider)
+	if len(got) != 2 {
+		t.Fatalf("failures = %+v, want both status policies", got)
+	}
+	for i, want := range []string{"https://ci.example.com/lint", "https://ci.example.com/test"} {
+		if !strings.Contains(got[i].Summary, want) {
+			t.Errorf("failure %d summary = %q, want its own status target %q", i, got[i].Summary, want)
+		}
+	}
+	if n := f.count("/org/project/_apis/git/repositories/repo/pullRequests/42/statuses"); n != 1 {
+		t.Errorf("statuses read %d times, want once per collection", n)
+	}
+}
+
+// A build that does not report the pull request head it merged is still
+// read, and says so; it is not graded stale.
+func TestADOCIEvidenceBuildWithoutReportedHeadIsNotStale(t *testing.T) {
+	f := rejectedBuildFake(t, "head-sha", 6)
+	f.builds["314"]["triggerInfo"] = map[string]string{"pr.number": "42"}
+	provider, done := f.serve()
+	defer done()
+
+	got := f.collect(t, provider)[0]
+	if got.Evidence != CIEvidenceComplete || !strings.Contains(got.Summary, "the build does not report the pull request head it merged") {
+		t.Errorf("evidence = %q summary = %q, want complete evidence noting the unreported head", got.Evidence, got.Summary)
+	}
+	if len(got.Annotations) != 3 {
+		t.Errorf("annotations = %+v, want the build's detail read", got.Annotations)
+	}
+}
+
+// Each step's log is graded when it cannot be excerpted: none attached, an
+// empty log, and an unreadable log catalog (which leaves the line counts
+// unknown, so the log is read whole).
+func TestADOCIEvidenceStepLogGaps(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(*adoBuildFake)
+		want   CIEvidenceState
+		note   string
+		check  func(*testing.T, *adoBuildFake, CIFailureDetail)
+	}{
+		"no log attached": {
+			mutate: func(f *adoBuildFake) { delete(f.timelines["314"][3], "log") },
+			want:   CIEvidencePartialProvider, note: "Linux / go test: no log is attached to this step",
+		},
+		"log id zero": {
+			mutate: func(f *adoBuildFake) { f.timelines["314"][3]["log"] = map[string]int{"id": 0} },
+			want:   CIEvidencePartialProvider, note: "Linux / go test: no log is attached to this step",
+		},
+		"empty log": {
+			mutate: func(f *adoBuildFake) { f.logs["314/7"] = []string{} },
+			want:   CIEvidencePartialProvider, note: "Linux / go test: log 7 is empty",
+		},
+		"log catalog unreadable": {
+			mutate: func(f *adoBuildFake) { f.failPaths["/org/project/_apis/build/builds/314/logs"] = http.StatusBadRequest },
+			want:   CIEvidenceComplete, note: "1 failed step(s) reported",
+			check: func(t *testing.T, f *adoBuildFake, got CIFailureDetail) {
+				r := f.requested("/org/project/_apis/build/builds/314/logs/7")
+				if r == nil || r.URL.Query().Get("startLine") != "" {
+					t.Errorf("log request = %v, want the log read whole when its line count is unknown", r)
+				}
+				if last := got.Annotations[len(got.Annotations)-1]; !strings.HasPrefix(last.Title, "log excerpt") {
+					t.Errorf("last annotation = %+v, want the log excerpt", last)
+				}
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := rejectedBuildFake(t, "head-sha", 6)
+			tc.mutate(f)
+			provider, done := f.serve()
+			defer done()
+
+			got := f.collect(t, provider)[0]
+			if got.Evidence != tc.want || !strings.Contains(got.Summary, tc.note) {
+				t.Errorf("evidence = %q summary = %q, want %q naming %q", got.Evidence, got.Summary, tc.want, tc.note)
+			}
+			for _, a := range got.Annotations {
+				if tc.want != CIEvidenceComplete && strings.HasPrefix(a.Title, "log excerpt") {
+					t.Errorf("annotation %+v: want no excerpt for a step whose log is missing", a)
+				}
+			}
+			if tc.check != nil {
+				tc.check(t, f, got)
+			}
+		})
+	}
+}
+
+// The build's log catalog is read once, however many failed steps' logs are
+// excerpted.
+func TestADOCIEvidenceReadsTheLogCatalogOnce(t *testing.T) {
+	f := rejectedBuildFake(t, "head-sha", 6)
+	f.timelines["314"] = []map[string]interface{}{
+		timelineRecord("j", "", "Job", "Linux", "failed", 1, 0),
+		timelineRecord("t1", "j", "Task", "vet", "failed", 1, 7),
+		timelineRecord("t2", "j", "Task", "test", "failed", 2, 8),
+	}
+	f.logCounts["314"] = []map[string]interface{}{{"id": 7, "lineCount": 6}, {"id": 8, "lineCount": 6}}
+	f.logs["314/8"] = goTestLogLines()
+	provider, done := f.serve()
+	defer done()
+
+	got := f.collect(t, provider)[0]
+	excerpts := 0
+	for _, a := range got.Annotations {
+		if strings.HasPrefix(a.Title, "log excerpt") {
+			excerpts++
+		}
+	}
+	if excerpts != 2 {
+		t.Errorf("annotations = %+v, want one excerpt per failed step", got.Annotations)
+	}
+	if n := f.count("/org/project/_apis/build/builds/314/logs"); n != 1 {
+		t.Errorf("log catalog read %d times, want once", n)
+	}
+}
+
+func TestSelectADOFailedSteps(t *testing.T) {
+	cases := map[string]struct {
+		records     []adoTimelineRecord
+		bounds      ADOCIEvidenceBounds
+		wantTitles  []string
+		wantDropped int
+	}{
+		"no failed job falls back to the other failed records, never tasks": {
+			records: []adoTimelineRecord{
+				{ID: "t", Type: "Task", Name: "orphan", Result: "failed", Order: 1},
+				{ID: "s", Type: "Stage", Name: "Validate", Result: "failed", Order: 3},
+				{ID: "p", Type: "Phase", Name: "Build", Result: "canceled", Order: 2},
+				{ID: "c", Type: "Checkpoint", Name: "Approval", Result: "succeeded", Order: 4},
+				{ID: "j", Type: "Job", Name: "Linux", Result: "succeeded", Order: 5},
+			},
+			bounds:      ADOCIEvidenceBounds{FailedJobs: 1, FailedTasksPerJob: 3},
+			wantTitles:  []string{"Phase Build"},
+			wantDropped: 1,
+		},
+		"a failed job without a failed task is itself the step": {
+			records: []adoTimelineRecord{
+				{ID: "j", Type: "Job", Name: "Linux", Result: "failed", Order: 1},
+				{ID: "t", ParentID: "j", Type: "Task", Name: "checkout", Result: "succeeded", Order: 1},
+			},
+			bounds:     ADOCIEvidenceBounds{FailedJobs: 3, FailedTasksPerJob: 3},
+			wantTitles: []string{"Linux"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			steps, dropped := selectADOFailedSteps(tc.records, tc.bounds)
+			titles := make([]string, 0, len(steps))
+			for _, s := range steps {
+				titles = append(titles, s.title)
+			}
+			if strings.Join(titles, "|") != strings.Join(tc.wantTitles, "|") || dropped != tc.wantDropped {
+				t.Errorf("steps = %q dropped = %d, want %q dropped %d", titles, dropped, tc.wantTitles, tc.wantDropped)
+			}
+		})
+	}
+}
+
+// A step with no (non-blank) error issue reports its warnings instead.
+func TestADOAppendStepIssuesFallsBackToWarnings(t *testing.T) {
+	p := NewADOProvider("org", "project", "token")
+	e := newADOCIEvidence()
+	step := adoFailedStep{title: "Linux / lint", record: adoTimelineRecord{Issues: []adoTimelineIssue{
+		{Type: "error", Message: "  "},
+		{Type: "warning", Message: "unused variable", Data: map[string]any{"SourcePath": "a.go", "LineNumber": "7"}},
+	}}}
+	p.appendStepIssues(step, defaultADOCIEvidenceBounds, &e)
+	if len(e.annotations) != 1 {
+		t.Fatalf("annotations = %+v, want the one warning", e.annotations)
+	}
+	got := e.annotations[0]
+	if got.Level != "warning" || got.Message != "unused variable" || got.Path != "a.go" || got.StartLine != 7 || got.Title != "Linux / lint" {
+		t.Errorf("annotation = %+v", got)
+	}
+	if e.state != CIEvidenceComplete {
+		t.Errorf("evidence = %q, want complete", e.state)
+	}
+}
+
+// Every build-API helper surfaces an unusable base URL as an error rather
+// than reading from a malformed endpoint, and a failed status read is not
+// cached as an empty status list.
+func TestADOBuildEvidenceHelpersRejectAnUnusableBaseURL(t *testing.T) {
+	p := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = "http://[::1" })
+	ctx := context.Background()
+	scope := &adoCIScope{repo: RepositoryRef{Name: "repo", Project: "project"}, pullID: "42", project: "project"}
+	ref := adoBuildRef{id: "314", project: "project"}
+	calls := map[string]func() error{
+		"buildURL": func() error { _, err := p.buildURL("project", nil, "314"); return err },
+		"latestPullRequestBuild": func() error {
+			_, found, err := p.latestPullRequestBuild(ctx, scope, "12")
+			if found {
+				t.Error("latestPullRequestBuild found a build at an unusable URL")
+			}
+			return err
+		},
+		"latestPullRequestStatus": func() error {
+			_, found, err := p.latestPullRequestStatus(ctx, scope, "pipelines", "validate")
+			if found || scope.statuses != nil {
+				t.Errorf("latestPullRequestStatus found = %v statuses = %v, want nothing found or cached", found, scope.statuses)
+			}
+			return err
+		},
+		"loadLogCatalog": func() error { return p.loadLogCatalog(ctx, ref, &adoLogCatalog{}) },
+		"readLogTail": func() error {
+			_, _, err := p.readLogTail(ctx, ref, 7, 200, &adoLogCatalog{loaded: true, lines: map[int]int{}})
+			return err
+		},
+	}
+	for name, call := range calls {
+		if err := call(); err == nil || !strings.Contains(err.Error(), "parse base url") {
+			t.Errorf("%s: err = %v, want the base URL parse error", name, err)
+		}
+	}
+}
+
+// readBounded reports a body that ends before its declared length as a log
+// read error, not as a short log.
+func TestADOReadBoundedReportsATruncatedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte("short"))
+	}))
+	defer server.Close()
+	p := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	body, err := p.readBounded(context.Background(), server.URL+"/log", 1<<20)
+	if err == nil || !strings.HasPrefix(err.Error(), "read log: ") || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("readBounded = %q, %v; want a read log error wrapping the unexpected EOF", body, err)
+	}
+	if _, err := p.readBounded(context.Background(), "http://[::1", 1<<20); err == nil {
+		t.Fatal("readBounded accepted an unparseable endpoint")
+	}
+}
+
+func TestDecodeADOLogLinesShapes(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want []string
+	}{
+		"blank body":                  {" \n\r\n ", nil},
+		"json value":                  {`{"count":2,"value":["a","b"]}`, []string{"a", "b"}},
+		"text with crlf":              {"one\r\ntwo\n", []string{"one", "two"}},
+		"brace text that is not json": {"{not json\nsecond", []string{"{not json", "second"}},
+	}
+	for name, tc := range cases {
+		if got := decodeADOLogLines([]byte(tc.body)); strings.Join(got, "|") != strings.Join(tc.want, "|") || (got == nil) != (tc.want == nil) {
+			t.Errorf("%s: lines = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// adoChunkLines never cuts a line inside a UTF-8 sequence when a rune
+// boundary lies within the limit, and still terminates (cutting at the limit)
+// when a single rune is longer than it.
+func TestADOChunkLinesCutsOnRuneBoundaries(t *testing.T) {
+	cases := map[string]struct {
+		text  string
+		limit int
+		want  []string
+	}{
+		"cut backs off to the rune start": {"a" + strings.Repeat("é", 4), 4, []string{"aé", "éé", "é"}},
+		"rune longer than the limit":      {"€", 2, []string{"\xe2\x82", "\xac"}},
+		"lines pack up to the limit":      {"ab\ncd\nef", 5, []string{"ab\ncd", "ef"}},
+	}
+	for name, tc := range cases {
+		got := adoChunkLines(tc.text, tc.limit)
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("%s: chunks = %q, want %q", name, got, tc.want)
+		}
+		for _, c := range got {
+			if len(c) > tc.limit {
+				t.Errorf("%s: chunk %q exceeds %d bytes", name, c, tc.limit)
+			}
+		}
+	}
+}
+
+func TestADOBuildRefFromTargetURLEdgeCases(t *testing.T) {
+	p := NewADOProvider("org", "project", "token")
+	// u.Path is already unescaped, so "%25zz" leaves "%zz" in the project
+	// segment, which is not a valid escape.
+	if ref, ok := p.buildRefFromTargetURL("https://dev.azure.com/org/100%25zz/_build/results?buildId=5"); ok {
+		t.Errorf("ref = %+v, want a project segment that does not unescape rejected", ref)
+	}
+	bare := &ADOProvider{Organization: "org"}
+	if bare.webBaseURL() != "https://dev.azure.com" {
+		t.Errorf("webBaseURL = %q, want the public Azure DevOps host when no base URL is set", bare.webBaseURL())
+	}
+	if ref, ok := bare.buildRefFromTargetURL("https://dev.azure.com/org/project/_build/results?buildId=9"); !ok || ref.id != "9" || ref.project != "project" {
+		t.Errorf("ref = %+v ok = %v, want build 9 of project on the default host", ref, ok)
 	}
 }

@@ -696,7 +696,14 @@ func (e *workflowCompileError) Unwrap() error {
 // WF-016); no registry is wired at the instance level yet, so this pins
 // version 1 for every workflow, matching run.go's existing limitation until a
 // follow-up introduces one.
-func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error)) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+//
+// knownTelemetryConnectors (#4475) is the instance's configured
+// external-telemetry connector names (knownExternalTelemetryConnectorNames).
+// Non-nil — even empty — rejects any task whose inputs.connector names a
+// connector the instance does not configure, at compile time rather than when
+// a run reaches the stage. Nil skips the check, for callers that compile
+// without the instance config's authority over connectors.
+func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	const workflowVersion = 1
 	knownChecks := knownAutomatedCheckNames()
 	// The admission registry resolves harness config (model/options), and model
@@ -737,16 +744,22 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		wf := &set.Workflows[i]
 		// Preview authorization is per-Workflow (#4220): wf's OWN annotations,
 		// never the Manifest's or its gaggle's.
-		m, err := workflow.Compile(
-			workflow.Definition{
-				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
-			},
+		opts := []workflow.Option{
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
+		}
+		if knownTelemetryConnectors != nil {
+			opts = append(opts, workflow.WithKnownExternalTelemetryConnectors(knownTelemetryConnectors))
+		}
+		m, err := workflow.Compile(
+			workflow.Definition{
+				Name: wf.Name, Version: workflowVersion, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations,
+			},
+			opts...,
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
@@ -754,6 +767,22 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
 	return machines, resolvedGoobers, warnings, nil
+}
+
+// knownExternalTelemetryConnectorNames returns cfg's configured
+// external-telemetry connector names for compiledMachinesWithWarnings'
+// authoring-time connector check (#4475). It is never nil for a non-nil cfg:
+// an instance with no connectors configured must still reject a workflow that
+// references one.
+func knownExternalTelemetryConnectorNames(cfg *instance.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.ExternalTelemetry.Connectors))
+	for _, connector := range cfg.ExternalTelemetry.Connectors {
+		names = append(names, connector.Name)
+	}
+	return names
 }
 
 func admitGooberHarnessConfigs(adapterRegistry *harness.Registry, goobers map[string]apiv1.GooberSpec) (map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {

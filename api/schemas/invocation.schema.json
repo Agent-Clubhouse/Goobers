@@ -13,6 +13,63 @@
     }
   ],
   "properties": {
+    "artifactPublication": {
+      "type": "object",
+      "description": "Runner-owned DSL 3.1 publication contract, pinned to the stage visit.",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "visit",
+        "slots"
+      ],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producing task name from the admitted workflow."
+        },
+        "visit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Opaque run/stage-scoped identity also journaled on stage.started."
+        },
+        "slots": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,128}$",
+                "description": "Stable producer-local slot handle."
+              },
+              "mediaType": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Declared media type, when specified."
+              },
+              "schemaPath": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Pinned schema declaration; content validation is a consumer concern."
+              },
+              "maxSize": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Declared byte ceiling, when positive."
+              }
+            }
+          },
+          "description": "Required producer-local declarations pinned from the admitted task."
+        }
+      }
+    },
     "taskId": { "type": "string", "minLength": 1, "description": "Stage instance identifier within this run." },
     "attempt": { "type": "integer", "minimum": 1, "description": "Stage attempt number used for retry-safe provenance. Omitted only by legacy callers, which default to attempt 1." },
     "workflowId": { "type": "string", "minLength": 1, "description": "Workflow definition identifier being executed." },
@@ -179,7 +236,7 @@
       "required": ["provider", "owner", "name"],
       "properties": {
         "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Repository provider." },
-        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host. Absent when provider is github: GitHub Enterprise Server is unsupported and config validation refuses a github baseUrl, so a github reference always means github.com." },
         "owner": { "type": "string", "minLength": 1, "description": "GitHub organization or user, Gitea owner, or Azure DevOps organization." },
         "project": { "type": "string", "description": "Azure DevOps project containing the repository." },
         "name": { "type": "string", "minLength": 1, "description": "Repository name." },

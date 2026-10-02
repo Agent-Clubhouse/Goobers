@@ -197,3 +197,8 @@ func TestVerifyPrivate_FailsClosedOnMissingFile(t *testing.T) {
 		t.Errorf("error not wrapping ErrNotPrivate: %v", err)
 	}
 }
+
+func makeBroadlyReadable(t *testing.T, path string) {
+	t.Helper()
+	icacls(t, path, "/grant:r", sidEveryone+":(R)")
+}

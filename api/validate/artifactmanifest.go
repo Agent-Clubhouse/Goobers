@@ -37,7 +37,7 @@ func checkArtifactManifestVariant(r *Report, w apiv1.Workflow, file string, i in
 	switch {
 	case legacy || dynamicLegacy:
 		reason = "artifactManifestFile and artifactFile are mutually exclusive"
-	case task.Type != "agentic":
+	case task.Type != "agentic" && len(task.ArtifactSlots) == 0:
 		reason = "artifactManifestFile requires an agentic task"
 	case !dynamicManifest:
 		pointer := apiv1.ArtifactPointer{Path: manifest, Digest: apiv1.Digest(nil)}

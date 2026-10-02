@@ -1031,6 +1031,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 	}
 
 	allCandidates := make([]*tickCandidate, 0, len(entries))
+	var evaluated []WorkflowEntry
 	for _, entry := range entries {
 		if s.authCircuitOpen(entryIdentity(entry), now) {
 			continue
@@ -1060,27 +1061,17 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			// dropping the lock between the read and the write let two callers
 			// both read the same pre-fire TriggerState, both compute Fire=true,
 			// and both dispatch the same due firing.
+			// Persisting the snapshot is batched to once per tick (#6010).
 			s.mu.Lock()
 			ts := s.triggers[identity]
 			lastEval := ts.LastEval
 			dueIndexes := dueScheduleIndexes(entry.Schedules, ts.LastEval, now)
 			res := Tick(ts, now)
-			var persistErr error
 			if res.LastEval != ts.LastEval {
-				evaluations := s.triggerEvaluationsLocked()
-				evaluations[identity] = res.LastEval
-				persistErr = s.persistTriggerEvaluationsLocked(evaluations)
+				evaluated = append(evaluated, entry)
 			}
 			s.triggers[identity] = TriggerState{Workflow: entry.Workflow, Schedules: entry.Schedules, LastEval: res.LastEval}
 			s.mu.Unlock()
-			if persistErr != nil {
-				s.journalEvent(journal.Event{
-					Type:     journal.EventError,
-					Workflow: entry.Workflow,
-					Gaggle:   entry.Gaggle,
-					Error:    journal.ErrorDetailFor("trigger_state_persist_failed", persistErr),
-				})
-			}
 			if res.Fire {
 				candidate.schedule = res
 				candidate.scheduleEnqueuedAt = oldestDueScheduleAt(entry.Schedules, lastEval, now)
@@ -1120,6 +1111,7 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		}
 		allCandidates = append(allCandidates, candidate)
 	}
+	s.persistTickTriggerEvaluations(evaluated)
 
 	s.pollDemandCounters(ctx, allCandidates, now)
 	s.evaluateRefillOpportunities(allCandidates, now)
@@ -3161,6 +3153,34 @@ func (s *Scheduler) triggerEvaluationsLocked() map[WorkflowIdentity]time.Time {
 		evaluations[identity] = state.LastEval
 	}
 	return evaluations
+}
+
+// persistTickTriggerEvaluations writes the trigger-state snapshot once for a
+// whole tick, after every due workflow's LastEval has advanced in memory
+// (#6010). Writing it per due workflow cost N full-snapshot rewrites at an
+// aligned cron boundary. Batching is safe: the evaluation loop dispatches
+// nothing, so every dispatch still follows this write, and restart rebuilds
+// LastEval from the journal's trigger.fired history (ReconstructLastEval), not
+// from this file. A failed write is journaled once per evaluated workflow, as
+// the per-workflow write did, and never blocks dispatch.
+func (s *Scheduler) persistTickTriggerEvaluations(evaluated []WorkflowEntry) {
+	if len(evaluated) == 0 {
+		return
+	}
+	s.mu.Lock()
+	err := s.persistTriggerEvaluationsLocked(s.triggerEvaluationsLocked())
+	s.mu.Unlock()
+	if err == nil {
+		return
+	}
+	for _, entry := range evaluated {
+		s.journalEvent(journal.Event{
+			Type:     journal.EventError,
+			Workflow: entry.Workflow,
+			Gaggle:   entry.Gaggle,
+			Error:    journal.ErrorDetailFor("trigger_state_persist_failed", err),
+		})
+	}
 }
 
 func (s *Scheduler) persistTriggerEvaluationsLocked(evaluations map[WorkflowIdentity]time.Time) error {

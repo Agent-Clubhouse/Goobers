@@ -1,0 +1,37 @@
+# Reference OpenTelemetry Collector configuration for a Goobers daemon's OTLP
+# export. It is an example to copy and adapt, not a supported deployment.
+#
+# The daemon exports traces AND metrics over OTLP. A collector that declares
+# only a traces pipeline answers every metrics export with `Unimplemented`, so
+# both pipelines below are required. The metric instrument names the daemon
+# emits are the `Metric*` catalog in internal/telemetry/metrics.go
+# (goobers.run.duration, goobers.run.outcomes, goobers.stage.duration, ...).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch: {}
+
+exporters:
+  # Metrics: re-publish for Prometheus to scrape (contrib `prometheus` exporter;
+  # dots in instrument names become underscores).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  # Traces: replace with the exporter for your trace store. `debug` only logs
+  # received spans so the example runs as written.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]

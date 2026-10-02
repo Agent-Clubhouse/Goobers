@@ -372,6 +372,17 @@ repos:
     token:
       env: GOOBERS_GITEA_TOKEN
 `, "baseUrl"},
+		{"github repo with baseUrl (GHES unsupported, #6347)", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    baseUrl: https://ghe.example.com
+    owner: acme
+    name: web
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+`, "baseUrl"},
 		{"unknown provider", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance

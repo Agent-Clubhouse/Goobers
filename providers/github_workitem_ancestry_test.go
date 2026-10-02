@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -96,5 +97,40 @@ func TestGitHubAncestryCrossRepositoryParentAndDeniedRead(t *testing.T) {
 	}
 	if len(allowed.Omissions) != 1 || allowed.Omissions[0].Reason != AncestryOmitAccessDenied || allowed.Omissions[0].Child != "github:acme/other:2" {
 		t.Fatalf("allow omissions = %+v, want access-denied reading issue 2's parent", allowed.Omissions)
+	}
+}
+
+// A child with no owner/name repository is a failed read made without a
+// request, and a field name GitHub has no equivalent for selects nothing.
+func TestGitHubAncestryChildWithoutRepositoryAndUnknownFields(t *testing.T) {
+	provider, paths := newGitHubParentServer(t, map[string]map[string]interface{}{
+		"/repos/acme/app/issues/7/parent": githubParentJSON(3, "acme/app", "Feature", "Feature body"),
+	}, nil)
+	reads, err := provider.ReadWorkItemParents(context.Background(), RepositoryRef{}, []WorkItemNode{
+		{Provider: ProviderGitHub, Project: "no-slash", ID: "1", ParentUnknown: true},
+		{Provider: ProviderGitHub, Project: "acme/app", ID: "7", ParentUnknown: true},
+	}, []string{"System.Description", "Body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := reads[0]; r.Omission != AncestryOmitReadFailed || r.Detail != "child has no owner/name repository" || r.Parent != nil {
+		t.Errorf("read 0 = %+v, want a failed read naming the missing repository", r)
+	}
+	if want := []string{"/repos/acme/app/issues/7/parent"}; !reflect.DeepEqual(*paths, want) {
+		t.Errorf("requests = %v, want only the readable child's parent", *paths)
+	}
+	if r := reads[1]; r.Parent == nil || !reflect.DeepEqual(r.Parent.Fields, []WorkItemField{{Name: "Body", Value: "Feature body"}}) {
+		t.Errorf("read 1 = %+v, want only the body field selected", r)
+	}
+}
+
+// A walk whose context has ended returns that error from the first child.
+func TestGitHubAncestryCancelledContextIsAnError(t *testing.T) {
+	provider, _ := newGitHubParentServer(t, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reads, err := provider.ReadWorkItemParents(ctx, RepositoryRef{}, []WorkItemNode{{Provider: ProviderGitHub, Project: "acme/app", ID: "7", ParentUnknown: true}}, nil)
+	if !errors.Is(err, context.Canceled) || reads != nil {
+		t.Fatalf("ReadWorkItemParents = %+v, %v; want the cancellation", reads, err)
 	}
 }

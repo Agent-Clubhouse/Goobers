@@ -114,7 +114,7 @@ func testRecoveryPublicationCustody(t *testing.T, mode string) {
 			}
 			// Terminal renewal scans an empty inventory while the archive is
 			// still on the wire. Intake must close this ordering gap itself.
-			return renewTerminalRecovery(layout, runID)
+			return renewTerminalRecovery(layout, manager, runID)
 		}}
 	}
 	err = service.PublishRecovery(ctx, runID, repo.CanonicalKey(), "7", body)

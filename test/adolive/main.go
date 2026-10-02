@@ -1,19 +1,40 @@
 // Command adolive provisions the Azure DevOps scratch project that the live
-// write leg (ADO-N16, #5727, .github/workflows/ado-live-write.yml) and the ADO
+// write leg (ADO-N16, #5727, .github/workflows/ado-live-write.yml), the
+// read-only live conformance leg (ado-live-conformance.yml) and the ADO
 // provider fixture-drift leg (#4602, provider-fixture-drift-ado.yml) run
 // against.
 //
 //	ADO_PAT=... go run ./test/adolive provision \
 //	  -organization-url https://dev.azure.com/example-org \
-//	  -project example-project -repository example-scratch [-apply]
+//	  -project example-project -repository example-scratch [-ci-pipeline] [-apply]
 //
 // It is a dry run by default: it reads the scratch repository, its branch
-// policies and the fixture work item, and prints what it would create. With
+// policies and the fixture work items, and prints what it would create. With
 // -apply it creates only what is missing, so running it again changes nothing.
-// It never updates or deletes anything, and it never creates a policy scoped by
-// prefix: a blocking policy covering the leg's goobers-live/ branches would
-// refuse every push the leg makes (design §8.2, F8). The token is read from
-// ADO_PAT, never from a flag, and never printed.
+// It never updates or deletes anything (the one write to an existing object is
+// adding the spec fixture's missing parent link), and it never creates a policy
+// scoped by prefix: a blocking policy covering the leg's goobers-live/ branches
+// would refuse every push the leg makes (design §8.2, F8). The token is read
+// from ADO_PAT, never from a flag, and never printed.
+//
+// What it provisions:
+//
+//   - Exact-scoped blocking policies on the scratch repository's base branch:
+//     minimum reviewers, the goobers-live/live-write status, and "Require a
+//     merge strategy" (the policy classification the write leg reads, #6106).
+//   - The #4602 fixture work item, tagged goobers-fixture.
+//   - The spec fixture pair the read-only leg reads (#6125, #6191, #6194): an
+//     ancestry parent (-parent-type, default Feature) with a description, and
+//     its child of the project's requirement type (or -spec-type) with an
+//     empty description, acceptance criteria and a Hierarchy link to the
+//     parent. Both are tagged goobers-live-fixture.
+//   - With -ci-pipeline only: a YAML build definition, goobers-live-ci-failure,
+//     on the scratch repository for the write leg's CI failure evidence
+//     scenario (#5652). The leg commits the YAML (a step that fails on
+//     purpose) to its own goobers-live/ branch and queues the definition
+//     there, so nothing lands on the base branch. It needs an organization
+//     with Azure Pipelines hosted parallelism and a PAT with Build (Read &
+//     execute); without both, leave it off and that scenario stays skipped.
 //
 // Finally it prints the repository variables to set. Only a repository admin
 // can set them; this tool does not.
@@ -48,8 +69,10 @@ const (
 	liveStatusName  = "live-write"
 
 	fixtureTitle = "goobers provider fixture (do not close)"
-	fixtureTag   = "goobers-fixture"
-	fixtureBody  = "Stable seeded work item read by the ADO provider fixture-drift workflow (#4602). Do not edit or close it."
+	// fixtureTag must equal providerfixture.ADOFixtureTag: the drift leg
+	// lists open items carrying it (main_test.go pins the two together).
+	fixtureTag  = "goobers-fixture"
+	fixtureBody = "Stable seeded work item read by the ADO provider fixture-drift workflow (#4602). Do not edit or close it."
 )
 
 var errBlockingPrefix = errors.New("a blocking branch policy covers the live leg's goobers-live/ branches")
@@ -60,6 +83,9 @@ type config struct {
 	repository      string
 	base            string
 	fixtureType     string
+	parentType      string
+	specType        string
+	ciPipeline      bool
 	apply           bool
 }
 
@@ -102,6 +128,9 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 	flags.StringVar(&cfg.repository, "repository", "", "dedicated scratch repository (never the testbed repository)")
 	flags.StringVar(&cfg.base, "base", "main", "base branch the policies are scoped to")
 	flags.StringVar(&cfg.fixtureType, "fixture-type", "Issue", "work item type for the #4602 fixture item")
+	flags.StringVar(&cfg.parentType, "parent-type", "Feature", "work item type of the ancestry parent fixture")
+	flags.StringVar(&cfg.specType, "spec-type", "", "work item type of the spec fixture (default: the project's requirement type)")
+	flags.BoolVar(&cfg.ciPipeline, "ci-pipeline", false, "also create the write leg's failing CI build definition (needs hosted parallelism)")
 	flags.BoolVar(&cfg.apply, "apply", false, "create what is missing (default: dry run)")
 	if err := flags.Parse(args); err != nil {
 		return config{}, err
@@ -112,6 +141,7 @@ func parseFlags(args []string, stderr io.Writer) (config, error) {
 		{"-repository", cfg.repository},
 		{"-base", cfg.base},
 		{"-fixture-type", cfg.fixtureType},
+		{"-parent-type", cfg.parentType},
 	} {
 		if strings.TrimSpace(required.value) == "" {
 			return config{}, fmt.Errorf("%s is required", required.name)
@@ -141,12 +171,24 @@ func provision(ctx context.Context, c *client, cfg config, out io.Writer) error 
 	if err != nil {
 		return err
 	}
+	specID, err := provisionSpecFixtures(ctx, c, cfg, out)
+	if err != nil {
+		return err
+	}
+	pipelineID := 0
+	if cfg.ciPipeline {
+		if pipelineID, err = provisionCIPipeline(ctx, c, cfg, repo, out); err != nil {
+			return err
+		}
+	}
 	printf(out, "\nRepository variables to set (an admin sets these; this tool does not):\n")
 	printf(out, "  ADO_WRITE_REPOSITORY=%s\n", repo.Name)
-	if fixtureID == 0 {
-		printf(out, "  ADO_PROVIDER_FIXTURE_WORK_ITEM=<id printed by a run with -apply>\n")
+	printVariable(out, "ADO_PROVIDER_FIXTURE_WORK_ITEM", fixtureID)
+	printVariable(out, "ADO_LIVE_SPEC_WORK_ITEM", specID)
+	if cfg.ciPipeline {
+		printVariable(out, "ADO_LIVE_CI_FAILURE_PIPELINE", pipelineID)
 	} else {
-		printf(out, "  ADO_PROVIDER_FIXTURE_WORK_ITEM=%d\n", fixtureID)
+		printf(out, "  ADO_LIVE_CI_FAILURE_PIPELINE: not provisioned (optional; re-run with -ci-pipeline)\n")
 	}
 	if !cfg.apply {
 		printf(out, "\nDry run: nothing was created. Re-run with -apply to create what is missing.\n")
@@ -156,6 +198,14 @@ func provision(ctx context.Context, c *client, cfg config, out io.Writer) error 
 
 func printf(out io.Writer, format string, args ...any) {
 	_, _ = fmt.Fprintf(out, format, args...)
+}
+
+func printVariable(out io.Writer, name string, id int) {
+	if id == 0 {
+		printf(out, "  %s=<id printed by a run with -apply>\n", name)
+		return
+	}
+	printf(out, "  %s=%d\n", name, id)
 }
 
 // desiredPolicy is one branch policy the scratch repository must carry.
@@ -193,6 +243,17 @@ func desiredPolicies(repoID, ref string) []desiredPolicy {
 				"scope":                    scope,
 			},
 			identity: map[string]string{"statusGenre": liveStatusGenre, "statusName": liveStatusName},
+		},
+		{
+			// Settled at completion, which the leg never reaches; the write
+			// leg reads how the provider classifies its evaluation (#6106).
+			typeName: "Require a merge strategy",
+			label:    "merge strategy",
+			settings: map[string]any{
+				"allowSquash":        true,
+				"allowNoFastForward": true,
+				"scope":              scope,
+			},
 		},
 	}
 }
@@ -382,7 +443,9 @@ func (c *client) endpoint(query url.Values, elems ...string) (string, error) {
 	if query == nil {
 		query = url.Values{}
 	}
-	query.Set("api-version", apiVersion)
+	if query.Get("api-version") == "" {
+		query.Set("api-version", apiVersion)
+	}
 	return joined + "?" + query.Encode(), nil
 }
 
@@ -514,13 +577,18 @@ func (c *client) createPolicy(ctx context.Context, typeID string, settings map[s
 // findFixture returns the lowest-numbered work item carrying the fixture title
 // and tag.
 func (c *client) findFixture(ctx context.Context) (int, bool, error) {
+	return c.findWorkItem(ctx, fixtureTitle, fixtureTag)
+}
+
+// findWorkItem returns the lowest-numbered work item with title and tag.
+func (c *client) findWorkItem(ctx context.Context, title, tag string) (int, bool, error) {
 	endpoint, err := c.endpoint(url.Values{"$top": []string{"1"}}, "wit", "wiql")
 	if err != nil {
 		return 0, false, err
 	}
 	query := fmt.Sprintf(
 		"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Title] = '%s' AND [System.Tags] CONTAINS '%s' ORDER BY [System.Id] ASC",
-		fixtureTitle, fixtureTag)
+		title, tag)
 	var out struct {
 		WorkItems []struct {
 			ID int `json:"id"`
@@ -536,14 +604,18 @@ func (c *client) findFixture(ctx context.Context) (int, bool, error) {
 }
 
 func (c *client) createFixture(ctx context.Context, itemType string) (int, error) {
-	endpoint, err := c.endpoint(nil, "wit", "workitems", "$"+itemType)
-	if err != nil {
-		return 0, err
-	}
-	patch := []map[string]string{
+	return c.createWorkItem(ctx, itemType, []map[string]any{
 		{"op": "add", "path": "/fields/System.Title", "value": fixtureTitle},
 		{"op": "add", "path": "/fields/System.Description", "value": fixtureBody},
 		{"op": "add", "path": "/fields/System.Tags", "value": fixtureTag},
+	})
+}
+
+// createWorkItem creates one work item of itemType from JSON-Patch operations.
+func (c *client) createWorkItem(ctx context.Context, itemType string, patch []map[string]any) (int, error) {
+	endpoint, err := c.endpoint(nil, "wit", "workitems", "$"+itemType)
+	if err != nil {
+		return 0, err
 	}
 	var created struct {
 		ID int `json:"id"`
