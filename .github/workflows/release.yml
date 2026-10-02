@@ -74,6 +74,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Release-time freshness check for supportmatrix.NextPlannedRelease
+      # (#5852). It lives here, not in the per-PR suite, because its verdict
+      # depends on which tag is being cut; asserting it against live tags on
+      # every PR failed each in-flight branch the moment a tag was pushed.
+      - name: Check NextPlannedRelease covers this release
+        env:
+          GOOBERS_RELEASE_TAG: ${{ github.ref_name }}
+        run: go test -count=1 -run '^TestReleaseTagWithinNextPlannedRelease$' ./internal/supportmatrix
+
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
