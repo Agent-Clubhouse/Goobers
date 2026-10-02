@@ -533,42 +533,53 @@ func isTerminalPushRejection(err error) bool {
 	return errors.As(err, &policyErr) || errors.As(err, &workflowErr)
 }
 
-// githubWorkflowPermissionMarker is the stable prefix (lower-cased) of
-// GitHub's refusal of a push, by a GitHub App installation, that creates or
-// updates a file under .github/workflows/ without the App's `workflows`
-// permission:
+// githubWorkflowPermissionPrefix and githubWorkflowPermissionVerb bracket
+// GitHub's refusal of a push that creates or updates a file under
+// .github/workflows/ by a credential not allowed to change workflows. The
+// credential named between them varies — "a GitHub App" (missing the
+// installation's `workflows` permission, as on #5502), "a Personal Access
+// Token" or "an OAuth App" (missing the `workflow` scope):
 //
 //	! [remote rejected] <ref> -> <ref> (refusing to allow a GitHub App to
 //	create or update workflow `.github/workflows/ci.yml` without `workflows`
 //	permission)
 //
 // The parenthetical can reach a log truncated ("workflow `.github/wo..."),
-// so only the prefix is matched.
-const githubWorkflowPermissionMarker = "refusing to allow a github app to create or update workflow"
+// so only these two fragments are matched (lower-cased).
+const (
+	githubWorkflowPermissionPrefix = "refusing to allow "
+	githubWorkflowPermissionVerb   = " to create or update workflow"
+)
 
 // isGitHubWorkflowPermissionPush reports whether output — git's combined
 // stdout+stderr from a rejected push — is GitHub's refusal of a
-// workflow-file change by an App installation lacking the `workflows`
-// permission (#5502). Like TF402455 it carries git's generic "failed to push
+// workflow-file change by a credential lacking permission to change
+// workflows (#5502). Like TF402455 it carries git's generic "failed to push
 // some refs" trailer, so it is checked ahead of isPushRaceError.
 func isGitHubWorkflowPermissionPush(output string) bool {
-	return strings.Contains(strings.ToLower(output), githubWorkflowPermissionMarker)
+	for _, line := range strings.Split(strings.ToLower(output), "\n") {
+		i := strings.Index(line, githubWorkflowPermissionPrefix)
+		if i >= 0 && strings.Contains(line[i:], githubWorkflowPermissionVerb) {
+			return true
+		}
+	}
+	return false
 }
 
 // workflowPermissionPushError reports that GitHub refused a push because the
-// diff touches .github/workflows/ and the pushing GitHub App installation
-// lacks the `workflows` permission. The diff is fine and the branch did not
-// race: no retry can succeed until the installation is granted the
-// permission, so its message leads with that remedy rather than the raw git
-// rejection alone. classifyProviderError maps it to a distinct non-retryable
-// code.
+// diff touches .github/workflows/ and the pushing credential (normally the
+// GitHub App installation) is not allowed to change workflows. The diff is
+// fine and the branch did not race: no retry can succeed until the
+// credential is granted that permission, so its message leads with the
+// remedy rather than the raw git rejection alone. classifyProviderError maps
+// it to a distinct non-retryable code.
 type workflowPermissionPushError struct {
 	branch string
 	err    error
 }
 
 func (e *workflowPermissionPushError) Error() string {
-	return fmt.Sprintf("push of branch %q was refused because it creates or updates a file under .github/workflows/ and the GitHub App installation lacks the `workflows` permission; grant the App installation the Workflows (read and write) permission, or push this change manually (retrying cannot succeed): %v", e.branch, e.err)
+	return fmt.Sprintf("push of branch %q was refused because it creates or updates a file under .github/workflows/ and the pushing credential lacks permission to change workflows; grant the GitHub App installation the `workflows` (Workflows: read and write) permission (or a personal/OAuth token the `workflow` scope), or push this change manually (retrying cannot succeed): %v", e.branch, e.err)
 }
 
 func (e *workflowPermissionPushError) Unwrap() error { return e.err }
