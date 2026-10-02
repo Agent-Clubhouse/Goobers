@@ -294,10 +294,9 @@ func runRemoteCancelForInstance(endpoint, runID, action, key, expectedID string,
 			return 2
 		}
 	}
-	var result httpapi.CancelRunResult
-	apiErr, err := callDaemonMutationAPIWithKey(
+	result, apiErr, err := callDaemonMutationAPIWithKey[httpapi.CancelRunRequest, httpapi.CancelRunResult](
 		instance.NewLayout("."), endpoint, apicontract.RouteCancelRun,
-		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, &result, key,
+		map[string]string{"{run}": runID}, httpapi.CancelRunRequest{Actor: actor}, key,
 	)
 	if err != nil {
 		pf(stderr, "error: %v; cancellation outcome may be unknown; retry run cancel with --request-id=%q and the same target\n", err, key)

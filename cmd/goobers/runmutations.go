@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/user"
 	"strings"
@@ -175,11 +172,11 @@ func callInterventionAPI(
 	routeID apicontract.RouteID,
 	input httpapi.InterventionRequest,
 ) (httpapi.InterventionResult, *apicontract.APIError, error) {
-	var result httpapi.InterventionResult
-	apiErr, err := callDaemonMutationAPI(layout, endpoint, routeID, map[string]string{
-		"{run}":   input.RunID,
-		"{stage}": input.Stage,
-	}, input, &result)
+	result, apiErr, err := callDaemonMutationAPI[httpapi.InterventionRequest, httpapi.InterventionResult](
+		layout, endpoint, routeID, map[string]string{
+			"{run}":   input.RunID,
+			"{stage}": input.Stage,
+		}, input)
 	if err != nil || apiErr != nil {
 		return httpapi.InterventionResult{}, apiErr, err
 	}
@@ -191,86 +188,56 @@ func callInterventionAPI(
 // requires the daemon to share this filesystem; a configured endpoint names a
 // daemon that does not (#3279/#3807). pathValues substitutes the route path's
 // placeholders, each escaped for a path segment.
-func callDaemonMutationAPI(
+func callDaemonMutationAPI[Req, Resp any](
 	layout instance.Layout,
 	endpoint string,
 	routeID apicontract.RouteID,
 	pathValues map[string]string,
-	input any,
-	result any,
-) (*apicontract.APIError, error) {
+	input Req,
+) (Resp, *apicontract.APIError, error) {
 	key, err := newInterventionIdempotencyKey()
 	if err != nil {
-		return nil, fmt.Errorf("generate intervention idempotency key: %w", err)
+		var zero Resp
+		return zero, nil, fmt.Errorf("generate intervention idempotency key: %w", err)
 	}
-	return callDaemonMutationAPIWithKey(layout, endpoint, routeID, pathValues, input, result, key)
+	return callDaemonMutationAPIWithKey[Req, Resp](layout, endpoint, routeID, pathValues, input, key)
 }
 
-func callDaemonMutationAPIWithKey(
+func callDaemonMutationAPIWithKey[Req, Resp any](
 	layout instance.Layout,
 	endpoint string,
 	routeID apicontract.RouteID,
 	pathValues map[string]string,
-	input any,
-	result any,
+	input Req,
 	key string,
-) (*apicontract.APIError, error) {
+) (Resp, *apicontract.APIError, error) {
+	var zero Resp
 	baseURL := endpoint
 	if baseURL == "" {
 		config, err := instance.LoadConfig(layout.ConfigFile())
 		if err != nil {
-			return nil, fmt.Errorf("load instance config: %w", err)
+			return zero, nil, fmt.Errorf("load instance config: %w", err)
 		}
 		address, err := dashboardDaemonAPIAddress(layout, apiListenAddress(config))
 		if err != nil {
-			return nil, fmt.Errorf("resolve live daemon API: %w", err)
+			return zero, nil, fmt.Errorf("resolve live daemon API: %w", err)
 		}
 		baseURL = daemonAPIScheme(config) + "://" + address
 	}
-	route, ok := apicontract.V1Route(routeID)
-	if !ok {
-		return nil, fmt.Errorf("API route %q is not registered", routeID)
-	}
-	replacements := make([]string, 0, 2*len(pathValues))
-	for placeholder, value := range pathValues {
-		replacements = append(replacements, placeholder, url.PathEscape(value))
-	}
-	routePath := strings.NewReplacer(replacements...).Replace(route.Path)
-	body, err := json.Marshal(input)
-	if err != nil {
-		return nil, fmt.Errorf("encode %s request: %w", routeID, err)
-	}
-	request, err := http.NewRequest(route.Method, baseURL+routePath, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("build %s request: %w", routeID, err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(httpapi.HeaderIdempotencyKey, key)
-	if token := strings.TrimSpace(os.Getenv("GOOBERS_API_TOKEN")); token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	// Do not redirect a mutation to a daemon whose identity was not displayed.
-	client := &http.Client{Timeout: remoteTriggerTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("call live daemon API: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxInterventionResponseBody))
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var envelope apicontract.ErrorEnvelope
-		if err := decoder.Decode(&envelope); err != nil {
-			return nil, fmt.Errorf("daemon API returned %s with an invalid error body: %w", response.Status, err)
-		}
-		return &envelope.Error, nil
-	}
-	if err := decoder.Decode(result); err != nil {
-		return nil, fmt.Errorf("decode daemon %s result: %w", routeID, err)
-	}
-	return nil, nil
+	return callDaemonJSON[Req, Resp](daemonJSONCall[Req]{
+		Context:         context.Background(),
+		Endpoint:        baseURL,
+		RouteID:         routeID,
+		PathValues:      pathValues,
+		IdempotencyKey:  key,
+		Input:           input,
+		MaxResponseBody: maxInterventionResponseBody,
+		ClientTimeout:   remoteTriggerTimeout,
+		EncodePrefix:    fmt.Sprintf("encode %s request", routeID),
+		BuildPrefix:     fmt.Sprintf("build %s request", routeID),
+		CallPrefix:      "call live daemon API",
+		DecodePrefix:    fmt.Sprintf("decode daemon %s result", routeID),
+	})
 }
 
 func newInterventionIdempotencyKey() (string, error) {

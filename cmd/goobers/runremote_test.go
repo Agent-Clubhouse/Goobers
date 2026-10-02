@@ -210,6 +210,42 @@ func TestRunRemoteTriggerReportsDaemonRefusal(t *testing.T) {
 	}
 }
 
+func TestRunRemoteTriggerRejectsInvalidErrorBodyAndRedirect(t *testing.T) {
+	t.Run("invalid error body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, "{")
+		}))
+		t.Cleanup(server.Close)
+
+		_, apiErr, err := submitRemoteTrigger(t.Context(), server.URL, httpapi.TriggerRequest{RequestID: "delivery"})
+		if apiErr != nil || err == nil || !strings.Contains(err.Error(), "daemon API returned 502 Bad Gateway with an invalid error body") {
+			t.Fatalf("api error=%+v error=%v", apiErr, err)
+		}
+	})
+
+	t.Run("redirect", func(t *testing.T) {
+		followed := false
+		target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			followed = true
+		}))
+		t.Cleanup(target.Close)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", target.URL)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(server.Close)
+
+		_, apiErr, err := submitRemoteTrigger(t.Context(), server.URL, httpapi.TriggerRequest{RequestID: "delivery"})
+		if apiErr != nil || err == nil || !strings.Contains(err.Error(), "daemon API returned 307 Temporary Redirect with an invalid error body") {
+			t.Fatalf("api error=%+v error=%v", apiErr, err)
+		}
+		if followed {
+			t.Fatal("mutation redirect was followed")
+		}
+	})
+}
+
 // An unreachable daemon is a transport error (exit 2), never a silent success —
 // the silent miss is exactly what the file drop did.
 func TestRunRemoteTriggerReportsTransportFailure(t *testing.T) {

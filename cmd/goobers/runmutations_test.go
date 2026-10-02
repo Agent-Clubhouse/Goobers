@@ -133,6 +133,51 @@ func TestInterventionCLIUsesBearerTokenAndReportsRefusal(t *testing.T) {
 	}
 }
 
+func TestApproveUsesRemoteDaemonAPIRejectsInvalidErrorBodyAndRedirect(t *testing.T) {
+	input := httpapi.InterventionRequest{RunID: "run-1", Stage: "review", Actor: "operator"}
+	pathValues := map[string]string{"{run}": input.RunID, "{stage}": input.Stage}
+
+	t.Run("invalid error body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte("{"))
+		}))
+		t.Cleanup(server.Close)
+
+		_, apiErr, err := callDaemonMutationAPIWithKey[httpapi.InterventionRequest, httpapi.InterventionResult](
+			instance.NewLayout(t.TempDir()), server.URL, apicontract.RouteApproveStage,
+			pathValues, input, "delivery",
+		)
+		if apiErr != nil || err == nil || !strings.Contains(err.Error(), "daemon API returned 409 Conflict with an invalid error body") {
+			t.Fatalf("api error=%+v error=%v", apiErr, err)
+		}
+	})
+
+	t.Run("redirect", func(t *testing.T) {
+		followed := false
+		target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			followed = true
+		}))
+		t.Cleanup(target.Close)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", target.URL)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(server.Close)
+
+		_, apiErr, err := callDaemonMutationAPIWithKey[httpapi.InterventionRequest, httpapi.InterventionResult](
+			instance.NewLayout(t.TempDir()), server.URL, apicontract.RouteApproveStage,
+			pathValues, input, "delivery",
+		)
+		if apiErr != nil || err == nil || !strings.Contains(err.Error(), "daemon API returned 307 Temporary Redirect with an invalid error body") {
+			t.Fatalf("api error=%+v error=%v", apiErr, err)
+		}
+		if followed {
+			t.Fatal("mutation redirect was followed")
+		}
+	})
+}
+
 func TestInterventionCLIRequiresAuditText(t *testing.T) {
 	code, _, stderr := runArgs(t, "override", "--actor=operator", "run-1", "review")
 	if code != 2 || !strings.Contains(stderr, "--rationale is required") {
