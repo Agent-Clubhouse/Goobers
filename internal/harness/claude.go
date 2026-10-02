@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/secfile"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -710,11 +711,12 @@ func seedClaudeCredentialsForPlatform(
 		}
 	}
 	target := filepath.Join(destination, ".credentials.json")
-	if err := os.WriteFile(target, credentials, 0o600); err != nil {
+	// The destination sits inside the run's workspace, whose inherited
+	// permissions say nothing about who may read an OAuth credential. secfile
+	// narrows it to the owner on every platform (mode 0600 on Unix, a
+	// protected owner-only DACL on Windows) and verifies the result.
+	if err := secfile.WritePrivate(target, credentials); err != nil {
 		return fmt.Errorf("copy stored credentials: %w", err)
-	}
-	if err := os.Chmod(target, 0o600); err != nil {
-		return fmt.Errorf("secure stored credentials: %w", err)
 	}
 	return nil
 }
