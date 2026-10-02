@@ -61,6 +61,12 @@ func TestReleasePublicationRequiresNativeArtifactSmoke(t *testing.T) {
 			t.Errorf("published platform %s has no native smoke leg", target)
 		}
 	}
+	smokeJob := workflowJob(string(data), "native-smoke")
+	for _, evidence := range []string{"$RUNNER_ARCH", "selected-checksum)", "$GITHUB_STEP_SUMMARY"} {
+		if !strings.Contains(smokeJob, evidence) {
+			t.Errorf("native-smoke must record runner arch and tested digest; missing %q", evidence)
+		}
+	}
 	job := workflowJob(string(data), "validate-release")
 	markers := []string{
 		"- name: Verify release artifacts", "set -euo pipefail",
