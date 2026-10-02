@@ -21,7 +21,7 @@ var (
 )
 
 // Sandbox rewrites a command so the platform sandbox confines its filesystem
-// writes to the policy's roots. The caller retains ownership of command
+// writes to the policy's roots and hides explicitly guarded paths. The caller retains ownership of command
 // environment, stdio, timeout, and process-group configuration.
 type Sandbox interface {
 	Wrap(command *exec.Cmd, policy Policy) error
@@ -35,6 +35,9 @@ type Sandbox interface {
 type Policy struct {
 	Workspace     string
 	WritableRoots []string
+	// ReadDeniedPaths hides private files or directories from the child.
+	// These are configuration-owned paths, never invocation-envelope input.
+	ReadDeniedPaths []string
 }
 
 // New returns the native sandbox for the current operating system.
@@ -45,6 +48,7 @@ func New() (Sandbox, error) {
 type validatedPolicy struct {
 	workspace     string
 	writableRoots []string
+	readDenied    []readDeniedPath
 }
 
 func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
@@ -93,6 +97,10 @@ func validate(command *exec.Cmd, policy Policy) (validatedPolicy, error) {
 			return validatedPolicy{}, fmt.Errorf("sandbox: writable root %q cannot be a filesystem root", root)
 		}
 		validated.writableRoots = append(validated.writableRoots, resolved)
+	}
+	validated.readDenied, err = validateReadDenials(policy.ReadDeniedPaths, append([]string{workspace}, validated.writableRoots...))
+	if err != nil {
+		return validatedPolicy{}, err
 	}
 	return validated, nil
 }
