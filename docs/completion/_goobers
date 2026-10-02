@@ -227,6 +227,7 @@ _goobers_completion()
         claims)
             case "${words[3]:-}" in
                 list) flags+=(--json --stale --gaggle --provider) ;;
+                active) flags+=(--json --gaggle --provider) ;;
                 release) flags+=(--gaggle --provider --force) ;;
             esac
             ;;
@@ -479,7 +480,7 @@ _goobers_completion()
             ;;
         claims)
             if (( CURRENT == 3 )); then
-                candidates=(list release)
+                candidates=(list active release)
                 _describe -V 'command' candidates
                 return
             fi

@@ -228,6 +228,16 @@ func (r standaloneDashboardReader) WorkItem(
 	return reader.WorkItem(ctx, provider, repository, kind, externalID)
 }
 
+// ActiveClaims forwards the active-claims read (#1488); the embedded Reader
+// interface would otherwise hide it from the handler's capability check.
+func (r standaloneDashboardReader) ActiveClaims(ctx context.Context) (readservice.ActiveClaimList, error) {
+	reader, ok := r.Reader.(readservice.ActiveClaimsReader)
+	if !ok {
+		return readservice.ActiveClaimList{}, errors.New("active claims are not served by this reader")
+	}
+	return reader.ActiveClaims(ctx)
+}
+
 func runDashboard(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()

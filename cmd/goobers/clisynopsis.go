@@ -76,6 +76,7 @@ var synopsisByID = map[string]string{
 	"blocked list":           "  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)\n",
 	"blocked clear":          "  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock\n",
 	"claims list":            "  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]\n                                print current claim leases, optionally only expired leases\n",
+	"claims active":          "  goobers claims active [--json] [--gaggle=name] [--provider=name] [path]\n                                print what is actively claimed now: item, workflow, run, holder, and age\n",
 	"claims release":         "  goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]\n                                force-release a claim through the live daemon or claims.lock\n",
 	"cancel-pending-ci":      "  goobers cancel-pending-ci [path]  cancel bounded pending CI for an exact reviewed PR head\n",
 	"trace":                  "  goobers trace [--api=<url>] [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]\n                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts\n",

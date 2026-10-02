@@ -282,6 +282,8 @@ func routeAvailability(id apicontract.RouteID, config handlerConfig) (bool, stri
 		available = config.state != nil
 	case apicontract.RouteTelemetryDefectAggregates:
 		available = config.telemetryDefects != nil
+	case apicontract.RouteClaimsActive:
+		available = config.activeClaimsAvailable
 	case apicontract.RouteTelemetryCosts, apicontract.RouteTelemetryStats,
 		apicontract.RouteTelemetryErrorSignatures, apicontract.RouteTelemetryErrors,
 		apicontract.RouteTelemetryImplementationOutcomes, apicontract.RouteWorkItems,
