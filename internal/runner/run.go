@@ -592,6 +592,8 @@ type Config struct {
 	// JournalAdvanced reports each durable journal append to derived readers.
 	// Optional; the callback owns failure reporting and must not fail the run.
 	JournalAdvanced func(runID string, seq uint64)
+	// JournalAdvancedContext is a cancellable, coalesced derived-state observer.
+	JournalAdvancedContext func(context.Context, string, uint64)
 	// PrepareTerminal records external cleanup immediately before run.finished.
 	// Optional; errors are surfaced before the terminal transition.
 	PrepareTerminal TerminalPreparer
@@ -1074,7 +1076,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		WorkspaceBranchSHA:  in.WorkspaceBranchSHA,
 		WorkspaceRepository: repoRefPtr(in.RepoRef),
 		ContextPointers:     append([]apiv1.ContextPointer(nil), in.ContextPointers...),
-	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
 	}
