@@ -94,6 +94,7 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
+	selfExecution *selfExecutionCounters
 	// Cost controls external cost publication by default. Gaggles may override
 	// it; omitted or null enabled preserves the built-in enabled behavior.
 	Cost       *apiv1.CostReporting `json:"cost,omitempty" yaml:"cost,omitempty"`
@@ -182,6 +183,8 @@ type Config struct {
 	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
 	// is startup-only, so in-flight runs finish against their pinned snapshot.
 	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
+	// Placement governs workflow execution on the daemon host.
+	Placement *PlacementConfig `json:"placement,omitempty" yaml:"placement,omitempty"`
 	// Isolation is the operator's strengthen-only placement floor. It never
 	// grants a runner a protection; runners must already enforce every effect.
 	Isolation *IsolationConfig `json:"isolation,omitempty" yaml:"isolation,omitempty"`

@@ -431,6 +431,7 @@ func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string,
 }
 
 func wireWorkerRuntimeSeams(deps *bootstrap.EngineDeps, seams *workerSeams, scratchRoot string) {
+	deps.AdmitSelfExecution = seams.admitSelfExecution
 	deps.Goober = seams.Agentic()
 	deps.Det = seams.Deterministic()
 	deps.Auto = seams.Automated()

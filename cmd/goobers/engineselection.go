@@ -104,7 +104,7 @@ func selectEngineForPinnedEntry(def wfpkg.Definition, placements []engine.Pinned
 	if len(placements) == 0 {
 		return engineSelection{
 			ReasonClass:    "no_pinned_placements",
-			FallbackReason: "no stage placements are pinned for this workflow (zero-declaration or local-mode inventory)",
+			FallbackReason: "no stage placements are pinned for this workflow (zero-declaration or local-mode inventory)" + selfExecutionMigrationReason(def),
 		}
 	}
 	pinned := make(map[string]engine.PinnedPlacement, len(placements))
@@ -213,7 +213,11 @@ func engineSelections(
 	// placement facts that are not the reason.
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
 		for identity, machine := range machines {
-			out[identity] = engineSelection{PlacementDeclared: entryDeclaresPlacement(machine, set, identity.Gaggle), ReasonClass: "engine_not_configured", FallbackReason: "this instance has no engine configuration"}
+			reason := "this instance has no engine configuration"
+			if machine != nil {
+				reason += selfExecutionMigrationReason(machine.Def)
+			}
+			out[identity] = engineSelection{PlacementDeclared: entryDeclaresPlacement(machine, set, identity.Gaggle), ReasonClass: "engine_not_configured", FallbackReason: reason}
 		}
 		return out, nil
 	}

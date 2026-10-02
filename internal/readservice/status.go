@@ -49,6 +49,7 @@ type StatusFleetFact struct {
 // SchedulerStatus is scheduler state projected from the instance journal for
 // local status adapters.
 type SchedulerStatus struct {
+	SelfExecution instance.SelfExecutionStats
 	// ClusterChecks are externally recorded Kubernetes checks; freshness is
 	// computed on every read, without scheduling probes in the daemon.
 	ClusterChecks []clustercheck.Result
@@ -711,7 +712,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 			return SchedulerStatus{}, err
 		}
 	}
-	status := SchedulerStatus{ClusterChecks: clustercheck.Snapshot(projected.clusterChecks, s.now()), ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
+	status := SchedulerStatus{ClusterChecks: clustercheck.Snapshot(projected.clusterChecks, s.now()), SelfExecution: s.sources.Config.SelfExecutionStats(), ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
 	if s.sources.InstanceLogStats != nil {
 		stats := s.sources.InstanceLogStats()
 		status.JournalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}

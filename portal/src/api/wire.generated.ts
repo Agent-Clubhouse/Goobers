@@ -162,6 +162,12 @@ export const goWireFixtures = {
     }
   },
   "health": {
+    "selfExecution": {
+      "policy": "",
+      "observed": false,
+      "placements": 0,
+      "refusals": 0
+    },
     "apiVersion": "v1",
     "schemaVersion": "v1",
     "build": {

@@ -49,9 +49,10 @@ import (
 // circuit-breaker instance — and the two would drift on the next change to
 // either, which is precisely how a "parity" path stops being parity.
 type engineTerminalHooks struct {
-	layout  instance.Layout
-	log     *journal.InstanceLog
-	repoRef apiv1.RepoRef
+	selfExecutionObserved func(bool)
+	layout                instance.Layout
+	log                   *journal.InstanceLog
+	repoRef               apiv1.RepoRef
 
 	existingFix  runner.ExistingFixHandler
 	blocked      runner.BlockedHandler
@@ -205,6 +206,19 @@ const existingFixStage = "implement"
 // reason and blockers to record, and the two are told apart exactly as the
 // runner tells them apart: by the FINAL STAGE'S OWN reported status.
 func (h *engineTerminalHooks) fireBlocked(ctx context.Context, out engineTerminalOutcome) {
+	if engine.IsSelfExecutionDenied(out.Err) {
+		if h.selfExecutionObserved != nil {
+			h.selfExecutionObserved(true)
+		}
+		h.fireStageEscalation(ctx, out, out.Result.FinalState, out.Err.Error())
+		if h.blocked != nil {
+			if err := h.blocked(ctx, runner.BlockedOutcome{RunID: out.RunID, RepoRef: h.repoRef, Stage: out.Result.FinalState, ItemID: h.itemID(out), Reason: out.Err.Error()}); err != nil {
+				h.recordHookFailure(out, out.Result.FinalState, "blocked_handling_failed", err)
+			}
+		}
+		return
+	}
+
 	if out.Phase != journal.PhaseEscalated {
 		return
 	}
@@ -213,6 +227,9 @@ func (h *engineTerminalHooks) fireBlocked(ctx context.Context, out engineTermina
 		return
 	}
 	stage := out.Result.FinalState
+	if env.Error != nil && env.Error.Code == runner.SelfExecutionDeniedCode && h.selfExecutionObserved != nil {
+		h.selfExecutionObserved(true)
+	}
 	o := runner.BlockedOutcome{
 		RunID:    out.RunID,
 		RepoRef:  h.repoRef,
@@ -320,6 +337,9 @@ const engineWalkFailureCode = "run_failed"
 // classifier so an exhausted infrastructure budget cannot become an item
 // failure merely because RunResult is absent. Unknown errors keep the fallback.
 func engineTerminalFailureCode(err error) string {
+	if engine.IsSelfExecutionDenied(err) {
+		return runner.SelfExecutionDeniedCode
+	}
 	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
 		return telemetry.ErrCodeInfraFailure
 	}

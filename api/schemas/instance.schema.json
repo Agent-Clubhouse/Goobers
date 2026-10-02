@@ -17,6 +17,14 @@
     }
   ],
   "properties": {
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Instance workflow placement policy. Omitted keeps local execution compatible; hosted instances should explicitly deny self execution.",
+      "properties": {
+        "selfExecution": { "type": "string", "enum": ["allow", "deny"], "default": "allow", "description": "allow permits local workflow work (the default); deny refuses every self placement, including agentic reviewer gates." }
+      }
+    },
     "cost": {
       "type": "object",
       "description": "Instance default for external cost publication; local usage accounting remains active.",

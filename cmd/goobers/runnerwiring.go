@@ -289,7 +289,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		return runner.Config{}, nil, err
 	}
 
-	rc := runner.Config{
+	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
 		RunControls:      cfg.RunConditions.RunControls(),
@@ -372,7 +372,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
-	}
+	}, cfg, tel)
 	if tel != nil {
 		rc.Telemetry = tel
 	}
