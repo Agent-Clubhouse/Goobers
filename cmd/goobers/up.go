@@ -2402,9 +2402,14 @@ func removeDaemonAPIAddress(path string) error {
 	return nil
 }
 
+// worktreeRunTerminal answers worktree.ReapOptions.IsRunTerminal. Every call
+// builds a fresh owner index, so callers call it once per Reap pass: the runs
+// directory is listed at most once per pass (#6359) and the next pass still
+// sees runs created since.
 func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
+	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID string) (bool, error) {
-		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, "")
+		phase, found, err := retainedWorktreePhase(owners, worktreeID, "")
 		return found && terminalRunPhase(phase), err
 	}
 }
