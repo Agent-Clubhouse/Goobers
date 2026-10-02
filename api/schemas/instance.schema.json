@@ -896,6 +896,11 @@
           "$ref": "#/$defs/duration",
           "examples": ["25m"]
         },
+        "recoveryCustodyTimeout": {
+          "description": "Post-stage recovery custody deadline for Kubernetes stage pods, as a Go duration. Unset keeps the built-in 10 minutes. This budget covers resolving/fetching the recovery base, excluding stage artifacts, scanning git status/diff, snapshotting, bundling, uploading, and host-side import acknowledgement before the pod surrenders. It is still clamped by the issue claim expiry; size it above the slowest expected dirty-worktree scan and archive publication on your runner storage.",
+          "$ref": "#/$defs/duration",
+          "examples": ["10m", "30m"]
+        },
         "stageMemoryLimit": {
           "description": "Memory ONE stage subprocess may use, as a Kubernetes quantity. Stage subprocesses share the daemon's own memory cgroup, so without a bound a single heavy stage can get the control-plane daemon OOM-killed and take every in-flight run with it (#4070); the admission-side memory gate cannot prevent this, because it refuses to START runs while the cgroup is hot and the killing allocation is a stage already running. There is deliberately NO default: the obvious one (pod limit less a daemon reserve) does not survive the recorded incidents, where children of 5.07 and 7.4 GiB killed a 10Gi pod in company with page cache, the daemon, and concurrent sibling stages. Unset, stages run unbounded and the daemon says so at every start. Enforced through a child cgroup where the memory controller is delegated to child cgroups, otherwise through RLIMIT_AS — which bounds ADDRESS SPACE rather than resident memory, so verify a value against a real stage. A breach fails the stage with stage_memory_exceeded rather than killing the daemon.",
           "type": "string",
