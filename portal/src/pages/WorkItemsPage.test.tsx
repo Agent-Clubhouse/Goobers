@@ -191,4 +191,106 @@ describe("WorkItemsPage", () => {
     expect(screen.getByRole("cell", { name: /^Comment/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View run" })).toHaveAttribute("href", "#/run/run-1");
   });
+
+  it("keeps equal numeric ids separate across providers, repositories, and projects", async () => {
+    const summary = {
+      actionCount: 1,
+      lastOperation: "create",
+      lastActionAt: "2026-09-01T12:00:00Z",
+      lastRunId: "run-1",
+    };
+    const navigate = vi.fn();
+    render(
+      <WorkItemsPage
+        client={new FixtureDaemonClient({
+          ...populatedDaemonFixtures(),
+          workItems: {
+            hasMore: false,
+            items: [
+              { ...summary, provider: "github", repository: "acme/app", kind: "issue", externalId: "7" },
+              { ...summary, provider: "github", repository: "acme/web", kind: "issue", externalId: "7" },
+              { ...summary, provider: "ado", repository: "contoso/alpha", kind: "issue", externalId: "7" },
+              { ...summary, provider: "ado", repository: "contoso/beta", kind: "issue", externalId: "7" },
+              { ...summary, provider: "ado", repository: "contoso/alpha/web", kind: "pr", externalId: "7" },
+              { ...summary, provider: "ado", kind: "issue", externalId: "7", url: "https://ado.example/a" },
+              { ...summary, provider: "ado", kind: "issue", externalId: "7", url: "https://ado.example/b" },
+            ],
+          },
+        })}
+        navigate={navigate}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    await screen.findByRole("button", { name: "Open issue #7 in acme/app" });
+    expect(screen.getByRole("button", { name: "Open issue #7 in acme/web" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open work item #7 in contoso/alpha" }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open work item #7 in contoso/beta" }))
+      .toBeInTheDocument();
+    expect(screen.getAllByText("ado · work item")).toHaveLength(2);
+
+    const unknown = screen.getAllByRole("button", { name: "work item #7 has no recorded repository" });
+    expect(unknown).toHaveLength(2);
+    unknown.forEach((row) => expect(row).toBeDisabled());
+    expect(screen.getAllByText("#7")).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Open PR #7 in contoso/alpha/web" }));
+    expect(navigate).toHaveBeenCalledWith({
+      page: "work-items",
+      provider: "ado",
+      repository: "contoso/alpha/web",
+      kind: "pr",
+      id: "7",
+    });
+  });
+
+  it("explains that unrecorded external work may still exist when the page is empty", async () => {
+    render(
+      <WorkItemsPage
+        client={new FixtureDaemonClient({
+          ...populatedDaemonFixtures(),
+          workItems: { hasMore: false, items: [] },
+        })}
+        navigate={vi.fn()}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByText(/No confirmed provider actions match this filter/))
+      .toHaveTextContent("may still exist in the provider");
+  });
+
+  it("labels an Azure Boards detail page as work-item activity", async () => {
+    render(
+      <WorkItemsPage
+        client={new FixtureDaemonClient({
+          ...populatedDaemonFixtures(),
+          workItemDetails: {
+            "ado/contoso/alpha/issue/7": {
+              provider: "ado",
+              repository: "contoso/alpha",
+              kind: "issue",
+              externalId: "7",
+              url: "https://dev.azure.com/contoso/alpha/_workitems/edit/7",
+              relatedPullRequests: [],
+              actions: [],
+              truncated: false,
+            },
+          },
+        })}
+        navigate={vi.fn()}
+        route={{ page: "work-items", provider: "ado", repository: "contoso/alpha", kind: "issue", id: "7" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByText("ado work item activity")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open work item" })).toHaveAttribute(
+      "href",
+      "https://dev.azure.com/contoso/alpha/_workitems/edit/7",
+    );
+  });
 });

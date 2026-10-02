@@ -2073,6 +2073,15 @@ summary:focus-visible {
   grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.2fr) minmax(150px, 1fr) 60px 18px;
 }
 
+/* A row whose repository was never recorded has no detail page to open. */
+.work-item-grid:disabled {
+  cursor: default;
+}
+
+.work-item-grid:disabled:hover {
+  background: transparent;
+}
+
 .work-item-grid > span:not(.work-item-identity) {
   display: grid;
   gap: 3px;
