@@ -98,7 +98,7 @@ func TestPreparedTopologySeparatesAuthorityAndKeepsConfigImmutable(t *testing.T)
 					t.Fatal("stage account must have no RoleBinding")
 				}
 			}
-			if (rb.Namespace != o.StageNamespace && !(rb.Namespace == systemNS && rb.RoleRef.Name == "goobers-service-addresses")) || len(rb.Subjects) != 1 || rb.Subjects[0].Name != "goobers-worker" || rb.Subjects[0].Namespace != systemNS {
+			if (rb.Namespace != o.StageNamespace && (rb.Namespace != systemNS || rb.RoleRef.Name != "goobers-service-addresses")) || len(rb.Subjects) != 1 || rb.Subjects[0].Name != "goobers-worker" || rb.Subjects[0].Namespace != systemNS {
 				t.Fatalf("unexpected authority grant: %+v", rb)
 			}
 		case "ServiceAccount":
