@@ -846,6 +846,12 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 	if err != nil {
 		return dashboardAPI{}, err
 	}
+	// Started only once nothing below can fail, so no error return leaves a
+	// live read-model writer behind (#5120).
+	stopReadProjection := func() {}
+	if readStore != nil && readMode == readservice.ReadModeProjected {
+		stopReadProjection = startStandaloneProjection(readStore, layout, errorLog)
+	}
 	return dashboardAPI{
 		handler: handler,
 		mode:    dashboardModeStandalone,
@@ -853,6 +859,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 		// (#1929); the change-feed stream holds no goroutine of its own beyond
 		// each subscription, which the handler cancels.
 		close: func() error {
+			stopReadProjection()
 			projectorErr := stopSchedulerProjector()
 			var telemetryCloseErr error
 			if telemetry != nil {
