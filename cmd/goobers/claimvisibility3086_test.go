@@ -21,7 +21,7 @@ func restoreInvisibleClaims(
 	now time.Time,
 	stderr io.Writer,
 ) (int, error) {
-	result, err := restoreInvisibleClaimsWindow(ctx, l, provider, repo, now, func() time.Time { return now }, stderr, 1<<30, "")
+	result, err := restoreInvisibleClaimsWindow(ctx, l, provider, repo, now, func() time.Time { return now }, stderr, 1<<30, "", backlogReconcileAssigneeScope{})
 	return result.Restored, err
 }
 

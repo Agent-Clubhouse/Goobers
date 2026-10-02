@@ -359,11 +359,33 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 		return 1
 	}
 	env.issueProvider = issueProvider
-	env.ghIssueProvider, _ = provider.(*providers.GitHubProvider)
-	if ado, isADO := provider.(*providers.ADOProvider); isADO {
+	env.ghIssueProvider = githubProviderForBacklogExtras(provider)
+	if ado := adoProviderForBacklogDefaults(provider); ado != nil {
 		applyGaggleDoneStates(env.root, ado)
 	}
 	return 0
+}
+
+func githubProviderForBacklogExtras(provider providers.Provider) *providers.GitHubProvider {
+	if gh, ok := provider.(*providers.GitHubProvider); ok {
+		return gh
+	}
+	if scoped, ok := provider.(scopedIssueProvider); ok {
+		gh, _ := scoped.Provider.(*providers.GitHubProvider)
+		return gh
+	}
+	return nil
+}
+
+func adoProviderForBacklogDefaults(provider providers.Provider) *providers.ADOProvider {
+	if ado, ok := provider.(*providers.ADOProvider); ok {
+		return ado
+	}
+	if scoped, ok := provider.(scopedIssueProvider); ok {
+		ado, _ := scoped.Provider.(*providers.ADOProvider)
+		return ado
+	}
+	return nil
 }
 
 // backlogPRExtrasAvailable reports whether backlog-query's GitHub
@@ -381,7 +403,11 @@ func backlogReconcileScope(respectAssignee bool, assignedTo string) backlogRecon
 	if !respectAssignee {
 		assignedTo = ""
 	}
-	return backlogReconcileAssigneeScope{respectAssignee: respectAssignee, assignedTo: assignedTo}
+	return backlogReconcileAssigneeScope{
+		respectAssignee: respectAssignee,
+		assignedTo:      assignedTo,
+		ownership:       issueOwnershipScopeFromInputs(),
+	}
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
@@ -495,6 +521,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			selectionPriority: selectionPriority,
 			respectAssignee:   respectAssignee,
 			assignedTo:        assignedTo,
+			ownership:         issueOwnershipScopeFromInputs(),
 			scanLimit:         scanLimit,
 		})
 	}
@@ -526,6 +553,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		selectionPriority: selectionPriority,
 		respectAssignee:   respectAssignee,
 		assignedTo:        assignedTo,
+		ownership:         issueOwnershipScopeFromInputs(),
 		scanLimit:         scanLimit,
 		openIssues:        openIssues,
 	}
@@ -1863,10 +1891,7 @@ func missingRequiredLabel(item providers.WorkItem, requireLabels []string) (stri
 }
 
 func resweepQueryAssignee(opts backlogResweepOptions) string {
-	if opts.assigneeScope.respectAssignee && opts.assigneeScope.assignedTo != "" {
-		return opts.assigneeScope.assignedTo
-	}
-	return ""
+	return opts.assigneeScope.queryAssignee()
 }
 
 func appendBlockedResweepCandidates(
@@ -1901,7 +1926,7 @@ func appendBlockedResweepCandidates(
 			env.debugf("excluded %s: missing required label %q", item.ID, label)
 			continue
 		}
-		if opts.assigneeScope.respectAssignee && !item.AssigneeMatches(opts.assigneeScope.assignedTo) {
+		if !opts.assigneeScope.permits(item) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -2044,7 +2069,7 @@ func appendReadyResweepCandidates(
 			env.debugf("excluded %s: missing required label %q", item.ID, label)
 			continue
 		}
-		if opts.assigneeScope.respectAssignee && !item.AssigneeMatches(opts.assigneeScope.assignedTo) {
+		if !opts.assigneeScope.permits(item) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -2245,7 +2270,7 @@ func performBacklogQueryReconciliation(
 		}
 		return result, 0
 	}
-	claims, err := restoreInvisibleClaimsWindow(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, time.Now, env.stderr, claimBudget, result.nextCursor.Claim)
+	claims, err := restoreInvisibleClaimsWindow(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, time.Now, env.stderr, claimBudget, result.nextCursor.Claim, scope)
 	if err != nil {
 		pf(env.stderr, "warning: could not reconcile claim visibility: %v\n", err)
 		result.Scan.WorkRemaining = true
@@ -2289,8 +2314,26 @@ type backlogScanOptions struct {
 	selectionPriority []string
 	respectAssignee   bool
 	assignedTo        string
+	ownership         issueOwnershipScope
 	scanLimit         int
 	openIssues        map[string]bool
+}
+
+func backlogScanQueryAssignee(opts backlogScanOptions) string {
+	if opts.respectAssignee && opts.assignedTo != "" {
+		return opts.assignedTo
+	}
+	if !opts.respectAssignee && len(opts.ownership.assignees) == 1 && opts.ownership.unassigned == ownershipUnassignedRefuse {
+		return opts.ownership.assignees[0]
+	}
+	return ""
+}
+
+func backlogScanPermitsAssignee(opts backlogScanOptions, item providers.WorkItem) bool {
+	if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
+		return false
+	}
+	return opts.ownership.permits(item)
 }
 
 type backlogEligibilityScan struct {
@@ -2330,10 +2373,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	var result backlogEligibilityScan
 	labels := compactLabels(opts.trustLabel)
 	labels = append(labels, opts.labelFilter.RequiredLabels()...)
-	queryAssignee := ""
-	if opts.respectAssignee && opts.assignedTo != "" {
-		queryAssignee = opts.assignedTo
-	}
+	queryAssignee := backlogScanQueryAssignee(opts)
 	// No lock path and no cursor path: every stateful read and write this
 	// scan makes now goes through the scheduler-state store below, which is
 	// the plane in a stage pod and the instance's own claims.lock-guarded
@@ -2341,7 +2381,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	// would reintroduce the instance-root dependency by construction.
 	result.cursorKey = backlogScanCursorKey(
 		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
-		opts.requireLabels, opts.excludeLabels, queryAssignee,
+		opts.requireLabels, opts.excludeLabels, queryAssignee, opts.ownership,
 	)
 	store, err := openStageStateStore(env.layout)
 	if err != nil {
@@ -2376,7 +2416,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
-		if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
+		if !backlogScanPermitsAssignee(opts, item) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -2596,10 +2636,7 @@ func runReadOnlyBacklogQuery(
 ) int {
 	labels := compactLabels(opts.trustLabel)
 	labels = append(labels, opts.labelFilter.RequiredLabels()...)
-	queryAssignee := ""
-	if opts.respectAssignee && opts.assignedTo != "" {
-		queryAssignee = opts.assignedTo
-	}
+	queryAssignee := backlogScanQueryAssignee(opts)
 	if opts.scanLimit <= 0 {
 		opts.scanLimit = backlogScanCeiling
 	}
@@ -2626,7 +2663,7 @@ func runReadOnlyBacklogQuery(
 			env.debugf("excluded %s: missing trust label %q", item.ID, opts.trustLabel)
 			continue
 		}
-		if opts.respectAssignee && !item.AssigneeMatches(opts.assignedTo) {
+		if !backlogScanPermitsAssignee(opts, item) {
 			env.debugf("excluded %s: assignment does not match configured assignee", item.ID)
 			continue
 		}
@@ -3016,6 +3053,7 @@ func backlogScanCursorKey(
 	trustLabel, labelExpression, fieldExpression string,
 	requireLabels, excludeLabels []string,
 	queryAssignee string,
+	ownership issueOwnershipScope,
 ) string {
 	key, _ := json.Marshal(struct {
 		Repository      providers.RepositoryRef `json:"repository"`
@@ -3032,7 +3070,8 @@ func backlogScanCursorKey(
 		// change. Distinct assignee values get distinct cursors so a
 		// narrowed scan's pagination progress never cross-contaminates a
 		// differently-scoped one over the same labels/predicates.
-		Assignee string `json:"assignee,omitempty"`
+		Assignee  string            `json:"assignee,omitempty"`
+		Ownership ownershipScopeKey `json:"ownership,omitempty"`
 	}{
 		Repository:      repo,
 		TrustLabel:      trustLabel,
@@ -3041,6 +3080,7 @@ func backlogScanCursorKey(
 		RequireLabels:   requireLabels,
 		ExcludeLabels:   excludeLabels,
 		Assignee:        queryAssignee,
+		Ownership:       ownershipScopeKey{Assignees: append([]string(nil), ownership.assignees...), Unassigned: ownership.unassigned},
 	})
 	sum := sha256.Sum256(key)
 	return stateclient.ScanCursorKey(fmt.Sprintf("%x", sum))

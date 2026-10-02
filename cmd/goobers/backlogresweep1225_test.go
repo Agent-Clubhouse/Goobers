@@ -407,6 +407,65 @@ func TestBacklogQueryResweepRespectsAssigneeScope(t *testing.T) {
 	}
 }
 
+func TestBacklogQueryResweepRespectsOwnershipScopeInputs(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(1, "Owned ready item", "goobers:approved", providers.LabelReady)
+	server.addIssue(2, "Foreign ready item", "goobers:approved", providers.LabelReady)
+	server.addIssue(3, "Owned blocked item", "goobers:approved", blockedOnSiblingLabel)
+	server.addIssue(4, "Foreign blocked item", "goobers:approved", blockedOnSiblingLabel)
+	server.addIssue(98, "Closed blocker one")
+	server.addIssue(99, "Closed blocker two")
+	server.setIssueBlockers(3, 98)
+	server.setIssueBlockers(4, 99)
+	server.setIssueState(98, "closed")
+	server.setIssueState(99, "closed")
+	server.mu.Lock()
+	server.issues[1].assignee = "alice"
+	server.issues[2].assignee = "bob"
+	server.issues[3].assignee = "alice"
+	server.issues[4].assignee = "bob"
+	server.mu.Unlock()
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "ownership-resweep-run")
+	configureCurationResweep(t, "4", "4")
+	t.Setenv("GOOBERS_INPUT_OWNERSHIPASSIGNEES", "alice")
+	t.Setenv("GOOBERS_INPUT_OWNERSHIPUNASSIGNED", "refuse")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, _, stderr := runArgs(t, "backlog-query", "--claim", "--resweep", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stderr = %q", code, stderr)
+	}
+	items := readCurationItems(t, filepath.Join(workDir, "claimed-items.json"))
+	gotIDs := map[string]string{}
+	for _, item := range items {
+		gotIDs[item.ID] = item.CurationMode
+	}
+	if len(gotIDs) != 2 || gotIDs["1"] != "resweep" || gotIDs["3"] != "dependency-recheck" {
+		t.Fatalf("curation items = %+v, want only ownership-scoped items 1 and 3", items)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"2", "4"} {
+		if _, claimed := ledger.Lookup(id); claimed {
+			t.Fatalf("foreign owned item %s was claimed by the re-sweep", id)
+		}
+	}
+	for _, raw := range server.issueListQueries {
+		query, err := url.ParseQuery(raw)
+		if err != nil {
+			t.Fatalf("parse query %q: %v", raw, err)
+		}
+		if got := query.Get("assignee"); got != "alice" {
+			t.Fatalf("list query %q assignee = %q, want alice", raw, got)
+		}
+	}
+}
+
 // TestBacklogQueryBlockedResweepRespectsPartitionRequireLabels is #4181's
 // dependency-recheck counterpart: appendBlockedResweepCandidates shared the
 // identical unscoped-listing shape as the ready path. An out-of-partition

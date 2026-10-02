@@ -105,6 +105,7 @@ func backlogResweepStateKey(
 		ReadyLabel     string                  `json:"readyLabel"`
 		AssignedTo     string                  `json:"assignedTo,omitempty"`
 		ScopedAssignee bool                    `json:"scopedAssignee,omitempty"`
+		Ownership      ownershipScopeKey       `json:"ownership,omitempty"`
 	}{
 		Repository:     repo,
 		Gaggle:         gaggle,
@@ -112,6 +113,7 @@ func backlogResweepStateKey(
 		ReadyLabel:     readyLabel,
 		AssignedTo:     scope.assignedTo,
 		ScopedAssignee: scope.respectAssignee,
+		Ownership:      scope.key(),
 	})
 	sum := sha256.Sum256(key)
 	return stateclient.ResweepStateKey(fmt.Sprintf("%x", sum))

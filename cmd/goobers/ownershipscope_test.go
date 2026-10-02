@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -109,6 +110,29 @@ func TestIssueOwnershipScopeUnassignedHandlingIsIndependent(t *testing.T) {
 	}
 }
 
+func TestIssueOwnershipScopeEmptyAssigneesOnlyRefusesUnassigned(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+	base := newOwnershipFakeProvider(repo,
+		providers.WorkItem{ID: "7", Assignee: "owner-a"},
+		providers.WorkItem{ID: "8"},
+	)
+	provider := scopedOwnershipProvider(t, base, "", "refuse")
+
+	if _, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		AddLabels:  []string{providers.LabelReady},
+	}); err != nil {
+		t.Fatalf("UpdateWorkItem assigned item with unassigned-only refusal: %v", err)
+	}
+	_, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         "8",
+		AddLabels:  []string{providers.LabelReady},
+	})
+	assertOwnershipRefusal(t, err)
+}
+
 func TestIssueOwnershipScopeRefusesOutOfScopeReassignmentWithTypedClassification(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
 	provider := scopedOwnershipProvider(t, newOwnershipFakeProvider(repo, providers.WorkItem{ID: "3", Assignee: "owner-a"}), "owner-a", "allow")
@@ -123,6 +147,73 @@ func TestIssueOwnershipScopeRefusesOutOfScopeReassignmentWithTypedClassification
 	code, retryable, extra := classifyProviderError(err)
 	if code != errorCodeIssueOwnershipScope || retryable || extra["errorClass"] != "policy_refusal" {
 		t.Fatalf("classification = %q, %v, %+v; want ownership policy refusal", code, retryable, extra)
+	}
+}
+
+func TestIssueOwnershipScopeGuardsCreateAndCommentCapabilities(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+	base := newOwnershipFakeProvider(repo, providers.WorkItem{ID: "1", Assignee: "owner-b"})
+	provider := scopedOwnershipProvider(t, base, "owner-a", "allow")
+	if _, ok := provider.(workItemCommentCreator); !ok {
+		t.Fatal("wrapped provider lost CreateWorkItemComment capability")
+	}
+	if _, ok := provider.(workItemLabelEnsurer); !ok {
+		t.Fatal("wrapped provider lost EnsureWorkItemLabels capability")
+	}
+
+	_, err := provider.CreateWorkItem(context.Background(), providers.CreateWorkItemRequest{
+		Repository: repo,
+		Title:      "out of scope",
+		Assignee:   "owner-b",
+	})
+	assertOwnershipRefusal(t, err)
+
+	if _, err := provider.CreateWorkItem(context.Background(), providers.CreateWorkItemRequest{
+		Repository: repo,
+		Title:      "unassigned is allowed",
+	}); err != nil {
+		t.Fatalf("CreateWorkItem unassigned with allow: %v", err)
+	}
+	refusingUnassigned := scopedOwnershipProvider(t, base, "owner-a", "refuse")
+	_, err = refusingUnassigned.CreateWorkItem(context.Background(), providers.CreateWorkItemRequest{
+		Repository: repo,
+		Title:      "unassigned is refused",
+	})
+	assertOwnershipRefusal(t, err)
+
+	commenter := provider.(workItemCommentCreator)
+	_, err = commenter.CreateWorkItemComment(context.Background(), repo, "1", "do not touch")
+	assertOwnershipRefusal(t, err)
+	if len(base.comments) != 0 {
+		t.Fatalf("comments = %+v, want no out-of-scope comment writes", base.comments)
+	}
+}
+
+func TestIssueOwnershipScopeSetsExpectedRevisionAfterScopeCheck(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+	base := newOwnershipFakeProvider(repo, providers.WorkItem{ID: "1", Assignee: "owner-a", Revision: "1"})
+	base.beforeUpdate = func(req providers.UpdateWorkItemRequest) {
+		item := base.items[req.ID]
+		item.Assignee = "owner-b"
+		item.Revision = "2"
+		base.items[req.ID] = item
+	}
+	provider := scopedOwnershipProvider(t, base, "owner-a", "allow")
+
+	_, err := provider.UpdateWorkItem(context.Background(), providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         "1",
+		AddLabels:  []string{providers.LabelReady},
+	})
+	var conflict *providers.RevisionConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("UpdateWorkItem error = %v, want revision conflict", err)
+	}
+	if len(base.updates) != 1 || base.updates[0].ExpectedRevision != "1" {
+		t.Fatalf("update requests = %+v, want expected revision from checked item", base.updates)
+	}
+	if slices.Contains(base.items["1"].Labels, providers.LabelReady) {
+		t.Fatalf("labels = %v, want guarded write rejected after concurrent reassignment", base.items["1"].Labels)
 	}
 }
 
@@ -152,6 +243,10 @@ type ownershipFakeProvider struct {
 	statuses []providers.UpdateWorkItemStatusRequest
 	claims   []providers.ClaimWorkItemRequest
 	releases []providers.ClaimWorkItemRequest
+	creates  []providers.CreateWorkItemRequest
+	comments []string
+
+	beforeUpdate func(providers.UpdateWorkItemRequest)
 }
 
 func newOwnershipFakeProvider(repo providers.RepositoryRef, items ...providers.WorkItem) *ownershipFakeProvider {
@@ -172,7 +267,13 @@ func (p *ownershipFakeProvider) GetWorkItem(_ context.Context, _ providers.Repos
 
 func (p *ownershipFakeProvider) UpdateWorkItem(_ context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	p.updates = append(p.updates, req)
+	if p.beforeUpdate != nil {
+		p.beforeUpdate(req)
+	}
 	item := p.items[req.ID]
+	if req.ExpectedRevision != "" && item.Revision != req.ExpectedRevision {
+		return providers.WorkItem{}, &providers.RevisionConflictError{ItemID: req.ID, Expected: req.ExpectedRevision, Actual: item.Revision}
+	}
 	if req.Assignee != nil {
 		item.Assignee = *req.Assignee
 	}
@@ -182,6 +283,23 @@ func (p *ownershipFakeProvider) UpdateWorkItem(_ context.Context, req providers.
 	}
 	p.items[req.ID] = item
 	return item, nil
+}
+
+func (p *ownershipFakeProvider) CreateWorkItem(_ context.Context, req providers.CreateWorkItemRequest) (providers.WorkItem, error) {
+	p.creates = append(p.creates, req)
+	id := fmt.Sprintf("%d", len(p.items)+1)
+	item := providers.WorkItem{ID: id, Title: req.Title, Body: req.Body, Labels: append([]string(nil), req.Labels...), Assignee: req.Assignee}
+	p.items[id] = item
+	return item, nil
+}
+
+func (p *ownershipFakeProvider) CreateWorkItemComment(_ context.Context, _ providers.RepositoryRef, id, body string) (providers.Comment, error) {
+	p.comments = append(p.comments, id+":"+body)
+	return providers.Comment{ID: fmt.Sprintf("%d", len(p.comments)), Body: body}, nil
+}
+
+func (p *ownershipFakeProvider) EnsureWorkItemLabels(context.Context, providers.RepositoryRef, []providers.WorkItemLabel) (providers.EnsureWorkItemLabelsResult, error) {
+	return providers.EnsureWorkItemLabelsResult{}, nil
 }
 
 func (p *ownershipFakeProvider) UpdateWorkItemStatus(_ context.Context, req providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {

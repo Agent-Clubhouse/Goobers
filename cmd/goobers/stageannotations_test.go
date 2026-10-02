@@ -426,11 +426,23 @@ func TestBacklogResweepStateKeyIsAlwaysAValidStateKey(t *testing.T) {
 		{"other ready label", backlogResweepStateKey(base, "goobers", "trusted", "other", backlogReconcileAssigneeScope{})},
 		{"other repo", backlogResweepStateKey(providers.RepositoryRef{Owner: "o", Name: "n"}, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{})},
 		{"scoped assignee", backlogResweepStateKey(base, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{respectAssignee: true, assignedTo: "alice"})},
+		{"ownership alice", backlogResweepStateKey(base, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{ownership: issueOwnershipScope{assignees: []string{"alice"}, unassigned: ownershipUnassignedRefuse}})},
+		{"ownership bob", backlogResweepStateKey(base, "goobers", "trusted", "ready", backlogReconcileAssigneeScope{ownership: issueOwnershipScope{assignees: []string{"bob"}, unassigned: ownershipUnassignedRefuse}})},
 	} {
 		if prior, dup := seen[probe.key]; dup {
 			t.Errorf("%s and %s share a re-sweep key", prior, probe.label)
 		}
 		seen[probe.key] = probe.label
+	}
+}
+
+func TestBacklogScanCursorKeyPartitionsOwnershipScope(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "Agent-Clubhouse", Name: "Goobers"}
+	base := backlogScanCursorKey(repo, "trusted", "", "", nil, nil, "", issueOwnershipScope{})
+	alice := backlogScanCursorKey(repo, "trusted", "", "", nil, nil, "alice", issueOwnershipScope{assignees: []string{"alice"}, unassigned: ownershipUnassignedRefuse})
+	bob := backlogScanCursorKey(repo, "trusted", "", "", nil, nil, "bob", issueOwnershipScope{assignees: []string{"bob"}, unassigned: ownershipUnassignedRefuse})
+	if base == alice || base == bob || alice == bob {
+		t.Fatalf("scan cursor keys not partitioned by ownership: base=%q alice=%q bob=%q", base, alice, bob)
 	}
 }
 
