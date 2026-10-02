@@ -79,8 +79,8 @@ credential mechanisms instead.
 |---|---|---|---|
 | Go | First-class — shipped reference + executed CI leg | Goobers canonical reference (`reference-workflows/gaggles/goobers/`) | Shipped, CI-green |
 | Java | First-class — shipped reference + executed CI leg | `config-examples/gaggles/java-service/` | Shipped, CI-green |
-| .NET/C# | First-class — shipped reference, leg is opt-in | `config-examples/gaggles/dotnet-service/` | Shipped, validated locally |
-| Python | First-class — shipped reference, leg is opt-in | `config-examples/gaggles/python-service/` | Shipped, validated locally |
+| .NET/C# | First-class — shipped reference + executed CI leg | `config-examples/gaggles/dotnet-service/` | Shipped, CI-green |
+| Python | First-class — shipped reference + executed CI leg | `config-examples/gaggles/python-service/` | Shipped, CI-green |
 | Node/TypeScript | First-class — shipped reference, no executing leg | `config-examples/gaggles/acme-web/` | Shipped reference, structural checks only |
 | Apple/iOS | Laddered — one validated target | simulator automation stage flavor | Landed (#740) |
 | Android | Laddered — one validated target, stretch | emulator automation stage flavor | Open, stretch (#742) |
@@ -96,17 +96,25 @@ They differ in what *executes* it:
 - **Shipped, CI-green** — an end-to-end test drives the real runner over the
   shipped gaggle, running its actual `ciCommand` against a real project, and
   **CI runs that test on every pull request**. Go's leg is this repository's
-  own suite; Java's is `test/e2e/java_gaggle_integration_test.go`, which the
-  `declared-dependency integration` job enables by setting `GOOBERS_JAVA_E2E`
-  and provisions with `setup-java` plus a warmed Maven repository.
-- **Shipped, validated locally** — the same end-to-end test exists
-  (`test/e2e/dotnet_gaggle_integration_test.go`,
-  `test/e2e/python_gaggle_integration_test.go`) and passes on a host with the
-  toolchain, but it is opt-in (`GOOBERS_DOTNET_E2E`, `GOOBERS_PYTHON_E2E`) and
-  **nothing in CI sets those variables**. Pinning the .NET SDK and a Python
-  3.12 + pytest environment in the cloud runner is the remaining work
-  ([#4615](https://github.com/Agent-Clubhouse/Goobers/issues/4615)); until that
-  lands, the row must not claim CI evidence it does not have.
+  own suite. Java, .NET and Python each have one under `test/e2e/`
+  (`java_gaggle_integration_test.go`, `dotnet_gaggle_integration_test.go`,
+  `python_gaggle_integration_test.go`), which the `declared-dependency
+  integration` job enables by setting `GOOBERS_JAVA_E2E`, `GOOBERS_DOTNET_E2E`
+  and `GOOBERS_PYTHON_E2E` (the .NET and Python legs are additionally asserted
+  to have passed, so a skip is red rather than a quiet green).
+  The job provisions each toolchain from a SHA-pinned setup action
+  (`setup-java` for Java 21, `setup-dotnet` for the .NET 9 SDK, `setup-python`
+  for Python 3.12) and acquires each fixture's dependencies before the tier
+  runs, cache-first with a bounded network fallback (#3322's shape): a warmed
+  Maven repository, the fixture's NuGet packages restored into the global
+  packages folder, and a wheelhouse for the pytest set pinned in
+  `test/e2e/testdata/pythonservice-ci-requirements.txt`, installed with
+  `--no-index` (#4615). None of the three tests opens its own unbounded
+  package fetch.
+- **Shipped, validated locally** — an end-to-end test exists and passes on a
+  host with the toolchain, but it is opt-in and **nothing in CI enables it**.
+  No row is at this level today; it is the honest label for a stack whose leg
+  is written before CI can provision its toolchain.
 - **Shipped reference, structural checks only** — the gaggle and its workflows
   are validated and compiled in CI, but no test executes the stack's own
   toolchain. Node/TypeScript is here: `acme-web` is the flagship

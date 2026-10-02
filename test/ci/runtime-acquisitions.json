@@ -20,7 +20,7 @@
     ],
     "offline": "Provision a local file GOPROXY with all selected modules, version lists and metadata, plus cached checksum verification data. Put a compatible Go on PATH and set GOTOOLCHAIN=local. GOPROXY=off alone can fail even for cached go-run tools because their deprecation/version metadata lookup is disabled; a warm source tree alone is not sufficient.",
     "sites": [
-	  "integration-dependency/go:go-modules",
+      "integration-dependency/go:go-modules",
       ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}:go-modules",
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",
@@ -210,7 +210,7 @@
     "what": "Pinned external action code, runner caches/artifacts, and toolchains provisioned by setup actions",
     "from": [
       "github.com and GitHub Actions artifact/cache services",
-      "Action-specific Go, Node and Java distribution endpoints"
+      "Action-specific Go, Node, Java, .NET and Python distribution endpoints"
     ],
     "offline": "no-offline-path: hosted jobs depend on GitHub and opaque external action implementations. These are bootstrap dependencies, not a promise that an action's transitive network behavior has been statically audited.",
     "sites": [
@@ -225,18 +225,30 @@
       ".github/workflows/ci.yml#deadcode/Checkout:github-actions",
       ".github/workflows/ci.yml#deadcode/Set up Go:github-actions",
       ".github/workflows/ci.yml#dependency-cache-warm/Checkout:github-actions",
+      ".github/workflows/ci.yml#dependency-cache-warm/Restore .NET fixture NuGet packages:github-actions",
+      ".github/workflows/ci.yml#dependency-cache-warm/Restore Python fixture wheelhouse:github-actions",
       ".github/workflows/ci.yml#dependency-cache-warm/Restore declared-dependency apt archives:github-actions",
+      ".github/workflows/ci.yml#dependency-cache-warm/Save .NET fixture NuGet packages:github-actions",
+      ".github/workflows/ci.yml#dependency-cache-warm/Save Python fixture wheelhouse:github-actions",
       ".github/workflows/ci.yml#dependency-cache-warm/Save declared-dependency apt archives:github-actions",
+      ".github/workflows/ci.yml#dependency-cache-warm/Set up .NET:github-actions",
       ".github/workflows/ci.yml#dependency-cache-warm/Set up Java:github-actions",
+      ".github/workflows/ci.yml#dependency-cache-warm/Set up Python:github-actions",
       ".github/workflows/ci.yml#deploy-reference/Checkout:github-actions",
       ".github/workflows/ci.yml#deploy-reference/Set up Go:github-actions",
       ".github/workflows/ci.yml#escalate-main-failure/Close resolved main failure:github-actions",
       ".github/workflows/ci.yml#escalate-main-failure/File or update critical main failure:github-actions",
       ".github/workflows/ci.yml#integration/Checkout:github-actions",
+      ".github/workflows/ci.yml#integration/Restore .NET fixture NuGet packages:github-actions",
+      ".github/workflows/ci.yml#integration/Restore Python fixture wheelhouse:github-actions",
       ".github/workflows/ci.yml#integration/Restore declared-dependency apt archives:github-actions",
+      ".github/workflows/ci.yml#integration/Save .NET fixture NuGet packages:github-actions",
+      ".github/workflows/ci.yml#integration/Save Python fixture wheelhouse:github-actions",
       ".github/workflows/ci.yml#integration/Save declared-dependency apt archives:github-actions",
+      ".github/workflows/ci.yml#integration/Set up .NET:github-actions",
       ".github/workflows/ci.yml#integration/Set up Go:github-actions",
       ".github/workflows/ci.yml#integration/Set up Java:github-actions",
+      ".github/workflows/ci.yml#integration/Set up Python:github-actions",
       ".github/workflows/ci.yml#lint/Checkout:github-actions",
       ".github/workflows/ci.yml#lint/Set up Go:github-actions",
       ".github/workflows/ci.yml#linux-validation/Checkout:github-actions",
@@ -365,13 +377,29 @@
   },
   {
     "id": "nuget-packages",
-    "what": "NuGet packages and restore metadata used by the opt-in dotnet-service integration fixture (GOOBERS_DOTNET_E2E)",
+    "what": "NuGet packages and restore metadata used by the dotnet-service integration fixture (GOOBERS_DOTNET_E2E), which CI's integration job enables",
     "from": [
       "NuGet sources configured by the SDK/project (normally api.nuget.org and its package CDN)"
     ],
-    "offline": "no-offline-path in the shipped fixture: dotnet test performs restore and no offline-only source configuration is supplied. Preinstalled SDK or NUGET_PACKAGES cache alone is not a guarantee that restore/audit metadata will not contact a source. This test is opt-in, not part of ordinary make ci.",
+    "offline": "cache-first, no-offline-path on a miss: integration restores the fixture's exact-version packages into the global packages folder from a cache entry keyed on the fixture project files (written on main by dependency-cache-warm) before the tier runs, so the test's own dotnet test restore resolves locally; the fixture disables NuGetAudit so that restore fetches no vulnerability metadata either. A cache miss falls back to a bounded, retried dotnet restore against the configured NuGet sources, and no offline-only source configuration is supplied. This leg is not part of ordinary make ci.",
     "sites": [
+      ".github/workflows/ci.yml#dependency-cache-warm/Warm .NET fixture NuGet packages:nuget-packages",
+      ".github/workflows/ci.yml#integration/Provision .NET fixture packages:nuget-packages",
       "integration-dependency/dotnet:nuget-packages"
+    ]
+  },
+  {
+    "id": "python-packages",
+    "what": "pytest and its dependencies for the python-service integration fixture (GOOBERS_PYTHON_E2E), pinned in test/e2e/testdata/pythonservice-ci-requirements.txt",
+    "from": [
+      "Python package index selected by pip configuration (normally pypi.org and files.pythonhosted.org)"
+    ],
+    "offline": "cache-first, no-offline-path on a miss: integration installs the pinned set with pip --no-index from a wheelhouse restored from a cache entry keyed on the requirements file (written on main by dependency-cache-warm). A miss, or a wheelhouse that no longer satisfies the pins, falls back to a bounded, retried pip download from the configured index before the same --no-index install. The test itself installs nothing.",
+    "sites": [
+      ".github/workflows/ci.yml#dependency-cache-warm/Warm Python fixture wheelhouse:python-packages",
+      ".github/workflows/ci.yml#integration/Provision Python fixture pytest:python-packages",
+      ".github/workflows/ci.yml#integration/Provision Python fixture pytest[2]:python-packages",
+      ".github/workflows/ci.yml#integration/Provision Python fixture pytest[3]:python-packages"
     ]
   }
 ]
