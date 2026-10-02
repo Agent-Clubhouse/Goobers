@@ -109,13 +109,14 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			return nil, err
 		}
 		wt, err := p.Manager.Create(ctx, worktree.CreateOptions{
-			RepoURL:    repoURL,
-			RunID:      req.RunID + "-" + req.Stage,
-			OwnerRunID: req.RunID,
-			Gaggle:     req.Gaggle,
-			BaseRef:    baseRef,
-			Branch:     "",
-			Sparse:     sparseCones(req.RepoRef.Checkout),
+			RepoURL:         repoURL,
+			RunID:           req.RunID + "-" + req.Stage,
+			OwnerRunID:      req.RunID,
+			Gaggle:          req.Gaggle,
+			BaseRef:         baseRef,
+			Branch:          "",
+			Sparse:          sparseCones(req.RepoRef.Checkout),
+			RetainOnCleanup: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workerhost: create read-only worktree for stage %q: %w", req.Stage, err)
@@ -153,6 +154,7 @@ func (p *WorktreeWorkspaces) Provision(ctx context.Context, req engine.Workspace
 			RequireExistingBranch: req.WorkspaceBranch != "",
 			AcquireRemoteBranch:   req.WorkspaceBranch != "",
 			Sparse:                sparseCones(req.RepoRef.Checkout),
+			RetainOnCleanup:       true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("workerhost: create worktree for stage %q: %w", req.Stage, err)

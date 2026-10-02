@@ -140,6 +140,9 @@ type CleanupTarget struct {
 	// Pinned identifies a managed clone whose base branches live under the
 	// mirror remote, rather than the local branches of a linked worktree.
 	Pinned bool
+	// RetainOnCleanup identifies non-terminal source-preservation cleanup
+	// paths that must publish recovery before the source can be reset.
+	RetainOnCleanup bool
 	// RepositoryDigest and CreatedAt are copied from the durable marker.
 	// Empty values identify legacy metadata and must not be guessed.
 	RepositoryDigest string
@@ -151,7 +154,7 @@ func (m *Manager) prepareCleanup(ctx context.Context, path, worktreeID, ownerRun
 }
 
 func (m *Manager) prepareMarkerCleanup(ctx context.Context, path, worktreeID string, mk marker) error {
-	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.prepareCleanupTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RetainOnCleanup: mk.RetainOnCleanup, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 func (m *Manager) prepareMarkerCleanupWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker) error {
@@ -173,7 +176,7 @@ func (m *Manager) prepareMarkerExit(ctx context.Context, path, worktreeID string
 	if !keep {
 		return m.prepareMarkerCleanup(ctx, path, worktreeID, mk)
 	}
-	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
+	return m.preparePreservedTarget(ctx, CleanupTarget{Path: path, WorktreeID: worktreeID, OwnerRunID: mk.OwnerRunID, Gaggle: mk.Gaggle, BaseRef: mk.BaseRef, StartRef: mk.StartRef, RetainOnCleanup: mk.RetainOnCleanup, RepositoryDigest: mk.RepositoryDigest, CreatedAt: mk.CreatedAt})
 }
 
 func (m *Manager) prepareMarkerExitWithRetention(ctx context.Context, key, path, markerPath, worktreeID string, mk marker, keep bool) error {

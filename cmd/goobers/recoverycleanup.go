@@ -109,7 +109,7 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err := recovery.RetainAbandonedPreparation(ctx, request, publication); err != nil {
 		return err
 	}
-	if !terminal {
+	if !terminal && !target.RetainOnCleanup {
 		return nil
 	}
 	// A checkout that never reached a commit and holds no tracked, staged, or
