@@ -87,6 +87,10 @@ func openAPIParameters(route Route) []map[string]any {
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}},
 			map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
 		)
+	case RouteConfigSourceDocument:
+		parameters = append(parameters,
+			map[string]any{"name": "path", "in": "query", "required": true, "schema": map[string]any{"type": "string"}},
+		)
 	case RouteRuns:
 		parameters = append(parameters,
 			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 200}},
