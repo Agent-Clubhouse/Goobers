@@ -92,6 +92,7 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 		},
 		{Type: EventRefTouched, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}},
 		{Type: EventRunnerMutationRecovered, ExternalRef: &ExternalRef{Provider: "github", Kind: "pr", ID: "9"}, Runner: map[string]any{"mutationReceiptId": "receipt"}},
+		{Type: EventClusterCheckCompleted, Runner: map[string]any{"check": "apiserver-ipblock-drift", "outcome": "fail", "expiresAt": "2026-10-02T12:00:00Z"}},
 		{Type: EventWorkerConfigDivergence, Runner: map[string]any{"worker": "worker-a", "state": "not-active", "message": "checking is not active"}},
 		{Type: EventError, Error: &ErrorDetail{Code: "boom", Message: "detail"}},
 		{Type: EventError, Error: ErrorDetailFor("empty_wrapped_leaf", fmt.Errorf("outer: %w", errors.New("")))},

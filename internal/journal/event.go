@@ -235,6 +235,8 @@ const (
 	// EventConfigReloadRejected records a changed config directory that failed
 	// validation and was not applied.
 	EventConfigReloadRejected EventType = "config.reload.rejected"
+	// EventClusterCheckCompleted records an externally scheduled Kubernetes check.
+	EventClusterCheckCompleted EventType = "runner.cluster_check.completed"
 	// EventWorkerConfigDivergence records a worker's observed config-tree
 	// relationship with the daemon. Its operational payload lives under Runner.
 	EventWorkerConfigDivergence EventType = "runner.config_divergence"

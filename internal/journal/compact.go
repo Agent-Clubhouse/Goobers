@@ -41,7 +41,8 @@ type InstanceEventsCompaction struct {
 // CompactInstanceEvents rewrites the instance journal at dir, keeping complete
 // records whose event time is at or after keepAfter, run.started records at
 // or after keepRunStartsAfter, the init.completed marker, plus the latest
-// scheduled trigger per workflow as restart checkpoints. A zero keepAfter
+// scheduled trigger per workflow, worker divergence, and externally reported
+// cluster-check result as restart checkpoints. A zero keepAfter
 // keeps every record (a no-op on the journal — used when the caller only wants
 // the surrounding db-vacuum maintenance). Records are preserved as their
 // ORIGINAL raw line bytes, never re-marshaled, so any forward-compatible
@@ -208,12 +209,14 @@ func compactInstanceEventsData(
 		time                time.Time
 		triggerKey          string
 		workerDivergenceKey string
+		clusterCheckKey     string
 		runStarted          bool
 		initDone            bool
 	}
 	var records []record
 	latestTrigger := make(map[string]int)
 	latestWorkerDivergence := make(map[string]int)
+	latestClusterCheck := make(map[string]int)
 	for _, line := range bytes.SplitAfter(complete, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -244,6 +247,10 @@ func compactInstanceEventsData(
 		}
 		rec.workerDivergenceKey = compactWorkerDivergenceKey(meta.Type, meta.Runner)
 		latestWorkerDivergence[rec.workerDivergenceKey] = len(records)
+		if meta.Type == EventClusterCheckCompleted {
+			rec.clusterCheckKey, _ = meta.Runner["check"].(string)
+			latestClusterCheck[rec.clusterCheckKey] = len(records)
+		}
 		records = append(records, rec)
 	}
 
@@ -251,9 +258,10 @@ func compactInstanceEventsData(
 	for i, rec := range records {
 		keepTriggerCheckpoint := rec.triggerKey != "" && latestTrigger[rec.triggerKey] == i
 		keepWorkerDivergenceCheckpoint := compactKeepsWorkerDivergence(rec.workerDivergenceKey, i, latestWorkerDivergence)
+		keepClusterCheck := rec.clusterCheckKey != "" && latestClusterCheck[rec.clusterCheckKey] == i
 		keepBudgetHistory := rec.runStarted &&
 			(keepRunStartsAfter.IsZero() || !rec.time.Before(keepRunStartsAfter))
-		if compactDropsAgedRecord(rec.time, keepAfter, keepTriggerCheckpoint, keepWorkerDivergenceCheckpoint, keepBudgetHistory, rec.initDone) {
+		if compactDropsAgedRecord(rec.time, keepAfter, keepTriggerCheckpoint, keepWorkerDivergenceCheckpoint || keepClusterCheck, keepBudgetHistory, rec.initDone) {
 			result.Dropped++
 			continue
 		}
@@ -280,8 +288,8 @@ func compactKeepsWorkerDivergence(worker string, index int, latest map[string]in
 	return worker != "" && latest[worker] == index
 }
 
-func compactDropsAgedRecord(at, keepAfter time.Time, triggerCheckpoint, workerCheckpoint, budgetHistory, initDone bool) bool {
-	return !keepAfter.IsZero() && at.Before(keepAfter) && !triggerCheckpoint && !workerCheckpoint && !budgetHistory && !initDone
+func compactDropsAgedRecord(at, keepAfter time.Time, triggerCheckpoint, resultCheckpoint, budgetHistory, initDone bool) bool {
+	return !keepAfter.IsZero() && at.Before(keepAfter) && !triggerCheckpoint && !resultCheckpoint && !budgetHistory && !initDone
 }
 
 // Compact atomically checkpoints records at or after keepAfter while the
