@@ -90,8 +90,8 @@ but cannot resolve the objects behind them.
 no mirror under any supplied workcopies root still lists it in its alternates. It
 fails closed: any dependent, or any error reading or walking an alternates file,
 refuses the deletion. It runs under the same file lock as refresh. It is a
-deliberate, operator-invoked step, not a background job, and there is no cleanup
-that treats a missing cache as safe to ignore.
+library function with no CLI command today and no background caller, so removal
+is a manual operation; nothing treats a missing cache as safe to ignore.
 
 ## External reference stores: what is and is not supported
 

@@ -37,8 +37,8 @@ never the limiting one.
 The practical consequence is a rule for authors: never grant egress to
 `goobers.dev/role=stage` without also pinning a runner-class label. A generic
 stage-wide grant would union over, and nullify, every per-class restriction. The
-renderer is the only producer of stage egress grants, and each rendered grant
-selects exactly one class. `TestDeployReferenceRenderedTogether` (in
+shipped manifests keep to this: the renderer produces the stage egress grants,
+and each rendered grant selects exactly one class. `TestDeployReferenceRenderedTogether` (in
 `cmd/goobers`) renders the reference bases together and fails any egress policy
 that selects `role=stage` without a runner-class label; that assertion encodes
 the consequence, and this section is the reason for it.
@@ -107,4 +107,4 @@ namespace admits the flow.
 ## Where this is referenced
 
 - `deploy/reference/README.md`, Conventions.
-- The `networkpolicy-api` check description in `internal/k8spreflight`.
+- The `networkpolicy-api` check hint in `internal/k8spreflight`.
