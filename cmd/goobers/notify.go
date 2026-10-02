@@ -256,11 +256,6 @@ func shortRunID(runID string) string {
 }
 
 func oneLine(value string) string {
-	const maxRunes = 240
 	value = strings.Join(strings.Fields(value), " ")
-	runes := []rune(value)
-	if len(runes) <= maxRunes {
-		return value
-	}
-	return string(runes[:maxRunes]) + "..."
+	return truncateRunes(value, 240, "...", false)
 }
