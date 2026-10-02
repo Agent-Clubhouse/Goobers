@@ -40,6 +40,79 @@ func TestProviderStageEnvParseFailure(t *testing.T) {
 	}
 }
 
+func TestParseProviderStageCommandParseError(t *testing.T) {
+	var stderr bytes.Buffer
+
+	_, ok, exitCode := parseProviderStageCommand([]string{"--unknown"}, "gather-pr-context", &stderr)
+
+	if ok {
+		t.Fatal("parseProviderStageCommand succeeded, want failure")
+	}
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "flag provided but not defined: -unknown") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestParseProviderStageCommandExtraArgs(t *testing.T) {
+	var stderr bytes.Buffer
+
+	_, ok, exitCode := parseProviderStageCommand([]string{"one", "two"}, "gather-pr-context", &stderr)
+
+	if ok {
+		t.Fatal("parseProviderStageCommand succeeded, want failure")
+	}
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2", exitCode)
+	}
+	if !strings.HasPrefix(stderr.String(), "Usage: goobers gather-pr-context [path]\n") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestParseProviderStageCommandResolvesRoot(t *testing.T) {
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "octo")
+	t.Setenv(executor.RepoProjectEnvVar, "")
+	t.Setenv(executor.RepoNameEnvVar, "repo")
+	root := t.TempDir()
+	t.Setenv(executor.InstanceRootEnvVar, root)
+
+	env, ok, exitCode := parseProviderStageCommand(nil, "gather-pr-context", &bytes.Buffer{})
+
+	if !ok {
+		t.Fatalf("parseProviderStageCommand failed with exit code %d", exitCode)
+	}
+	if env.root != root {
+		t.Fatalf("root = %q, want %q", env.root, root)
+	}
+	if env.repo != (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "octo", Name: "repo"}) {
+		t.Fatalf("repo = %+v", env.repo)
+	}
+}
+
+func TestParseProviderStageCommandRepositoryResolutionFailure(t *testing.T) {
+	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderGitHub))
+	t.Setenv(executor.RepoOwnerEnvVar, "")
+	t.Setenv(executor.RepoProjectEnvVar, "")
+	t.Setenv(executor.RepoNameEnvVar, "")
+	var stderr bytes.Buffer
+
+	_, ok, exitCode := parseProviderStageCommand(nil, "gather-pr-context", &stderr)
+
+	if ok {
+		t.Fatal("parseProviderStageCommand succeeded, want failure")
+	}
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "error: invalid routed github repository") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestParseProviderStageEnvTooManyArgs(t *testing.T) {
 	fs := flag.NewFlagSet("provider-stage", flag.ContinueOnError)
 	usageCalled := false

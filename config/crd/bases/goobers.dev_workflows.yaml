@@ -600,6 +600,20 @@ spec:
                             description: From names the source as "<producer-task>.<artifact-slot>".
                             pattern: ^[^.]+\.[A-Za-z0-9_-]{1,128}$
                             type: string
+                          mediaType:
+                            description: |-
+                              MediaType optionally declares the media type this consumer expects from
+                              the referenced producer slot. When both sides declare a media type, the
+                              workflow compiler requires an exact match.
+                            minLength: 1
+                            type: string
+                          schemaPath:
+                            description: |-
+                              SchemaPath optionally declares the schema this consumer expects from the
+                              referenced producer slot. When both sides declare a schema, the workflow
+                              compiler requires an exact match.
+                            minLength: 1
+                            type: string
                         required:
                         - from
                         type: object

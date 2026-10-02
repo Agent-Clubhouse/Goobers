@@ -368,6 +368,33 @@ func typeMentions(t, target reflect.Type) bool {
 // outside the runner's own process is accepted only when it matches what
 // result.schema.json declares — a known status, error detail on a failure,
 // and contained, digest-pinned pointers.
+func TestResultEnvelopeWorkspaceRevisionValidation(t *testing.T) {
+	for _, status := range []ResultStatus{ResultSuccess, ResultFailure, ResultBlocked, ResultNoWork} {
+		t.Run(string(status), func(t *testing.T) {
+			result := ResultEnvelope{
+				Status: status,
+				Error:  &ErrorInfo{Code: "test_failure", Message: "test failure"},
+				WorkspaceRevision: &WorkspaceRevision{
+					Repository: RepositoryIdentity{Provider: ProviderGitHub, Owner: "org", Name: "repo"},
+					CommitSHA:  strings.Repeat("a", 40),
+				},
+			}
+			if err := result.Validate(); err != nil {
+				t.Fatalf("valid revision: %v", err)
+			}
+			result.WorkspaceRevision.CommitSHA = "short"
+			if err := result.Validate(); err == nil {
+				t.Fatal("malformed revision was accepted")
+			}
+			result.WorkspaceRevision.CommitSHA = strings.Repeat("a", 40)
+			result.WorkspaceRevision.Repository.Provider = ProviderADO
+			if err := result.Validate(); err == nil {
+				t.Fatal("ADO identity without a project was accepted")
+			}
+		})
+	}
+}
+
 func TestResultEnvelopeValidate(t *testing.T) {
 	digest := Digest([]byte("artifact bytes"))
 	tests := []struct {

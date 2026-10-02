@@ -363,7 +363,10 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		seedEvents = events
 	}
 
-	f := r.newResumeFrame(jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	f, err := r.newResumeFrame(ctx, jr, in, id, registrar, events, seedEvents, rerun, humanProgress)
+	if err != nil {
+		return Result{}, fmt.Errorf("runner: reconstruct workspace revision for run %q: %w", in.RunID, err)
+	}
 	ws := f.ws
 
 	startState, err := f.resolveStartState(rd, in.Machine)
@@ -613,15 +616,20 @@ func validateHumanResumeDecision(in ResumeInput, humanProgress humanGateProgress
 // are not readable until the journal's item snapshot and pinned run controls
 // have been resolved, so resumeOwned fills those two in.
 func (r *Runner) newResumeFrame(
+	ctx context.Context,
 	jr *journal.Run, in ResumeInput, id journal.RunIdentity, registrar SecretRegistrar,
 	events, seedEvents []journal.Event, rerun *rerunContext, humanProgress humanGateProgress,
-) *resumeFrame {
+) (*resumeFrame, error) {
 	activeParallel, parallelStart := pendingParallel(seedEvents, in.Machine)
 	pointerEvents := seedEvents
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	ws := newWalkState(jr, StartInput{
+	branch := 0
+	if activeParallel != nil && activeParallel.spec.MaxConcurrentBranches <= 1 && activeParallel.current() != nil {
+		branch = activeParallel.current().id
+	}
+	startIn, err := r.restoreResumeWorkspaceRevision(ctx, StartInput{
 		instanceID:       id.InstanceID,
 		configGeneration: id.ConfigGeneration,
 		RunID:            in.RunID,
@@ -634,7 +642,11 @@ func (r *Runner) newResumeFrame(
 		// here after it already started (and therefore already cleared the #735
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
-	}, registrar, "")
+	}, events, activeParallel, parallelStart, branch)
+	if err != nil {
+		return nil, err
+	}
+	ws := newWalkState(jr, startIn, registrar, "")
 	if id.ContinuedFromRunID != "" {
 		ws.pointers = append(ws.pointers, id.ContextPointers...)
 	} else {
@@ -680,7 +692,7 @@ func (r *Runner) newResumeFrame(
 		hasLast:            hasLast,
 		segmentLastStage:   segmentLastStage,
 		hasSegmentLast:     hasSegmentLast,
-	}
+	}, nil
 }
 
 // resolveStartState picks the workflow state this resume re-enters at.

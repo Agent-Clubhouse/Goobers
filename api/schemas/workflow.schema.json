@@ -548,7 +548,9 @@
             "additionalProperties": false,
             "required": ["from"],
             "properties": {
-              "from": { "type": "string", "pattern": "^[^.]+\\.[A-Za-z0-9_-]{1,128}$", "description": "Source artifact slot as producerTask.slotName." }
+              "from": { "type": "string", "pattern": "^[^.]+\\.[A-Za-z0-9_-]{1,128}$", "description": "Source artifact slot as producerTask.slotName." },
+              "mediaType": { "type": "string", "minLength": 1, "description": "Optional media type the consumer expects from the referenced producer slot." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "Optional repository/config-relative schema path the consumer expects from the referenced producer slot." }
             }
           }
         },

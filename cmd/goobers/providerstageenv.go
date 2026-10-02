@@ -13,6 +13,41 @@ type stageCommandEnv struct {
 	repo providers.RepositoryRef
 }
 
+func parseProviderStageCommand(args []string, command string, stderr io.Writer) (stageCommandEnv, bool, int) {
+	fs := newCLIFlagSet(command, flag.ContinueOnError)
+	return parseProviderStageFlagCommand(fs, args, command, stderr)
+}
+
+func parseProviderStageFlagCommand(fs *flag.FlagSet, args []string, command string, stderr io.Writer) (stageCommandEnv, bool, int) {
+	env, ok, exitCode := parseProviderStageFlagCommandRoot(fs, args, command, stderr)
+	if !ok {
+		return stageCommandEnv{}, false, exitCode
+	}
+	env, ok = resolveProviderStageEnv(env.root, stderr)
+	if !ok {
+		return stageCommandEnv{}, false, 1
+	}
+	return env, true, 0
+}
+
+func parseProviderStageCommandRoot(args []string, command string, stderr io.Writer) (stageCommandEnv, bool, int) {
+	fs := newCLIFlagSet(command, flag.ContinueOnError)
+	return parseProviderStageFlagCommandRoot(fs, args, command, stderr)
+}
+
+func parseProviderStageFlagCommandRoot(fs *flag.FlagSet, args []string, command string, stderr io.Writer) (stageCommandEnv, bool, int) {
+	fs.SetOutput(stderr)
+	fs.Usage = helpUsage(stderr, command)
+	if err := fs.Parse(args); err != nil {
+		return stageCommandEnv{}, false, 2
+	}
+	root, ok := providerStageRootArg(fs)
+	if !ok {
+		return stageCommandEnv{}, false, 2
+	}
+	return stageCommandEnv{root: root}, true, 0
+}
+
 func parseProviderStageEnv(fs *flag.FlagSet, stderr io.Writer) (stageCommandEnv, bool) {
 	root, ok := providerStageRootArg(fs)
 	if !ok {
@@ -22,12 +57,20 @@ func parseProviderStageEnv(fs *flag.FlagSet, stderr io.Writer) (stageCommandEnv,
 }
 
 func resolveProviderStageEnv(root string, stderr io.Writer) (stageCommandEnv, bool) {
-	repo, err := providerRepo(root)
+	env, err := loadProviderStageEnv(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return stageCommandEnv{}, false
 	}
-	return stageCommandEnv{root: root, repo: repo}, true
+	return env, true
+}
+
+func loadProviderStageEnv(root string) (stageCommandEnv, error) {
+	repo, err := providerRepo(root)
+	if err != nil {
+		return stageCommandEnv{}, err
+	}
+	return stageCommandEnv{root: root, repo: repo}, nil
 }
 
 func (e stageCommandEnv) repoRef() providers.RepositoryRef {

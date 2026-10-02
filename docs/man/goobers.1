@@ -232,6 +232,24 @@ export a sanitized portable gaggle bundle
 \fBgoobers gaggle import\fR
 atomically create a gaggle from a validated bundle
 .TP
+\fBgoobers harness\fR
+inspect or manage harness lifecycle operations
+.TP
+\fBgoobers harness auth\fR
+inspect or manage harness authentication
+.TP
+\fBgoobers harness auth copilot\fR
+inspect or manage Copilot harness authentication
+.TP
+\fBgoobers harness auth copilot login\fR
+delegate to the native Copilot login flow
+.TP
+\fBgoobers harness auth copilot logout\fR
+report whether native Copilot logout is supported
+.TP
+\fBgoobers harness auth copilot status\fR
+report Copilot harness authentication without exposing credentials
+.TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
 .TP
@@ -630,6 +648,12 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-gather-pr-context\fR(1),
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
+\fBgoobers-harness\fR(1),
+\fBgoobers-harness-auth\fR(1),
+\fBgoobers-harness-auth-copilot\fR(1),
+\fBgoobers-harness-auth-copilot-login\fR(1),
+\fBgoobers-harness-auth-copilot-logout\fR(1),
+\fBgoobers-harness-auth-copilot-status\fR(1),
 \fBgoobers-help\fR(1),
 \fBgoobers-init\fR(1),
 \fBgoobers-ios-simulator-test\fR(1),

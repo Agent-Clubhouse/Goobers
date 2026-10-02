@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"regexp"
@@ -196,22 +195,11 @@ const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"errors), 1 = business error, 2 = usage/IO error.\n"
 
 func runPostMerge(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("post-merge", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "post-merge")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommand(args, "post-merge", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	// Azure DevOps post-merge reduces to a single action — close the work item
 	// the merged PR resolved — and must NOT resolve a github:* token or run any
 	// of the GitHub sibling/demotion/remediation machinery below (each issues a

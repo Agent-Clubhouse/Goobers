@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"time"
 
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
@@ -21,7 +23,8 @@ var serviceHealthInterval = 6 * time.Hour
 // version bump rather than a silent change of meaning for an older reader.
 //
 // 2 adds recoveryInventory (#4911 AC5).
-const serviceHealthSchemaVersion = 2
+// 3 adds credential-free harnessAuth lifecycle state (#5081).
+const serviceHealthSchemaVersion = 3
 
 // serviceHealthUnknown is the explicit marker for a field whose real value
 // could not be observed.
@@ -60,6 +63,7 @@ type serviceHealthObservation struct {
 	// offline or pre-first-sample record declines to answer rather than
 	// reporting an empty inventory it never measured.
 	RecoveryInventory *readservice.RecoveryInventoryStatus
+	HarnessAuth       []harness.AuthInfo
 }
 
 // Window coverage values. An incomplete history stays explicit rather than
@@ -71,6 +75,22 @@ const (
 	// count is not a measurement and must not be treated as one.
 	serviceHealthWindowUnknown = "unknown"
 )
+
+var serviceHealthHarnessAuth = func(root string) []harness.AuthInfo {
+	if _, err := os.Stat(instance.NewLayout(root).ConfigFile()); err != nil {
+		return nil
+	}
+	info, err := copilotAuthInfoWithTimeout(root, 2*time.Second)
+	if err != nil {
+		return []harness.AuthInfo{{
+			Status:      harness.AuthStatusUnknown,
+			Executable:  "copilot",
+			Runner:      serviceHealthUnknown,
+			Remediation: "goobers harness auth copilot status",
+		}}
+	}
+	return []harness.AuthInfo{info}
+}
 
 // observeServiceHealth gathers one observation. Every lookup degrades to an
 // explicit unknown rather than failing: a diagnostic record that refuses to be
@@ -101,6 +121,9 @@ func observeServiceHealth(root string, identity *daemonIdentity, log *journal.In
 	}
 	if inventory != nil {
 		obs.RecoveryInventory = inventory()
+	}
+	if serviceHealthHarnessAuth != nil {
+		obs.HarnessAuth = serviceHealthHarnessAuth(root)
 	}
 	if log != nil {
 		if events, truncated, err := journal.ReadInstanceLogWindow(log.Dir(), 4<<20, 1000); err == nil {
@@ -171,6 +194,39 @@ func serviceHealthPayload(obs serviceHealthObservation) map[string]any {
 	}
 	if obs.RecoveryInventory != nil {
 		payload["recoveryInventory"] = recoveryInventoryHealthPayload(obs.RecoveryInventory)
+	}
+	if len(obs.HarnessAuth) > 0 {
+		payload["harnessAuth"] = harnessAuthHealthPayload(obs.HarnessAuth)
+	}
+	return payload
+}
+
+func harnessAuthHealthPayload(infos []harness.AuthInfo) map[string]any {
+	payload := make(map[string]any, len(infos))
+	for i, info := range infos {
+		name := "copilot"
+		if i > 0 {
+			name = fmt.Sprintf("copilot-%d", i+1)
+		}
+		entry := map[string]any{
+			"status": info.Status,
+		}
+		if info.Executable != "" {
+			entry["executable"] = info.Executable
+		}
+		if info.Version != "" {
+			entry["version"] = info.Version
+		}
+		if info.Runner != "" {
+			entry["runner"] = info.Runner
+		}
+		if info.ProfileDir != "" {
+			entry["profile"] = info.ProfileDir
+		}
+		if info.Remediation != "" {
+			entry["remediation"] = info.Remediation
+		}
+		payload[name] = entry
 	}
 	return payload
 }

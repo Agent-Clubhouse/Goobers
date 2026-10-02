@@ -479,10 +479,11 @@ func newParallelTestRunner(t *testing.T, newDet NewDeterministicFunc) (*Runner, 
 	t.Helper()
 	runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
 	r, err := New(Config{
-		NewDeterministic: newDet,
-		Worktrees:        wtMgr,
-		RunsDir:          runsDir,
-		ScratchDir:       t.TempDir(),
+		ResolveRepositoryIdentity: lookupRunnerRepositoryFixture,
+		NewDeterministic:          newDet,
+		Worktrees:                 wtMgr,
+		RunsDir:                   runsDir,
+		ScratchDir:                t.TempDir(),
 		RepoCloneURL: func(apiv1.RepoRef) (string, error) {
 			return fixtureRepo, nil
 		},

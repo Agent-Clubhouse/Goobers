@@ -514,36 +514,31 @@ func functionStructurallyChangedPaths(
 }
 
 func hydrateCurrentPatches(dir, base string, files []providers.ChangedFile) ([]providers.ChangedFile, error) {
-	out := append([]providers.ChangedFile(nil), files...)
-	for i := range out {
-		if out[i].Patch != "" {
-			continue
-		}
-		args := []string{"diff", "--no-color", "--function-context", base + "...HEAD", "--"}
-		if out[i].PreviousPath != "" {
-			args = append(args, out[i].PreviousPath)
-		}
-		args = append(args, out[i].Path)
-		cmd := workspaceGitCommand(dir, args...)
-		patch, err := workspaceGitOutput(cmd)
-		if err != nil {
-			return nil, gitOutputError("git "+strings.Join(args, " "), err)
-		}
-		out[i].Patch = string(patch)
-	}
-	return out, nil
+	return hydratePatches(dir, files, func(providers.ChangedFile) []string {
+		return []string{"diff", "--no-color", "--function-context", base + "...HEAD", "--"}
+	})
 }
 
 func hydrateMergedSiblingPatches(dir, mergeSHA string, files []providers.ChangedFile) ([]providers.ChangedFile, error) {
+	return hydratePatches(dir, files, func(providers.ChangedFile) []string {
+		return []string{
+			"diff", "--no-color", "--function-context", "--find-renames",
+			mergeSHA + "^", mergeSHA, "--",
+		}
+	})
+}
+
+func hydratePatches(
+	dir string,
+	files []providers.ChangedFile,
+	argsFor func(providers.ChangedFile) []string,
+) ([]providers.ChangedFile, error) {
 	out := append([]providers.ChangedFile(nil), files...)
 	for i := range out {
 		if out[i].Patch != "" {
 			continue
 		}
-		args := []string{
-			"diff", "--no-color", "--function-context", "--find-renames",
-			mergeSHA + "^", mergeSHA, "--",
-		}
+		args := argsFor(out[i])
 		if out[i].PreviousPath != "" {
 			args = append(args, out[i].PreviousPath)
 		}

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -68,21 +67,11 @@ const gatherPRContextHelp = "Usage: goobers gather-pr-context [path]\n\n" +
 // PR-thread comments + whether the base has advanced since this PR branched, as
 // context for the stages that follow (#363's rebase + finding-driven routing).
 func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("gather-pr-context", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-pr-context")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommand(args, "gather-pr-context", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	validateRemediationAlgorithm(stderr)
 	adapter, err := newGatherPRContextAdapter(root, repo)
 	if err != nil {

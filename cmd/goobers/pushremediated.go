@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -64,22 +63,11 @@ const pushRemediatedHelp = "Usage: goobers push-remediated [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runPushRemediated(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("push-remediated", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "push-remediated")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommand(args, "push-remediated", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	if repo.Provider == providers.ProviderADO {
 		return runPushRemediatedADO(root, repo, stdout, stderr)
 	}

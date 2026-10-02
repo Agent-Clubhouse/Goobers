@@ -1185,11 +1185,12 @@ func newRerunTestRunner(t *testing.T, newAgentic NewAgenticFunc, newDeterministi
 	runsDir := filepath.Join(root, "runs")
 	fixtureRepo := newFixtureRepo(t)
 	r, err := New(Config{
-		NewAgentic:       newAgentic,
-		NewDeterministic: newDeterministic,
-		Worktrees:        manager,
-		RunsDir:          runsDir,
-		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		ResolveRepositoryIdentity: lookupRunnerRepositoryFixture,
+		NewAgentic:                newAgentic,
+		NewDeterministic:          newDeterministic,
+		Worktrees:                 manager,
+		RunsDir:                   runsDir,
+		RepoCloneURL:              func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
 	})
 	if err != nil {
 		t.Fatal(err)

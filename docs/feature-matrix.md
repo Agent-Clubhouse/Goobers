@@ -526,6 +526,8 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.agentic` | 3.1 | ga | preview | dev |
 | `task.artifactInputs` | 3.1 | preview | preview | v0.5.0 |
 | `task.artifactInputs.from` | 3.1 | preview | preview | v0.5.0 |
+| `task.artifactInputs.mediaType` | 3.1 | preview | preview | v0.5.0 |
+| `task.artifactInputs.schemaPath` | 3.1 | preview | preview | v0.5.0 |
 | `task.artifactSlots` | 3.1 | preview | preview | v0.5.0 |
 | `task.artifactSlots.maxSize` | 3.1 | preview | preview | v0.5.0 |
 | `task.artifactSlots.mediaType` | 3.1 | preview | preview | v0.5.0 |
@@ -638,6 +640,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 3.0 -> 3.1
 
-- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`
+- Added: `task.artifactInputs`, `task.artifactInputs.from`, `task.artifactInputs.mediaType`, `task.artifactInputs.schemaPath`, `task.artifactSlots`, `task.artifactSlots.maxSize`, `task.artifactSlots.mediaType`, `task.artifactSlots.name`, `task.artifactSlots.schemaPath`
 - Removed: none
 - Level changes: none

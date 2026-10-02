@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"time"
@@ -19,16 +18,11 @@ const gatherReviewThreadsHelp = "Usage: goobers gather-review-threads [path]\n\n
 	"2 = usage/IO error.\n"
 
 func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("gather-review-threads", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-review-threads")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommandRoot(args, "gather-review-threads", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
+	root := env.root
 
 	runID, _, err := providerRunContext()
 	if err != nil {
@@ -40,11 +34,11 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read remediation brief: %v\n", err)
 		return 1
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok = resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repo
 	provider, err := reviewThreadStageSurface[reviewThreadReader](root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

@@ -249,6 +249,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "image-ca", takesArg: true, desc: "Internal root CA PEM for image trust checks"},
 		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
 		{name: "repo", desc: "Compare repository forge policy with GitHub"},
+		{name: "harness-auth", desc: "Report credential-free harness authentication state"},
 		{name: "av-exclusions", desc: "List the directories Goobers writes then reads and verify antivirus exclusions (advisory)"},
 		{name: "work-root", takesArg: true, desc: "Worker work root to enumerate (--av-exclusions)"},
 		{name: "kubeconfig", takesArg: true, desc: "Kubeconfig path"},

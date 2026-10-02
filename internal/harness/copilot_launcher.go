@@ -16,6 +16,11 @@ import (
 
 const launcherContractFlag = "--goobers-launcher-contract"
 
+const (
+	launcherAuthOwnerLauncher          = "launcher"
+	launcherAuthOwnerUnderlyingHarness = "underlying-harness"
+)
+
 var verifiedAdapterManagedLaunchers sync.Map
 
 // launcherContract is the versioned, credential-free wrapper handshake. It is
@@ -26,9 +31,21 @@ type launcherContract struct {
 	SessionMode string             `json:"sessionMode"`
 	SessionArgs []string           `json:"sessionArgs,omitempty"`
 	AuthProbe   *launcherAuthProbe `json:"authProbe,omitempty"`
+	Auth        *launcherAuthOps   `json:"auth,omitempty"`
 }
 
 type launcherAuthProbe struct {
+	Args []string `json:"args"`
+}
+
+type launcherAuthOps struct {
+	Owner                                 string          `json:"owner,omitempty"`
+	PersistedStateSharedWithDirectHarness bool            `json:"persistedStateSharedWithDirectHarness,omitempty"`
+	InteractiveLogin                      *launcherAuthOp `json:"interactiveLogin,omitempty"`
+	Logout                                *launcherAuthOp `json:"logout,omitempty"`
+}
+
+type launcherAuthOp struct {
 	Args []string `json:"args"`
 }
 
@@ -94,12 +111,20 @@ func validateLauncherContract(contract launcherContract) (launcherContract, erro
 		if contract.AuthProbe != nil {
 			return contract, fmt.Errorf("authProbe requires launcher contract version 2")
 		}
+		if contract.Auth != nil {
+			return contract, fmt.Errorf("auth operations require launcher contract version 2")
+		}
 	case 2:
 		if contract.AuthProbe == nil {
 			return contract, fmt.Errorf("launcher contract version 2 requires authProbe")
 		}
 		if err := validateLauncherArgs("authProbe args", contract.AuthProbe.Args); err != nil {
 			return contract, err
+		}
+		if contract.Auth != nil {
+			if err := validateLauncherAuthOps(contract.Auth); err != nil {
+				return contract, err
+			}
 		}
 	default:
 		return contract, fmt.Errorf("unsupported launcher contract version %d", contract.Version)
@@ -131,6 +156,28 @@ func validateLauncherContract(contract launcherContract) (launcherContract, erro
 		return contract, fmt.Errorf("unsupported launcher sessionMode %q", contract.SessionMode)
 	}
 	return contract, nil
+}
+
+func validateLauncherAuthOps(auth *launcherAuthOps) error {
+	if auth.Owner == "" {
+		auth.Owner = launcherAuthOwnerLauncher
+	}
+	switch auth.Owner {
+	case launcherAuthOwnerLauncher, launcherAuthOwnerUnderlyingHarness:
+	default:
+		return fmt.Errorf("auth owner must be %q or %q", launcherAuthOwnerLauncher, launcherAuthOwnerUnderlyingHarness)
+	}
+	if auth.InteractiveLogin != nil {
+		if err := validateLauncherArgs("auth interactiveLogin args", auth.InteractiveLogin.Args); err != nil {
+			return err
+		}
+	}
+	if auth.Logout != nil {
+		if err := validateLauncherArgs("auth logout args", auth.Logout.Args); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateLauncherArgs(name string, args []string) error {
