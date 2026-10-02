@@ -10225,6 +10225,22 @@ code,
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
+.guided-shell-selector {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.guided-shell-selector legend {
+  margin-bottom: 6px;
+  width: 100%;
+}
+
+.guided-shell-selector label {
+  align-items: center;
+  padding: 6px 12px;
+}
+
 .guided-source-choice {
   display: grid;
   gap: 10px;
