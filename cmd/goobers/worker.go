@@ -89,8 +89,9 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             exists and that this worker's credentials\n" +
 	"                             hold the RBAC grants dispatch needs there,\n" +
 	"                             failing startup by name otherwise. Requires\n" +
-	"                             --instance and --blob-store (the surrender\n" +
-	"                             plane rides the same volume); cluster access\n" +
+	"                             --instance and one artifact store mode. In\n" +
+	"                             endpoint mode the worker reads surrendered\n" +
+	"                             results through --daemon-api; cluster access\n" +
 	"                             uses in-cluster credentials or the standard\n" +
 	"                             kubeconfig rules (default\n" +
 	"                             $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
@@ -189,7 +190,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: stage dispatch: load instance config: %v\n", err)
 			return 2
 		}
-		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT")); err != nil {
+		if _, err := validateStageDispatchConfig(cfg, *daemonAPI, stageBlobEndpoint(*blobEndpoint)); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
@@ -335,7 +336,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
 			return 1
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams)
+		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams, *blobEndpoint)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1

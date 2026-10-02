@@ -708,8 +708,6 @@ func (e *workflowCompileError) Unwrap() error {
 // a run reaches the stage. Nil skips the check, for callers that compile
 // without the instance config's authority over connectors.
 func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, environment harness.EnvironmentConfig, harnessCommand map[string][]string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	const workflowVersion = 1
-	knownChecks := knownAutomatedCheckNames()
 	// The admission registry resolves harness config (model/options), and model
 	// resolution spawns the configured launcher for model discovery whenever a
 	// goober declares spec.Model — so the launcher override must apply here too,
@@ -731,6 +729,19 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	machines, err := compileWorkflowMachines(set, goobers, adapterRegistry.Names(), knownTelemetryConnectors)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return machines, resolvedGoobers, warnings, nil
+}
+
+// compileWorkflowMachines applies structural workflow admission independently
+// of harness model/options admission, so diagnostics can report invalid harness
+// configuration without inventing a different workflow compilation path.
+func compileWorkflowMachines(set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, harnessNames, knownTelemetryConnectors []string) (map[localscheduler.WorkflowIdentity]*workflow.Machine, error) {
+	const workflowVersion = 1
+	knownChecks := knownAutomatedCheckNames()
 	// Gaggle-level runner requirements feed push-boundary admission (#2861):
 	// each stage's effective requirement set is its gaggle's
 	// RequiredCapabilities union its own. The DSL 3.0 successor surface — the
@@ -751,7 +762,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 		opts := []workflow.Option{
 			workflow.WithGoobers(goobers),
 			workflow.WithKnownChecks(knownChecks),
-			workflow.WithKnownHarnesses(adapterRegistry.Names()),
+			workflow.WithKnownHarnesses(harnessNames),
 			workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(wf.Annotations)),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
 			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
@@ -766,11 +777,11 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			opts...,
 		)
 		if err != nil {
-			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
+			return nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}
 		}
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
-	return machines, resolvedGoobers, warnings, nil
+	return machines, nil
 }
 
 // knownExternalTelemetryConnectorNames returns cfg's configured

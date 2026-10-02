@@ -73,6 +73,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/apireadcache",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#5297), whose Windows steps never selected these cache tests; conditional-GET and lock-file contracts run on the Linux unit shards only."
+    },
+    {
       "package": "internal/apireadstore",
       "coverage": "none",
       "category": "not-selected",
@@ -182,6 +188,12 @@
     },
     {
       "package": "internal/clidocs",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/clustercheck",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."

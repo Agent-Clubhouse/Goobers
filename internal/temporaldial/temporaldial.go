@@ -35,7 +35,7 @@ type TLS struct {
 	// CertFile and KeyFile are the PEM client certificate and key presented
 	// for mTLS. Both or neither.
 	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
-	KeyFile  string `json:"keyFile,omitempty" yaml:"keyFile,omitempty"`
+	KeyFile  string `json:"keyFile,omitempty" yaml:"keyFile,omitempty" credentialPath:"file"`
 	// ServerName overrides the name verified against the frontend's
 	// certificate — needed when the dialed address (a ClusterIP, a port
 	// forward) is not a name on the certificate.

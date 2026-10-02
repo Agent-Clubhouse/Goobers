@@ -53,6 +53,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Learn Goobers: author, test, and debug a workflow](learn-workflow-authoring.md)
 - [Live stage timing in dashboard lists](live-stage-timing.md)
 - [Local speech notifications](local-speech-notifications.md)
+- [MCP readiness in unattended preflight](mcp-preflight.md)
 - [Merge provenance reports](merge-provenance.md)
 - [Move a local instance to another machine](move-local-instance.md)
 - [Run multiple Goobers instances against one repo](multiple-instances-one-repo.md)

@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/fieldpredicate"
@@ -45,7 +46,7 @@ func (l *resolvingOpenPRLister) ListOpenPullRequests(ctx context.Context, repo p
 		return nil, fmt.Errorf("resolve open-pr-list token for %s: %w", l.ref, err)
 	}
 	l.reg.Register([]byte(token))
-	return newOpenPRProvider(token, apiReadCacheOptionForSnapshot(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
+	return newOpenPRProvider(token, apireadcache.Option(l.schedulerDir, "")).ListOpenPullRequests(ctx, repo)
 }
 
 // newADOOpenPRProvider builds the ADO provider the open-PR lister polls from
@@ -375,7 +376,7 @@ func newCounterGitHubProvider(
 	}
 	reg.Register([]byte(token))
 	opts := []func(*providers.GitHubProvider){
-		apiReadCacheOptionForSnapshot(schedulerDir, providersnapshot.ID(ctx)),
+		apireadcache.Option(schedulerDir, providersnapshot.ID(ctx)),
 	}
 	if accounting != nil {
 		opts = append(opts,

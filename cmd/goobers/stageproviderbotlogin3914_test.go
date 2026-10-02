@@ -430,8 +430,8 @@ func procenvBaseEnvNames(t *testing.T) []string {
 func TestNoLoginConsumingCommandConstructsAGitHubProviderOffSeam(t *testing.T) {
 	allowed := map[string]string{
 		// The seam itself.
-		"stageprovider.go": "the seam",
-		"apireadcache.go":  "the cached wrapper the seam calls",
+		"stageprovider.go":      "the seam",
+		"apireadcachewiring.go": "the cached wrapper the seam calls",
 		// Non-stage or non-identity paths: none of these ever consults
 		// AuthenticatedLogin, so no configured login is needed.
 		"selfupdate.go":            "reads public releases; no repository identity",

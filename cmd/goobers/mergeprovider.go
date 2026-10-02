@@ -85,7 +85,7 @@ func mergeStageProviderWithRecorder(root string, repo providers.RepositoryRef, t
 	}
 	if repo.Provider == providers.ProviderGitHub {
 		// The conditional-GET read cache is a GitHub HTTPClient decorator
-		// (apireadcache.go); the Gitea arm has never been cached.
+		// (internal/apireadcache); the Gitea arm has never been cached.
 		opts = append(opts, withStageProviderCache())
 	}
 	return newMergeReviewProviderAs[mergeProvider](root, repo, false, opts...)

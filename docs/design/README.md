@@ -15,8 +15,8 @@ word — read the page, not this table, before depending on it.
 | Status | Documents |
 |---|---:|
 | `draft` | 14 |
-| `approved` | 21 |
-| `implemented` | 27 |
+| `approved` | 20 |
+| `implemented` | 28 |
 | `superseded` | 4 |
 | `historical` | 6 |
 | **Total** | **72** |
@@ -85,7 +85,7 @@ word — read the page, not this table, before depending on it.
 | [Validation & CI Enrichment — closing the false-green gaps](validation-and-ci-enrichment.md) | `approved` | — | — | — | — | — | 09db115bb (2026-09-06) |
 | [Design: Versioning & Releases — DSL compatibility, tagged builds, feature matrix](versioning-and-compatibility.md) | `implemented` | — | — | #427, #428, #429, #430, #431, #432, #433, #434 | — | — | — |
 | [Windows Pod Restrictions](windows-pod-restrictions.md) | `implemented` | — | — | #3619 | — | — | — |
-| [Resident worker blob transport](worker-blob-transport.md) | `approved` | — | — | — | #5293 | — | 1b53150b1 (2026-10-02) |
+| [Resident worker blob transport](worker-blob-transport.md) | `implemented` | — | — | #5293 | — | — | 2ea5900aa (2026-10-02) |
 | [Design: Workflow CD — GitOps config source for the local daemon](workflow-cd.md) | `implemented` | — | — | #454, #455, #456, #457, #458, #459, #460, #461 | — | — | — |
 
 ## `docs/design/v0/`

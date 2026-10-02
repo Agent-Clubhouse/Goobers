@@ -19,6 +19,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/avexclusion"
+	"github.com/goobers/goobers/internal/clustercheck"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
@@ -197,6 +198,7 @@ func renderSchedulerStatusSignals(
 	text.WriteString(telemetryDestinationStatusLines(status.TelemetryExporterHealth))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
+	clustercheck.WriteStatus(text, status.ClusterChecks)
 	text.WriteString(configReloadRejectionStatusLine(status))
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
@@ -399,6 +401,7 @@ type statusJSONSummary struct {
 type statusJSONOutput struct {
 	TelemetryExporterHealth *readservice.TelemetryExporterHealthStatus `json:"telemetryExporterHealth,omitempty"`
 	SelfExecution           instance.SelfExecutionStats                `json:"selfExecution"`
+	ClusterChecks           []clustercheck.Result                      `json:"clusterChecks,omitempty"`
 	Root                    *statusRootIdentity                        `json:"root,omitempty"`
 	QueueEligibility        *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
 	EngineFallbacks         []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
@@ -1559,6 +1562,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var stageServiceAccounts map[string]string
 		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
+		var clusterChecks []clustercheck.Result
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -1578,6 +1582,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				stageServiceAccounts = status.StageServiceAccounts
 				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
+				clusterChecks = status.ClusterChecks
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
@@ -1586,6 +1591,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		baselineBlockers := optionalStatusBaselineBlockers(l)
 		output := statusJSONOutput{
 			TelemetryExporterHealth: telemetryExporterHealth,
+			ClusterChecks:           clusterChecks,
 			Root:                    optionalStatusRoot(supportsWatch, l, now),
 			QueueEligibility:        optionalStatusQueueEvidence(supportsWatch, sources, set.Workflows, *gaggleFilter, *workflowFilter),
 			EngineFallbacks:         engineFallbacks,
@@ -1607,11 +1613,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Collection:              runLoader.collectionStatus(),
 			Runs:                    statusRecoverySummaries(l, runs, now),
 		}
-		if err := json.NewEncoder(stdout).Encode(output); err != nil {
-			pf(stderr, "error: encode status: %v\n", err)
-			return 2
-		}
-		return 0
+		return writeStatusJSON(stdout, stderr, output)
 	}
 
 	// Skipped in --json mode since the structured summary has no plain-text
@@ -1626,6 +1628,15 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	renderStatus(stdout, runs, now)
 	printStatusRecovery(stdout, l, runs, now)
 	renderOlderRunsHint(stdout, olderRuns)
+	return 0
+}
+
+// writeStatusJSON keeps CLI encoding and exit-code handling at one boundary.
+func writeStatusJSON(stdout, stderr io.Writer, output statusJSONOutput) int {
+	if err := json.NewEncoder(stdout).Encode(output); err != nil {
+		pf(stderr, "error: encode status: %v\n", err)
+		return 2
+	}
 	return 0
 }
 

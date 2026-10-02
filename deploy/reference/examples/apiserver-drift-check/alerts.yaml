@@ -1,0 +1,50 @@
+# Optional: requires Prometheus Operator CRDs and kube-state-metrics CronJob
+# metrics (including kube_cronjob_status_last_successful_time). Add the labels
+# required by your Prometheus ruleSelector; route warning alerts in Alertmanager.
+# Kept out of kustomization.yaml so the detector does not require those CRDs.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: goobers-apiserver-drift-check
+  namespace: goobers-system
+spec:
+  groups:
+    - name: goobers-cluster-checks
+      rules:
+        # A failed/timed-out/image-pull-blocked latest run has no successful
+        # completion after its schedule. Historic failed Jobs do not keep this
+        # firing after recovery. The job deadline is 5m; allow 10m to complete.
+        - alert: GoobersClusterCheckNotSuccessful
+          expr: |
+            (
+              kube_cronjob_status_last_schedule_time{namespace="goobers-system",cronjob="goobers-apiserver-drift-check"}
+              unless on(namespace, cronjob)
+              (
+                kube_cronjob_status_last_successful_time{namespace="goobers-system",cronjob="goobers-apiserver-drift-check"}
+                >= on(namespace, cronjob)
+                kube_cronjob_status_last_schedule_time{namespace="goobers-system",cronjob="goobers-apiserver-drift-check"}
+              )
+            ) < time() - 600
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Latest Goobers cluster check has not succeeded
+            description: Inspect CronJob Jobs and pod logs, then goobers status for the last recorded check. A successful later run clears this alert.
+        # Also catch a suspended or never-started CronJob after a 2h grace
+        # period. Monitor kube-state-metrics and rule evaluation separately.
+        - alert: GoobersClusterCheckStale
+          expr: |
+            (
+              kube_cronjob_status_last_successful_time{namespace="goobers-system",cronjob="goobers-apiserver-drift-check"} < time() - 7200
+            ) or (
+              kube_cronjob_created{namespace="goobers-system",cronjob="goobers-apiserver-drift-check"} < time() - 7200
+              unless on(namespace, cronjob)
+              kube_cronjob_status_last_successful_time{namespace="goobers-system",cronjob="goobers-apiserver-drift-check"}
+            )
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: Goobers cluster check success is stale or missing
+            description: Check the monitoring CronJob schedule, suspension, pod scheduling, image pull, and journal volume. The daemon does not schedule these checks.

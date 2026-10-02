@@ -905,3 +905,64 @@ A config tree delivered through a ConfigMap is bounded by the Kubernetes object
 size limit of roughly 1 MiB. This is a hard limit of the transport, not a tuning
 knob: a tree that outgrows it needs a different delivery (the `config-mirror`
 overlay), so check its size before relying on ConfigMap delivery (#3290).
+
+### Scheduled check reporting
+
+Cluster monitoring owns periodic drift/overlay checks and notifications. The
+Goobers daemon **does not schedule checks**. The
+[reference CronJob](examples/apiserver-drift-check/cronjob.yaml) runs the existing
+scoped drift detector hourly and records its results with
+`--record-instance /var/lib/goobers --result-max-age 2h`. A manual
+`goobers doctor --k8s` can use the same flags. Without `--record-instance`, doctor
+remains an install-time, read-only probe with stdout and exit status only.
+
+Each result appends a `runner.cluster_check.completed` instance journal event
+containing the builtin check ID, outcome, and expiration time. Raw diagnostics,
+endpoints, and credentials are not copied into the journal; inspect the check's
+JSON output or pod logs for detail. A failure to initialize the Kubernetes client
+records failed outcomes for the selected checks. Failure to write the journal
+exits 2 and makes the Job fail. Required detector failures retain exit 1.
+
+`goobers status` reads the latest outcome **per check**, so a successful drift
+check cannot hide a failing overlay check. Failure appears as `degraded` until
+that same check succeeds. A later skipped/warning result cannot clear that
+failure or refresh its original check time and expiration; an expired failure
+remains degraded and also says `stale`. Expired passing/warning results appear
+as `stale`; skipped/warning
+checks are never called healthy. Every line includes the last outcome, check
+time, and expiration. A subsequent fresh success restores `healthy`, including
+after daemon restart. Journal retention preserves the latest result per check.
+An instance with no recorded results has no cluster-check status: this is not
+proof of health. Configure the external missing-success alert before relying on
+unattended operation.
+
+Before enabling the CronJob, initialize the instance's `scheduler/` directory
+and adopt the reference API pod label, PVC name and namespace (or change all
+selectors consistently). The monitor mounts only the scheduler subdirectory and
+must run on the API pod's node: the instance journal requires **RWO block storage
+with working local file locks**, not RWX/NFS. The monitor uses the same UID/GID
+as the API. Treat permission to write this journal as trusted operator access.
+No daemon lock takeover or daemon restart is needed. Missing API placement,
+volume permission, or image-pull failures are visible through cluster monitoring
+even if the process never starts and cannot publish a result.
+
+Install [alerts.yaml](examples/apiserver-drift-check/alerts.yaml) separately if
+you use Prometheus Operator. It requires kube-state-metrics CronJob creation,
+last-schedule and last-successful-time metrics; enable those metrics in your
+version, set labels matching Prometheus's rule selector, and route the warning
+alerts through Alertmanager. The rule flags a scheduled run with no success
+after ten minutes (the Job deadline is five minutes), plus stale/missing success
+after two hours. Historic failed Jobs do not prevent recovery from clearing the
+alert. Verify rule evaluation and notification delivery, and monitor the
+kube-state-metrics scrape itself: missing metrics are not a passing detector.
+Keep alert thresholds and `--result-max-age` aligned with any schedule change.
+
+For periodic overlay checks, use the same reporting flags in a monitoring-owned
+CronJob selecting `overlay-pin-agreement,overlay-image-contract`, supplying a
+trusted `--overlay-dir`, pinned tools/runtime and the probe inputs described
+above. Adapt the alert selectors to that CronJob. Overlay image probing needs
+its documented container runtime; the minimal drift image/NetworkPolicy-only
+RBAC is not a ready-made overlay probe host. Do not put either schedule in the
+daemon. [#4290](https://github.com/Agent-Clubhouse/Goobers/issues/4290) owns adding
+checks; [#4878](https://github.com/Agent-Clubhouse/Goobers/issues/4878) provides
+recording, freshness, status and alert wiring for the existing checks.

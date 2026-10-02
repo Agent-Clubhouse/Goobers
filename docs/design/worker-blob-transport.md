@@ -1,9 +1,9 @@
 # Resident worker blob transport
 
-Status: approved — blob endpoint transport is implemented; surrender read transport pending.
-Pending-delivery: #5293
-Scope-delta: Blob transport is delivered here; worker surrender Seen/Get transport and removal of its directory mount remain in the second #5293 PR.
-Verified: 1b53150b1 (2026-10-02)
+Status: implemented — blob and surrender endpoint transport.
+Delivered-by: #5293
+Scope-delta: No remaining transport scope delta; endpoint dispatch workers use both blob and surrender APIs without a shared artifact mount.
+Verified: 2ea5900aa (2026-10-02)
 
 An instance-backed worker requires exactly one artifact-store mode:
 
@@ -27,11 +27,16 @@ startup with `WORKER_BLOB_STORE_MISMATCH`. The small content-addressed probe is
 retained. Local directory workers without `--dispatch-namespace` do not contact
 the plane and need no shared signing key.
 
-The initial endpoint implementation covers worker artifact transport. Dispatch
-workers still require the shared `--blob-store` mount for the identity-keyed
-`surrender/` directory: the surrender API currently exposes writes only. The
-separate worker surrender read transport tracked by #5293 removes that remaining
-mount requirement; endpoint artifact transport alone does not do so.
+In endpoint mode, dispatch workers also read the identity-keyed surrender plane
+through `--daemon-api`, without a shared blob or surrender directory. Stage pods
+retain their existing write-once surrender POST. The worker reads presence from
+`GET /api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender/seen` and results
+from GET on the surrender path itself. An absent result maps to the existing
+no-surrender condition. Presence does not imply successful execution; the engine
+still validates and classifies the surrendered result. Directory-backed dispatch
+keeps its existing `surrender/` directory alongside the blob tree. Upgrade the
+daemon to a version serving the worker read routes before switching dispatch
+workers to endpoint mode; an older daemon will refuse those reads.
 
 ## Worker authentication
 
@@ -49,3 +54,27 @@ rotation takes effect when worker and daemon reload/restart their signing-key
 configuration; outstanding tokens signed by the old key then fail. Bearer
 values are not emitted to startup output or journals. GET responses are bounded
 to 64 MiB at the client; artifact evidence readers may request a smaller bound.
+
+## Surrender read authentication and bounds
+
+Surrender reads use another dedicated bearer, `goobers-worker-surrender-read.`,
+with its own HMAC domain. It grants only the two surrender GET routes. It cannot
+write a surrender, get or put blobs, read config, emit journal records, invoke
+credentials, or access any other route. Pod credentials, human administrator
+roles, blob-worker bearers, and the existing config-digest credential cannot
+read surrendered results or presence. The handlers enforce that worker identity
+again even if the server is configured with a permissive authorizer.
+
+The worker mints a fresh two-minute token per read, using the same shared signing
+key configuration and five-minute maximum lifetime as the other worker bearer.
+The same restart/reload rotation behavior applies. No bearer values are passed
+to stage pods, startup output, or journals by this transport.
+
+Each result read has the existing one MiB surrender write limit. The directory
+backend opens a regular file beneath its root and reads at most the limit plus
+one byte; the HTTP handler also checks the returned size. The client independently
+bounds result responses to one MiB and presence responses to 128 bytes, rejects
+missing/malformed presence, and applies a 30-second HTTP timeout. Responses use
+`Cache-Control: no-store`. Server error bodies are never copied into client
+errors. A worker read client rejects Put locally; the only write credential is
+still the stage pod's run-scoped bearer.
