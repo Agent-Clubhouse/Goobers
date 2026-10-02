@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -37,16 +36,6 @@ const (
 	verdictStateLockOperation = "remediation-verdict.update"
 )
 
-// verdictDocument is one PR's verdict as it lives at its own scheduler-state
-// key, carrying the record key it was written for so a mis-keyed document is
-// caught rather than acted on (the same integrity posture
-// remediationNoopDocument and failureStreakDocument take).
-type verdictDocument struct {
-	Schema  string        `json:"schema"`
-	Key     string        `json:"key"`
-	Verdict apiv1.Verdict `json:"verdict"`
-}
-
 // verdictRecordKey is the record's logical identity: the repository's
 // provider-complete canonical identity plus the PR number, so identically
 // numbered PRs in different repositories or providers never collide.
@@ -61,27 +50,16 @@ func verdictStateKey(key string) string {
 	return stateclient.RemediationVerdictKey(fmt.Sprintf("%x", sum))
 }
 
-func decodeVerdictRecord(value stateclient.Value, key string) (apiv1.Verdict, bool, error) {
-	if !value.Exists() {
-		return apiv1.Verdict{}, false, nil
-	}
-	var doc verdictDocument
-	if err := json.Unmarshal(value.Data, &doc); err != nil {
-		return apiv1.Verdict{}, false, fmt.Errorf("decode remediation-verdict state: %w", err)
-	}
-	if doc.Schema != verdictStateSchema {
-		return apiv1.Verdict{}, false, fmt.Errorf(
-			"decode remediation-verdict state: unsupported schema %q, want %q", doc.Schema, verdictStateSchema)
-	}
-	if doc.Key != key {
-		return apiv1.Verdict{}, false, fmt.Errorf(
-			"decode remediation-verdict state: record is keyed to %q, not %q", doc.Key, key)
-	}
-	return doc.Verdict, true, nil
+var verdictRecordSpec = keyedStateRecordSpec[apiv1.Verdict]{
+	schema:      verdictStateSchema,
+	operation:   verdictStateLockOperation,
+	errorPrefix: "decode remediation-verdict state",
+	field:       keyedStateRecordFieldVerdict,
+	stateKey:    verdictStateKey,
 }
 
-func encodeVerdictRecord(key string, verdict apiv1.Verdict) ([]byte, error) {
-	return json.Marshal(verdictDocument{Schema: verdictStateSchema, Key: key, Verdict: verdict})
+func decodeVerdictRecord(value stateclient.Value, key string) (apiv1.Verdict, bool, error) {
+	return decodeKeyedStateRecord(value, key, verdictRecordSpec)
 }
 
 // updateVerdictRecord is the record's read-modify-write: one lock acquisition
@@ -94,22 +72,7 @@ func updateVerdictRecord(
 	key string,
 	fn func(apiv1.Verdict, bool) (apiv1.Verdict, bool, error),
 ) error {
-	return store.Update(ctx, verdictStateKey(key), verdictStateLockOperation,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, exists, err := decodeVerdictRecord(value, key)
-			if err != nil {
-				return nil, false, err
-			}
-			next, write, err := fn(current, exists)
-			if err != nil || !write {
-				return nil, false, err
-			}
-			data, err := encodeVerdictRecord(key, next)
-			if err != nil {
-				return nil, false, err
-			}
-			return data, true, nil
-		})
+	return updateKeyedStateRecord(ctx, store, key, verdictRecordSpec, fn)
 }
 
 // loadVerdictState reads a PR's authoritative verdict record. It answers

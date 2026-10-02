@@ -419,5 +419,6 @@ func loadNoWorkStreakRecord(
 	if err != nil {
 		return noWorkStreakRecord{}, fmt.Errorf("read no-work-streak state for %s#%s: %w", repo.Name, itemID, err)
 	}
-	return decodeNoWorkStreakRecord(value, key)
+	record, _, err := decodeKeyedStateRecord(value, key, noWorkStreakRecordSpec)
+	return record, err
 }

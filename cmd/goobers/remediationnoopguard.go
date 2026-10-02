@@ -94,16 +94,6 @@ type remediationNoopRecord struct {
 // indistinguishable anyway.
 func (r remediationNoopRecord) empty() bool { return r == remediationNoopRecord{} }
 
-// remediationNoopDocument is one PR's record as it lives at its own
-// scheduler-state key. It carries the record key it was written for so a
-// mis-keyed document is caught rather than acted on — the same integrity
-// posture backlogHealthCursor takes with its coordinates.
-type remediationNoopDocument struct {
-	Schema string                `json:"schema"`
-	Key    string                `json:"key"`
-	Record remediationNoopRecord `json:"record"`
-}
-
 // legacyRemediationNoopState is the aggregate document's shape, retained only
 // for the one-time migration.
 type legacyRemediationNoopState struct {
@@ -133,6 +123,14 @@ func remediationNoopStateKey(key string) string {
 	return stateclient.PRRemediationNoopKey(fmt.Sprintf("%x", sum))
 }
 
+var remediationNoopRecordSpec = keyedStateRecordSpec[remediationNoopRecord]{
+	schema:      remediationNoopSchema,
+	operation:   remediationNoopLockOperation,
+	errorPrefix: "decode remediation no-op state",
+	field:       keyedStateRecordFieldRecord,
+	stateKey:    remediationNoopStateKey,
+}
+
 func normalizeRemediationCauses(raw string) string {
 	parts := splitLabelList(raw)
 	for i := range parts {
@@ -142,37 +140,8 @@ func normalizeRemediationCauses(raw string) string {
 	return strings.Join(parts, ",")
 }
 
-// decodeRemediationNoopRecord reads one PR's record out of a scheduler-state
-// value. An absent key is the zero record — the overwhelmingly common
-// first-run state — but a value that is present and unreadable is an ERROR,
-// never a zero record: "unreadable" must not be indistinguishable from "no
-// prior no-op", or the guard fails open on corruption exactly as it did in a
-// pod.
-func decodeRemediationNoopRecord(value stateclient.Value, key string) (remediationNoopRecord, error) {
-	if !value.Exists() {
-		return remediationNoopRecord{}, nil
-	}
-	var doc remediationNoopDocument
-	if err := json.Unmarshal(value.Data, &doc); err != nil {
-		return remediationNoopRecord{}, fmt.Errorf("decode remediation no-op state: %w", err)
-	}
-	if doc.Schema != remediationNoopSchema {
-		return remediationNoopRecord{}, fmt.Errorf(
-			"decode remediation no-op state: unsupported schema %q, want %q", doc.Schema, remediationNoopSchema)
-	}
-	if doc.Key != key {
-		return remediationNoopRecord{}, fmt.Errorf(
-			"decode remediation no-op state: record is keyed to %q, not %q", doc.Key, key)
-	}
-	return doc.Record, nil
-}
-
 func encodeRemediationNoopRecord(key string, record remediationNoopRecord) ([]byte, error) {
-	return json.Marshal(remediationNoopDocument{
-		Schema: remediationNoopSchema,
-		Key:    key,
-		Record: record,
-	})
+	return encodeKeyedStateRecord(key, record, remediationNoopRecordSpec)
 }
 
 // updateRemediationNoopRecord is the record's read-modify-write: one lock
@@ -185,21 +154,9 @@ func updateRemediationNoopRecord(
 	key string,
 	fn func(remediationNoopRecord) (remediationNoopRecord, bool, error),
 ) error {
-	return store.Update(ctx, remediationNoopStateKey(key), remediationNoopLockOperation,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeRemediationNoopRecord(value, key)
-			if err != nil {
-				return nil, false, err
-			}
-			next, write, err := fn(current)
-			if err != nil || !write {
-				return nil, false, err
-			}
-			data, err := encodeRemediationNoopRecord(key, next)
-			if err != nil {
-				return nil, false, err
-			}
-			return data, true, nil
+	return updateKeyedStateRecord(ctx, store, key, remediationNoopRecordSpec,
+		func(current remediationNoopRecord, _ bool) (remediationNoopRecord, bool, error) {
+			return fn(current)
 		})
 }
 

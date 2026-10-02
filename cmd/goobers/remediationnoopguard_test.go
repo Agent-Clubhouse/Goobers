@@ -27,7 +27,8 @@ func readRemediationNoopRecord(ctx context.Context, store stateclient.Store, key
 	if err != nil {
 		return remediationNoopRecord{}, fmt.Errorf("read remediation no-op state: %w", err)
 	}
-	return decodeRemediationNoopRecord(value, key)
+	record, _, err := decodeKeyedStateRecord(value, key, remediationNoopRecordSpec)
+	return record, err
 }
 
 // seedRemediationNoopState records one no-op attempt for key directly, standing
