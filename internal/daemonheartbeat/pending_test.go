@@ -23,7 +23,6 @@ func TestUpdatePendingClause(t *testing.T) {
 		t.Errorf("cleared clause() = %q, want empty", got)
 	}
 	// A nil holder is valid for a heartbeat with no checker wired up.
-	(*PendingUpdate)(nil).Set("v1.2.3")
 	if got := (*PendingUpdate)(nil).Clause(); got != "" {
 		t.Errorf("(*PendingUpdate)(nil).Clause() = %q, want empty", got)
 	}

@@ -15,11 +15,7 @@ import "sync/atomic"
 type PendingUpdate struct{ version atomic.Pointer[string] }
 
 // Set records the available version, or clears the condition when empty.
-// A nil holder means no heartbeat surface is wired and is ignored.
 func (p *PendingUpdate) Set(version string) {
-	if p == nil {
-		return
-	}
 	if version == "" {
 		p.version.Store(nil)
 		return
