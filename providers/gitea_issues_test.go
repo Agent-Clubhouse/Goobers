@@ -181,6 +181,48 @@ func TestGiteaCreateWorkItemResolvesLabelIDsCreatingMissing(t *testing.T) {
 	}
 }
 
+func TestGiteaCreateWorkItemWithoutLabelsSkipsLabelResolution(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels []string
+	}{
+		{name: "nil"},
+		{name: "normalizes to empty", labels: []string{" ", "\t"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+				assertMethod(t, r, http.MethodPost)
+				var body map[string]interface{}
+				decodeJSON(t, r, &body)
+				if _, ok := body["labels"]; ok {
+					t.Fatalf("issue create body = %#v, want no labels field", body)
+				}
+				writeJSON(t, w, map[string]interface{}{
+					"id": 999, "number": 11, "title": "New work", "state": "open",
+				})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewGiteaProvider(server.URL, "token")
+			item, err := provider.CreateWorkItem(context.Background(), CreateWorkItemRequest{
+				Repository: RepositoryRef{Owner: "acme", Name: "app"},
+				Title:      "New work",
+				Labels:     tt.labels,
+			})
+			if err != nil {
+				t.Fatalf("CreateWorkItem returned error: %v", err)
+			}
+			if item.ID != "11" {
+				t.Fatalf("item = %#v, want issue 11", item)
+			}
+		})
+	}
+}
+
 // TestGiteaCreateWorkItemRunIDIdempotency proves a RunID re-pass finds the
 // existing footer-matching issue instead of posting a duplicate.
 func TestGiteaCreateWorkItemRunIDIdempotency(t *testing.T) {
