@@ -177,10 +177,10 @@ func scopeGateSizeDescription(changedFiles, changedLines, filesThreshold, linesT
 }
 
 // releaseAcknowledgedScopeGateAfterVerdict is apply-verdict's call site for
-// releaseAcknowledgedScopeGate: it reads the gate decision the verdict was
-// published under and reports the outcome without failing the stage.
-func releaseAcknowledgedScopeGateAfterVerdict(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, stdout, stderr io.Writer) {
-	parked := providerInput("scopeGateParked", "") == "true"
+// releaseAcknowledgedScopeGate: parked is the gate decision the verdict was
+// published under (apply-verdict's scopeGateParked input); it reports the
+// outcome without failing the stage.
+func releaseAcknowledgedScopeGateAfterVerdict(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, parked bool, stdout, stderr io.Writer) {
 	released, err := releaseAcknowledgedScopeGate(ctx, provider, repo, prNumber, prLabels, parked)
 	if err != nil {
 		pf(stderr, "warning: scope gate: %v\n", err)

@@ -953,7 +953,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
-		releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, stdout, stderr)
+		releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
 		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(posted.Decision), verdictAuthor, stderr)
 	}
@@ -973,7 +973,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := reconcileMergeReviewStatusCommentAs(ctx, prProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 	}
-	releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, stdout, stderr)
+	releaseAcknowledgedScopeGateAfterVerdict(ctx, prProvider, repo, selectedNumber, current.Labels, providerInput("scopeGateParked", "") == "true", stdout, stderr)
 	if posted.Decision == apiv1.VerdictFail && hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
 		if err := refreshEscalationSnapshotAfterRepeatFail(ctx, prProvider, repo, current, statusComments); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("refresh merge-escalation snapshot for PR #%d", selectedNumber), err, resultFile)
