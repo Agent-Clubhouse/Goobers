@@ -151,3 +151,10 @@ Verify a change with a clean build and a negative control:
 docker build --no-cache -t goobers-exporter deploy/monitoring   # must pass
 # then corrupt every hash of one package in a scratch copy: the build must fail
 ```
+
+## OTLP collector example
+
+`otel-collector.yaml` is a reference OpenTelemetry Collector configuration for a
+daemon that exports OTLP. It declares both a traces and a **metrics** pipeline;
+a collector without the metrics pipeline rejects every metrics export with
+`Unimplemented`. See `internal/telemetry/README.md` for the instrument catalog.

@@ -58,6 +58,13 @@ const (
 	// while this is an administrative setting, and the operator actions have
 	// nothing in common.
 	copilotMCPStatusPolicyRejected = "policy-rejected"
+	// copilotMCPStatusEnterpriseBlocked means the CLI refused the server
+	// because an enterprise customization lockdown permits only plugin or
+	// managed MCP servers (#6358). Unlike the third-party policy above there
+	// is no organization setting Goobers can point at: running goobers-io
+	// under that lockdown is unsupported, so the operator action is to run
+	// the stage where the lockdown does not apply.
+	copilotMCPStatusEnterpriseBlocked = "enterprise-policy-blocked"
 	// copilotMCPStatusRemovedAfterConnect means the server completed its MCP
 	// handshake, but a later root reconciliation replaced the effective
 	// configuration without it. Copilot then removes the server before the
@@ -81,6 +88,17 @@ var copilotMCPPolicyRejectionMarkers = []string{
 	"mcp third-party policy is not enabled",
 	"skipping third-party mcp server",
 }
+
+// copilotMCPEnterpriseLockdownMarker is the CLI's own phrase for declining
+// an MCP server under an enterprise customization lockdown. Observed
+// verbatim:
+//
+//	Skipping MCP server "goobers-io": blocked by enterprise customization
+//	lockdown (only plugin/managed MCP servers are permitted)
+//
+// Matched line-scoped and only alongside a quoted server name, like the
+// third-party markers.
+const copilotMCPEnterpriseLockdownMarker = "blocked by enterprise customization lockdown"
 
 // copilotMCPServerFailures compares the MCP servers this invocation registered
 // (goobers-io when GoobersIORegistered, plus every declared req.MCPServers
@@ -119,6 +137,8 @@ func copilotMCPServerFailures(req RunRequest, logDir string) []MCPServerFailure 
 		}
 		status := copilotMCPStatusAbsent
 		switch {
+		case hasKey(scan.enterpriseBlocked, name):
+			status = copilotMCPStatusEnterpriseBlocked
 		case hasKey(scan.policyRejected, name):
 			// Checked first: a server policy refused was never launched, so
 			// the absence below would describe it correctly but uselessly.
@@ -141,8 +161,11 @@ type copilotMCPScan struct {
 	connected      map[string]struct{}
 	launched       map[string]struct{}
 	policyRejected map[string]struct{}
-	removed        map[string]struct{}
-	reported       bool
+	// enterpriseBlocked is kept apart from policyRejected because the two
+	// refusals need different operator actions (#6358).
+	enterpriseBlocked map[string]struct{}
+	removed           map[string]struct{}
+	reported          bool
 }
 
 // copilotRegisteredMCPServers returns the deduplicated names this invocation
@@ -174,10 +197,11 @@ func copilotRegisteredMCPServers(req RunRequest) []string {
 // and whether the log contains any MCP activity at all.
 func scanCopilotMCPLog(logDir string) copilotMCPScan {
 	scan := copilotMCPScan{
-		connected:      make(map[string]struct{}),
-		launched:       make(map[string]struct{}),
-		policyRejected: make(map[string]struct{}),
-		removed:        make(map[string]struct{}),
+		connected:         make(map[string]struct{}),
+		launched:          make(map[string]struct{}),
+		policyRejected:    make(map[string]struct{}),
+		enterpriseBlocked: make(map[string]struct{}),
+		removed:           make(map[string]struct{}),
 	}
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
@@ -237,6 +261,11 @@ func scanCopilotMCPLogFile(path string, scan *copilotMCPScan) bool {
 					delete(scan.removed, name)
 				}
 			}
+			sawMCP = true
+			continue
+		}
+		if name, ok := copilotMCPEnterpriseBlockedServerName(line); ok {
+			scan.enterpriseBlocked[name] = struct{}{}
 			sawMCP = true
 			continue
 		}
@@ -342,14 +371,47 @@ func copilotMCPPolicyRejectedServerName(line string) (string, bool) {
 	if !matched {
 		return "", false
 	}
+	return quotedMCPServerName(line)
+}
+
+// copilotMCPEnterpriseBlockedServerName extracts the server name from an
+// enterprise customization lockdown refusal, if the line is one (#6358). The
+// quoted name is required, as for the third-party policy line.
+func copilotMCPEnterpriseBlockedServerName(line string) (string, bool) {
+	if !strings.Contains(strings.ToLower(line), copilotMCPEnterpriseLockdownMarker) {
+		return "", false
+	}
+	return quotedMCPServerName(line)
+}
+
+// copilotMCPEnterpriseBlockedServers returns the servers this invocation's CLI
+// log shows refused under an enterprise customization lockdown.
+func copilotMCPEnterpriseBlockedServers(logDir string) map[string]struct{} {
+	if logDir == "" {
+		return nil
+	}
+	return scanCopilotMCPLog(logDir).enterpriseBlocked
+}
+
+// quotedMCPServerName returns the double-quoted name that follows "MCP
+// server" in line, or the first quoted span when the line has no such phrase.
+// Anchoring on the phrase keeps a structured record's own quoted keys from
+// being read as the name.
+func quotedMCPServerName(line string) (string, bool) {
+	if idx := strings.Index(line, "MCP server "); idx >= 0 && strings.Contains(line[idx:], `"`) {
+		line = line[idx:]
+	}
 	open := strings.Index(line, `"`)
 	if open < 0 {
 		return "", false
 	}
 	rest := line[open+1:]
 	close := strings.Index(rest, `"`)
-	if close <= 0 {
+	// A log record that carries the message inside a JSON string escapes the
+	// quotes; drop the escape so the name is the same either way.
+	name := strings.TrimSuffix(rest[:max(close, 0)], `\`)
+	if close <= 0 || name == "" {
 		return "", false
 	}
-	return rest[:close], true
+	return name, true
 }

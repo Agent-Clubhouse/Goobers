@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -104,15 +106,23 @@ func TestSharedVisibilityDaemonFindsRegistrationWithoutLocalClaim(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Repos = []instance.RepoRef{{Provider: "github", BaseURL: server.URL, Owner: "acme", Name: "repo", Token: instance.TokenRef{Env: "SHARED_RETRY_TEST_TOKEN"}}}
+	// A github repo takes no baseUrl (#6347), so the fake API is reached through
+	// the sweep's provider seam rather than instance.yaml.
+	cfg.Repos = []instance.RepoRef{{Provider: "github", Owner: "acme", Name: "repo", Token: instance.TokenRef{Env: "SHARED_RETRY_TEST_TOKEN"}}}
 	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	sweep := sharedVisibilitySweep{layout: layout}
+	sweep := sharedVisibilitySweep{layout: layout, claimProvider: func(ctx context.Context, cfg *instance.Config, repo providers.RepositoryRef, registrar terminalSecretRegistry, stores credentials.StoreResolver, requested capability.Capability) (*providers.GitHubProvider, error) {
+		provider, err := daemonSharedClaimProvider(ctx, cfg, repo, registrar, stores, requested)
+		if provider != nil {
+			provider.BaseURL = server.URL
+		}
+		return provider, err
+	}}
 	if err := sweep.run(t.Context()); err != nil || calls != 0 {
 		t.Fatalf("local-only instance contacted provider: %v %d", err, calls)
 	}
-	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, URL: server.URL, Owner: "acme", Name: "repo"}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "repo"}
 	if err := registerSharedVisibilityRepository(t.Context(), layout, repo); err != nil {
 		t.Fatal(err)
 	}

@@ -4,11 +4,14 @@ Status: approved — Goobernetes v1 design. Encodes the PO decision record in
 goobernetes-decisions.md (2026-08-22).
 
 Delivered-by: #3516, #3568, #4540
+Scope-delta: #3568 delivers rendered reference NetworkPolicies and an offline drift gate. Live cluster verification and the deferred proxy layer remain outside this slice; the broader restrictions design is still approved.
+Verified: 53566d5a9 (2026-10-02)
 
 The instance mandate configuration and admission/status slice is delivered by
 #4540 ([operator guide](../guides/isolation-mandates.md)). This does not claim
 the entire restrictions program implemented; the broader effect-list delivery
-(#3516), manifest rendering (#3568), and remaining work below retain their owners.
+(#3516) and remaining work below retain their owners. Manifest rendering and its
+committed-fixture drift gate are delivered by #3568.
 
 This document defines the v1 restrictions model for all three execution modes: what a
 restriction *is* (an effect, never a mechanism), who may introduce one (runner, stage,

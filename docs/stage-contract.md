@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha10` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha11` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -1287,7 +1287,7 @@ The engine records the revision refusal instead of another dispatch or an
 accepted `stage.finished` event. Missing, unavailable, or syntactically broken
 surrender documents keep their existing transport retry behavior.
 
-- The contract version is `v1alpha10` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha11` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -1309,3 +1309,35 @@ surrender documents keep their existing transport retry behavior.
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a
   schema. Validate an envelope with `api/validate.(*Validator).ValidateEnvelope`.
+
+### Named artifact publication (DSL 3.1)
+
+A task with `artifactSlots` publishes through `inputs.artifactManifestFile`.
+This applies to agentic and deterministic producers. Every declared slot is
+required. Manifest entry names select slots; the runner reads contained workspace
+files, sanitizes the bytes, and computes each journal pointer. Model-supplied
+paths or digests in completion pointers cannot bind a declared slot.
+
+The invocation's `artifactPublication` contract is pinned by the runner. Its
+stage and visit match `stage.started`'s `runner.artifactVisit`; the logical
+invocation attempt is recorded alongside them in the published index. Contract
+version `v1alpha11` adds this optional invocation field. Named indexes use
+`goobers.dev/stage-artifact-set/v1alpha2` and record `bindings` with stage, visit,
+attempt, slot, and the complete `ArtifactPointer`. The index is itself a durable
+artifact referenced by `stage.finished`, so retries and graph re-entry cannot
+silently retarget an earlier binding. The visit is an opaque run/stage-scoped
+identity, not a portable event sequence across runner implementations.
+
+Payload order and unrelated diagnostic artifacts cannot change a named binding.
+Legacy index schema, generated names, and positional `artifact[N]` aliases remain
+available. `missing_artifact_slot` identifies a required slot absent from a
+publication; `invalid_artifact_slot_publication` identifies a refused binding.
+Malformed staging manifests retain `invalid_declared_artifact_set`. These are
+producer publication failures; consumer dispatch enforcement is separate.
+
+Remote deterministic commands receive the pinned publication contract through
+the dispatcher's privileged environment. The pod runtime keeps this authority
+out of the child command's environment and publishes the prepared payloads and
+index through durable blob storage and journal adoption before returning their
+pointers. Publication I/O failures return `artifact_publication_failed`; missing
+or invalid slots retain the typed publication codes above.

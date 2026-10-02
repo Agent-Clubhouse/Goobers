@@ -522,6 +522,17 @@
       "recoverySafe": false
     },
     {
+      "id": "claimsActive",
+      "method": "GET",
+      "path": "/api/v1/claims/active",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "triggerIngest",
       "method": "POST",
       "path": "/api/v1/triggers",

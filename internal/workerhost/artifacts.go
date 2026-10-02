@@ -235,3 +235,29 @@ func (s *StagingArtifacts) recordUnder(kind, name string, data []byte, integrity
 	}
 	return ref, nil
 }
+
+// RecordPreparedArtifact publishes already sanitized bytes without rewriting
+// them. Both the local content store and configured fleet store must commit
+// before a named output may be returned. Ordinary diagnostics remain best effort.
+func (s *StagingArtifacts) RecordPreparedArtifact(ctx context.Context, _ string, mediaType string, data []byte) (journal.Ref, error) {
+	if s == nil || s.root == "" {
+		return journal.Ref{}, fmt.Errorf("workerhost: staging artifacts not configured")
+	}
+	ref, err := journal.ArtifactRef(data)
+	if err != nil {
+		return journal.Ref{}, err
+	}
+	ref.MediaType = mediaType
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	local := &blobstore.Dir{Root: filepath.Join(s.root, "artifacts")}
+	if err := local.Put(ctx, ref.Digest, data); err != nil {
+		return journal.Ref{}, err
+	}
+	if s.Store != nil {
+		if err := s.Store.Put(ctx, ref.Digest, data); err != nil {
+			return journal.Ref{}, err
+		}
+	}
+	return ref, nil
+}

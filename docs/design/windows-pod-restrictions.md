@@ -4,7 +4,7 @@
 > describes is superseded as the execution substrate**
 > Delivered-by: #3619
 
-> **⚠️ Read this first (#4240).** This note was written against the resident
+> **⚠️ Read this first (#4240, #6352).** This note was written against the resident
 > `goobers worker` Deployment, which `goobernetes-architecture.md` §10
 > supersedes as the execution substrate: mode-3 stages run in **fresh
 > dispatcher-created pods**, one per stage attempt, not inside a resident
@@ -13,12 +13,10 @@
 > Admission, not of the worker — and the dispatcher applies the same rules when
 > it renders a Windows stage pod.
 >
-> What is **not** settled by this note is whether
-> `deploy/reference/goobers-system/worker-windows-deployment.yaml` should remain
-> as a control-plane utility, be kept as a legacy reference, or be retired. That
-> disposition is an open item on
-> [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240) and is
-> deliberately not decided here.
+> The resident reference manifest this note was written against,
+> `worker-windows-deployment.yaml`, is **retired** (#6352, PO ruling 2026-10-02)
+> and no longer ships under `deploy/reference/`; the shape and field facts are
+> kept here as the record of what a Windows pod must declare.
 >
 > The authoritative statement of what a Windows runner may declare and what is
 > enforceable on it is
@@ -28,9 +26,9 @@
 > runner and refused at instance load, at validate (CAP005), and at pod render
 > (#3619).
 
-This note records the Windows-specific parts of the reference worker in
-`deploy/reference/goobers-system/worker-windows-deployment.yaml`. It is an
-opt-in worker for a Windows node pool; the Linux worker remains the default.
+This note records the Windows-specific parts of the former reference Windows
+worker (the retired `worker-windows-deployment.yaml`), an opt-in worker for a
+Windows node pool; the Linux worker remains the default.
 
 ## Admission and filesystem field table
 

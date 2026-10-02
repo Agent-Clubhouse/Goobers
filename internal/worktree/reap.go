@@ -368,6 +368,7 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 
 	var results []ReapResult
 	var warnings []ReapWarning
+	registration := newRegistrationSnapshot(m.repoDirForKey(key))
 	for _, e := range entries {
 		if !e.IsDir() || seen[e.Name()] {
 			continue
@@ -392,7 +393,7 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 			warnings = append(warnings, ReapWarning{Path: ownershipPath, Err: ownershipErr})
 			continue
 		}
-		registered, err := worktreeRegistered(ctx, m.repoDirForKey(key), path)
+		registered, err := registration.registered(ctx, path)
 		if err != nil {
 			var timeoutErr *GitCleanupTimeoutError
 			if errors.As(err, &timeoutErr) {
@@ -581,17 +582,61 @@ func worktreeRegistered(ctx context.Context, repoDir, path string) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	return registeredWorktreeMatches(registered, path), nil
+}
+
+// registrationSnapshot answers worktreeRegistered for many markerless
+// candidates of one repository while listing its worktrees once per pass
+// instead of once per candidate (#6359). Only the non-destructive answer is
+// taken from the snapshot: "not registered" sends a candidate to the stricter
+// terminal-journal check, so a worktree registered after the snapshot can
+// only become harder to reap. "Registered" authorizes removal on its own, so
+// that answer is re-confirmed live before it is returned. A failed listing
+// is not cached; the next candidate retries it as before.
+type registrationSnapshot struct {
+	repoDir string
+	// list is registeredWorktrees outside tests; tests count calls through it.
+	list    func(context.Context, string) ([]registeredWorktree, error)
+	loaded  bool
+	entries []registeredWorktree
+}
+
+func newRegistrationSnapshot(repoDir string) *registrationSnapshot {
+	return &registrationSnapshot{repoDir: repoDir, list: registeredWorktrees}
+}
+
+func (s *registrationSnapshot) registered(ctx context.Context, path string) (bool, error) {
+	if !s.loaded {
+		entries, err := s.list(ctx, s.repoDir)
+		if err != nil {
+			return false, err
+		}
+		s.entries, s.loaded = entries, true
+		// Listed for this very candidate, so it is already a live answer.
+		return registeredWorktreeMatches(entries, path), nil
+	}
+	if !registeredWorktreeMatches(s.entries, path) {
+		return false, nil
+	}
+	live, err := s.list(ctx, s.repoDir)
+	if err != nil {
+		return false, err
+	}
+	return registeredWorktreeMatches(live, path), nil
+}
+
+func registeredWorktreeMatches(registered []registeredWorktree, path string) bool {
 	for _, entry := range registered {
 		if sameWorktreePath(entry.Path, path) {
-			return true, nil
+			return true
 		}
 		registeredInfo, registeredErr := os.Stat(entry.Path)
 		pathInfo, pathErr := os.Stat(path)
 		if registeredErr == nil && pathErr == nil && os.SameFile(registeredInfo, pathInfo) {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 // sameWorktreePath keeps registration checks meaningful after the worktree

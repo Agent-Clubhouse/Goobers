@@ -123,10 +123,19 @@ func adoLiveJanitorPullRequests(n adoLiveNamespace, prs []PullRequestSummary, no
 	return stale
 }
 
-// adoLiveRetireState picks the state a live work item is retired to: the
-// type's Removed-category state, else its Completed-category state (§8.2:
-// "Removed, or Closed where the type has no Removed").
-func adoLiveRetireState(states []adoWorkItemState) (string, bool) {
+// adoLiveRetireState picks the state a live work item in state current is
+// retired to: the type's Removed-category state, else its Completed-category
+// state (§8.2: "Removed, or Closed where the type has no Removed"). An item
+// already in a Completed or Removed state is retired as it is: processes such
+// as Agile allow no Closed -> Removed transition, and the work-item scenario
+// closes its item before cleanup runs.
+func adoLiveRetireState(states []adoWorkItemState, current string) (string, bool) {
+	for _, state := range states {
+		if strings.EqualFold(state.Name, current) &&
+			(strings.EqualFold(state.Category, "Removed") || strings.EqualFold(state.Category, "Completed")) {
+			return "", false
+		}
+	}
 	for _, category := range []string{"Removed", "Completed"} {
 		for _, state := range states {
 			if strings.EqualFold(state.Category, category) {
@@ -254,15 +263,21 @@ func TestADOLiveJanitorSelectsOnlyStaleForeignLivePullRequests(t *testing.T) {
 func TestADOLiveRetireStatePrefersRemovedThenCompleted(t *testing.T) {
 	t.Parallel()
 	withRemoved := []adoWorkItemState{{Name: "New", Category: "Proposed"}, {Name: "Closed", Category: "Completed"}, {Name: "Removed", Category: "Removed"}}
-	if got, ok := adoLiveRetireState(withRemoved); !ok || got != "Removed" {
+	if got, ok := adoLiveRetireState(withRemoved, "New"); !ok || got != "Removed" {
 		t.Fatalf("retire state = %q, %v; want Removed", got, ok)
 	}
 	withoutRemoved := []adoWorkItemState{{Name: "To Do", Category: "Proposed"}, {Name: "Done", Category: "Completed"}}
-	if got, ok := adoLiveRetireState(withoutRemoved); !ok || got != "Done" {
+	if got, ok := adoLiveRetireState(withoutRemoved, "To Do"); !ok || got != "Done" {
 		t.Fatalf("retire state = %q, %v; want Done", got, ok)
 	}
-	if _, ok := adoLiveRetireState([]adoWorkItemState{{Name: "New", Category: "Proposed"}}); ok {
+	if _, ok := adoLiveRetireState([]adoWorkItemState{{Name: "New", Category: "Proposed"}}, "New"); ok {
 		t.Fatal("a type with no terminal state must not report a retire state")
+	}
+	// Agile allows no Closed -> Removed transition: a closed item stays closed.
+	for _, current := range []string{"Closed", "removed"} {
+		if got, ok := adoLiveRetireState(withRemoved, current); ok {
+			t.Fatalf("retire state from %s = %q, want none: the item is already retired", current, got)
+		}
 	}
 }
 

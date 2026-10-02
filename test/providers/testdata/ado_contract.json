@@ -53,7 +53,7 @@
                 "System.CreatedDate": "2000-01-01T00:00:00Z",
                 "System.Description": "Stable fixture body.",
                 "System.State": "Active",
-                "System.Tags": "goobers:ready",
+                "System.Tags": "goobers-fixture",
                 "System.Title": "Stable fixture work item",
                 "System.WorkItemType": "Issue"
               },
@@ -111,7 +111,7 @@
             "System.CreatedDate": "2000-01-01T00:00:00Z",
             "System.Description": "Stable fixture body.",
             "System.State": "Active",
-            "System.Tags": "goobers:ready",
+            "System.Tags": "goobers-fixture",
             "System.Title": "Stable fixture work item",
             "System.WorkItemType": "Issue"
           },

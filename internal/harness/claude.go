@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/secfile"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -69,6 +70,12 @@ func dropForeignAnthropicAPIKey(env []string) []string {
 // verified against Anthropic's docs or a live token in this change; if that
 // prefix ever changes, this is the one place to update.
 const anthropicOAuthTokenPrefix = "sk-ant-oat"
+
+// ClaudeAgentPlugin is the plugin identity the claude-code harness journals on
+// its agent lifecycle events. Its cost is Claude's vendor-reported USD
+// estimate (total_cost_usd), normalized to nano-AIU only so mixed-agent
+// totals are summable (#6353).
+const ClaudeAgentPlugin = "claude"
 
 // remapAnthropicOAuthToken moves a resolved agent:model credential shaped
 // like a Claude Code subscription OAuth token (anthropicOAuthTokenPrefix)
@@ -453,7 +460,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	}
 
 	agentTelemetry, err := beginAdapterAgentTelemetry(
-		req, "claude", req.Model, req.Model,
+		req, ClaudeAgentPlugin, req.Model, req.Model,
 		requestedHarnessOption(req, "effort"), options["effort"],
 	)
 	if err != nil {
@@ -499,8 +506,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 			}
 			remaining := totalTimeout - time.Since(started)
 			if remaining <= 0 {
-				runErr = fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0])
-				completionErr = nil
+				runErr, completionErr = repairExit(completionErr, fmt.Errorf("%w after %s: %s", ErrTimeout, totalTimeout, argv[0]))
 			} else {
 				recoveryPrompt := renderCompletionRepairPrompt(req, completionErr)
 				prompts = append(prompts, recoveryPrompt)
@@ -515,8 +521,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 				invocationResults = append(invocationResults, recovery)
 				result = mergeProcessResults(result, recovery, req.MaxTranscriptBytes)
 				if recoveryErr != nil {
-					runErr = recoveryErr
-					completionErr = nil
+					runErr, completionErr = repairExit(completionErr, recoveryErr)
 				} else {
 					payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
 					completionErr = validateCompletion(req, payload, completionErr)
@@ -710,11 +715,12 @@ func seedClaudeCredentialsForPlatform(
 		}
 	}
 	target := filepath.Join(destination, ".credentials.json")
-	if err := os.WriteFile(target, credentials, 0o600); err != nil {
+	// The destination sits inside the run's workspace, whose inherited
+	// permissions say nothing about who may read an OAuth credential. secfile
+	// narrows it to the owner on every platform (mode 0600 on Unix, a
+	// protected owner-only DACL on Windows) and verifies the result.
+	if err := secfile.WritePrivate(target, credentials); err != nil {
 		return fmt.Errorf("copy stored credentials: %w", err)
-	}
-	if err := os.Chmod(target, 0o600); err != nil {
-		return fmt.Errorf("secure stored credentials: %w", err)
 	}
 	return nil
 }

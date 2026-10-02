@@ -1165,7 +1165,7 @@ func compileSchedulerMachinesWithProgress(
 	reportStartupProgress(startupProgress, "compiling workflow machines")
 	return compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		true, modelCredential,
+		true, modelCredential, knownExternalTelemetryConnectorNames(cfg),
 	)
 }
 

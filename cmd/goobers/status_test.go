@@ -1214,6 +1214,69 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 	}
 }
 
+// TestBuildStatusFleetSummaryCountsNoWorkBesideSuccess is #5553: a lane whose
+// recent completions all found nothing to do reported a bare 100%, reading as
+// productive while idle for days. No-work completions still count as
+// successes, but the cell says how many of them were no-work.
+func TestBuildStatusFleetSummaryCountsNoWorkBesideSuccess(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 6, 30, 0, 0, time.UTC)
+	workflows := []apiv1.Workflow{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "idle"},
+			Spec:       apiv1.WorkflowSpec{Gaggle: "fleet", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "productive"},
+			Spec:       apiv1.WorkflowSpec{Gaggle: "fleet", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}}},
+		},
+	}
+	// The idle lane has twelve completed no-work ticks (only the window's ten
+	// count); the productive lane has one completed run that did work.
+	facts := []readservice.StatusFleetFact{{Gaggle: "fleet", Workflow: "idle"}, {Gaggle: "fleet", Workflow: "productive"}}
+	for i := 0; i < statusSuccessRateWindow+2; i++ {
+		at := now.Add(-time.Duration(i+1) * time.Minute)
+		facts[0].TerminalRuns = append(facts[0].TerminalRuns, readservice.RunSummary{
+			ID: fmt.Sprintf("idle-%02d", i), Workflow: "idle", Gaggle: "fleet",
+			Phase: journal.PhaseCompleted, StartedAt: at, LastActivityAt: at, NoWork: true,
+		})
+	}
+	facts[1].TerminalRuns = append(facts[1].TerminalRuns, readservice.RunSummary{
+		ID: "work", Workflow: "productive", Gaggle: "fleet",
+		Phase: journal.PhaseCompleted, StartedAt: now, LastActivityAt: now,
+	})
+
+	got, err := buildStatusFleetSummary(workflows, statusFleetRuns(facts), nil, nil, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle, productive := got.Workflows[0], got.Workflows[1]
+	if idle.SuccessfulRuns != statusSuccessRateWindow || idle.NoWorkRuns != statusSuccessRateWindow {
+		t.Fatalf("idle summary = %+v, want %d successes all no-work", idle, statusSuccessRateWindow)
+	}
+	if productive.SuccessfulRuns != 1 || productive.NoWorkRuns != 0 {
+		t.Fatalf("productive summary = %+v", productive)
+	}
+
+	var text bytes.Buffer
+	renderStatusFleetSummary(&text, got, now)
+	if !strings.Contains(text.String(), "10/10 100% (10 no-work)") {
+		t.Fatalf("summary text = %q, want the no-work count beside the success count", text.String())
+	}
+	if strings.Count(text.String(), "no-work") != 1 {
+		t.Fatalf("summary text = %q, want no no-work note on the productive lane", text.String())
+	}
+	// Columns stay aligned: NEXT starts at the same offset on every row.
+	var nextAt []int
+	for _, line := range strings.Split(text.String(), "\n") {
+		if i := strings.Index(line, "manual"); i >= 0 {
+			nextAt = append(nextAt, i)
+		}
+	}
+	if len(nextAt) != 2 || nextAt[0] != nextAt[1] {
+		t.Fatalf("NEXT offsets = %v in %q, want two aligned rows", nextAt, text.String())
+	}
+}
+
 // infraFailedStatusRun builds a terminal run summary that has failed with an
 // infra-classified error, for #4263's sustained-failure-streak alarm tests.
 func infraFailedStatusRun(runID, workflow, gaggle string, at time.Time, message string) runSummary {

@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS CLAIMS ACTIVE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers claims active \- print what is actively claimed now: item, workflow, run, holder, and age
+.SH SYNOPSIS
+\fBgoobers claims active\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers claims active [--json] [--gaggle=name] [--provider=name] [path]
+
+Print what this instance has actively claimed now: item, workflow, run,
+holder, and age, oldest first. Expired, released, and revoked leases are
+omitted (`goobers claims list --stale` shows expired ones). Holder is the owning instance
+for a shared-visibility claim, otherwise "local". The daemon API serves
+the same view at GET /api/v1/claims/active. Default path is ".".
+.fi
+.SH EXAMPLES
+.nf
+goobers claims active
+goobers claims active --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
