@@ -144,8 +144,11 @@ var ErrOverflowRefUnresolved = errors.New("recovery overflow ref does not resolv
 // (ReadOverflow, promotion, retirement, restore), so the extension is written
 // into it rather than into a sidecar no overflow reader overlays; this is the
 // forward-only move publishOverflowRecord already permits. A record that has
-// been promoted or retired meanwhile is reported as os.ErrNotExist and never
-// recreated. Success is not journal acknowledgement; the caller appends it.
+// been promoted or retired before the write is reported as os.ErrNotExist and
+// not recreated (the write needs the entry's directory to exist; a removal
+// racing the write itself from another process can leave a record behind,
+// which the next promotion pass completes). Success is not journal
+// acknowledgement; the caller appends it.
 func RenewOverflowRetention(ctx context.Context, repository, path string, deadline time.Time) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
