@@ -69,6 +69,10 @@ type labelMutationPlan struct {
 }
 
 func planLabelMutation(current, add, remove []string, fold labelNameFold) labelMutationPlan {
+	current = normalizeLabelNames(current)
+	add = normalizeLabelNames(add)
+	remove = normalizeLabelNames(remove)
+
 	knownCurrent := current != nil
 	currentSet := labelNameSet(current, fold)
 	removeSet := labelNameSet(remove, fold)
@@ -115,4 +119,17 @@ func planLabelMutation(current, add, remove []string, fold labelNameFold) labelM
 		}
 	}
 	return plan
+}
+
+func normalizeLabelNames(labels []string) []string {
+	if labels == nil {
+		return nil
+	}
+	normalized := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label = strings.TrimSpace(label); label != "" {
+			normalized = append(normalized, label)
+		}
+	}
+	return normalized
 }

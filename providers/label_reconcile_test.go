@@ -104,6 +104,18 @@ func TestPlanLabelMutation(t *testing.T) {
 				Result: []string{"replace"},
 			},
 		},
+		{
+			name:    "trims and drops blank mutation inputs",
+			current: []string{" first ", " ", "drop", "first"},
+			add:     []string{" new ", "", " first "},
+			remove:  []string{" drop ", "\t"},
+			fold:    exactLabelName,
+			want: labelMutationPlan{
+				Add:    []string{"new"},
+				Remove: []string{"drop"},
+				Result: []string{"first", "new"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
