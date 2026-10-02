@@ -48,6 +48,7 @@ type StatusFleetFact struct {
 // SchedulerStatus is scheduler state projected from the instance journal for
 // local status adapters.
 type SchedulerStatus struct {
+	SelfExecution instance.SelfExecutionStats
 	// IsolationMandates is the effective, operator-owned class floor loaded
 	// by this daemon. Nil means no instance mandate is configured.
 	IsolationMandates     map[string][]string
@@ -688,7 +689,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 			return SchedulerStatus{}, err
 		}
 	}
-	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
+	status := SchedulerStatus{SelfExecution: s.sources.Config.SelfExecutionStats(), ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
 	if s.sources.InstanceLogStats != nil {
 		stats := s.sources.InstanceLogStats()
 		status.JournalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}

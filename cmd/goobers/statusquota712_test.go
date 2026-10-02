@@ -100,7 +100,8 @@ func TestStatusJSONOmitsProviderQuotaPause(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("unmarshal stdout %q: %v", stdout, err)
 	}
-	if len(got) != 7 ||
+	if len(got) != 8 ||
+		got["selfExecution"] == nil ||
 		got["root"] == nil ||
 		got["queueEligibility"] == nil ||
 		got["warnings"] == nil ||

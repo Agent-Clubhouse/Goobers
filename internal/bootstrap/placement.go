@@ -23,10 +23,12 @@ package bootstrap
 
 import (
 	"fmt"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/workflow"
@@ -93,7 +95,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 	for i := range set.Goobers {
 		goobers[set.Goobers[i].Name] = set.Goobers[i].Spec
 	}
-	requirements, err := workflow.IsolationStagePlacements(def, gaggleSpec, goobers, inventory.ClassMandates)
+	requirements, err := workflow.IsolationStagePlacements(def, gaggleSpec, goobers, inventory.ClassMandates, inventory.SelfExecutionDenied)
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q placement requirements: %w", def.Name, err)
 	}
@@ -122,6 +124,9 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 	}
 	ledgerFor := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
 	for _, task := range def.Spec.Tasks {
+		if cfg.SelfExecutionDenied() && task.Run != nil && executor.StageRequiresInstanceRoot(task.Run.Command, strings.TrimSpace(task.Inputs[executor.InputKind])) {
+			return nil, fmt.Errorf("workflow %q stage %q: placement.selfExecution: deny forbids this instance-root-only workflow command; migrate it to a remote-safe equivalent", def.Name, task.Name)
+		}
 		if _, dup := ledgerFor[task.Name]; dup {
 			return nil, fmt.Errorf("workflow %q: task name %q is declared twice; stage names must be unique for name-keyed pinning", def.Name, task.Name)
 		}

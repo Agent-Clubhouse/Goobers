@@ -169,3 +169,9 @@ database and tables must exist before ingest.
 
 For gaggle isolation in v1, partition trace queries by
 `TraceAttributes.goobers.gaggle`.
+
+Self execution policy exports `goobers.placement.self_denied` (1 for deny, 0
+for allow), `goobers.placement.self` (actual local workflow work), and
+`goobers.placement.self_refused` (refused local work). These are daemon process
+observations, without stage or workflow dimensions. Under deny, alert on any
+self placement or refusal; both counter series begin explicitly at zero.

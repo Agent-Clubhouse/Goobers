@@ -65,6 +65,7 @@ type Reader interface {
 
 // Health is the versioned daemon health response.
 type Health struct {
+	SelfExecution instance.SelfExecutionStats `json:"selfExecution"`
 	ReadStateEnvelope
 	APIVersion       string                  `json:"apiVersion"`
 	SchemaVersion    string                  `json:"schemaVersion"`
@@ -408,8 +409,13 @@ func (s *Local) healthUnannotated(ctx context.Context) (Health, error) {
 		lastTickAgeMillis = &ageMillis
 	}
 
+	selfExecution := s.sources.Config.SelfExecutionStats()
+	if selfExecution.Policy == "deny" && (selfExecution.Placements > 0 || selfExecution.Refusals > 0) {
+		healthy = false
+	}
 	build := version.Get()
 	return Health{
+		SelfExecution:    selfExecution,
 		Update:           s.updateAvailability(),
 		DefinitionReload: s.definitionReloadSnapshot(),
 		Startup:          s.startupStatusSnapshot(),

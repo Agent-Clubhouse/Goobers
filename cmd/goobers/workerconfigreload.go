@@ -142,6 +142,7 @@ func (w *workerSeams) loadConfigSnapshotAt(l instance.Layout) (*workerConfigSnap
 	if err != nil {
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
+	cfg.StartSelfExecutionAccounting()
 	snapshot := &workerConfigSnapshot{
 		configDir:     l.ConfigDir(),
 		digest:        digest,

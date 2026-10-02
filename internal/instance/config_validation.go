@@ -58,6 +58,7 @@ func (c *Config) validateConfigSections(stores map[string]bool) error {
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,
 		c.validateRunners,
+		c.validatePlacement,
 		c.validateIsolation,
 		c.validateEgress,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },

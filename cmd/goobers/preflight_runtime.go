@@ -211,7 +211,7 @@ func buildRuntimePreflightReport(root, workflowName, identityMode string) (runti
 		return runtimePreflightReport{}, err
 	}
 	inventory := cfg.PlacementInventory(runnersolve.HostOS())
-	placements, err := workflow.IsolationStagePlacements(machine.Def, gaggle, resolvedGoobers, inventory.ClassMandates)
+	placements, err := workflow.IsolationStagePlacements(machine.Def, gaggle, resolvedGoobers, inventory.ClassMandates, inventory.SelfExecutionDenied)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}
@@ -297,7 +297,7 @@ func runtimePreflightGaggleSpec(set *instance.ConfigSet, name string) (apiv1.Gag
 
 func runtimePreflightStageRunnerFacts(cfg *instance.Config, def workflow.Definition, requirements []runnersolve.StageRequirement, inventory runnersolve.Inventory) (map[string]runtimePreflightStageRunner, error) {
 	facts := make(map[string]runtimePreflightStageRunner, len(requirements))
-	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates()) || (inventory.LocalMode() && !cfg.HasIsolationMandates()) {
+	if cfg == nil || (len(cfg.Runners) == 0 && !cfg.HasIsolationMandates() && !cfg.SelfExecutionDenied()) || (inventory.LocalMode() && !cfg.HasIsolationMandates() && !cfg.SelfExecutionDenied()) {
 		for _, req := range requirements {
 			facts[req.Stage] = runtimePreflightRunnerUnobservable("stage has no pinned runner selection in the zero-declaration/local-mode execution path")
 		}

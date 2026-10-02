@@ -62,6 +62,8 @@ const (
 // definition at the version the run started on, so the run is unaffected by later
 // re-registrations (WF-016).
 type RunInput struct {
+	// SelfExecutionDenied pins the operator policy so a stale worker cannot permit fallback.
+	SelfExecutionDenied    bool               `json:"selfExecutionDenied,omitempty"`
 	InstanceID             string             `json:"instanceId,omitempty"`
 	RunID                  string             `json:"runId"`
 	Gaggle                 string             `json:"gaggle"`
@@ -1018,6 +1020,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// remediated a branch nobody was reviewing.
 		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut, taskDispatches)
 	}
+	if in.SelfExecutionDenied {
+		return runner.SelfExecutionBlockedResult(t.Name), nil
+	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)
 	if t.Type == apiv1.TaskAgentic {
@@ -1157,6 +1162,9 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// versus the workflow's own — and the self arm's options are the
 		// ones it has always had.
 		placement, remote := remotePlacementFor(in, g.Name)
+		if !remote && in.SelfExecutionDenied {
+			return "", nil, GateReviewResult{}, temporal.NewNonRetryableApplicationError((&runner.SelfExecutionRefusal{Stage: g.Name}).Error(), runner.SelfExecutionDeniedCode, nil)
+		}
 		if remote {
 			ctx = dispatchActivityContext(ctx, env.Limits, placement.Queue)
 		} else {

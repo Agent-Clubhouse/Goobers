@@ -396,6 +396,7 @@ type statusJSONSummary struct {
 }
 
 type statusJSONOutput struct {
+	SelfExecution          instance.SelfExecutionStats                `json:"selfExecution"`
 	Root                   *statusRootIdentity                        `json:"root,omitempty"`
 	QueueEligibility       *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
 	EngineFallbacks        []readmodel.EngineFallback                 `json:"engineFallbacks,omitempty"`
@@ -1550,6 +1551,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var storageHealth *readservice.StorageHealthStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
+		selfExecution := cfg.SelfExecutionStats()
 		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
 		var parked *statusParkedBacklog
@@ -1566,6 +1568,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				storageHealth = status.StorageHealth
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
+				selfExecution = status.SelfExecution
 				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
 			}
@@ -1588,6 +1591,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			StorageHealth:          storageHealth,
 			RefusedWorkflows:       refusedWorkflows,
 			IsolationMandates:      isolationMandates,
+			SelfExecution:          selfExecution,
 			Summary:                fleetSummary,
 			ParkedBacklog:          parked,
 			BaselineBlockers:       baselineBlockers,

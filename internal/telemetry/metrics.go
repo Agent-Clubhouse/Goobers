@@ -22,6 +22,10 @@ import (
 // in internal/telemetry/README.md and internal/telemetry/metric-contract-v1.json;
 // the collector pipeline is configured against those names.
 const (
+	// MetricSelfPlacements counts actual local workflow execution placements.
+	MetricSelfPlacements = "goobers.placement.self"
+	MetricSelfRefusals   = "goobers.placement.self_refused"
+	MetricSelfDenied     = "goobers.placement.self_denied"
 	// MetricRunDuration measures wall-clock workflow run duration.
 	MetricRunDuration = "goobers.run.duration"
 	// MetricRunOutcomes counts finished workflow runs by outcome.
@@ -164,6 +168,9 @@ var metricAttributeAllowlist = map[string]struct{}{
 // *instruments disables metric recording, which is what every client built
 // without a metric reader gets.
 type instruments struct {
+	selfPlacements           apimetric.Int64Counter
+	selfRefusals             apimetric.Int64Counter
+	selfDenied               apimetric.Int64Gauge
 	runDuration              apimetric.Float64Histogram
 	runOutcomes              apimetric.Int64Counter
 	stageDuration            apimetric.Float64Histogram
@@ -201,6 +208,12 @@ func newInstruments(meter apimetric.Meter) (*instruments, error) {
 	inst := &instruments{limiter: newCardinalityLimiter(metricAttributeMaxValues)}
 	var err error
 
+	inst.selfPlacements, err = newInt64Counter(meter, MetricSelfPlacements)
+	record(err)
+	inst.selfRefusals, err = newInt64Counter(meter, MetricSelfRefusals)
+	record(err)
+	inst.selfDenied, err = newInt64Gauge(meter, MetricSelfDenied)
+	record(err)
 	inst.runDuration, err = newFloat64Histogram(meter, MetricRunDuration)
 	record(err)
 	inst.runOutcomes, err = newInt64Counter(meter, MetricRunOutcomes)

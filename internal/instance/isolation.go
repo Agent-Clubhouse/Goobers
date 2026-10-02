@@ -32,7 +32,7 @@ func (c *Config) HasIsolationMandates() bool {
 // PlacementInventory is the shared inventory construction for validation,
 // boot admission and run-start pinning. Every caller carries the same floor.
 func (c *Config) PlacementInventory(selfOS string) runnersolve.Inventory {
-	inv := runnersolve.Inventory{Runners: c.PlacementRunners(selfOS)}
+	inv := runnersolve.Inventory{Runners: c.PlacementRunners(selfOS), SelfExecutionDenied: c.SelfExecutionDenied()}
 	if !c.HasIsolationMandates() {
 		return inv
 	}

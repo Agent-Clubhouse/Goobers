@@ -140,15 +140,16 @@ const (
 )
 
 var wellKnownErrorCodes = map[string]ErrorClass{
-	ErrCodeProviderRateLimit: ErrorClassProviderRateLimit,
-	ErrCodeTimeout:           ErrorClassTimeout,
-	ErrCodeHarnessFailure:    ErrorClassHarnessFailure,
-	ErrCodeValidationFailed:  ErrorClassValidation,
-	ErrCodeInfraFailure:      ErrorClassInfra,
-	ErrCodeInfraGit:          ErrorClassInfraGit,
-	ErrCodeInfraNet:          ErrorClassInfraNet,
-	ErrCodeInfraWorkspace:    ErrorClassInfra,
-	ErrCodeInfraJournal:      ErrorClassInfra,
+	ErrCodeProviderRateLimit:        ErrorClassProviderRateLimit,
+	ErrCodeTimeout:                  ErrorClassTimeout,
+	ErrCodeHarnessFailure:           ErrorClassHarnessFailure,
+	ErrCodeValidationFailed:         ErrorClassValidation,
+	"placement_refused_self_denied": ErrorClassValidation,
+	ErrCodeInfraFailure:             ErrorClassInfra,
+	ErrCodeInfraGit:                 ErrorClassInfraGit,
+	ErrCodeInfraNet:                 ErrorClassInfraNet,
+	ErrCodeInfraWorkspace:           ErrorClassInfra,
+	ErrCodeInfraJournal:             ErrorClassInfra,
 	// Exact, so it beats the "timeout" substring heuristic below: waiting out
 	// another process's claims lock is contention, not a stage running long,
 	// and the two want different remedies.

@@ -816,3 +816,31 @@ func appendStartTime(opts []trace.SpanStartOption, at time.Time) []trace.SpanSta
 	}
 	return append(opts, trace.WithTimestamp(at))
 }
+
+// SelfExecutionPolicy records the effective policy (one means deny) and creates
+// explicit zero counter series before the daemon admits workflow work.
+func (c *Client) SelfExecutionPolicy(denied bool) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	var value int64
+	if denied {
+		value = 1
+	}
+	ctx := context.Background()
+	c.instruments.selfDenied.Record(ctx, value)
+	c.instruments.selfPlacements.Add(ctx, 0)
+	c.instruments.selfRefusals.Add(ctx, 0)
+}
+
+// SelfExecutionObserved counts only actual local work or a pre-execution refusal.
+func (c *Client) SelfExecutionObserved(refused bool) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	if refused {
+		c.instruments.selfRefusals.Add(context.Background(), 1)
+	} else {
+		c.instruments.selfPlacements.Add(context.Background(), 1)
+	}
+}

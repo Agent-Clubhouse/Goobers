@@ -1,0 +1,19 @@
+# Provision this instance policy alongside the reference Kubernetes manifests.
+# Add real repositories/credentials and API TLS in your deployment overlay.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+placement:
+  selfExecution: deny
+engine:
+  hostPort: temporal-frontend.temporal.svc.cluster.local:7233
+  namespace: default
+  taskQueue: goobers-engine
+runners:
+  - name: linux-work
+    host: goobers-work
+    provides:
+      os: linux
+      shell: true
+      harnesses: [copilot]

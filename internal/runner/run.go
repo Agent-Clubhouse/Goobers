@@ -439,6 +439,9 @@ type AgentProvenance struct {
 // definition a daemon knows about; the compiled Machine for a specific run is
 // supplied per call in StartInput, not fixed here.
 type Config struct {
+	SelfExecutionDenied bool
+	// SelfExecutionObserved receives true for a refusal, false for actual self work.
+	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
 	ConfigGeneration string
 	// RecoveryEvents supplies verified retained-state observations after a
@@ -4600,6 +4603,16 @@ type taskFrame struct {
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	if r.cfg.SelfExecutionDenied {
+		if r.cfg.SelfExecutionObserved != nil {
+			r.cfg.SelfExecutionObserved(true)
+		}
+		result := SelfExecutionBlockedResult(tf.t.Name)
+		if err := tf.jr.Append(journal.Event{Type: journal.EventError, Stage: tf.t.Name, Error: journal.ErrorDetailFor(SelfExecutionDeniedCode, &SelfExecutionRefusal{Stage: tf.t.Name})}); err != nil {
+			return apiv1.ResultEnvelope{}, nil, err
+		}
+		return result, nil, nil
+	}
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
 	if tf.workspaceRevision != nil {
 		tf.in.workspaceRevision = (*tf.workspaceRevision).DeepCopy()
@@ -4726,6 +4739,9 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		// this feature existed, and an unconditional per-attempt event would
 		// change every one of them. A journal that cannot be written is fatal
 		// (§2.6), same as stage.started above.
+		if r.cfg.SelfExecutionObserved != nil {
+			r.cfg.SelfExecutionObserved(false)
+		}
 		if r.recordsPlacement() {
 			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
 				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
@@ -5832,6 +5848,12 @@ func taskEscalationTarget(machine *workflow.Machine, task apiv1.Task) string {
 // evaluation and turned a worktree-provisioning failure (disk, git) into a
 // failure of a gate that touches no filesystem whatsoever.
 func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval *gate.Evaluator, ex *executors, in StartInput, g apiv1.Gate, subjectStage string, subjectResult apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, fanIn *parallelExec, instructionAddendum, workspaceBranch, knownOutcome string) (result gate.Result, err error, removeErr error) {
+	if g.Evaluator == apiv1.EvaluatorAgentic && r.cfg.SelfExecutionDenied {
+		return gate.Result{}, r.refuseSelfExecution(ctx, jr, in, g.Name), nil
+	}
+	if g.Evaluator == apiv1.EvaluatorAgentic && r.cfg.SelfExecutionObserved != nil {
+		r.cfg.SelfExecutionObserved(false)
+	}
 	// Same drain contract as runTask: SIGTERM does not interrupt an active gate,
 	// but a stalled-run watchdog request does.
 	ctx = stalledAttemptContext(ctx)
