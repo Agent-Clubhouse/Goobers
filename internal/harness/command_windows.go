@@ -65,3 +65,23 @@ func resolveStdioHarnessCommand(command []string) []string {
 	}
 	return append([]string{resolved}, command[1:]...)
 }
+
+func shouldUseCopilotPromptStdin(command []string, prompt string) bool {
+	if len(command) == 0 || !strings.Contains(prompt, `"`) {
+		return false
+	}
+	resolved, err := exec.LookPath(command[0])
+	if err != nil {
+		return false
+	}
+	extension := strings.ToLower(filepath.Ext(resolved))
+	if extension != ".cmd" && extension != ".bat" {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSuffix(filepath.Base(resolved), extension), "copilot") {
+		return false
+	}
+	script := strings.TrimSuffix(resolved, filepath.Ext(resolved)) + ".ps1"
+	_, err = os.Stat(script)
+	return err == nil
+}
