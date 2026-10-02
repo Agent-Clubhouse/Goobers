@@ -1243,10 +1243,24 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 	if spec.RequireLabels != nil {
 		used.add(featureGaggleRequireLabels)
 	}
+	addGaggleIssueOwnershipFeatures(used, spec.IssueOwnershipScope)
 	if spec.Siblings != nil {
 		used.add(featureGaggleSiblings)
 	}
 	return currentFeatureRegistry.resolve(used.ids())
+}
+
+func addGaggleIssueOwnershipFeatures(used featureSet, scope *apiv1.IssueOwnershipScope) {
+	if scope == nil {
+		return
+	}
+	used.add(featureGaggleIssueOwnershipScope)
+	if scope.Assignees != nil {
+		used.add(featureGaggleIssueOwnershipScopeAssignees)
+	}
+	if scope.Unassigned != "" {
+		used.add(featureGaggleIssueOwnershipScopeUnassigned)
+	}
 }
 
 // addParallelFeatures records the GA DSL fields used by a parallel state.
