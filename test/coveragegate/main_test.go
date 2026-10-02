@@ -189,10 +189,13 @@ func TestDefaultExcludeAdmitsPackagesExtractedFromCmd(t *testing.T) {
 	for _, line := range []string{
 		"github.com/goobers/goobers/internal/apireadcache/cache.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/credentialoverride/preflight.go:10.1,12.2 2 1",
+		"github.com/goobers/goobers/internal/daemonheartbeat/heartbeat.go:10.1,12.2 2 1",
+		"github.com/goobers/goobers/internal/daemonstate/apiaddress.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/escalationnotify/policy.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/intervention/service.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/nowork/terminal.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/pushrejection/classify.go:10.1,12.2 2 1",
+		"github.com/goobers/goobers/internal/sweepreport/report.go:10.1,12.2 2 1",
 		"github.com/goobers/goobers/internal/tracefollow/transcripts.go:10.1,12.2 2 1",
 	} {
 		if exclude.MatchString(line) {

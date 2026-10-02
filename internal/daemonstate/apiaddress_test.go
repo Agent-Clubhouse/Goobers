@@ -1,4 +1,4 @@
-package main
+package daemonstate
 
 import (
 	"errors"
@@ -9,8 +9,8 @@ import (
 )
 
 // Isolated filesystem tests for the daemon API address file (#4575):
-// publishDaemonAPIAddress must replace the file atomically and never leak its
-// temporary file, and removeDaemonAPIAddress must treat a missing file as
+// PublishAPIAddress must replace the file atomically and never leak its
+// temporary file, and RemoveAPIAddress must treat a missing file as
 // already removed. Every test works in its own t.TempDir().
 
 func readAPIAddressFile(t *testing.T, path string) string {
@@ -41,31 +41,31 @@ func assertOnlyAPIAddressEntries(t *testing.T, dir string, want ...string) {
 
 func TestPublishDaemonAPIAddressWritesNewFileWithoutTempLeak(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, daemonAPIAddressFileName)
+	path := filepath.Join(dir, APIAddressFileName)
 
-	if err := publishDaemonAPIAddress(path, "127.0.0.1:41234"); err != nil {
-		t.Fatalf("publishDaemonAPIAddress: %v", err)
+	if err := PublishAPIAddress(path, "127.0.0.1:41234"); err != nil {
+		t.Fatalf("PublishAPIAddress: %v", err)
 	}
 	if got := readAPIAddressFile(t, path); got != "127.0.0.1:41234\n" {
 		t.Fatalf("address file = %q, want the address plus a newline", got)
 	}
-	assertOnlyAPIAddressEntries(t, dir, daemonAPIAddressFileName)
+	assertOnlyAPIAddressEntries(t, dir, APIAddressFileName)
 }
 
 func TestPublishDaemonAPIAddressReplacesExistingAddress(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, daemonAPIAddressFileName)
+	path := filepath.Join(dir, APIAddressFileName)
 	if err := os.WriteFile(path, []byte("127.0.0.1:1111\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := publishDaemonAPIAddress(path, "127.0.0.1:2222"); err != nil {
-		t.Fatalf("publishDaemonAPIAddress: %v", err)
+	if err := PublishAPIAddress(path, "127.0.0.1:2222"); err != nil {
+		t.Fatalf("PublishAPIAddress: %v", err)
 	}
 	if got := readAPIAddressFile(t, path); got != "127.0.0.1:2222\n" {
 		t.Fatalf("address file = %q, want the replacement address", got)
 	}
-	assertOnlyAPIAddressEntries(t, dir, daemonAPIAddressFileName)
+	assertOnlyAPIAddressEntries(t, dir, APIAddressFileName)
 }
 
 // TestPublishDaemonAPIAddressTempFileLivesBesideTarget pins the atomicity
@@ -73,7 +73,7 @@ func TestPublishDaemonAPIAddressReplacesExistingAddress(t *testing.T) {
 // (a same-filesystem rename) under a hidden name readers never match.
 func TestPublishDaemonAPIAddressTempFileLivesBesideTarget(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, daemonAPIAddressFileName)
+	path := filepath.Join(dir, APIAddressFileName)
 	var gotDir, gotPattern string
 	original := createDaemonAPIAddressTempFile
 	t.Cleanup(func() { createDaemonAPIAddressTempFile = original })
@@ -82,23 +82,23 @@ func TestPublishDaemonAPIAddressTempFileLivesBesideTarget(t *testing.T) {
 		return original(dir, pattern)
 	}
 
-	if err := publishDaemonAPIAddress(path, "127.0.0.1:3333"); err != nil {
-		t.Fatalf("publishDaemonAPIAddress: %v", err)
+	if err := PublishAPIAddress(path, "127.0.0.1:3333"); err != nil {
+		t.Fatalf("PublishAPIAddress: %v", err)
 	}
 	if gotDir != dir {
 		t.Fatalf("temp dir = %q, want the target's directory %q", gotDir, dir)
 	}
-	if !strings.HasPrefix(gotPattern, "."+daemonAPIAddressFileName+"-") {
-		t.Fatalf("temp pattern = %q, want a hidden %q-prefixed name", gotPattern, daemonAPIAddressFileName)
+	if !strings.HasPrefix(gotPattern, "."+APIAddressFileName+"-") {
+		t.Fatalf("temp pattern = %q, want a hidden %q-prefixed name", gotPattern, APIAddressFileName)
 	}
 }
 
 func TestPublishDaemonAPIAddressCreateFailureLeavesNothing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing-scheduler-dir", daemonAPIAddressFileName)
+	path := filepath.Join(t.TempDir(), "missing-scheduler-dir", APIAddressFileName)
 
-	err := publishDaemonAPIAddress(path, "127.0.0.1:4444")
+	err := PublishAPIAddress(path, "127.0.0.1:4444")
 	if err == nil || !strings.Contains(err.Error(), "create daemon API address file") {
-		t.Fatalf("publishDaemonAPIAddress error = %v, want a create failure", err)
+		t.Fatalf("PublishAPIAddress error = %v, want a create failure", err)
 	}
 	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("address file stat = %v, want not-exist", statErr)
@@ -156,7 +156,7 @@ func TestPublishDaemonAPIAddressWriteOrCloseFailureKeepsPriorAddressAndCleansTem
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			path := filepath.Join(dir, daemonAPIAddressFileName)
+			path := filepath.Join(dir, APIAddressFileName)
 			if err := os.WriteFile(path, []byte("127.0.0.1:1111\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -172,9 +172,9 @@ func TestPublishDaemonAPIAddressWriteOrCloseFailureKeepsPriorAddressAndCleansTem
 				return tc.file(f), nil
 			}
 
-			err := publishDaemonAPIAddress(path, "127.0.0.1:5555")
+			err := PublishAPIAddress(path, "127.0.0.1:5555")
 			if err == nil || !strings.Contains(err.Error(), tc.wantText) {
-				t.Fatalf("publishDaemonAPIAddress error = %v, want %q", err, tc.wantText)
+				t.Fatalf("PublishAPIAddress error = %v, want %q", err, tc.wantText)
 			}
 			if got := readAPIAddressFile(t, path); got != "127.0.0.1:1111\n" {
 				t.Fatalf("address file = %q, want the prior address untouched", got)
@@ -182,7 +182,7 @@ func TestPublishDaemonAPIAddressWriteOrCloseFailureKeepsPriorAddressAndCleansTem
 			if _, statErr := os.Stat(tempPath); !errors.Is(statErr, os.ErrNotExist) {
 				t.Fatalf("temporary file %q stat = %v, want removed", tempPath, statErr)
 			}
-			assertOnlyAPIAddressEntries(t, dir, daemonAPIAddressFileName)
+			assertOnlyAPIAddressEntries(t, dir, APIAddressFileName)
 		})
 	}
 }
@@ -191,16 +191,16 @@ func TestPublishDaemonAPIAddressWriteOrCloseFailureKeepsPriorAddressAndCleansTem
 // replacement to fail by making the target a non-empty directory.
 func TestPublishDaemonAPIAddressReplaceFailureCleansTemp(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, daemonAPIAddressFileName)
+	path := filepath.Join(dir, APIAddressFileName)
 	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	err := publishDaemonAPIAddress(path, "127.0.0.1:6666")
+	err := PublishAPIAddress(path, "127.0.0.1:6666")
 	if err == nil || !strings.Contains(err.Error(), "publish daemon API address") {
-		t.Fatalf("publishDaemonAPIAddress error = %v, want a replace failure", err)
+		t.Fatalf("PublishAPIAddress error = %v, want a replace failure", err)
 	}
-	assertOnlyAPIAddressEntries(t, dir, daemonAPIAddressFileName)
+	assertOnlyAPIAddressEntries(t, dir, APIAddressFileName)
 	if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
 		t.Fatalf("target stat = %v, %v; want the pre-existing directory untouched", info, statErr)
 	}
@@ -208,7 +208,7 @@ func TestPublishDaemonAPIAddressReplaceFailureCleansTemp(t *testing.T) {
 
 func TestRemoveDaemonAPIAddressRemovesFileAndToleratesMissing(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, daemonAPIAddressFileName)
+	path := filepath.Join(dir, APIAddressFileName)
 	sibling := filepath.Join(dir, "up.lock")
 	for _, file := range []string{path, sibling} {
 		if err := os.WriteFile(file, []byte("x\n"), 0o644); err != nil {
@@ -216,8 +216,8 @@ func TestRemoveDaemonAPIAddressRemovesFileAndToleratesMissing(t *testing.T) {
 		}
 	}
 
-	if err := removeDaemonAPIAddress(path); err != nil {
-		t.Fatalf("removeDaemonAPIAddress: %v", err)
+	if err := RemoveAPIAddress(path); err != nil {
+		t.Fatalf("RemoveAPIAddress: %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("address file stat = %v, want removed", err)
@@ -226,21 +226,21 @@ func TestRemoveDaemonAPIAddressRemovesFileAndToleratesMissing(t *testing.T) {
 	assertOnlyAPIAddressEntries(t, dir, "up.lock")
 
 	// Already gone (a clean prior shutdown, or a second removal): not an error.
-	if err := removeDaemonAPIAddress(path); err != nil {
-		t.Fatalf("removeDaemonAPIAddress on a missing file: %v", err)
+	if err := RemoveAPIAddress(path); err != nil {
+		t.Fatalf("RemoveAPIAddress on a missing file: %v", err)
 	}
-	if err := removeDaemonAPIAddress(filepath.Join(dir, "no-such-dir", daemonAPIAddressFileName)); err != nil {
-		t.Fatalf("removeDaemonAPIAddress under a missing directory: %v", err)
+	if err := RemoveAPIAddress(filepath.Join(dir, "no-such-dir", APIAddressFileName)); err != nil {
+		t.Fatalf("RemoveAPIAddress under a missing directory: %v", err)
 	}
 }
 
 func TestRemoveDaemonAPIAddressReportsOtherErrors(t *testing.T) {
-	path := filepath.Join(t.TempDir(), daemonAPIAddressFileName)
+	path := filepath.Join(t.TempDir(), APIAddressFileName)
 	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := removeDaemonAPIAddress(path)
+	err := RemoveAPIAddress(path)
 	if err == nil || !strings.Contains(err.Error(), "remove daemon API address") {
-		t.Fatalf("removeDaemonAPIAddress error = %v, want a wrapped removal failure", err)
+		t.Fatalf("RemoveAPIAddress error = %v, want a wrapped removal failure", err)
 	}
 }

@@ -253,6 +253,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/daemonheartbeat",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Daemon heartbeat tests extracted from cmd/goobers; the Windows CLI test selection did not run these tests. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/daemonlog",
       "coverage": "none",
       "category": "not-selected",
@@ -779,6 +785,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the two runtime-alias dedup tests run ('Windows rollup migration alias dedup'); the rest of the ~15s suite is not Windows-sensitive."
+    },
+    {
+      "package": "internal/sweepreport",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Sweep error reporting extracted from cmd/goobers; the Windows CLI test selection did not run its rate-limit unit test. Runs on the Linux unit shards."
     },
     {
       "package": "internal/telemetry",
