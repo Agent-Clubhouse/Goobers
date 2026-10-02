@@ -70,7 +70,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for stage rerun: %w", in.RunID, err)
 	}

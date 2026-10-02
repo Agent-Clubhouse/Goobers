@@ -2178,8 +2178,8 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		// the read model exactly as one that finishes under a live runner does.
 		// Without it the terminal append records no intake watermark and the
 		// projector never re-reads the run (#5278).
-		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
-		DrainedDowntime: drainedDowntime,
+		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
+		DrainedDowntime:        drainedDowntime,
 	}
 }
 
