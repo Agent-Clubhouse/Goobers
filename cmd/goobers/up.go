@@ -144,6 +144,26 @@ func daemonReadHandlerOptions(root string, setup *schedulerSetup) []httpapi.Hand
 	return options
 }
 
+func newConfigAuthoringReader(ctx context.Context, layout instance.Layout, config *instance.Config) (configauthoring.Reader, error) {
+	root := layout.ConfigDir()
+	kind := apicontract.ConfigSourceLocal
+	writable := true
+	if config != nil && config.WorkflowSource != nil {
+		switch config.WorkflowSource.Kind {
+		case instance.WorkflowSourceKindLocalDir:
+			var err error
+			root, err = (instance.LocalDirSource{Path: config.WorkflowSource.Path}).Resolve(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("resolve local configuration source: %w", err)
+			}
+		case instance.WorkflowSourceKindGit:
+			kind = apicontract.ConfigSourceGit
+			writable = false
+		}
+	}
+	return configauthoring.NewReader(root, kind, writable)
+}
+
 func appendWorkerDivergenceHandlerOption(options []httpapi.HandlerOption, setup *schedulerSetup) ([]httpapi.HandlerOption, error) {
 	option, err := newWorkerDivergenceHandlerOption(setup.InstanceLog, setup.Config)
 	if err != nil {
@@ -874,13 +894,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	apiHandlerOpts := daemonReadHandlerOptions(l.Root, setup)
-	sourceKind := apicontract.ConfigSourceLocal
-	sourceWritable := true
-	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-		sourceKind = apicontract.ConfigSourceGit
-		sourceWritable = false
-	}
-	configReader, err := configauthoring.NewReader(l.ConfigDir(), sourceKind, sourceWritable)
+	configReader, err := newConfigAuthoringReader(ctx, l, setup.Config)
 	if err != nil {
 		return reportDaemonStartupError(stderr, "initialize configuration source reader", err)
 	}

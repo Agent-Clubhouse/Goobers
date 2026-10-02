@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -93,6 +94,49 @@ func TestConfigAuthoringReadRoutesAreMountedFromContract(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET %s status = %d, body = %s", path, response.Code, response.Body)
+		}
+	}
+}
+
+func TestConfigAuthoringReadRoutesAreDiscoverableWhenConfigured(t *testing.T) {
+	handler, err := NewHandler(
+		&fakeReader{},
+		RequireRoles(),
+		discardLogger(),
+		WithAuthenticator(&fakeAuthenticator{
+			principal: &Principal{Subject: "viewer", Roles: []Role{RoleView}},
+		}),
+		WithDiscoveryIdentity(DiscoveryIdentity{DaemonInstanceID: "instance-1"}),
+		WithConfigAuthoringReader(fakeConfigAuthoringReader{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.CapabilitiesPath, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("capabilities status = %d, body = %s", response.Code, response.Body)
+	}
+	var capabilities apicontract.CapabilityDocument
+	if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(capabilities.Routes), len(apicontract.V1Routes())+3; got != want {
+		t.Fatalf("capability routes = %d, want %d", got, want)
+	}
+
+	for _, route := range apicontract.V1ConfigAuthoringRoutes() {
+		if route.Method != http.MethodGet {
+			continue
+		}
+		capability := capabilityByID(t, capabilities, route.ID)
+		if !capability.Available || capability.RequiredRole != string(RoleView) {
+			t.Fatalf("%s capability = %+v", route.ID, capability)
+		}
+		path, _ := discoveryOperation(t, handler, route.ID)
+		if path != route.Path {
+			t.Fatalf("%s OpenAPI path = %q, want %q", route.ID, path, route.Path)
 		}
 	}
 }
