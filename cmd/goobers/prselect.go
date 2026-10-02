@@ -11,11 +11,14 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/prqueue"
+	"github.com/goobers/goobers/internal/runner"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -202,6 +205,11 @@ func runPRSelectCore(
 	exclusions := newPRSelectExclusions()
 	exclusions.report.ObservedAt = now
 	exclusions.report.CompleteSnapshot = bool(completeness)
+	branchOccupancies, err := prSelectBranchOccupancies(ctx, root, repo)
+	if err != nil {
+		pf(stderr, "error: inspect PR branch occupancy: %v\n", err)
+		return 1
+	}
 	for _, pr := range prs {
 		matchesTargetedPull := hasTargetedPullNumber && strconv.Itoa(pr.Number) == targetedPullNumber
 		if pr.State != "open" || (!matchesTargetedPull && pr.Base != base) ||
@@ -247,6 +255,12 @@ func runPRSelectCore(
 			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
 			exclusions.recordPR(pr.Number, exclusionPolicy)
+			continue
+		}
+		if occupancy, occupied := branchOccupancies[pr.Head]; occupied && occupancy.Status == worktree.BranchOccupancyActive {
+			pf(stdout, "excluded PR #%d: branch %s is owned by live run %s\n",
+				pr.Number, pr.Head, occupancy.OwnerRunID)
+			exclusions.recordPR(pr.Number, exclusionBranchOccupied)
 			continue
 		}
 		blocked, blockCode, blockReason, gateCode := prSelectSafetyGatesBlock(
@@ -607,7 +621,84 @@ const (
 	exclusionDemoted           = prqueue.Demoted
 	exclusionSiblingBlocked    = prqueue.SiblingBlocked
 	exclusionTutorSignoff      = prqueue.TutorSignoff
+	exclusionBranchOccupied    = prqueue.BranchOccupied
 )
+
+func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.RepositoryRef) (map[string]worktree.BranchOccupancy, error) {
+	layout := layoutFor(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		return nil, err
+	}
+
+	gaggleName := strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
+	var gaggles []*apiv1.Gaggle
+	if gaggleName != "" {
+		gaggle := configuredGaggle(set, gaggleName)
+		if gaggle == nil {
+			gaggles = append(gaggles, &apiv1.Gaggle{})
+		} else {
+			gaggles = append(gaggles, gaggle)
+		}
+	} else {
+		for i := range set.Gaggles {
+			gaggles = append(gaggles, &set.Gaggles[i])
+		}
+	}
+
+	cloneURLFn := repoCloneURL
+	if cloneURLFn == nil {
+		cloneURLFn = runner.DefaultRepoCloneURL
+	}
+	repoURL, err := cloneURLFn(apiv1.RepoRef{
+		Provider: apiv1.Provider(repo.Provider),
+		BaseURL:  repo.URL,
+		Owner:    repo.Owner,
+		Project:  repo.Project,
+		Name:     repo.Name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository clone URL: %w", err)
+	}
+
+	occupancies := make(map[string]worktree.BranchOccupancy)
+	seenRoots := make(map[string]bool)
+	for _, gaggle := range gaggles {
+		scopedGaggle := gaggle.Name
+		if scopedGaggle == "" {
+			scopedGaggle = gaggleName
+		}
+		scoped, err := instance.EffectiveWorkcopiesLayout(layout.ForGaggle(scopedGaggle), cfg, gaggle)
+		if err != nil {
+			return nil, fmt.Errorf("resolve workcopies root for gaggle %q: %w", gaggle.Name, err)
+		}
+		workcopiesRoot := scoped.WorkcopiesDir()
+		if seenRoots[workcopiesRoot] {
+			continue
+		}
+		seenRoots[workcopiesRoot] = true
+		manager, err := worktree.NewManager(workcopiesRoot)
+		if err != nil {
+			return nil, err
+		}
+		found, err := manager.BranchOccupancies(ctx, repoURL)
+		if err != nil {
+			return nil, err
+		}
+		for branch, occupancy := range found {
+			if existing, duplicate := occupancies[branch]; duplicate &&
+				(existing.OwnerRunID != occupancy.OwnerRunID || existing.Status != occupancy.Status) {
+				return nil, fmt.Errorf("branch %q has conflicting occupancy records across workcopies roots", branch)
+			}
+			occupancies[branch] = occupancy
+		}
+	}
+	return occupancies, nil
+}
 
 // prSelectExclusions tallies why the pull requests this workflow is
 // responsible for did not become eligible (#2969).
