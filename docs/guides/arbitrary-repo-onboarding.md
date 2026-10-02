@@ -554,11 +554,12 @@ machines, or independent journals and budgets — not because of a repository
 count. See [Choose where an instance and its config
 live](instance-placement.md) for that decision.
 
-Two constraints apply to either shape. Goober and workflow names are
-instance-global, not gaggle-scoped, so a copied gaggle that keeps a name such
-as `coder` fails validation with a duplicate-name error; prefix names per
-gaggle as in step 2 below. And a new gaggle only claims work its backlog
-labels actually match: the `goobers init` scaffold defaults the backlog labels
+Two constraints apply to either shape. Goober names are instance-global, not
+gaggle-scoped, so a copied gaggle that keeps a name such as `coder` fails
+validation with a duplicate-name error; prefix goober names per gaggle as in
+step 2 below. Workflow names are deduplicated per gaggle (by gaggle and name),
+so two gaggles may ship workflows with the same `metadata.name`. And a new
+gaggle only claims work its backlog labels actually match: the `goobers init` scaffold defaults the backlog labels
 and `trustLabel` to `goobers`, which a real repository often does not carry,
 and a workflow whose labels match nothing claims nothing without an error —
 check `gh label list --repo <owner>/<name>` and set the trust label from
