@@ -223,6 +223,9 @@ func (c RunnerConfig) validateStageMemoryLimit() error {
 }
 
 func (c TelemetryConfig) validate(stores map[string]bool, telemetryEnabled bool) error {
+	if err := c.validateExporters(stores, telemetryEnabled); err != nil {
+		return err
+	}
 	if c.CollectionProfile != "" && !c.CollectionProfile.valid() {
 		return fmt.Errorf("telemetry.collectionProfile must be one of health, journal, standard, or diagnostic")
 	}

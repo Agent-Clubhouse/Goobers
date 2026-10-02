@@ -52,6 +52,7 @@ type DiagnosticExportStats struct {
 // DiagnosticExporter owns an independent, bounded OTLP Logs transport. A slow
 // collector never blocks the producer or the journal/trace export stream.
 type DiagnosticExporter struct {
+	legacy       *DiagnosticExporter
 	destinations map[string]*DiagnosticExporter
 	mu           sync.Mutex
 	closed       bool

@@ -11,6 +11,7 @@ Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
                           [--image-pull-policy always|never]
+                          [--record-instance <root>] [--result-max-age <duration>]
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--psa-namespaces <namespace,...>] [--psa-service-account <name>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
@@ -50,6 +51,10 @@ unconfigured they report a skipped warn. Checks persist no cluster resources.
 Required checks that cannot run report fail with the
 reason — never a silent pass. Reference manifests expressing the same
 requirements live under deploy/reference/ (#663).
+
+--record-instance persists check outcomes in the instance journal for status.
+--result-max-age sets their freshness window (default 2h); the cluster monitoring
+CronJob owns scheduling. No recording occurs unless --record-instance is set.
 
 --checks limits --k8s to the named check IDs; unknown or duplicate IDs are errors.
 For a least-privilege drift monitor, use --checks apiserver-ipblock-drift.

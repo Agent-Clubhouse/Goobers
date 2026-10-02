@@ -17,7 +17,6 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
-	"github.com/goobers/goobers/internal/diagnostics/featureusage"
 )
 
 // ErrGiteaMergeQueueUnsupported is the typed sentinel EnqueuePullRequest and
@@ -1572,65 +1571,33 @@ func (p *GiteaProvider) do(ctx context.Context, method, endpoint string, body, o
 // mostly inert. Every request carries `Authorization: token <token>`, Gitea's
 // native scheme.
 func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
-	maxWait := p.maxRateLimitWait
-	if maxWait <= 0 {
-		maxWait = defaultRateLimitMaxWait
-	}
-	var rateLimitWaited time.Duration
-	var rateLimitRetries, transientRetries int
-	for {
-		req, err := newJSONRequest(ctx, method, endpoint, body)
-		if err != nil {
-			return nil, err
-		}
-		token, err := p.resolveToken(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if token != "" {
-			req.Header.Set("Authorization", "token "+token)
-		}
-		featureusage.RecordProviderHTTP("gitea")
-		resp, err := httpClientOrDefault(p.Client).Do(req)
-		if err != nil {
-			if transientRetries < p.maxRetries {
-				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
-					return nil, serr
-				}
-				transientRetries++
-				continue
+	return sendJSONWithPolicy(ctx, restSendPolicy{
+		client:              p.Client,
+		providerHTTPName:    "gitea",
+		maxTransientRetries: p.maxRetries,
+		maxRateLimitRetries: p.maxRateLimitRetries,
+		maxRateLimitWait:    p.maxRateLimitWait,
+		retryable:           true,
+		sleep:               p.sleep,
+		decorate: func(ctx context.Context, req *http.Request) error {
+			token, err := p.resolveToken(ctx)
+			if err != nil {
+				return err
 			}
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		if resp.StatusCode == http.StatusTooManyRequests {
-			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
-			if rateLimitRetries >= p.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
-				ev.Outcome = RateLimitOutcomeExhausted
-				p.observeRateLimit(ctx, ev)
-				return resp, nil
+			if token != "" {
+				req.Header.Set("Authorization", "token "+token)
 			}
-			_ = resp.Body.Close()
-			if serr := p.sleep(ctx, wait); serr != nil {
-				ev.Outcome = RateLimitOutcomeCanceled
-				p.observeRateLimit(ctx, ev)
-				return nil, serr
-			}
-			ev.Outcome = RateLimitOutcomeRetry
-			p.observeRateLimit(ctx, ev)
-			rateLimitWaited += wait
-			rateLimitRetries++
-			continue
-		}
-		if resp.StatusCode >= 500 && transientRetries < p.maxRetries {
-			_ = resp.Body.Close()
-			if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
-				return nil, serr
-			}
-			transientRetries++
-			continue
-		}
-		return resp, nil
-	}
+			return nil
+		},
+		isRateLimited: func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusTooManyRequests
+		},
+		planRateLimit:    p.rateLimitPlan,
+		observeRateLimit: p.observeRateLimit,
+		handleExhaustedRateLimit: func(resp *http.Response, _ RateLimitEvent) (*http.Response, error) {
+			return resp, nil
+		},
+	}, method, endpoint, body)
 }
 
 // getAllPages follows the Link header's rel="next" until exhausted, invoking

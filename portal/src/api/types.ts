@@ -496,6 +496,11 @@ export interface StorageHealthStatus {
 }
 
 export interface TelemetryExporterHealthStatus {
+  destinations?: Record<string, TelemetryExporterHealthStatus>;
+  unavailableReason?: string;
+  replay?: { accountingReady: boolean; pendingRecords: number; pendingBytes: number; oldestPendingSeconds: number; lastSuccess?: string; lastFailure?: string; failureClass?: string; activeFailure: boolean };
+  journal?: { accepted: number; dropped: number; failures: number };
+  diagnostics?: { accepted: number; dropped: number; failures: number };
   enabled: boolean;
   mode?: "disabled" | "local" | "otlp" | "stdout" | "azure-monitor" | "custom" | string;
   endpointHost?: string;

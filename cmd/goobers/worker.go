@@ -91,8 +91,9 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             exists and that this worker's credentials\n" +
 	"                             hold the RBAC grants dispatch needs there,\n" +
 	"                             failing startup by name otherwise. Requires\n" +
-	"                             --instance and --blob-store (the surrender\n" +
-	"                             plane rides the same volume); cluster access\n" +
+	"                             --instance and one artifact store mode. In\n" +
+	"                             endpoint mode the worker reads surrendered\n" +
+	"                             results through --daemon-api; cluster access\n" +
 	"                             uses in-cluster credentials or the standard\n" +
 	"                             kubeconfig rules (default\n" +
 	"                             $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
@@ -181,7 +182,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// Validate mode-3 authority before starting background work or printing
 	// endpoints. Invalid URLs may contain credentials and must never be echoed.
 	var recurringStageSweeper stageOrphanSweeper
-	if err := validateWorkerDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI); err != nil {
+	if err := validateWorkerDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobEndpoint); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -326,7 +327,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
 			return 1
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams)
+		dispatch, derr := buildStageDispatch(*instanceRoot, *daemonAPI, *blobRoot, owner, seams, *blobEndpoint)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1
@@ -403,7 +404,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 
 // validateWorkerDispatch rejects invalid mode-3 authority before startup opens
 // background resources or prints potentially sensitive endpoints.
-func validateWorkerDispatch(root, dispatchNamespace, daemonAPI string) error {
+func validateWorkerDispatch(root, dispatchNamespace, daemonAPI, blobEndpoint string) error {
 	if dispatchNamespace == "" {
 		return nil
 	}
@@ -414,7 +415,7 @@ func validateWorkerDispatch(root, dispatchNamespace, daemonAPI string) error {
 	if err != nil {
 		return fmt.Errorf("stage dispatch: load instance config: %w", err)
 	}
-	_, err = validateStageDispatchConfig(cfg, daemonAPI, os.Getenv("GOOBERS_BLOB_ENDPOINT"))
+	_, err = validateStageDispatchConfig(cfg, daemonAPI, stageBlobEndpoint(blobEndpoint))
 	return err
 }
 

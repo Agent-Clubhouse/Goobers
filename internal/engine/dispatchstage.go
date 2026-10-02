@@ -211,13 +211,17 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 	}
 	attemptEnv := env
 	attemptEnv.Attempt = int32(podAttempt)
+	physicalAttempt := dispatchPodAttempt(ctx, g.Name, podAttempt)
+	if number, ok := reviewerNumber(ctx); ok && physicalAttempt > 0 {
+		attemptEnv.Attempt = int32(number)
+	}
 	var result stageActivityResult
 	// OwningWorkflowID is read here, inside the workflow, for the same reason
 	// dispatchRemoteTask reads it in its own retry closure: this walk's
 	// execution IS the attempt's driver, and a scheduled run's id
 	// (claimID+"-run") cannot be reconstructed from the pod's labels alone.
 	err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
-		PodAttempt:       dispatchPodAttempt(ctx, g.Name, podAttempt),
+		PodAttempt:       physicalAttempt,
 		Class:            dispatchAttemptClass(ctx, class),
 		Envelope:         attemptEnv,
 		Placement:        placement,
@@ -227,7 +231,11 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		Review:           true,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result)
-	recordGatePlacement(ctx, rec, g.Name, podAttempt, class, result, err)
+	placementAttempt := podAttempt
+	if number, ok := reviewerNumber(ctx); ok {
+		placementAttempt = number
+	}
+	recordGatePlacement(ctx, rec, g.Name, placementAttempt, class, result, err)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}

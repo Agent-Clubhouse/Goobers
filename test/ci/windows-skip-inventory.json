@@ -16,7 +16,7 @@
       "package": "api/schemas",
       "coverage": "partial",
       "category": "seam-selection",
-      "reason": "Only the journal-logs schema tests run, in the 'Windows journal OTLP export' step."
+      "reason": "Journal-logs and named-exporter schema tests run in the 'Windows journal OTLP export' step."
     },
     {
       "package": "api/validate",
@@ -182,6 +182,12 @@
     },
     {
       "package": "internal/clidocs",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/clustercheck",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."

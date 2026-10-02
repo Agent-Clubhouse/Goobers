@@ -154,7 +154,7 @@ parallels:
 | `join` | yes | State run once after all successful/accepted branch settlement. |
 | `onFailure` | for `fail_fast` and `all_or_nothing` | Failure target; forbidden for `continue_on_error`. |
 | `branchTimeoutSeconds` | no | Positive bound applied to each branch. |
-| `maxConcurrentBranches` | no | Maximum simultaneous branches; defaults to `1`. |
+| `maxConcurrentBranches` | no | Maximum simultaneous branches; defaults to `1`, so branches run sequentially. Validation warns when it is unset; set it, even to `1`, to make the schedule explicit. |
 
 Successful branch paths end at `@join`; a branch may instead terminate the run
 through `@abort` or `@escalate`. Human gates and writable repository workspaces

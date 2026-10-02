@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 const workflowShowFixture = `apiVersion: goobers.dev/v1alpha1
@@ -191,5 +193,143 @@ func TestWorkflowUsage(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "\n  workflow show") {
 		t.Fatalf("help stdout = %q", stdout)
+	}
+}
+
+const workflowParallelFixture = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: query
+  tasks:
+    - name: query
+      type: deterministic
+      goal: Query work.
+      run:
+        command: ["true"]
+      next: analyze
+    - name: security
+      type: deterministic
+      goal: Analyze security.
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: performance
+      type: deterministic
+      goal: Analyze performance.
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement work.
+      capabilities:
+        - agent:model
+  parallels:
+    - name: analyze
+      failurePolicy: all_or_nothing
+      branches:
+        - name: security
+          start: security
+        - name: performance
+          start: performance
+      join: implement
+      onFailure: "@abort"
+`
+
+// TestWorkflowShowTextRendersParallels pins #2738: the text view lists the
+// parallel with its branches and failure route, resolves each branch's
+// "@join" to the join stage, and states the sequential default, agreeing
+// with --dot rather than printing an edge into a state it never lists.
+func TestWorkflowShowTextRendersParallels(t *testing.T) {
+	root := initDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(workflowParallelFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "show", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("workflow show: code = %d, stderr = %q", code, stderr)
+	}
+	want := `workflow: default-implement
+triggers: manual-only
+start: query
+stages:
+  query (kind: deterministic) -> analyze
+  security (kind: deterministic) -> implement
+  performance (kind: deterministic) -> implement
+  implement (kind: agentic) -> <complete>
+  analyze (kind: parallel, maxConcurrentBranches unset: branches run sequentially)
+    branch security start: security
+    branch performance start: performance
+    branch-failed target: @abort
+`
+	if stdout != want {
+		t.Fatalf("workflow show stdout:\n%s\nwant:\n%s", stdout, want)
+	}
+	if !strings.Contains(stderr, `parallel "analyze": maxConcurrentBranches is unset, so its 2 branches run sequentially`) {
+		t.Fatalf("workflow show stderr did not surface the sequential-parallel warning: %q", stderr)
+	}
+
+	code, dot, stderr := runArgs(t, "workflow", "show", "--dot", "default-implement", root)
+	if code != 0 {
+		t.Fatalf("workflow show --dot: code = %d, stderr = %q", code, stderr)
+	}
+	for _, edge := range []string{
+		`"analyze" -> "security";`,
+		`"analyze" -> "performance";`,
+		`"analyze" -> "@abort";`,
+		`"security" -> "implement";`,
+		`"performance" -> "implement";`,
+	} {
+		if !strings.Contains(dot, edge) {
+			t.Fatalf("workflow show --dot missing %s:\n%s", edge, dot)
+		}
+	}
+}
+
+// TestWorkflowShowTextRefusesInvalidWorkflow is a regression guard for
+// #2738: an invalid parallel workflow exits 1 instead of printing a confident
+// DAG. Config validation rejects this case before show compiles; the compile
+// step in show keeps the text view in lockstep with --dot if it ever does not.
+func TestWorkflowShowTextRefusesInvalidWorkflow(t *testing.T) {
+	root := initDemo(t)
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	broken := strings.Replace(workflowParallelFixture, "      join: implement\n", "      join: query\n", 1)
+	if err := os.WriteFile(workflowPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "workflow", "show", "default-implement", root)
+	if code != 1 {
+		t.Fatalf("workflow show: code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "stages:") {
+		t.Fatalf("workflow show printed a DAG for an invalid workflow:\n%s", stdout)
+	}
+}
+
+func TestParallelConcurrencyDescribesEachSetting(t *testing.T) {
+	for _, tc := range []struct {
+		limit int32
+		want  string
+	}{
+		{0, "maxConcurrentBranches unset: branches run sequentially"},
+		{1, "maxConcurrentBranches: 1, branches run sequentially"},
+		{3, "maxConcurrentBranches: 3"},
+	} {
+		parallels := []apiv1.Parallel{{Name: "other", MaxConcurrentBranches: 4}, {Name: "fan", MaxConcurrentBranches: tc.limit}}
+		if got := parallelConcurrency(parallels, "fan"); got != tc.want {
+			t.Fatalf("limit %d: got %q, want %q", tc.limit, got, tc.want)
+		}
 	}
 }

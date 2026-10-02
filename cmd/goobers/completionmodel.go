@@ -167,6 +167,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit the versioned onboarding action envelope"},
 	},
 	"preflight": {
+		{name: "instance", takesArg: true, desc: "Instance root to inspect"},
+		{name: "workflow", takesArg: true, desc: "Workflow name to inspect"},
+		{name: "execution-identity", takesArg: true, values: []string{"actual"}, desc: "Report actual identity boundaries"},
+		{name: "check-readiness", desc: "Run bounded read-only harness probes"},
+		{name: "json", desc: "Emit versioned runtime preflight report"},
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
 	},
@@ -246,6 +251,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "record-instance", takesArg: true, desc: "Instance root receiving Kubernetes check results"},
+		{name: "result-max-age", takesArg: true, desc: "Recorded Kubernetes result freshness window"},
 		{name: "psa-namespaces", takesArg: true, desc: "Namespaces for rendered pod admission checks"},
 		{name: "psa-service-account", takesArg: true, desc: "Stage ServiceAccount for rendered pod admission checks"},
 		{name: "temporal-codec", desc: "Report configured Temporal payload codec"},
@@ -544,6 +551,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"telemetry test": {
+		{name: "destination", takesArg: true, desc: "Named Azure destination to probe"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "timeout", takesArg: true, desc: "Connectivity deadline"},
 	},
