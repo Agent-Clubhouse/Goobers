@@ -155,17 +155,17 @@ func TestIntegrationArchiveIntakeEnsuresMissingDeltaBase(t *testing.T) {
 		t.Fatalf("intake without EnsureBase into an empty mirror: %v, want base missing", err)
 	}
 	failing := request
-	failing.EnsureBase = func(context.Context, string, string) error { return errors.New("forge unavailable") }
+	failing.EnsureBase = func(context.Context, string, string, string) error { return errors.New("forge unavailable") }
 	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), failing, ack); err == nil {
 		t.Fatal("intake succeeded although EnsureBase failed")
 	}
 	calls := 0
-	request.EnsureBase = func(_ context.Context, repository, sha string) error {
+	request.EnsureBase = func(_ context.Context, repository, sha, ref string) error {
 		calls++
-		if repository != host || sha != record.BaseSHA {
-			t.Fatalf("EnsureBase(%q, %q), want (%q, %q)", repository, sha, host, record.BaseSHA)
+		if repository != host || sha != record.BaseSHA || ref != record.BaseRef {
+			t.Fatalf("EnsureBase(%q, %q, %q), want (%q, %q, %q)", repository, sha, ref, host, record.BaseSHA, record.BaseRef)
 		}
-		recoveryTestGit(t, host, "fetch", source, "main")
+		recoveryTestGit(t, host, "fetch", source, "+"+ref+":"+ref)
 		return nil
 	}
 	got, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, ack)
@@ -175,10 +175,34 @@ func TestIntegrationArchiveIntakeEnsuresMissingDeltaBase(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("EnsureBase calls = %d, want 1", calls)
 	}
+	if got.archiveFormat() != archiveFormatDelta {
+		t.Fatalf("host re-captured a %q bundle, want delta", got.archiveFormat())
+	}
 	if data := recoveryTestGit(t, host, "show", got.Ref+":implementation"); data != "worker implementation" {
 		t.Fatalf("host pin: %q", data)
 	}
 	if _, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), request, ack); err != nil || calls != 1 {
 		t.Fatalf("retry with base present: err=%v calls=%d, want no further EnsureBase", err, calls)
+	}
+	// A base present but not reachable from the host's copy of its base ref (a
+	// stale mirror) must also refresh the ref, or the host captures full history.
+	stale, staleInventory := t.TempDir(), t.TempDir()
+	recoveryTestGit(t, stale, "init", "--bare")
+	recoveryTestGit(t, stale, "fetch", source, record.BaseSHA+":refs/heads/scratch")
+	recoveryTestGit(t, stale, "update-ref", "-d", "refs/heads/scratch")
+	staleRequest := request
+	staleRequest.Repository, staleRequest.InventoryRoot, staleRequest.CleanupRoots = stale, staleInventory, []string{stale}
+	refreshed := 0
+	staleRequest.EnsureBase = func(_ context.Context, repository, sha, ref string) error {
+		refreshed++
+		recoveryTestGit(t, repository, "update-ref", ref, sha)
+		return nil
+	}
+	staleGot, _, err := AcceptArchive(ctx, bytes.NewReader(wire.Bytes()), staleRequest, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed != 1 || staleGot.archiveFormat() != archiveFormatDelta {
+		t.Fatalf("stale base ref: refreshed=%d format=%q, want 1 and delta", refreshed, staleGot.archiveFormat())
 	}
 }

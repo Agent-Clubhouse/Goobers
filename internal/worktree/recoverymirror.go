@@ -43,29 +43,45 @@ func (m *Manager) WithRecoveryMirror(ctx context.Context, repoURL string, visit 
 	return visit(dir)
 }
 
-// FetchRecoveryBase refreshes origin's heads and tags into a recovery mirror so
-// a delta archive's base commit becomes importable (#6306). It must be called
+// FetchRecoveryBase makes a delta archive's base commit present in a recovery
+// mirror and, when baseRef names an origin branch or tag, refreshes that one
+// ref so the base is provably reachable from it (#6306). Otherwise the host
+// would re-capture the snapshot as a full-history bundle. It must be called
 // from inside WithRecoveryMirror's visitor, which holds the repository lock.
 // The fetch is best-effort recovery assistance: callers fail closed when the
 // base is still missing afterwards.
-func (m *Manager) FetchRecoveryBase(ctx context.Context, repoURL, dir, sha string) error {
+func (m *Manager) FetchRecoveryBase(ctx context.Context, repoURL, dir, sha, baseRef string) error {
 	if repoURL == "" || dir == "" || sha == "" {
 		return fmt.Errorf("recovery base fetch requires repository, mirror and commit")
 	}
-	// Fetch only the base commit first: a heads/tags refresh of a large
-	// repository can exceed the pod's bounded publication deadline. Forges
-	// that refuse unadvertised SHAs fall back to the narrow mirror refresh.
-	if shaErr := m.runRemoteGit(ctx, repoURL, dir, "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha); shaErr != nil {
-		if err := m.fetchMirror(ctx, repoURL, dir, true); err != nil {
-			return fmt.Errorf("fetch recovery base: %w", errors.Join(shaErr, err))
+	present := func() bool {
+		_, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", sha+"^{commit}")
+		return err == nil
+	}
+	// Fetch narrowly first: a heads/tags refresh of a large repository can
+	// exceed the pod's bounded publication deadline. A single tracked ref is
+	// incremental; a bare SHA covers a base ref that has since moved away.
+	var errs []error
+	if strings.HasPrefix(baseRef, "refs/heads/") || strings.HasPrefix(baseRef, "refs/tags/") {
+		if err := m.runRemoteGit(ctx, repoURL, dir, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "+"+baseRef+":"+baseRef); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	if _, err := rawGitOutput(ctx, dir, recoveryMirrorEnvironment(), "cat-file", "-e", sha+"^{commit}"); err != nil {
-		return fmt.Errorf("recovery base commit %s not reachable from origin heads or tags: %w", sha, err)
+	if !present() {
+		if err := m.runRemoteGit(ctx, repoURL, dir, "fetch", "--no-tags", "--no-write-fetch-head", "origin", sha); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if !present() {
+		if err := m.fetchMirror(ctx, repoURL, dir, true); err != nil {
+			return fmt.Errorf("fetch recovery base: %w", errors.Join(append(errs, err)...))
+		}
+	}
+	if !present() {
+		return fmt.Errorf("recovery base commit %s not reachable from origin heads or tags", sha)
 	}
 	return nil
 }
-
 func ensureRecoveryMirrorDirectory(path string) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
