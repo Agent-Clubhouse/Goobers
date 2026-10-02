@@ -4,6 +4,7 @@ package apireadstore
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 
 	_ "modernc.org/sqlite" // Registers the cache database driver.
 
+	"github.com/goobers/goobers/internal/sqliteschema"
 	"github.com/goobers/goobers/internal/sqliteuri"
 )
 
@@ -62,7 +64,7 @@ func Open(dir string, maxEntries, maxBytes int) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, maxEntries: maxEntries, maxBytes: maxBytes}
-	if _, err := db.Exec(schema); err != nil {
+	if err := sqliteschema.Migrate(context.Background(), db, "apireadstore", []string{schema}); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

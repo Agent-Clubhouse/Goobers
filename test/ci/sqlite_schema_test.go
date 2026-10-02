@@ -19,6 +19,9 @@ import (
 // here deliberately. Read-only pools are listed too: they validate or inherit
 // the schema version established by their package's writer.
 var auditedSQLOpeners = []string{
+	// Disposable HTTP response cache uses versioned migrations and refuses
+	// future schemas; callers fail open to the authoritative daemon response.
+	"internal/apireadstore/store.go:Open:Open",
 	"internal/cancelreceipt/store.go:Open:Open",
 	"internal/readmodel/existing_reader.go:OpenExistingReader:Open",
 	"internal/readmodel/intake/existing_reader.go:OpenExistingReader:Open",

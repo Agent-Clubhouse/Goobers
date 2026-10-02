@@ -176,3 +176,25 @@ func TestDatabaseKeepsProviderResponsesPrivate(t *testing.T) {
 		t.Fatalf("database permissions %o expose provider responses", info.Mode().Perm())
 	}
 }
+
+func TestOpenVersionsSchemaAndRefusesNewerCache(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir, 8, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := s.db.QueryRow("SELECT version FROM schema_meta").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+	if _, err := s.db.Exec("UPDATE schema_meta SET version=99"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if newer, err := Open(dir, 8, 4096); err == nil {
+		_ = newer.Close()
+		t.Fatal("future schema accepted")
+	}
+}
