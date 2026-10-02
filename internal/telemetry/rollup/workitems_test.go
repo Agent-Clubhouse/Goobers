@@ -176,6 +176,56 @@ func TestWorkItemsPreserveSelfHostedADOAuthority(t *testing.T) {
 	}
 }
 
+func TestWorkItemsGroupEquivalentADOAuthorities(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for index, mutation := range []struct {
+		gaggle string
+		url    string
+	}{
+		{"alpha", "https://dev.azure.com/org/proj/_workitems/edit/7"},
+		{"beta", "https://org.visualstudio.com/proj/_workitems/edit/7"},
+		{"gamma", ""},
+	} {
+		runID := "run-" + mutation.gaggle
+		at := start.Add(time.Duration(index) * time.Minute)
+		if _, err := db.sql.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+			VALUES (?, 'implementation', 1, ?, 'completed', ?)`,
+			runID, mutation.gaggle, formatTime(at)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.sql.Exec(`
+			INSERT INTO provider_mutations
+				(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+			VALUES (?, 1, 'ado', 'issue', '7', NULLIF(?, ''), 'update', ?)`,
+			runID, mutation.url, formatTime(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, hasMore, err := db.WorkItems(context.Background(), WorkItemQuery{Provider: "ado", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore || len(items) != 1 {
+		t.Fatalf("items = %#v, hasMore = %v", items, hasMore)
+	}
+	if items[0].Repository != "org/proj" ||
+		items[0].URL != "https://org.visualstudio.com/proj/_workitems/edit/7" ||
+		items[0].ActionCount != 3 || items[0].LastRunID != "run-gamma" {
+		t.Fatalf("work item = %#v", items[0])
+	}
+
+	actions, truncated, err := db.WorkItemActions(context.Background(), "ado", "org/proj", "issue", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(actions) != 3 || actions[0].RunID != "run-gamma" {
+		t.Fatalf("actions = %#v, truncated = %v", actions, truncated)
+	}
+}
+
 func TestWorkItemsCanonicalizeURLVariantsAcrossGaggles(t *testing.T) {
 	db := openTestDB(t, t.TempDir())
 	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)

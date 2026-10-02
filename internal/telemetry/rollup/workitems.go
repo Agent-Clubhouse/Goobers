@@ -104,38 +104,60 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				AND (? = '' OR pm.provider = ?)
 				AND (? = '' OR pm.kind = ?)
 		),
+		identified AS (
+			SELECT
+				normalized.*,
+				goobers_work_item_repository(provider, canonical_url) AS repository_identity
+			FROM normalized
+		),
 		known_gaggle_identity AS (
 			SELECT provider, kind, external_id, gaggle,
 			       CASE
-				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
+					       THEN MAX(repository_identity)
+				       ELSE ''
+			       END AS inferred_repository,
+			       CASE
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
 					       THEN MAX(canonical_url)
 				       ELSE ''
 			       END AS inferred_url
-			FROM normalized
-			WHERE canonical_url <> ''
+			FROM identified
+			WHERE repository_identity <> ''
 			GROUP BY provider, kind, external_id, gaggle
 		),
 		known_identity AS (
 			SELECT provider, kind, external_id,
 			       CASE
-				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
+					       THEN MAX(repository_identity)
+				       ELSE ''
+			       END AS inferred_repository,
+			       CASE
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
 					       THEN MAX(canonical_url)
 				       ELSE ''
 			       END AS inferred_url
-			FROM normalized
-			WHERE canonical_url <> ''
+			FROM identified
+			WHERE repository_identity <> ''
 			GROUP BY provider, kind, external_id
 		),
 		resolved AS (
 			SELECT
-				normalized.*,
+				identified.*,
+				COALESCE(
+					NULLIF(repository_identity, ''),
+					NULLIF(known_gaggle_identity.inferred_repository, ''),
+					NULLIF(known_identity.inferred_repository, ''),
+					''
+				) AS item_repository,
 				COALESCE(
 					NULLIF(canonical_url, ''),
 					NULLIF(known_gaggle_identity.inferred_url, ''),
 					NULLIF(known_identity.inferred_url, ''),
 					''
 				) AS item_url
-			FROM normalized
+			FROM identified
 			LEFT JOIN known_gaggle_identity USING (provider, kind, external_id, gaggle)
 			LEFT JOIN known_identity USING (provider, kind, external_id)
 		),
@@ -146,7 +168,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				pm.external_id,
 				pm.item_url,
 				COUNT(*) OVER (
-					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_url)
+					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_repository)
 				) AS action_count,
 				pm.operation,
 				pm.occurred_at,
@@ -155,7 +177,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				COALESCE(r.workflow, '') AS workflow,
 				COALESCE(r.status, '') AS status,
 				ROW_NUMBER() OVER (
-					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_url)
+					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_repository)
 					ORDER BY julianday(pm.occurred_at) DESC, pm.occurred_at DESC, pm.run_id DESC, pm.seq DESC
 				) AS item_rank
 			FROM resolved pm
@@ -241,38 +263,60 @@ func (db *DB) WorkItemActions(
 			FROM provider_mutations pm
 			LEFT JOIN runs r ON r.run_id = pm.run_id
 		),
+		identified AS (
+			SELECT
+				normalized.*,
+				goobers_work_item_repository(provider, canonical_url) AS repository_identity
+			FROM normalized
+		),
 		known_gaggle_identity AS (
 			SELECT provider, kind, external_id, gaggle,
 			       CASE
-				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
+					       THEN MAX(repository_identity)
+				       ELSE ''
+			       END AS inferred_repository,
+			       CASE
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
 					       THEN MAX(canonical_url)
 				       ELSE ''
 			       END AS inferred_url
-			FROM normalized
-			WHERE canonical_url <> ''
+			FROM identified
+			WHERE repository_identity <> ''
 			GROUP BY provider, kind, external_id, gaggle
 		),
 		known_identity AS (
 			SELECT provider, kind, external_id,
 			       CASE
-				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
+					       THEN MAX(repository_identity)
+				       ELSE ''
+			       END AS inferred_repository,
+			       CASE
+				       WHEN MIN(lower(repository_identity)) = MAX(lower(repository_identity))
 					       THEN MAX(canonical_url)
 				       ELSE ''
 			       END AS inferred_url
-			FROM normalized
-			WHERE canonical_url <> ''
+			FROM identified
+			WHERE repository_identity <> ''
 			GROUP BY provider, kind, external_id
 		),
 		resolved AS (
 			SELECT
-				normalized.*,
+				identified.*,
+				COALESCE(
+					NULLIF(repository_identity, ''),
+					NULLIF(known_gaggle_identity.inferred_repository, ''),
+					NULLIF(known_identity.inferred_repository, ''),
+					''
+				) AS item_repository,
 				COALESCE(
 					NULLIF(canonical_url, ''),
 					NULLIF(known_gaggle_identity.inferred_url, ''),
 					NULLIF(known_identity.inferred_url, ''),
 					''
 				) AS item_url
-			FROM normalized
+			FROM identified
 			LEFT JOIN known_gaggle_identity USING (provider, kind, external_id, gaggle)
 			LEFT JOIN known_identity USING (provider, kind, external_id)
 		)
