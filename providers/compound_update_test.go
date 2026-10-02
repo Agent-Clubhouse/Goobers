@@ -168,7 +168,10 @@ func TestCompoundUpdateRetryIsIdempotent(t *testing.T) {
 		noReplay bool
 	}
 	faults := []fault{
-		{name: "field patch lost after commit", method: http.MethodPatch, commit: true, wantErr: true},
+		// The first effect's write committed but its response was lost:
+		// nothing is known-complete, yet the error is still typed partial.
+		{name: "field patch lost after commit", method: http.MethodPatch, commit: true, wantErr: true,
+			wantCompleted: []string{}, wantPending: []string{"fields", "labels", "comment"}},
 		{name: "label add rejected", method: http.MethodPost, path: "/labels", wantErr: true,
 			wantCompleted: []string{"fields"}, wantPending: []string{"labels", "comment"}},
 		{name: "label remove rejected", method: http.MethodDelete, path: "-", wantErr: true,
@@ -204,12 +207,8 @@ func TestCompoundUpdateRetryIsIdempotent(t *testing.T) {
 				if (err != nil) != f.wantErr {
 					t.Fatalf("first attempt err = %v, wantErr %v", err, f.wantErr)
 				}
-				var partial *PartialUpdateError
-				if f.wantCompleted == nil {
-					if errors.As(err, &partial) {
-						t.Fatalf("first attempt = %v, want no partial-commit error (nothing committed)", err)
-					}
-				} else {
+				if f.wantErr {
+					var partial *PartialUpdateError
 					if !errors.As(err, &partial) {
 						t.Fatalf("first attempt err = %v, want *PartialUpdateError", err)
 					}
@@ -308,35 +307,45 @@ func TestCompoundUpdateIgnoresOtherKeysAndUnkeyedComments(t *testing.T) {
 }
 
 // TestCompoundStatusUpdateRetryIsIdempotent covers UpdateWorkItemStatus, the
-// close-out's done/in-review path: a failure after the comment, then a retry,
+// close-out's done/in-review path, failing after each sub-operation: a retry
 // leaves one comment and the item closed with its status label.
 func TestCompoundStatusUpdateRetryIsIdempotent(t *testing.T) {
-	for backendName, newBackend := range newCompoundBackends(t, &recordingRecorder{}) {
-		for _, commit := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/commentCommitted=%v", backendName, commit), func(t *testing.T) {
+	faults := []struct {
+		name          string
+		method, path  string
+		skip          int
+		commit        bool
+		wantErr       bool
+		wantCompleted []string
+	}{
+		{name: "label swap rejected", method: http.MethodPost, path: "/labels", wantErr: true, wantCompleted: []string{}},
+		{name: "close rejected", method: http.MethodPatch, wantErr: true, wantCompleted: []string{"labels"}},
+		{name: "comment rejected", method: http.MethodPost, path: "/comments", wantErr: true, wantCompleted: []string{"labels", "state"}},
+		{name: "comment response lost after commit", method: http.MethodPost, path: "/comments", commit: true},
+		{name: "final read fails after comment", method: http.MethodGet, skip: 1, wantErr: true, wantCompleted: []string{"labels", "state", "comment"}},
+	}
+	for _, f := range faults {
+		for backendName, newBackend := range newCompoundBackends(t, &recordingRecorder{}) {
+			t.Run(backendName+"/"+f.name, func(t *testing.T) {
 				b := newBackend()
 				ctx := context.Background()
 				req := UpdateWorkItemStatusRequest{
 					Repository: RepositoryRef{Owner: "acme", Name: "app"}, ID: "7", Status: WorkItemStatusDone,
-					Comment: "Implemented in https://example.test/pr/1.", IdempotencyKey: "issue-close-out/run-3/7",
+					Comment: "Implemented in https://example.test/pr/1.", IdempotencyKey: "issue-close-out/run-3/7/done",
 				}
-				if commit {
-					// The comment committed; the read-back fails.
-					b.injector.arm(http.MethodGet, b.prefix, 1, false)
-				} else {
-					b.injector.arm(http.MethodPost, b.prefix+"/comments", 0, false)
-				}
+				b.injector.arm(f.method, b.prefix+f.path, f.skip, f.commit)
 				_, err := b.provider.UpdateWorkItemStatus(ctx, req)
-				var partial *PartialUpdateError
-				if !errors.As(err, &partial) {
-					t.Fatalf("first attempt err = %v, want *PartialUpdateError", err)
+				if (err != nil) != f.wantErr {
+					t.Fatalf("first attempt err = %v, wantErr %v", err, f.wantErr)
 				}
-				wantCompleted := []string{"labels", "state"}
-				if commit {
-					wantCompleted = append(wantCompleted, "comment")
-				}
-				if !reflect.DeepEqual(partial.Completed, wantCompleted) {
-					t.Fatalf("completed = %v, want %v", partial.Completed, wantCompleted)
+				if f.wantErr {
+					var partial *PartialUpdateError
+					if !errors.As(err, &partial) {
+						t.Fatalf("first attempt err = %v, want *PartialUpdateError", err)
+					}
+					if !reflect.DeepEqual(partial.Completed, f.wantCompleted) {
+						t.Fatalf("completed = %v, want %v", partial.Completed, f.wantCompleted)
+					}
 				}
 				item, err := b.provider.UpdateWorkItemStatus(ctx, req)
 				if err != nil {
