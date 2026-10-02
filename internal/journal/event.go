@@ -418,6 +418,9 @@ type Event struct {
 	// circuit, produced is every other terminal. Empty is accepted only for
 	// journals written before this field existed.
 	Disposition string `json:"disposition,omitempty"`
+	// TerminalCause is an additive diagnostic record on run.finished. Excluded
+	// from conformance; its human text uses the normal event scrubber.
+	TerminalCause *TerminalCause `json:"terminalCause,omitempty"`
 	// WorkflowVersion is the immutable workflow version re-asserted by a
 	// run.resumed action. Normative.
 	WorkflowVersion int `json:"workflowVersion,omitempty"`

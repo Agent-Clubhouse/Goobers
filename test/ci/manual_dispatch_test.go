@@ -16,14 +16,16 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 	if !ok || len(dispatch.Content) != 0 {
 		t.Fatal("CI must support manual dispatch without checkout/skip inputs")
 	}
-	if w.Concurrency.Group != "ci-${{ github.workflow }}-${{ github.ref }}" || !w.Concurrency.CancelInProgress {
+	// A title/body-edit run alone gets a run-unique group (#6360); dispatch
+	// renders the shared ref group (TestCIRunsOnBaseRetargetNotMetadataEdits).
+	if w.Concurrency.Group != "ci-${{ github.workflow }}-${{ github.ref }}${{ "+ciMetadataEdit+" && format('-metadata-edit-{0}', github.run_id) || '' }}" || !w.Concurrency.CancelInProgress {
 		t.Fatal("CI concurrency must isolate frozen refs while preserving same-ref cancellation")
 	}
 	if !maps.Equal(w.Permissions, map[string]string{"actions": "read", "contents": "read", "pull-requests": "read"}) {
 		t.Fatal("manual CI must retain read-only default permissions")
 	}
 	aggregate := w.Jobs["required-ci"]
-	if aggregate.If != "${{ always() && github.event_name != 'push' }}" || aggregate.ContinueOnError || len(aggregate.Needs) == 0 {
+	if aggregate.If != "${{ always() && github.event_name != 'push' && !"+ciMetadataEdit+" }}" || aggregate.ContinueOnError || len(aggregate.Needs) == 0 {
 		t.Fatal("manual CI must require the full fail-closed aggregate")
 	}
 	for _, id := range aggregate.Needs {
@@ -31,7 +33,7 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 		if !exists {
 			t.Fatalf("required job %s is undefined", id)
 		}
-		if job.If != "" && job.If != "${{ github.event_name != 'push' }}" {
+		if job.If != "" && job.If != "${{ github.event_name != 'push' }}" && job.If != ciCodeGate {
 			t.Errorf("required job %s has a condition not guaranteed to run on dispatch: %s", id, job.If)
 		}
 		if job.ContinueOnError || len(job.Permissions) != 0 {

@@ -240,3 +240,30 @@ run, report, _ := journal.Recover(runDir, journal.WithScrubber(scrub))
 `journal.Ref` is the on-disk production form of the stage contract's wire
 `api/v1alpha1.ArtifactPointer` (#10) — same fields — so the runner maps
 journal→wire 1:1.
+
+## Structured terminal causes
+
+The local runner and new Temporal histories write `run.finished.terminalCause` with schema
+`goobers.dev/journal/terminal-cause/v1` for failed, aborted and escalated runs.
+The containing event is a single scrubbed, fsynced record: there is no second
+cause append that can be lost or duplicated across the terminal crash window.
+Its classification, selector, selected verdict/target, stable code, human
+message and causal event sequence describe the decision before cleanup runs.
+Retry/repass budgets count additional executions, excluding the initial
+attempt and a rejected re-entry; absent budgets mean unavailable or inapplicable.
+Allowances come from the run's pinned definition and controls. Temporal histories
+without the terminal-cause version marker keep their original payloads. Live
+writers resolve the cause's emit key to its actual sequence when progress events
+interleave with the deterministic projection.
+
+`Reader.TerminalCause` (or `TerminalCauseFromEvents` for an existing snapshot)
+returns that typed record or `ErrTerminalCauseUnavailable`. Older journals are
+not backfilled, unknown record versions are unavailable, and a resume/rerun
+clears the previous generation's cause. Readservice retains its legacy display
+projection but marks `terminalCauseStatus: "unavailable"` when no authoritative
+record exists; new projections expose the durable record and use its facts.
+
+The abort taxonomy includes defined abort, operator abort, drain, signal and
+resume refusal. Current graceful drain/signal handling pauses a running run;
+it does not manufacture an abort record. Resume refusal retains its existing
+failed phase while recording the distinct `resume-refused` classification.

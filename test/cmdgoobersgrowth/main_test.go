@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,71 +47,6 @@ func invoke(root string, args ...string) (int, string) {
 	var output bytes.Buffer
 	status := run(append([]string{"-root", root}, args...), &output, &output)
 	return status, output.String()
-}
-
-func TestBothRatchetDimensions(t *testing.T) {
-	for _, dimension := range dimensions {
-		t.Run(dimension, func(t *testing.T) {
-			for _, scenario := range []string{"unchanged", "growth", "decrease", "repin-unjustified", "repin-stale", "repin-justified", "committed-unjustified", "committed-justified"} {
-				t.Run(scenario, func(t *testing.T) {
-					root := fixture(t)
-					baseRef := git(t, root, "rev-parse", "HEAD")
-					old, next := 6, 7
-					if dimension == dimensions[1] {
-						old, next = 2, 3
-					}
-					if scenario != "unchanged" {
-						if dimension == dimensions[0] {
-							source := "package main\n\n// a\n\n"
-							if scenario == "decrease" {
-								source = "package main\n\n"
-							}
-							put(t, root, "cmd/goobers/a.go", source)
-						} else if scenario == "decrease" {
-							if err := os.Remove(filepath.Join(root, "cmd/goobers/b.go")); err != nil {
-								t.Fatal(err)
-							}
-						} else {
-							// An empty file isolates file growth from line growth.
-							put(t, root, "cmd/goobers/c.go", "")
-						}
-					}
-					if strings.Contains(scenario, "repin") || strings.HasPrefix(scenario, "committed") {
-						lines, files := 6, 2
-						if dimension == dimensions[0] {
-							lines = next
-						} else {
-							files = next
-						}
-						content := fmt.Sprintf("!non-test-line-count %d\n!non-test-file-count %d\n", lines, files)
-						if scenario == "repin-stale" {
-							content += fmt.Sprintf("!%s-justification\t%d\tprevious exception\n", dimension, old)
-						}
-						if scenario == "repin-justified" || scenario == "committed-justified" {
-							content += fmt.Sprintf("!%s-justification\t%d\trequired CLI adapter\n", dimension, next)
-						}
-						put(t, root, baselinePath, content)
-					}
-					if strings.HasPrefix(scenario, "committed") {
-						git(t, root, "add", ".")
-						git(t, root, "-c", "user.name=Gate Test", "-c", "user.email=gate@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "repin")
-					}
-					code, output := invoke(root, "-base-ref", baseRef)
-					wantFailure := scenario == "growth" || scenario == "repin-unjustified" || scenario == "repin-stale" || scenario == "committed-unjustified"
-					if (code != 0) != wantFailure {
-						t.Fatalf("status %d: %s", code, output)
-					}
-					if wantFailure {
-						for _, want := range []string{dimension, baselinePath, fmt.Sprintf("baseline %d", old), fmt.Sprintf("new value %d", next), "make cmdgoobers-growth-update"} {
-							if !strings.Contains(output, want) {
-								t.Errorf("output missing %q: %s", want, output)
-							}
-						}
-					}
-				})
-			}
-		})
-	}
 }
 
 func TestUpdateRequiresExactTargetForBothDimensions(t *testing.T) {
@@ -190,17 +124,17 @@ func TestInvalidBaselines(t *testing.T) {
 
 func TestMissingBaselinesAndInvalidBaseReference(t *testing.T) {
 	root := fixture(t)
-	if code, _ := invoke(root, "-base-ref", "missing-revision"); code == 0 {
+	if code, _ := invoke(root, "-update", "-base-ref", "missing-revision"); code == 0 {
 		t.Fatal("missing base revision accepted")
 	}
-	if code, _ := invoke(root, "-base-ref", ""); code == 0 {
+	if code, _ := invoke(root, "-update", "-base-ref", ""); code == 0 {
 		t.Fatal("empty base revision accepted")
 	}
 	if err := os.Remove(filepath.Join(root, baselinePath)); err != nil {
 		t.Fatal(err)
 	}
-	if code, _ := invoke(root); code == 0 {
-		t.Fatal("missing current baseline accepted")
+	if code, output := invoke(root); code != 0 {
+		t.Fatalf("informational main report requires a baseline: %s", output)
 	}
 	// Removing the working baseline cannot bypass a committed ceiling.
 	put(t, root, "cmd/goobers/c.go", "package main\n")

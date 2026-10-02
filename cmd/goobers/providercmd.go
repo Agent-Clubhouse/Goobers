@@ -449,6 +449,12 @@ const (
 	// became a PR at all. Never an auth failure and never retried: retrying
 	// (as a ref race or with a fresh credential) hits the identical policy.
 	errorCodeBranchPolicyProtected = "provider_branch_policy_protected"
+	// errorCodeWorkflowPermissionDenied is a push (or force-push) GitHub
+	// refused because it creates or updates a .github/workflows/ file and
+	// the pushing App installation lacks the `workflows` permission
+	// (workflowPermissionPushError, #5502). Never an auth failure and never
+	// retried: only granting the permission (or a manual push) clears it.
+	errorCodeWorkflowPermissionDenied = "github_workflow_permission_denied"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
 	// status such as a 422 validation error). Still typed and diagnosable —
@@ -519,6 +525,10 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	var policyPush *policyProtectedPushError
 	if errors.As(err, &policyPush) {
 		return errorCodeBranchPolicyProtected, false, nil
+	}
+	var workflowPush *workflowPermissionPushError
+	if errors.As(err, &workflowPush) {
+		return errorCodeWorkflowPermissionDenied, false, nil
 	}
 	if isADODeliveredCredentialRejection(err, message) {
 		return errorCodeProviderAuthFailed, false, nil

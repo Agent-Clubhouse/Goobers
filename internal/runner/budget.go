@@ -197,3 +197,27 @@ func usageBudgetConfigured(limits apiv1.Limits) bool {
 func validTokenUsage(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value == math.Trunc(value)
 }
+
+// BudgetExceededErrorCode is the shared non-retryable usage failure code.
+const BudgetExceededErrorCode = budgetExceededErrorCode
+
+// StageUsageBudget applies the local runner's canonical cumulative arithmetic
+// to trusted adapter usage. Its zero value is ready for one task dispatch loop.
+// It contains only deterministic state and may also be used by Temporal replay.
+type StageUsageBudget struct{ totals *stageUsageTotals }
+
+// Apply charges this attempt, then checks configured limits. An error before
+// the adapter reported usage is not evidence that the adapter consumed budget.
+func (b *StageUsageBudget) Apply(limits apiv1.Limits, metrics map[string]float64, reported bool, result *apiv1.ResultEnvelope, dispatchErr *error) {
+	if b.totals == nil {
+		b.totals = newStageUsageTotals()
+	}
+	accumulateStageUsage(b.totals, metrics)
+	if *dispatchErr == nil || reported {
+		var exceeded bool
+		*result, exceeded = enforceStageBudget(limits, metrics, b.totals, *result)
+		if exceeded {
+			*dispatchErr = nil
+		}
+	}
+}

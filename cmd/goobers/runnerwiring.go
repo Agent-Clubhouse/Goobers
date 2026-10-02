@@ -309,6 +309,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				HarnessInfo: harnessInfo, AdapterRegistry: adapterRegistry, EnvCapabilities: envCaps,
 				Resolver: resolver, Grants: grants, SharedRegistry: sharedReg, RunsDir: l.RunsDir(),
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
+				GuardedCredentialPaths: instance.GuardedCredentialPaths(cfg),
 			})
 			if err != nil {
 				return nil, err

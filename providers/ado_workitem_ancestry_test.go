@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -197,5 +198,53 @@ func TestADOAncestryCycleStopsWithoutRereading(t *testing.T) {
 	}
 	if want := []string{"ado:project:900>945@cycle"}; !reflect.DeepEqual(omissionReasons(got), want) {
 		t.Fatalf("omissions = %v, want %v", omissionReasons(got), want)
+	}
+}
+
+// A child whose parent id is not a positive integer is a failed read that
+// never reaches the batch; children sharing a parent put it in the batch
+// once; and a parent without System.TeamProject is placed in the provider's
+// project.
+func TestADOAncestryReadsEachValidParentOnce(t *testing.T) {
+	parent := adoAncestryItem(900, "ignored", "Feature", 0, nil)
+	delete(parent["fields"].(map[string]interface{}), "System.TeamProject")
+	fake := &adoAncestryServer{items: map[int]map[string]interface{}{900: parent}}
+	provider := newADOAncestryServer(t, fake)
+	children := []WorkItemNode{
+		{Provider: ProviderADO, Project: "project", ID: "1", ParentID: "not-a-number"},
+		{Provider: ProviderADO, Project: "project", ID: "2", ParentID: "900"},
+		{Provider: ProviderADO, Project: "project", ID: "3", ParentID: "0"},
+		{Provider: ProviderADO, Project: "project", ID: "4", ParentID: "900"},
+	}
+	reads, err := provider.ReadWorkItemParents(context.Background(), RepositoryRef{Project: "project"}, children, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := [][]int{{900}}; !reflect.DeepEqual(fake.batches, want) {
+		t.Fatalf("batches = %v, want %v", fake.batches, want)
+	}
+	for _, i := range []int{0, 2} {
+		if r := reads[i]; r.Omission != AncestryOmitReadFailed || r.Detail != "invalid parent id" || r.Parent != nil || r.ParentID != children[i].ParentID {
+			t.Errorf("read %d = %+v, want a failed read of the invalid parent id", i, r)
+		}
+	}
+	for _, i := range []int{1, 3} {
+		r := reads[i]
+		if r.Omission != "" || r.Parent == nil || r.Parent.Key() != "ado:project:900" || r.Parent.Type != "Feature" {
+			t.Errorf("read %d = %+v, want Feature 900 placed in the provider's project", i, r)
+		}
+	}
+}
+
+// A walk whose context has ended returns that error rather than recording
+// every parent as an omission.
+func TestADOAncestryCancelledContextIsAnError(t *testing.T) {
+	provider := newADOAncestryServer(t, &adoAncestryServer{items: map[int]map[string]interface{}{}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reads, err := provider.ReadWorkItemParents(ctx, RepositoryRef{Project: "project"},
+		[]WorkItemNode{{Provider: ProviderADO, Project: "project", ID: "1", ParentID: "900"}}, nil)
+	if !errors.Is(err, context.Canceled) || reads != nil {
+		t.Fatalf("ReadWorkItemParents = %+v, %v; want the cancellation", reads, err)
 	}
 }

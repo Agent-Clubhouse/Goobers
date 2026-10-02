@@ -14,9 +14,108 @@
   },
   "execution": {
     "identityMode": "actual",
+    "process": {
+      "pid": 1,
+      "os": "\u003chost-os\u003e",
+      "uid": "\u003ceffective-user\u003e",
+      "gid": "\u003ceffective-group\u003e",
+      "source": {
+        "fidelity": "observed",
+        "detail": "current process OS and effective identity"
+      }
+    },
+    "plan": {
+      "paths": [
+        {
+          "purpose": "instance",
+          "path": "\u003cinstance\u003e",
+          "source": {
+            "fidelity": "static",
+            "detail": "loaded instance and workflow configuration; no path access or runtime enforcement probe"
+          }
+        },
+        {
+          "purpose": "config",
+          "path": "\u003cconfig\u003e",
+          "source": {
+            "fidelity": "static",
+            "detail": "loaded instance and workflow configuration; no path access or runtime enforcement probe"
+          }
+        },
+        {
+          "purpose": "runs",
+          "path": "\u003cruns\u003e",
+          "source": {
+            "fidelity": "static",
+            "detail": "loaded instance and workflow configuration; no path access or runtime enforcement probe"
+          }
+        },
+        {
+          "purpose": "workcopies",
+          "path": "\u003cworkcopies\u003e",
+          "source": {
+            "fidelity": "static",
+            "detail": "loaded instance and workflow configuration; no path access or runtime enforcement probe"
+          }
+        }
+      ],
+      "credentialSources": [
+        {
+          "scope": "repos[0]",
+          "kind": "env"
+        },
+        {
+          "scope": "capability",
+          "capability": "agent:model",
+          "kind": "env"
+        }
+      ],
+      "sandbox": {
+        "agentic": "disabled",
+        "runners": [
+          {
+            "name": "linux-pool"
+          },
+          {
+            "name": "local"
+          }
+        ],
+        "enforcement": {
+          "outcome": "unobservable",
+          "code": "sandbox_enforcement_unobservable",
+          "detail": "configured posture is not proof of enforcement on the target runner",
+          "source": {
+            "fidelity": "unobservable",
+            "detail": "target runner not probed"
+          }
+        }
+      },
+      "timeouts": {
+        "runControls": {
+          "maxRepasses": 3,
+          "stalledRunTimeout": "45m0s"
+        },
+        "repositoryDefaults": [
+          ""
+        ],
+        "cancellation": {
+          "outcome": "unobservable",
+          "code": "cancellation_unobservable",
+          "detail": "attempt parent deadlines and process cleanup require target execution",
+          "source": {
+            "fidelity": "unobservable",
+            "detail": "no running attempt"
+          }
+        }
+      },
+      "source": {
+        "fidelity": "static",
+        "detail": "loaded instance and workflow configuration; no path access or runtime enforcement probe"
+      }
+    },
     "source": {
       "fidelity": "static",
-      "detail": "instance.yaml and config/ only; no host, provider, credential, sandbox, or harness probe was executed"
+      "detail": "static execution inputs and observed reporting-process identity; no provider, credential, sandbox, or harness probe was executed"
     }
   },
   "stages": [
@@ -64,6 +163,21 @@
         "source": {
           "fidelity": "static",
           "detail": "instance runner inventory, workflow placement requirements, and deterministic dispatcher selection"
+        }
+      },
+      "identity": {
+        "outcome": "unsupported",
+        "code": "worker_identity_unobservable",
+        "detail": "container/remote worker process, service account and security context were not observed; local checks cannot prove worker equivalence",
+        "source": {
+          "fidelity": "unobservable",
+          "detail": "no target-process attestation or safe impersonation"
+        }
+      },
+      "settings": {
+        "source": {
+          "fidelity": "static",
+          "detail": "compiled stage timeout and workspace inputs; instance/repository defaults apply when unset; parent cancellation remains runtime-only"
         }
       },
       "source": {
@@ -119,6 +233,22 @@
           "detail": "instance runner inventory, workflow placement requirements, and deterministic dispatcher selection"
         }
       },
+      "identity": {
+        "outcome": "unsupported",
+        "code": "worker_identity_unobservable",
+        "detail": "container/remote worker process, service account and security context were not observed; local checks cannot prove worker equivalence",
+        "source": {
+          "fidelity": "unobservable",
+          "detail": "no target-process attestation or safe impersonation"
+        }
+      },
+      "settings": {
+        "workspace": "repo",
+        "source": {
+          "fidelity": "static",
+          "detail": "compiled stage timeout and workspace inputs; instance/repository defaults apply when unset; parent cancellation remains runtime-only"
+        }
+      },
       "source": {
         "fidelity": "static",
         "detail": "workflow task definition"
@@ -128,6 +258,16 @@
   "checks": [
     {
       "category": "authentication",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "authentication_unobservable",
       "outcome": "unobservable",
       "detail": "credential presence and sign-in state require an external auth probe, which this report intentionally does not run",
@@ -138,6 +278,16 @@
     },
     {
       "category": "transport",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "transport_unobservable",
       "outcome": "unobservable",
       "detail": "provider and harness transport reachability require external network probes, which this report intentionally does not run",
@@ -148,6 +298,16 @@
     },
     {
       "category": "authorization",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "authorization_unobservable",
       "outcome": "unobservable",
       "detail": "permission checks require provider authorization probes, which this report intentionally does not run",
@@ -158,6 +318,16 @@
     },
     {
       "category": "unavailable_tool",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "tool_unobservable",
       "outcome": "unobservable",
       "detail": "tool availability requires host or harness execution, which this report intentionally does not run",
@@ -168,6 +338,16 @@
     },
     {
       "category": "path_access",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "path_access_unobservable",
       "outcome": "unobservable",
       "detail": "runtime workspace path access requires runner execution, which this report intentionally does not run",
@@ -178,6 +358,16 @@
     },
     {
       "category": "sandbox",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "sandbox_unobservable",
       "outcome": "unobservable",
       "detail": "sandbox enforcement requires runner probing, which this report intentionally does not run",
@@ -188,6 +378,16 @@
     },
     {
       "category": "capability_mismatch",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "capability_mismatch_unobservable",
       "outcome": "unobservable",
       "detail": "runner capability satisfaction requires scheduler/runner inventory evaluation beyond this static report",
@@ -198,6 +398,16 @@
     },
     {
       "category": "cleanup_guarantee",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "cleanup_guarantee_unsupported",
       "outcome": "unsupported",
       "detail": "cleanup guarantees are not proven by this report contract slice",
@@ -208,6 +418,16 @@
     },
     {
       "category": "unsupported",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "external_probe_unsupported",
       "outcome": "unsupported",
       "detail": "external credential, harness, MCP, sandbox, lifecycle, and provider probes are outside this report contract slice",
@@ -218,6 +438,16 @@
     },
     {
       "category": "unobservable",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "unknown_facts_explicit",
       "outcome": "unobservable",
       "detail": "unknown facts are explicit and cannot satisfy a required guarantee",
@@ -228,6 +458,16 @@
     },
     {
       "category": "capability_mismatch",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "stage_capability_satisfaction_unobservable",
       "outcome": "unobservable",
       "stage": "claim",
@@ -239,6 +479,16 @@
     },
     {
       "category": "capability_mismatch",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
       "code": "stage_capability_satisfaction_unobservable",
       "outcome": "unobservable",
       "stage": "implement",
@@ -246,6 +496,48 @@
       "source": {
         "fidelity": "static",
         "detail": "workflow stage declaration"
+      }
+    },
+    {
+      "category": "execution_identity",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "worker_identity_unobservable",
+      "outcome": "unsupported",
+      "stage": "claim",
+      "detail": "container/remote worker process, service account and security context were not observed; local checks cannot prove worker equivalence",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "no target-process attestation or safe impersonation"
+      }
+    },
+    {
+      "category": "execution_identity",
+      "process": {
+        "pid": 1,
+        "os": "\u003chost-os\u003e",
+        "uid": "\u003ceffective-user\u003e",
+        "gid": "\u003ceffective-group\u003e",
+        "source": {
+          "fidelity": "observed",
+          "detail": "current process OS and effective identity"
+        }
+      },
+      "code": "worker_identity_unobservable",
+      "outcome": "unsupported",
+      "stage": "implement",
+      "detail": "container/remote worker process, service account and security context were not observed; local checks cannot prove worker equivalence",
+      "source": {
+        "fidelity": "unobservable",
+        "detail": "no target-process attestation or safe impersonation"
       }
     }
   ],

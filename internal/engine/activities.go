@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
@@ -31,11 +30,10 @@ import (
 // decoupled from the concrete receiver instance; they must equal the method
 // names on Activities exactly (Temporal registers struct methods by name).
 const (
-	ActInvokeGoober       = "InvokeGoober"
-	ActReviewGoober       = "ReviewGoober"
-	ActRunDeterministic   = "RunDeterministic"
-	ActEvaluateAutomated  = "EvaluateAutomated"
-	ActReconcileSchedules = "ReconcileSchedules"
+	ActInvokeGoober      = "InvokeGoober"
+	ActReviewGoober      = "ReviewGoober"
+	ActRunDeterministic  = "RunDeterministic"
+	ActEvaluateAutomated = "EvaluateAutomated"
 	// ActDispatchStage is the mode-3 dispatch activity (#3588,
 	// dispatchstage.go): the stage executes in a dispatcher-created pod and
 	// its surrendered outputs marshal back into the same stageActivityResult
@@ -55,9 +53,6 @@ type Activities struct {
 	Goober             invoke.Goober
 	Det                invoke.Deterministic
 	Auto               invoke.Automated
-	// ScheduleService is required only by the quarantined tier-3 schedule
-	// reconciliation workflow.
-	ScheduleService workflowservice.WorkflowServiceClient
 	// Workspaces provisions the fresh working copy each stage attempt runs
 	// in. Required for any stage that executes in a workspace (agentic tasks,
 	// deterministic tasks, agentic reviewer gates); an automated gate's checks
@@ -121,6 +116,8 @@ type Activities struct {
 // Placement is additive and omitempty, so a history written before it existed
 // decodes with a nil Placement rather than failing.
 type DispatchStageResult struct {
+	// Usage is trusted adapter accounting, independent of result metrics.
+	Usage *AttemptUsage `json:"usage,omitempty"`
 	// Embed the legacy activity result so its JSON stays flat and histories
 	// recorded before mutation metadata was added remain replay-decodable.
 	apiv1.ResultEnvelope
@@ -307,48 +304,6 @@ type MutationFact struct {
 // mutationFact is the in-package spelling of MutationFact. An ALIAS, for the
 // same reason stageActivityResult is one.
 type mutationFact = MutationFact
-
-type scheduleReconcileActivityInput struct {
-	Namespace     string
-	TaskQueue     string
-	CatchupWindow time.Duration
-	Snapshot      ScheduleSnapshot
-}
-
-// ReconcileSchedules applies one snapshot inside the durable per-instance
-// reconciliation workflow.
-func (a *Activities) ReconcileSchedules(ctx context.Context, input scheduleReconcileActivityInput) error {
-	if a.ScheduleService == nil {
-		return fmt.Errorf("reconcile schedules: %w", ErrNotConfigured)
-	}
-	stopHeartbeat := make(chan struct{})
-	defer close(stopHeartbeat)
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				activity.RecordHeartbeat(ctx, input.Snapshot.ConfigGeneration)
-			case <-ctx.Done():
-				return
-			case <-stopHeartbeat:
-				return
-			}
-		}
-	}()
-	activity.RecordHeartbeat(ctx, input.Snapshot.ConfigGeneration)
-
-	reconciler, err := newScheduleReconciler(
-		newTemporalScheduleStore(a.ScheduleService, input.Namespace),
-		input.TaskQueue,
-		input.CatchupWindow,
-	)
-	if err != nil {
-		return err
-	}
-	return reconciler.reconcileDirect(ctx, input.Snapshot)
-}
 
 // ErrNotConfigured is returned by an activity whose backing seam was not wired.
 var ErrNotConfigured = errors.New("engine: activity dependency not configured")
@@ -553,7 +508,7 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 // recorded with the two-argument shape replays under this code
 // (TestContinuityPreChangeHistoryReplays). A struct in the second position
 // would fail to decode those payloads.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (out stageActivityResult, outErr error) {
 	if a.AdmitSelfExecution != nil {
 		if err := a.AdmitSelfExecution(env.TaskID); err != nil {
 			var refusal *runner.SelfExecutionRefusal
@@ -577,6 +532,16 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	defer a.removeWorkspaceWithReceipts(ctx, env, ws)
+
+	var usage activityUsageCollector
+	ctx = invoke.WithAgentUsageReporter(ctx, usage.report)
+	defer func() {
+		snapshot := usage.snapshot()
+		out.Usage = &snapshot
+		if outErr != nil {
+			outErr = agenticUsageError(outErr, snapshot)
+		}
+	}()
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		// #724 salvage: an agentic session that ran out of wall clock has not

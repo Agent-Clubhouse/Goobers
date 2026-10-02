@@ -40,6 +40,7 @@ Local installs retain the compatible `allow` default.
 | `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`). Containers reference the bare image name `goobers`, left untransformed so the base stays consumable as a remote kustomize base (#3287) — point it at a registry via your own `images:` overlay, or see `examples/goobers-system-registry/` if you fork and edit instead | §2, §3, §4, §5 |
 | `telemetry/` | optional overlay for customer-owned Application Insights: Kubernetes Secret injection, `standard` profile initialization, persistent replay on the journal PVC, and the shared connectivity test | telemetry guide |
 | `examples/goobers-system-registry/` | example overlay stamping `goobers-system/` with a `registry.example.com/CHANGE-ME` placeholder image — copy and edit rather than apply as-is | §1 |
+| [`examples/netpol-drift/`](examples/netpol-drift/README.md) | offline CI fixture: committed per-class manifests, provenance snapshot and address-count baseline checked by `make deploy-validate`; not for deployment | §5, decision 016 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
 | `temporal/` | values for the OSS Temporal Helm chart + kustomize base (Temporal-isolation NetworkPolicies + the namespace-registration Job) | §2, §4, §5 |
@@ -396,6 +397,97 @@ endpoint as well as Azure DevOps. Display commands such as `goobers status`
 tolerate a missing identity, but the daemon's gaggle runtime builds the
 identity at startup to authenticate worktree git operations, so a daemon whose
 projection is missing fails to start.
+
+### Stage-pod dependency downloads through an instance-owned proxy
+
+A mounted `GOMODCACHE` gives a stage somewhere to retain modules; it does not
+provide a download route. A stage placed on `self` uses its host's environment,
+while a dispatched stage runs in a fresh pod. Setting `HTTPS_PROXY` on the daemon
+or worker alone does not configure that pod. Check the run's placement evidence
+before comparing a successful local build with a failing pod build.
+
+Proxy configuration is owned by the instance. Configure both the stage's
+environment and its network grants in your deployment/config overlay. Automatic
+product-default proxying is tracked separately in #1307.
+
+For an image-backed runner, declare the following **stage `env:` fragment** in
+the instance-owned workflow. For a Deployment-backed runner, put the equivalent
+named `env` entries on the **first container** in the runner Deployment's pod
+template; the dispatcher copies that container's environment into each attempt.
+Explicit template `env` names and stage-declared `env` names survive
+`env:default-deny`. Merely adding a name to `runner.envPassthrough` does not copy
+a daemon environment value into a pod.
+
+```yaml
+env:
+  HTTP_PROXY: http://egress-proxy.networking.svc.cluster.local:3128
+  HTTPS_PROXY: http://egress-proxy.networking.svc.cluster.local:3128
+  NO_PROXY: localhost,127.0.0.1,::1,.svc,.svc.cluster.local
+  GOPROXY: https://proxy.golang.org
+```
+
+Replace the example proxy with your service and port. Add the exact internal
+daemon/blob endpoints to `NO_PROXY` if they use other names or literal IPs, and
+retain their existing direct network grants. Use the module mirror your instance
+actually supports; omitting `,direct` avoids an accidental direct-fetch fallback.
+Keep checksum verification enabled. If the proxy intercepts TLS, provision its
+trusted CA in the stage image as well. Do not put proxy passwords in workflow
+documents.
+
+The stage namespace also needs egress to the proxy's backing pods and listening
+port. An example **additional NetworkPolicy** follows; replace the namespace,
+proxy labels, port, and runner-class value with values from your installation.
+Read the class value from the rendered `goobers netpol-render` policy or an actual
+stage pod; do not infer it from the runner's name.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-build-class-to-proxy
+  namespace: example-gaggle
+spec:
+  podSelector:
+    matchLabels:
+      goobers.dev/role: stage
+      goobers.dev/runner-class: REPLACE-WITH-RENDERED-CLASS
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: networking
+          podSelector:
+            matchLabels:
+              app: egress-proxy
+      ports:
+        - protocol: TCP
+          port: 3128
+```
+
+NetworkPolicy grants are additive. Select only the intended build class, never
+all stage pods or a `network:none` class. Where the proxy namespace denies
+ingress, add the matching ingress grant there, scoped to that stage namespace
+and class. Preserve DNS access for proxy service resolution. The proxy itself
+must have outbound access and allow the exact module/checksum hosts and download
+redirect destinations required by the build (for the public Go service, commonly
+`proxy.golang.org`, `sum.golang.org`, and `storage.googleapis.com`). Review denials
+in its access log using the host policy described below.
+
+Validate with a short diagnostic stage placed on the **same runner and class**
+as the failing build. Confirm the rendered pod carries the intended proxy
+variable names, run `go env GOPROXY GOMODCACHE`, then perform a bounded module
+download using the repository's pinned `go.mod`. Use a fresh writable temporary
+`GOMODCACHE` for that probe so a warm shared cache cannot hide a broken route;
+remove the probe cache afterward. Verify an allowed request in the proxy log
+and completed module files, then retry the normal stage with its durable cache.
+A direct public-IP timeout points to missing proxy settings or a bypass; a
+timeout dialing the proxy points to service/network reachability; a proxy denial
+points to its host allowlist. Run this probe in the stage execution environment,
+not just a daemon shell.
+
+See [runtime acquisition](../../docs/guides/runtime-acquisition.md) for the
+additional dependencies needed by a complete CI run and offline provisioning.
 
 ### Egress allowlist: name hosts, not domain suffixes
 

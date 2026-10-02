@@ -1,0 +1,33 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: ci-linux
+    host: ghcr.io/example/goobers-ci:v0.7.0
+    provides:
+      os: linux
+    restrictions: [network:allowlist, tmp:ephemeral]
+  - name: locked
+    host: ghcr.io/example/goobers-locked:v0.7.0
+    provides:
+      os: linux
+    restrictions: [network:none]
+  - name: unrestricted
+    host: ghcr.io/example/goobers-ci:v0.7.0
+    provides:
+      os: linux
+engine:
+  hostPort: temporal.goobers-system:7233
+egress:
+  allowlist:
+    - name: github-provider
+      kind: provider
+      source: https://api.github.com/meta
+      sourceSHA256: d3e6f228b8add2a3f3f87c5e1088dbe4706cc337152d1b54e8221066ecf05a48
+      cidrs: [140.82.112.0/20]
+    - name: copilot-model
+      kind: model
+      source: https://api.github.com/meta
+      sourceSHA256: d3e6f228b8add2a3f3f87c5e1088dbe4706cc337152d1b54e8221066ecf05a48
+      cidrs: [140.82.113.21/32]

@@ -57,7 +57,6 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		AdmitSelfExecution: deps.AdmitSelfExecution,
 		Det:                deps.Det,
 		Auto:               deps.Auto,
-		ScheduleService:    temporalClient.WorkflowService(),
 		Workspaces:         deps.Workspaces,
 		Scrubber:           deps.Scrubber,
 		Journal:            deps.Journal,

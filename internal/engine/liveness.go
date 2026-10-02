@@ -373,7 +373,7 @@ func isScheduledRunWorkflowID(workflowID string) bool {
 
 // looksLikeScheduleClaimID reports whether workflowID has the shape Temporal
 // gives a Schedule action: the configured action id, "-", and the nominal
-// fire time in RFC3339 (the same encoding scheduledFireTime parses back out).
+// fire time in RFC3339, as used by the removed Temporal Schedule starter.
 //
 // The timestamp itself contains '-', so the split point is found by trying
 // each '-' from the right — cheap on ids this short, and exact, which matters
@@ -491,3 +491,7 @@ func (p *WorkflowLiveness) eachOpenWorkflow(ctx context.Context, visit func(info
 		}
 	}
 }
+
+// Legacy Schedule histories used a child workflow to execute each claimed run.
+// Keep this mapping for lookup and cancellation of existing run journals.
+const scheduledRunWorkflowIDSuffix = "-run"

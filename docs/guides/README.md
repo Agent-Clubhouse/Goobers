@@ -27,6 +27,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Diagnostics bundle](diagnostics-bundle.md)
 - [Use the Goobers agent toolkit](dsl-authoring-skill.md)
 - [Engine fallback observability](engine-fallback-observability.md)
+- [Closed execution projection repair](engine-projection-repair.md)
 - [EvalSuite onboarding: running tests and reading reports](evals-onboarding.md)
 - [EvalSuite PR review checklist](evals-review-checklist.md)
 - [External telemetry connectors](external-telemetry-connectors.md)

@@ -301,6 +301,10 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 
 	protectedBranch := createMergedTerminalBranch("terminal-owner")
 	eligibleBranch := createMergedTerminalBranch("eligible-owner")
+	recordRetentionItem(t, layout, "eligible-owner")
+	oldLookup := retentionItemParked
+	retentionItemParked = func(context.Context, string, string, recordedItemRepo) (bool, error) { return false, nil }
+	t.Cleanup(func() { retentionItemParked = oldLookup })
 	repoDir, err := manager.WorkingCopy(ctx, repo)
 	if err != nil {
 		t.Fatalf("WorkingCopy: %v", err)
@@ -371,7 +375,7 @@ func TestPruneConfiguredRetentionProtectsPausedRunReboundBranchOnRestart(t *test
 			{Gaggle: "example", Workflow: machine.Def.Name}: machine,
 		},
 	}
-	protected, err := retentionProtectedBranches(map[string]string{manager.Root: layout.RunsDir()}, setup)
+	protected, err := retentionBranchReferences(map[string]string{manager.Root: layout.RunsDir()}, setup, false)
 	if err != nil {
 		t.Fatalf("collect protected branches: %v", err)
 	}
@@ -416,7 +420,7 @@ func TestRetentionProtectedBranchesRejectsFutureJournalSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = retentionProtectedBranches(map[string]string{"worktrees": runsDir}, &schedulerSetup{})
+	_, err = retentionBranchReferences(map[string]string{"worktrees": runsDir}, &schedulerSetup{}, false)
 	if err == nil {
 		t.Fatal("retention accepted a future journal schema")
 	}
