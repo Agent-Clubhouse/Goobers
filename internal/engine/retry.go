@@ -184,6 +184,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			infrastructureFailures++
 			nextRetryClass = journal.AttemptInfra
 			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
+				rec.exhaustedTerminalRetry(t.Name, journal.AttemptInfra, int(infrastructureFailures), int(runner.DefaultMaxInfrastructureAttempts))
 				return apiv1.ResultEnvelope{}, fmt.Errorf(
 					"engine: journal stage %q: %w (attempt %d/%d)",
 					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
@@ -222,6 +223,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			nextRetryClass = journal.AttemptInfra
 		}
 		if !shouldRetry {
+			rec.exhaustedTerminalRetry(t.Name, failureClass, int(retryCount), int(retryLimit))
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
 		}
 		retryDelay := infrastructureRetryDelay(err, backoff, workflow.Now(ctx))

@@ -894,6 +894,7 @@ export const goWireFixtures = {
       "terminalReason": "review budget exhausted",
       "causalEventSeq": 9
     },
+    "terminalCauseStatus": "unavailable",
     "transitions": [
       {
         "branch": 0,

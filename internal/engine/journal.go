@@ -133,7 +133,9 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
-	proj JournalProjection
+	proj          JournalProjection
+	machine       *wf.Machine
+	terminalCause *journal.TerminalCause
 
 	usesRepo       bool
 	branchRecorded bool
@@ -202,6 +204,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 	}
 	runControls = effectiveControls.Overrides()
 	rec := &runJournal{
+		machine: m,
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
 				InstanceID:      in.InstanceID,
@@ -764,6 +767,7 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 		Error:  errorDetail,
 		Runner: detail,
 	})
+	r.failureTerminalCause(stage, code, message)
 }
 
 // runCanceledCause is the run_failed cause text for a cancelled run. The
@@ -780,8 +784,18 @@ func runCanceledCause(err error) string {
 
 // runFinished closes the projection with the terminal phase and authoritative
 // work disposition, mapped to the local runner's run.finished vocabulary.
-func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase, disposition string) {
-	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition})
+func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase, disposition string, finalState string) error {
+	var cause *journal.TerminalCause
+	if workflow.GetVersion(ctx, terminalCauseChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		var err error
+		cause, err = r.buildTerminalCause(phase, finalState)
+		if err != nil {
+			return err
+		}
+	}
+	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition, TerminalCause: cause})
+	r.terminalCause = nil
+	return nil
 }
 
 // PhaseForStatus maps the engine's RunResult status onto the local runner's

@@ -611,6 +611,14 @@ func TestRunAbortMarksRunTerminal(t *testing.T) {
 	if st.Phase != journal.PhaseAborted {
 		t.Fatalf("phase = %q, want %q", st.Phase, journal.PhaseAborted)
 	}
+	cause, err := rd.TerminalCause()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cause.Classification != journal.TerminalOperatorAbort || cause.Code != "run_canceled" || cause.CausalEventSeq != st.LastSeq {
+		t.Fatalf("operator abort cause = %+v, terminal seq = %d", cause, st.LastSeq)
+	}
+
 }
 
 func TestRunAbortRejectsAmbiguousRunIDPrefix(t *testing.T) {
