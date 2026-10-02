@@ -77,6 +77,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Instance-shared goobers](shared-goobers.md)
 - [Stack support](stack-support.md)
 - [Daemon supervision (systemd · launchd · Windows Service)](supervision.md)
+- [Export to multiple named destinations](telemetry-destinations.md)
 - [Telemetry load and v0.5.0 validation](telemetry-load-validation.md)
 - [Test timing artifacts and budgets](test-timing.md)
 - [Tutor config-only write-boundary](tutor-write-boundary.md)

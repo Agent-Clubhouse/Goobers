@@ -1328,6 +1328,9 @@ type AgentModelGitHubAppConfig struct {
 // TelemetryConfig configures the local telemetry rollup store and optional
 // collector push (§8).
 type TelemetryConfig struct {
+	// Exporters are named, independent remote destinations. The legacy single
+	// destination blocks remain supported when this list is empty.
+	Exporters []TelemetryExporterConfig `json:"exporters,omitempty" yaml:"exporters,omitempty"`
 	// Enabled toggles OTel client construction, span emission, local SQLite
 	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`

@@ -155,6 +155,9 @@ func newTelemetryExporterHealth(cfg *instance.Config) *telemetry.ExporterHealth 
 	if cfg == nil || !cfg.TelemetryEnabled() {
 		return telemetry.NewExporterHealth(false, "disabled", "")
 	}
+	if len(cfg.Telemetry.Exporters) > 0 {
+		return telemetry.NewExporterHealth(true, "custom", "")
+	}
 	mode := "local"
 	endpoint := ""
 	otlpEnabled := cfg.Telemetry.OTLP != nil && cfg.Telemetry.OTLP.Enabled()

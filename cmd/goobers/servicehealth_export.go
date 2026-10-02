@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"time"
@@ -61,18 +62,23 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 	otlp := setup.Config.DiagnosticOTLP()
 	azure := setup.Config.Telemetry.AzureMonitor
 	azureEnabled := setup.Config.TelemetryEnabled() && azure != nil && azure.Enabled()
-	if !otlp.Enabled() && !azureEnabled {
+	if !otlp.Enabled() && !azureEnabled && !setup.Config.Telemetry.NamedAzureEnabled() {
 		return nil, nil
 	}
 	cfg := telemetry.Config{
 		ServiceVersion: version.Get().Version, BuildCommit: version.Get().Commit,
 		Scrubber:                journal.Chain(setup.SharedRegistry, journal.NewPatternScrubber()),
+		ExporterHealth:          setup.TelemetryExporterHealth,
 		AzureMonitorReplayStart: setup.TelemetryReplayStart,
 	}
 	_, cfg.ResourceAttributes = telemetryInstanceIdentities(root)
+	var legacyErr error
 	if otlp.Enabled() {
 		if err := configureOTLP(ctx, &cfg, otlp, setup.SharedRegistry, stores); err != nil {
-			return nil, err
+			if !setup.Config.Telemetry.NamedAzureEnabled() {
+				return nil, err
+			}
+			legacyErr = err
 		}
 	}
 	if azureEnabled {
@@ -80,7 +86,9 @@ func buildDiagnosticExporterWithStores(ctx context.Context, root string, setup *
 			return nil, err
 		}
 	}
-	return telemetry.NewDiagnosticExporter(cfg)
+	namedErr := configureNamedTelemetry(ctx, &cfg, setup.Config.Telemetry, root, setup.SharedRegistry, stores, true)
+	exporter, err := telemetry.NewDiagnosticExporter(cfg)
+	return exporter, errors.Join(legacyErr, namedErr, err)
 }
 
 // Whitelist the public operational contract rather than exporting the instance
