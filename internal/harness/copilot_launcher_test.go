@@ -83,8 +83,10 @@ func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
 	for _, input := range []string{
 		`{}`, `{"version":2,"sessionMode":"adapter-managed"}`,
 		`{"version":1,"sessionMode":"adapter-managed","authProbe":{"args":["auth"]}}`,
+		`{"version":1,"sessionMode":"adapter-managed","auth":{"interactiveLogin":{"args":["auth","login"]}}}`,
 		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":[]}}`,
 		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":[""]}}`,
+		`{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth"]},"auth":{"interactiveLogin":{"args":[]}}}`,
 		`{"version":1,"sessionMode":"auto"}`,
 		`{"version":1,"sessionMode":"adapter-managed","sessionArgs":["--id"]}`,
 		`{"version":1,"sessionMode":"templated"}`,
@@ -96,6 +98,52 @@ func TestLauncherContractRejectsAmbiguousSessionSemantics(t *testing.T) {
 		if _, err := parseLauncherContract([]byte(input)); err == nil {
 			t.Errorf("accepted incompatible contract: %s", input)
 		}
+	}
+}
+
+func TestLauncherV2AuthCommandUsesDeclaredLifecycleOperation(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:                 []string{"wrapper", "copilot"},
+		RequireLauncherContract: true,
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			if req.Command[len(req.Command)-1] != launcherContractFlag {
+				t.Fatalf("unexpected command before lifecycle operation: %v", req.Command)
+			}
+			_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]},"auth":{"interactiveLogin":{"args":["auth","login","--profile","runner"]},"logout":{"args":["auth","logout","--profile","runner"]}}}`)
+			return ProcessResult{}, err
+		}),
+	}
+	command, _, err := adapter.AuthCommand(context.Background(), "login")
+	if err != nil {
+		t.Fatalf("AuthCommand login: %v", err)
+	}
+	if !reflect.DeepEqual(command, []string{"wrapper", "copilot", "auth", "login", "--profile", "runner"}) {
+		t.Fatalf("login command = %v", command)
+	}
+	command, _, err = adapter.AuthCommand(context.Background(), "logout")
+	if err != nil {
+		t.Fatalf("AuthCommand logout: %v", err)
+	}
+	if !reflect.DeepEqual(command, []string{"wrapper", "copilot", "auth", "logout", "--profile", "runner"}) {
+		t.Fatalf("logout command = %v", command)
+	}
+}
+
+func TestLauncherWithoutLifecycleLoginFailsClearly(t *testing.T) {
+	adapter := &CopilotAdapter{
+		Command:                 []string{"wrapper", "copilot"},
+		RequireLauncherContract: true,
+		Runner: launcherProcessRunner(func(_ context.Context, req ProcessRequest) (ProcessResult, error) {
+			if req.Command[len(req.Command)-1] != launcherContractFlag {
+				t.Fatalf("unexpected command before lifecycle operation: %v", req.Command)
+			}
+			_, err := io.WriteString(req.StdoutCapture, `{"version":2,"sessionMode":"adapter-managed","authProbe":{"args":["auth","status"]}}`)
+			return ProcessResult{}, err
+		}),
+	}
+	_, _, err := adapter.AuthCommand(context.Background(), "login")
+	if err == nil || !strings.Contains(err.Error(), "does not declare login auth support") {
+		t.Fatalf("AuthCommand err = %v", err)
 	}
 }
 

@@ -1251,6 +1251,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
+       goobers doctor --harness-auth [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
 --k8s preflights a target Kubernetes cluster against the documented
@@ -1313,6 +1314,10 @@ merge-queue requirement, required status checks — issue #916, Tier 4 of
 skipped. Token-scope introspection is reported as unavailable when GitHub
 does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
 from a failed call. instance-root defaults to ".".
+
+--harness-auth reports credential-free Copilot harness authentication state
+for the configured launcher/profile: authenticated, signed-out, or unknown,
+plus executable, version when available, runner, and profile directory.
 
 --av-exclusions lists every directory Goobers writes and immediately reads
 back — the set real-time antivirus scanning on Windows must exclude, or a

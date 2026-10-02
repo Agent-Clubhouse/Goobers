@@ -117,12 +117,20 @@ func TestPreflightProbeErrorReportsTimeoutBeforeExitCode(t *testing.T) {
 }
 
 func TestCopilotAuthProbeErrorCarriesStableAuthRequiredCode(t *testing.T) {
-	err := copilotAuthProbeError(context.Background(), "sign-in check", ProcessResult{ExitCode: 1, Transcript: []byte("not signed in")}, nil, false)
-	if !IsHarnessAuthRequired(err) {
-		t.Fatalf("err = %v, want HARNESS_AUTH_REQUIRED", err)
-	}
-	if !strings.Contains(err.Error(), HarnessAuthRequiredCode) || !strings.Contains(err.Error(), "goobers harness auth copilot login") {
-		t.Fatalf("auth-required error is not actionable: %v", err)
+	for _, transcript := range []string{
+		"not signed in",
+		"credential is expired",
+		"stored credential is inaccessible",
+	} {
+		t.Run(transcript, func(t *testing.T) {
+			err := copilotAuthProbeError(context.Background(), "sign-in check", ProcessResult{ExitCode: 1, Transcript: []byte(transcript)}, nil, false)
+			if !IsHarnessAuthRequired(err) {
+				t.Fatalf("err = %v, want HARNESS_AUTH_REQUIRED", err)
+			}
+			if !strings.Contains(err.Error(), HarnessAuthRequiredCode) || !strings.Contains(err.Error(), "goobers harness auth copilot login") {
+				t.Fatalf("auth-required error is not actionable: %v", err)
+			}
+		})
 	}
 }
 

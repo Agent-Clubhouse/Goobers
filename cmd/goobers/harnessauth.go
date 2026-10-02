@@ -34,6 +34,10 @@ type copilotAuthReporter interface {
 	AuthStatus(context.Context) (harness.AuthInfo, error)
 }
 
+type copilotAuthCommander interface {
+	AuthCommand(context.Context, string) ([]string, []string, error)
+}
+
 func runHarness(args []string, stdout, stderr io.Writer) int {
 	pf(stderr, "%s", harnessAuthHelp)
 	return 2
@@ -89,13 +93,7 @@ func runHarnessAuthCopilotLogin(args []string, stdout, stderr io.Writer) int {
 }
 
 func runHarnessAuthCopilotLogout(args []string, stdout, stderr io.Writer) int {
-	root, ok := parseHarnessAuthRoot(args, stderr, "harness auth copilot logout")
-	if !ok {
-		return 2
-	}
-	_, _ = root, stdout
-	pf(stderr, "error: Copilot CLI logout is not supported by this native harness; clear credentials with the vendor-supported mechanism for the selected profile\n")
-	return 1
+	return runHarnessAuthCopilotNative("logout", args, stdout, stderr)
 }
 
 func runHarnessAuthCopilotNative(operation string, args []string, stdout, stderr io.Writer) int {
@@ -103,16 +101,43 @@ func runHarnessAuthCopilotNative(operation string, args []string, stdout, stderr
 	if !ok {
 		return 2
 	}
-	cfg, err := loadHarnessAuthConfig(root)
+	adapter, err := copilotAuthAdapter(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	command := harnessCommandOrDefault(cfg.Runner.HarnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"})
-	command = append(append([]string(nil), command...), operation)
-	if err := runCopilotNativeAuthCommand(context.Background(), command, harnessEnvironmentPolicy(cfg.Runner), stdout, stderr); err != nil {
+	commander, ok := adapter.(copilotAuthCommander)
+	if !ok {
+		pf(stderr, "error: configured Copilot adapter does not expose authentication %s\n", operation)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	command, env, err := commander.AuthCommand(ctx, operation)
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if err := runCopilotNativeAuthCommand(ctx, command, env, stdout, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if operation == "login" {
+		reporter, ok := adapter.(copilotAuthReporter)
+		if !ok {
+			pf(stderr, "error: configured Copilot adapter does not expose authentication status\n")
+			return 1
+		}
+		info, err := reporter.AuthStatus(ctx)
+		if err != nil {
+			pf(stderr, "error: verify login: %v\n", err)
+			return 1
+		}
+		printCopilotAuthInfo(stdout, info)
+		if info.Status != harness.AuthStatusAuthenticated {
+			pf(stderr, "error: login completed but Copilot authentication is %s\n", info.Status)
+			return 1
+		}
 	}
 	return 0
 }
@@ -186,14 +211,12 @@ func printCopilotAuthInfo(stdout io.Writer, info harness.AuthInfo) {
 	}
 }
 
-func runCopilotNativeAuthCommandDefault(ctx context.Context, command []string, environment harness.EnvironmentConfig, stdout, stderr io.Writer) error {
+func runCopilotNativeAuthCommandDefault(ctx context.Context, command, env []string, stdout, stderr io.Writer) error {
 	if len(command) == 0 {
 		return fmt.Errorf("no Copilot command configured")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Env = harness.AuthEnvironment(environment)
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

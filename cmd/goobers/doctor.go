@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/k8spreflight"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -29,6 +30,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"                          [--image-tools <tool,...>] [--image-ca <root.pem>]\n" +
 	"                          [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]\n" +
 	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
+	"       goobers doctor --harness-auth [--report text|json] [instance-root]\n" +
 	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
 	"--k8s preflights a target Kubernetes cluster against the documented\n" +
 	"infrastructure shape (docs/design/k8s-infra-shape.md) before installing\n" +
@@ -81,6 +83,9 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"skipped. Token-scope introspection is reported as unavailable when GitHub\n" +
 	"does not expose it (fine-grained PAT / GitHub App tokens) — never inferred\n" +
 	"from a failed call. instance-root defaults to \".\".\n\n" +
+	"--harness-auth reports credential-free Copilot harness authentication state\n" +
+	"for the configured launcher/profile: authenticated, signed-out, or unknown,\n" +
+	"plus executable, version when available, runner, and profile directory.\n\n" +
 	"--av-exclusions lists every directory Goobers writes and immediately reads\n" +
 	"back — the set real-time antivirus scanning on Windows must exclude, or a\n" +
 	"scan holding a handle on a just-written file surfaces minutes later as an\n" +
@@ -140,6 +145,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	k8sMode := fs.Bool("k8s", false, "preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md")
 	repoMode := fs.Bool("repo", false, "diff declared repo forge-policy manifests against live GitHub state")
+	harnessAuthMode := fs.Bool("harness-auth", false, "report credential-free harness authentication state")
 	avMode := fs.Bool("av-exclusions", false, "list the directories Goobers writes then reads and verify antivirus exclusions (advisory)")
 	workRoot := fs.String("work-root", "", "worker work root to enumerate with --av-exclusions (default: the worker's own default)")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (default: the standard loading rules)")
@@ -167,13 +173,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	modes := 0
-	for _, on := range []bool{*k8sMode, *repoMode, *avMode} {
+	for _, on := range []bool{*k8sMode, *repoMode, *harnessAuthMode, *avMode} {
 		if on {
 			modes++
 		}
 	}
 	if modes != 1 {
-		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
+		pf(stderr, "goobers doctor: exactly one of --k8s, --repo, --harness-auth or --av-exclusions is required\n\n")
 		fs.Usage()
 		return 2
 	}
@@ -206,18 +212,12 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *repoMode || *avMode {
-		root := "."
-		if fs.NArg() == 1 {
-			root = fs.Arg(0)
-		} else if fs.NArg() > 1 {
+	if *repoMode || *harnessAuthMode || *avMode {
+		if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
 		}
-		if *avMode {
-			return runDoctorAVExclusions(root, *workRoot, *reportFormat, stdout, stderr, realAVExclusionDeps())
-		}
-		return runDoctorRepo(root, *reportFormat, stdout, stderr)
+		return runDoctorInstanceMode(fs.Arg(0), *reportFormat, *workRoot, *repoMode, *harnessAuthMode, *avMode, stdout, stderr)
 	}
 
 	if fs.NArg() != 0 {
@@ -298,6 +298,23 @@ var newDoctorGitHubProvider = func(token string) providers.PolicyProvider {
 	return providers.NewGitHubProvider(token)
 }
 
+func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnessAuthMode, avMode bool, stdout, stderr io.Writer) int {
+	if root == "" {
+		root = "."
+	}
+	switch {
+	case avMode:
+		return runDoctorAVExclusions(root, workRoot, reportFormat, stdout, stderr, realAVExclusionDeps())
+	case harnessAuthMode:
+		return runDoctorHarnessAuth(root, reportFormat, stdout, stderr)
+	case repoMode:
+		return runDoctorRepo(root, reportFormat, stdout, stderr)
+	default:
+		pf(stderr, "goobers doctor: no instance-root mode selected\n")
+		return 2
+	}
+}
+
 // doctorRepoReport is one repo's `goobers doctor --repo` result — the stable
 // --report json shape.
 type doctorRepoReport struct {
@@ -313,6 +330,63 @@ type doctorRepoFinding struct {
 	Field    string `json:"field"`
 	Declared string `json:"declared"`
 	Live     string `json:"live"`
+}
+
+type doctorHarnessAuthReport struct {
+	Harness     string             `json:"harness"`
+	Status      harness.AuthStatus `json:"status"`
+	Executable  string             `json:"executable,omitempty"`
+	Version     string             `json:"version,omitempty"`
+	Runner      string             `json:"runner,omitempty"`
+	ProfileDir  string             `json:"profile,omitempty"`
+	Remediation string             `json:"remediation,omitempty"`
+}
+
+func runDoctorHarnessAuth(root, reportFormat string, stdout, stderr io.Writer) int {
+	info, err := copilotAuthInfo(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	report := doctorHarnessAuthReport{
+		Harness:     "copilot",
+		Status:      info.Status,
+		Executable:  info.Executable,
+		Version:     info.Version,
+		Runner:      info.Runner,
+		ProfileDir:  info.ProfileDir,
+		Remediation: info.Remediation,
+	}
+	if reportFormat == "json" {
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			pf(stderr, "error: encode report: %v\n", err)
+			return 2
+		}
+	} else {
+		printCopilotAuthInfo(stdout, info)
+	}
+	if info.Status != harness.AuthStatusAuthenticated {
+		return 1
+	}
+	return 0
+}
+
+func copilotAuthInfo(root string) (harness.AuthInfo, error) {
+	return copilotAuthInfoWithTimeout(root, harnessPreflightTimeout)
+}
+
+func copilotAuthInfoWithTimeout(root string, timeout time.Duration) (harness.AuthInfo, error) {
+	adapter, err := copilotAuthAdapter(root)
+	if err != nil {
+		return harness.AuthInfo{}, err
+	}
+	reporter, ok := adapter.(copilotAuthReporter)
+	if !ok {
+		return harness.AuthInfo{}, fmt.Errorf("configured Copilot adapter does not expose authentication status")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return reporter.AuthStatus(ctx)
 }
 
 // runDoctorRepo diffs every configured repo's declared policy manifest
