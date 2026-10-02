@@ -652,7 +652,7 @@ func TestPublishGroupsOneBuildBreakAcrossThirteenPackagesIntoOneIssue(t *testing
 			t.Fatalf("grouped issue does not list affected package %s:\n%s", failure.Package, create.Body)
 		}
 	}
-	if !strings.Contains(create.Body, "- #4128 (closed as a duplicate") || !strings.Contains(create.Body, "- #4129 (closed as a duplicate") ||
+	if !strings.Contains(create.Body, "- #4128 (superseded") || !strings.Contains(create.Body, "- #4129 (superseded") ||
 		strings.Contains(create.Body, "#4130") {
 		t.Fatalf("grouped issue does not cross-link exactly the open superseded issues:\n%s", create.Body)
 	}

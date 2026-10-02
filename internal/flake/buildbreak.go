@@ -30,48 +30,67 @@ var (
 //
 // One commit that breaks a shared package fails every downstream package that
 // builds it, each under its own package, test name and wrapper message
-// (#4230). The signature keeps only what those failures share — the source
-// file base name and the compiler's message — and drops the package path,
-// relative path, line and column that differ from one consumer to the next,
-// so the same break observed from many packages yields one signature.
+// (#4230). The signature keeps only what those failures share — the broken
+// package's import path from the go tool's "# import/path" header, the source
+// file base name and the compiler's message — and drops the consumer's own
+// package, the relative path, line and column that differ from one consumer
+// to the next, so the same break observed from many packages yields one
+// signature.
 //
-// A test that shells out to `go build` often reports only the go tool's
-// "# import/path" header, its diagnostics lost to a separate stream (the
-// failures behind #4230 looked like this). The signature then falls back to
-// the broken package's import path, which is likewise the same from every
-// consumer.
+// A test that shells out to `go build` often reports only the header, its
+// diagnostics lost to a separate stream (the failures behind #4230 looked
+// like this). The signature then keeps whatever other output followed the
+// header, so two different failures of one package do not merge.
 func BuildBreakSignature(text string) (string, bool) {
-	var headers, diagnostics []string
+	var headers, diagnostics, details []string
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if match := compileHeader.FindStringSubmatch(line); len(match) == 2 {
-			if header := "# " + match[1]; !slices.Contains(headers, header) {
-				headers = append(headers, header)
-			}
+			headers = appendUnique(headers, "# "+match[1])
 			continue
 		}
 		if len(headers) == 0 {
 			continue
 		}
-		match := compileDiagnostic.FindStringSubmatch(line)
-		if len(match) != 3 {
+		if match := compileDiagnostic.FindStringSubmatch(line); len(match) == 3 {
+			diagnostics = appendUnique(diagnostics, match[1]+": "+normalizeLine(match[2]))
 			continue
 		}
-		if diagnostic := match[1] + ": " + normalizeLine(match[2]); !slices.Contains(diagnostics, diagnostic) {
-			diagnostics = append(diagnostics, diagnostic)
+		if detail := normalizeLine(line); !buildBreakNoise(line, detail) {
+			details = appendUnique(details, detail)
 		}
 	}
-	if len(diagnostics) == 0 {
-		diagnostics = headers
-	}
-	if len(diagnostics) == 0 {
+	if len(headers) == 0 {
 		return "", false
 	}
+	if len(diagnostics) == 0 {
+		diagnostics = details
+	}
+	slices.Sort(headers)
 	slices.Sort(diagnostics)
 	if len(diagnostics) > buildBreakMessageLimit {
 		diagnostics = diagnostics[:buildBreakMessageLimit]
 	}
-	return boundSignature("build failed: " + strings.Join(diagnostics, " | ")), true
+	return boundSignature("build failed: " + strings.Join(append(headers, diagnostics...), " | ")), true
+}
+
+// buildBreakNoise reports a line after a go tool header that names nothing
+// about the break: runner boilerplate, a bare stream label, or a value that
+// normalized to placeholders only (a timestamp).
+func buildBreakNoise(raw, normalized string) bool {
+	if failureBoilerplate(raw) || normalized == "stderr:" || normalized == "stdout:" {
+		return true
+	}
+	return strings.TrimSpace(placeholderOnly.ReplaceAllString(normalized, "")) == ""
+}
+
+var placeholderOnly = regexp.MustCompile(`<(?:time|uuid|addr|duration|rand|hash)>`)
+
+func appendUnique(values []string, value string) []string {
+	if slices.Contains(values, value) {
+		return values
+	}
+	return append(values, value)
 }
 
 // BuildBreakFingerprint returns the ledger identity of one build break: the

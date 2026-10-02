@@ -654,7 +654,7 @@ func groupedIssueBody(run runMetadata, failure testFailure, superseded []string)
 	if len(superseded) > 0 {
 		lines = append(lines, "", "## Superseded issues", "")
 		for _, id := range superseded {
-			lines = append(lines, "- #"+singleLine(id)+" (closed as a duplicate of this issue)")
+			lines = append(lines, "- #"+singleLine(id)+" (superseded by this issue)")
 		}
 	}
 	lines = append(lines,

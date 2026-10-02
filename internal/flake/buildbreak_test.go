@@ -36,12 +36,16 @@ func TestBuildBreakSignatureCollapsesOneBreakAcrossPackages(t *testing.T) {
 	if first != second || first != windows {
 		t.Fatalf("one build break produced different signatures:\n%s\n%s\n%s", first, second, windows)
 	}
-	for _, unwanted := range []string{"../", "cmd/app", ":120", ":9", "build validator", "github.com/example"} {
+	for _, unwanted := range []string{"../", "cmd/app/root.go", ":120", ":9", "build validator", "build_test.go"} {
 		if strings.Contains(first, unwanted) {
 			t.Fatalf("signature %q retained volatile %q", first, unwanted)
 		}
 	}
-	for _, wanted := range []string{"root.go: undefined: newRegistry", "root.go: too many arguments in call to run"} {
+	for _, wanted := range []string{
+		"# github.com/example/app/cmd/app",
+		"root.go: undefined: newRegistry",
+		"root.go: too many arguments in call to run",
+	} {
 		if !strings.Contains(first, wanted) {
 			t.Fatalf("signature %q lost the compiler diagnostic %q", first, wanted)
 		}
@@ -58,6 +62,16 @@ func TestBuildBreakSignatureSeparatesDifferentErrors(t *testing.T) {
 	other, ok := BuildBreakSignature(strings.ReplaceAll(buildBreakOutput("build validator", "", 120), "newRegistry", "loadPolicy"))
 	if !ok || other == first {
 		t.Fatalf("different compile errors share a signature: %q", other)
+	}
+	// The same message from a different broken package is a different break.
+	if elsewhere, _ := BuildBreakSignature(strings.ReplaceAll(buildBreakOutput("build validator", "", 120), "app/cmd/app", "app/cmd/tool")); elsewhere == first {
+		t.Fatalf("breaks in different packages share a signature: %q", elsewhere)
+	}
+	// Header-only failures of one package that fail differently stay apart.
+	killed, _ := BuildBreakSignature("build: exit status 1\n# github.com/example/app/cmd/app\ncompile: signal: killed\nFAIL")
+	oom, _ := BuildBreakSignature("build: exit status 1\n# github.com/example/app/cmd/app\nlink: out of memory\nFAIL")
+	if killed == oom {
+		t.Fatalf("different header-only failures share a signature: %q", killed)
 	}
 }
 
