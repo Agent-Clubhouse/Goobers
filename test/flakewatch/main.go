@@ -57,7 +57,17 @@ type githubClient struct {
 	branch     string
 	token      string
 	http       *http.Client
+	// retryDelays bounds how often a GET answered with a 5xx is retried and
+	// how long to wait before each retry. Empty means no retries.
+	retryDelays []time.Duration
+	// sleep waits between retries; nil uses a context-aware timer. Tests
+	// inject it so retries never wait on wall-clock time.
+	sleep func(context.Context, time.Duration) error
 }
+
+// defaultRetryDelays is the bounded backoff for transient 5xx answers from
+// the GitHub API (#6350).
+var defaultRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
 
 type pullRequest struct {
 	Number  int    `json:"number"`
@@ -157,14 +167,16 @@ type failuresReport struct {
 		StartedAt  time.Time `json:"started_at"`
 		FinishedAt time.Time `json:"finished_at"`
 	} `json:"run"`
-	Failures     []failure     `json:"failures"`
-	LogOmissions []logOmission `json:"log_omissions,omitempty"`
+	Failures        []failure        `json:"failures"`
+	LogOmissions    []logOmission    `json:"log_omissions,omitempty"`
+	SourceOmissions []sourceOmission `json:"source_omissions,omitempty"`
 }
 
 type scanResult struct {
 	KnownDispatched int
 	Novel           []failure
 	LogOmissions    []logOmission
+	SourceOmissions []sourceOmission
 }
 
 type failureScan struct {
@@ -179,6 +191,16 @@ type logOmission struct {
 	Reason  string `json:"reason"`
 }
 
+// sourceOmission records a failure source whose checks or jobs could not be
+// listed, so the scan skipped it instead of aborting.
+type sourceOmission struct {
+	SHA         string `json:"sha"`
+	RunID       int64  `json:"run_id,omitempty"`
+	PullRequest int    `json:"pull_request,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Reason      string `json:"reason"`
+}
+
 type httpStatusError struct {
 	Method   string
 	Endpoint string
@@ -188,6 +210,16 @@ type httpStatusError struct {
 
 func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("%s %s: status %d: %s", e.Method, e.Endpoint, e.Status, e.Message)
+}
+
+// serverErrorStatus reports the status of a 5xx answer, which GitHub uses for
+// transient outages, or 0 when err is anything else.
+func serverErrorStatus(err error) int {
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.Status >= 500 && statusErr.Status <= 599 {
+		return statusErr.Status
+	}
+	return 0
 }
 
 func main() {
@@ -211,11 +243,12 @@ func run(
 		return 2
 	}
 	client := &githubClient{
-		base:       strings.TrimRight(opts.apiURL, "/"),
-		repository: opts.repository,
-		branch:     opts.branch,
-		token:      token,
-		http:       httpClient,
+		base:        strings.TrimRight(opts.apiURL, "/"),
+		repository:  opts.repository,
+		branch:      opts.branch,
+		token:       token,
+		http:        httpClient,
+		retryDelays: defaultRetryDelays,
 	}
 	started := now().UTC()
 	result, err := scan(context.Background(), client, started.Add(-opts.lookback), started)
@@ -224,9 +257,10 @@ func run(
 		return 1
 	}
 	report := failuresReport{
-		SchemaVersion: reportSchema,
-		Failures:      result.Novel,
-		LogOmissions:  result.LogOmissions,
+		SchemaVersion:   reportSchema,
+		Failures:        result.Novel,
+		LogOmissions:    result.LogOmissions,
+		SourceOmissions: result.SourceOmissions,
 	}
 	report.Run.RunID = getenv("GITHUB_RUN_ID")
 	report.Run.RunAttempt = getenv("GITHUB_RUN_ATTEMPT")
@@ -240,10 +274,11 @@ func run(
 	}
 	_, _ = fmt.Fprintf(
 		stdout,
-		"flake watch: %d known dispatched, %d novel candidate(s), %d unavailable job log(s)\n",
+		"flake watch: %d known dispatched, %d novel candidate(s), %d unavailable job log(s), %d unavailable source(s)\n",
 		result.KnownDispatched,
 		len(result.Novel),
 		len(result.LogOmissions),
+		len(result.SourceOmissions),
 	)
 	return 0
 }
@@ -296,6 +331,17 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 	novelIndex := make(map[string]int)
 	for _, failureSource := range sources {
 		scanned, err := client.failures(ctx, failureSource, observed)
+		var unavailable *sourceUnavailableError
+		if errors.As(err, &unavailable) {
+			result.SourceOmissions = append(result.SourceOmissions, sourceOmission{
+				SHA:         failureSource.SHA,
+				RunID:       failureSource.RunID,
+				PullRequest: failureSource.PullRequest,
+				URL:         failureSource.URL,
+				Reason:      unavailable.Error(),
+			})
+			continue
+		}
 		if err != nil {
 			return result, fmt.Errorf("scan %s: %w", failureSource.SHA, err)
 		}
@@ -451,6 +497,9 @@ func (c *githubClient) pullFiles(ctx context.Context, number int) (map[string]bo
 
 func (c *githubClient) failures(ctx context.Context, source source, observed time.Time) (failureScan, error) {
 	checks, err := c.sourceChecks(ctx, source)
+	if status := serverErrorStatus(err); status != 0 {
+		return failureScan{}, &sourceUnavailableError{status: status, err: err}
+	}
 	if err != nil {
 		return failureScan{}, err
 	}
@@ -462,6 +511,9 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		annotations, err := getAll[annotation](ctx, c, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
 			"per_page": {"100"},
 		})
+		if status := serverErrorStatus(err); status != 0 {
+			return failureScan{}, &sourceUnavailableError{status: status, err: err}
+		}
 		if err != nil {
 			return failureScan{}, err
 		}
@@ -501,12 +553,13 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		log, err := c.jobLog(ctx, check.JobID)
 		if err != nil {
 			var statusErr *httpStatusError
-			if errors.As(err, &statusErr) && statusErr.Status == http.StatusNotFound {
+			if errors.As(err, &statusErr) &&
+				(statusErr.Status == http.StatusNotFound || serverErrorStatus(err) != 0) {
 				result.LogOmissions = append(result.LogOmissions, logOmission{
 					JobID:   check.JobID,
 					JobName: check.Name,
 					JobURL:  check.HTMLURL,
-					Reason:  "job log unavailable (HTTP 404)",
+					Reason:  fmt.Sprintf("job log unavailable (HTTP %d)", statusErr.Status),
 				})
 				continue
 			}
@@ -519,6 +572,19 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 	}
 	return result, nil
 }
+
+// sourceUnavailableError marks a source whose checks, jobs or annotations
+// kept answering 5xx after retries; scan records it and moves on.
+type sourceUnavailableError struct {
+	status int
+	err    error
+}
+
+func (e *sourceUnavailableError) Error() string {
+	return fmt.Sprintf("source unavailable (HTTP %d)", e.status)
+}
+
+func (e *sourceUnavailableError) Unwrap() error { return e.err }
 
 func ignoresFlakeSignals(conclusion string) bool {
 	switch conclusion {
@@ -855,37 +921,36 @@ func (c *githubClient) requestPage(
 	if len(query) != 0 {
 		target += "?" + query.Encode()
 	}
-	var body io.Reader
+	var payload []byte
 	if input != nil {
 		data, err := json.Marshal(input)
 		if err != nil {
 			return "", err
 		}
-		body = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, body)
-	if err != nil {
-		return "", err
+		payload = data
 	}
 	baseURL, err := url.Parse(c.base)
 	if err != nil {
 		return "", err
 	}
-	if req.URL.Scheme != baseURL.Scheme || req.URL.Host != baseURL.Host {
-		return "", fmt.Errorf("refuse pagination outside GitHub API origin: %s", req.URL.Redacted())
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(ctx, method, endpoint, func() (*http.Request, error) {
+		var body io.Reader
+		if payload != nil {
+			body = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target, body)
+		if err != nil {
+			return nil, err
+		}
+		if req.URL.Scheme != baseURL.Scheme || req.URL.Host != baseURL.Host {
+			return nil, fmt.Errorf("refuse pagination outside GitHub API origin: %s", req.URL.Redacted())
+		}
+		return req, nil
+	})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("%s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
-	}
 	if output == nil {
 		return nextLink(resp.Header.Get("Link")), nil
 	}
@@ -896,28 +961,71 @@ func (c *githubClient) requestPage(
 }
 
 func (c *githubClient) getBytes(ctx context.Context, endpoint string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(ctx, http.MethodGet, endpoint, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet, c.base+endpoint, nil)
+	})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	return io.ReadAll(resp.Body)
+}
+
+// do sends the request newRequest builds and returns a 2xx response, or an
+// *httpStatusError for any other status. A GET answered with a 5xx is retried
+// after each of c.retryDelays; other methods are never retried because
+// replaying them is not safe.
+func (c *githubClient) do(
+	ctx context.Context,
+	method, endpoint string,
+	newRequest func() (*http.Request, error),
+) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		req, err := newRequest()
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			return resp, nil
+		}
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &httpStatusError{
-			Method:   http.MethodGet,
+		_ = resp.Body.Close()
+		statusErr := &httpStatusError{
+			Method:   method,
 			Endpoint: endpoint,
 			Status:   resp.StatusCode,
 			Message:  strings.TrimSpace(string(message)),
 		}
+		if method != http.MethodGet || serverErrorStatus(statusErr) == 0 || attempt >= len(c.retryDelays) {
+			return nil, statusErr
+		}
+		if err := c.wait(ctx, c.retryDelays[attempt]); err != nil {
+			// Not wrapped: an interrupted retry is not a transient 5xx and
+			// must not be recorded as an unavailable source.
+			return nil, fmt.Errorf("%s (retry interrupted): %w", statusErr.Error(), err)
+		}
 	}
-	return io.ReadAll(resp.Body)
+}
+
+func (c *githubClient) wait(ctx context.Context, delay time.Duration) error {
+	if c.sleep != nil {
+		return c.sleep(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func nextLink(header string) string {
