@@ -54,10 +54,21 @@ import (
 // per `run`), only for harnesses an agentic stage actually references.
 var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all-tools", "--available-tools="}
 
+// copilotAuthCheckSuccessLine is the reply copilotAuthCheckArgs asks for. The
+// probe passes as soon as the CLI prints it, without waiting out the CLI's own
+// shutdown, which on slow hosts took long enough after a valid reply to push
+// the probe past harnessPreflightTimeout (#5165).
+const copilotAuthCheckSuccessLine = "ok"
+
 // harnessPreflightTimeout bounds a single harness preflight (its version check
 // plus the auth probe's real API round-trip) so a hung CLI or network can't
-// hang `goobers validate` or `goobers up`/`run` startup.
-const harnessPreflightTimeout = 90 * time.Second
+// hang `goobers validate` or `goobers up`/`run` startup. One value serves all
+// three so they cannot disagree about whether the same harness is healthy.
+// It is deliberately generous: a valid Copilot probe was measured at 92-100s
+// end to end on Windows (#5165), so the former 90s cap failed healthy hosts.
+// The probe returns as soon as its reply arrives, so the cap only costs time
+// when a CLI or network is genuinely hung.
+const harnessPreflightTimeout = 180 * time.Second
 
 const placeholderFindingCode = "PLACEHOLDER001"
 const sourceTreeAdvisoryCode = "SOURCE001"

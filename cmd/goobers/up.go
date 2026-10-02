@@ -342,7 +342,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"and preserved by default. --cleanup-spans-only-runs deletes them at\n" +
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
-	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
+	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
+	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
+	"stage needs a harness that fails its startup check is still refused, while\n" +
+	"other workflows keep running.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
