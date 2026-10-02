@@ -1132,45 +1132,29 @@ func markMergeReviewVerdictStale(ctx context.Context, provider remediationProvid
 
 func reconcileMergeReviewStatusCommentAs(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prNumber int, author, body string) error {
 	id := strconv.Itoa(prNumber)
-	comments, err := provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("list merge-review status comments: %w", err)
-	}
-	marked := mergeReviewStatusComments(comments, author)
-	if len(marked) == 0 {
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo,
-			ID:         id,
-			Comment:    body,
-		}); err != nil {
-			return fmt.Errorf("create merge-review status comment: %w", err)
-		}
-	} else if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
-		return fmt.Errorf("update merge-review status comment: %w", err)
-	}
-
-	comments, err = provider.ListComments(ctx, repo, id)
-	if err != nil {
-		return fmt.Errorf("relist merge-review status comments: %w", err)
-	}
-	marked = mergeReviewStatusComments(comments, author)
-	if len(marked) == 0 {
-		return fmt.Errorf("merge-review status comment disappeared during reconciliation")
-	}
-	// The stored body carries the provider's attribution footer whenever the
-	// stage runs with attribution, so only the text this stage wrote decides
-	// whether the canonical comment still needs an update.
-	if providers.StripAttribution(marked[0].Body) != strings.TrimSpace(body) {
-		if err := provider.UpdateComment(ctx, repo, marked[0].ID, body); err != nil {
-			return fmt.Errorf("update canonical merge-review status comment: %w", err)
-		}
-	}
-	for _, duplicate := range marked[1:] {
-		if err := provider.DeleteComment(ctx, repo, duplicate.ID); err != nil {
-			return fmt.Errorf("delete duplicate merge-review status comment %s: %w", duplicate.ID, err)
-		}
-	}
-	return nil
+	return reconcileCanonicalProviderComment(body, canonicalProviderCommentSpec{
+		noun: "merge-review status",
+		list: func() ([]providers.Comment, error) {
+			return provider.ListComments(ctx, repo, id)
+		},
+		create: func(body string) error {
+			_, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+				Repository: repo,
+				ID:         id,
+				Comment:    body,
+			})
+			return err
+		},
+		update: func(commentID, body string) error {
+			return provider.UpdateComment(ctx, repo, commentID, body)
+		},
+		remove: func(commentID string) error {
+			return provider.DeleteComment(ctx, repo, commentID)
+		},
+		match: func(comments []providers.Comment) []providers.Comment {
+			return mergeReviewStatusComments(comments, author)
+		},
+	})
 }
 
 func mergeReviewStatusComments(comments []providers.Comment, author string) []providers.Comment {
