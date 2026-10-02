@@ -188,9 +188,13 @@ work, and how interactive actions are authorized. The protocol (OIDC) and the se
   seatbelt denies reads and writes; bubblewrap masks files with `/dev/null`
   and directories with an empty read-only mount after all writable grants.
   Paths are canonicalized, multiply-linked files and writable overlap are
-  refused, and policy errors omit the private path. This defense in depth
+  refused, and policy errors omit the private path. Guarded directories undergo
+  a bounded metadata walk that rejects hardlinks, symlinks, special files,
+  inspection errors, and traversal limits before launch. This defense in depth
   does not relax the constructor refusal above or newly sandbox deterministic
-  execution. Explicitly granted stage credentials remain available through
+  execution. The deterministic tripwire matches named paths, not descendants
+  of a configured key directory; indirect and directory-child reads remain
+  outside that narrow check. Explicitly granted stage credentials remain available through
   their existing delivery channels.
 
   These guards are not a same-UID host isolation boundary. Unconfined code,

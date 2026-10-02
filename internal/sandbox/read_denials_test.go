@@ -113,3 +113,68 @@ func TestReadDenialsCanonicalizeAndCollapseDescendants(t *testing.T) {
 		t.Fatalf("canonical guard: %+v %v", got, err)
 	}
 }
+
+func TestNativeSandboxRefusesGuardedDirectoryWithExternalHardlink(t *testing.T) {
+	base := requiredNativeSandbox(t)
+	workspace := t.TempDir()
+	private := t.TempDir()
+	key := filepath.Join(private, "version.pem")
+	if err := os.WriteFile(key, []byte("fixture-directory-private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(key, filepath.Join(workspace, "outside-key-alias")); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "-c", "exit 0")
+	if err := WithReadDenials(base, []string{private}).Wrap(command, Policy{Workspace: workspace}); err != errReadDeniedPath {
+		t.Fatalf("guarded directory with external alias: %v; want generic refusal before launch", err)
+	}
+}
+
+func TestReadDeniedDirectoryRejectsAmbiguityAndTraversalLimits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native policy boundary is Unix-only")
+	}
+	t.Run("symlink", func(t *testing.T) {
+		private := t.TempDir()
+		if err := os.Symlink(t.TempDir(), filepath.Join(private, "alias")); err != nil {
+			t.Fatal(err)
+		}
+		remaining := maxReadDeniedEntries
+		if err := validateReadDeniedDirectory(private, 0, &remaining); err != errReadDeniedPath {
+			t.Fatalf("symlink: %v; want refusal", err)
+		}
+	})
+	t.Run("entry-budget", func(t *testing.T) {
+		private := t.TempDir()
+		for _, name := range []string{"first", "second"} {
+			if err := os.WriteFile(filepath.Join(private, name), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		remaining := 1
+		if err := validateReadDeniedDirectory(private, 0, &remaining); err != errReadDeniedPath {
+			t.Fatalf("entry budget: %v; want refusal", err)
+		}
+	})
+	t.Run("depth", func(t *testing.T) {
+		private := t.TempDir()
+		path := private
+		for range maxReadDeniedDepth {
+			path = filepath.Join(path, "nested")
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		remaining := maxReadDeniedEntries
+		if err := validateReadDeniedDirectory(private, 0, &remaining); err != errReadDeniedPath {
+			t.Fatalf("depth budget: %v; want refusal", err)
+		}
+	})
+	t.Run("inspection-error", func(t *testing.T) {
+		remaining := maxReadDeniedEntries
+		if err := validateReadDeniedDirectory(filepath.Join(t.TempDir(), "missing"), 0, &remaining); err != errReadDeniedPath {
+			t.Fatalf("inspection error: %v; want refusal", err)
+		}
+	})
+}

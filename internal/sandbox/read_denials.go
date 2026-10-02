@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +10,11 @@ import (
 	"strings"
 )
 
-const maxReadDeniedPaths = 256
+const (
+	maxReadDeniedPaths   = 256
+	maxReadDeniedEntries = 4096
+	maxReadDeniedDepth   = 32
+)
 
 var errReadDeniedPath = errors.New("sandbox: guarded credential path cannot be safely confined")
 
@@ -42,10 +47,16 @@ func validateReadDenials(paths []string, writable []string) ([]readDeniedPath, e
 		return nil, errReadDeniedPath
 	}
 	byPath := make(map[string]readDeniedPath, len(paths))
+	remaining := maxReadDeniedEntries
 	for _, path := range paths {
 		denied, err := resolveReadDenial(path, writable)
 		if err != nil {
 			return nil, err
+		}
+		if denied.directory {
+			if err := validateReadDeniedDirectory(denied.path, 0, &remaining); err != nil {
+				return nil, err
+			}
 		}
 		byPath[denied.path] = denied
 	}
@@ -92,4 +103,44 @@ func resolveReadDenial(path string, writable []string) (readDeniedPath, error) {
 func pathContains(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// validateReadDeniedDirectory rejects aliases that could escape a directory
+// mask. ReadDir batches bound memory and a shared budget bounds all configured
+// directory walks. This inspects metadata only, never credential contents.
+func validateReadDeniedDirectory(path string, depth int, remaining *int) error {
+	if depth >= maxReadDeniedDepth {
+		return errReadDeniedPath
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return errReadDeniedPath
+	}
+	defer directory.Close()
+	for {
+		entries, err := directory.ReadDir(64)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return errReadDeniedPath
+		}
+		for _, entry := range entries {
+			*remaining--
+			if *remaining < 0 {
+				return errReadDeniedPath
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return errReadDeniedPath
+			}
+			if info.IsDir() {
+				if err := validateReadDeniedDirectory(filepath.Join(path, entry.Name()), depth+1, remaining); err != nil {
+					return err
+				}
+			} else if !info.Mode().IsRegular() || !singleLink(info) {
+				return errReadDeniedPath
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+	}
 }
