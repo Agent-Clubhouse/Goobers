@@ -557,6 +557,9 @@ type agenticExecutorInput struct {
 	ArtifactRecorder runner.ArtifactRecorder
 	SecretRegistrar  runner.SecretRegistrar
 	AgenticAdapter   func(string, map[string]string) harness.Adapter
+
+	// Local runner only; worker pods do not inherit daemon-host paths.
+	GuardedCredentialPaths []string
 }
 
 func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
@@ -616,6 +619,7 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 		return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 	}
 	opts := []harness.Option{
+		harness.WithGuardedCredentialPaths(input.GuardedCredentialPaths),
 		harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
 		harness.WithHarnessVersion(input.HarnessInfo[harnessName].Version),
 		harness.WithAssetBundle(input.Assets[input.GooberName]),
