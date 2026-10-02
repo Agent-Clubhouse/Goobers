@@ -980,8 +980,13 @@ func (r *Run) RecordStageArtifactWithIntegrity(stage string, attempt int, class 
 // annotations never enter the conformance view — the live journal writer's
 // idempotency key (livejournal.EmitKeyRunnerField) rides here.
 func (r *Run) RecordStageArtifactAnnotated(stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
+	return r.RecordBranchStageArtifactAnnotated(0, stage, attempt, class, name, data, integrity, runnerMeta)
+}
+
+// RecordBranchStageArtifactAnnotated preserves branch identity and emit metadata.
+func (r *Run) RecordBranchStageArtifactAnnotated(branch int, stage string, attempt int, class AttemptClass, name string, data []byte, integrity apiv1.Integrity, runnerMeta map[string]any) (Ref, error) {
 	return r.recordArtifact(Event{
-		Type: EventArtifactRecorded, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
+		Type: EventArtifactRecorded, Branch: branch, Stage: stage, Attempt: attempt, AttemptClass: class, Name: name, Integrity: integrity,
 		Runner: copyRunnerMeta(runnerMeta),
 	}, data, 0)
 }

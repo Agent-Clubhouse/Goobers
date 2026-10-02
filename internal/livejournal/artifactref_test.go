@@ -283,3 +283,27 @@ func TestArtifactRefWriteFailureDoesNotBecomeFalseAckAfterReopen(t *testing.T) {
 		t.Fatalf("repaired destination did not apply: %+v, %v", out, err)
 	}
 }
+
+func TestArtifactBranchPreservedForInlineAndAdoptedBytes(t *testing.T) {
+	for _, adopt := range []bool{false, true} {
+		t.Run(strconv.FormatBool(adopt), func(t *testing.T) {
+			data := []byte("branch-bound evidence")
+			req := artifactRefRequest(t, data)
+			req.Ops[0].Artifact.Branch = 3
+			if !adopt {
+				req.Ops[0].Artifact.Ref = nil
+				req.Ops[0].Artifact.Data = data
+			}
+			source := artifactSourceFunc(func(context.Context, string, int64) ([]byte, error) { return data, nil })
+			writer, dir := testArtifactWriter(t, WithArtifactSource(source))
+			if _, err := writer.Emit(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			writer.Close()
+			events := readEvents(t, dir, req.RunID)
+			if len(events) != 2 || events[1].Branch != 3 || events[1].Ref == nil || events[1].Ref.Digest != journal.Digest(data) {
+				t.Fatalf("branch/bytes lost: %+v", events)
+			}
+		})
+	}
+}
