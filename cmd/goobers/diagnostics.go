@@ -86,11 +86,8 @@ func runDiagnosticsBundle(args []string, stdout, stderr io.Writer) int {
 		output  = fs.String("output", "", "write the archive to this path")
 		asJSON  = fs.Bool("json", false, "write the machine-readable document to stdout instead of an archive")
 	)
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	if *maxRuns < 1 {
@@ -100,10 +97,6 @@ func runDiagnosticsBundle(args []string, stdout, stderr io.Writer) int {
 	if *runID != "" && *pr > 0 {
 		pf(stderr, "error: --run and --pr select different scopes; pass one\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -165,20 +158,13 @@ func runDiagnosticsTriage(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = helpUsage(stderr, "diagnostics triage")
 	runID := fs.String("run", "", "run id to classify")
 	asJSON := fs.Bool("json", false, "write the machine-readable support-triage contract")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	if strings.TrimSpace(*runID) == "" {
 		pf(stderr, "error: --run is required\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {

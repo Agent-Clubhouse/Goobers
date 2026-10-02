@@ -51,18 +51,11 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 	write := fs.Bool("write", false, "apply the migration to each file in place (default: print a diff only)")
 	instanceSchema := fs.Bool("instance-schema", false, "add the schemaVersion line a runners: inventory requires (#4217)")
 	fs.Usage = helpUsage(stderr, "fix")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, parsed := parseOptionalRoot(fs, args)
+	if !parsed {
 		return 2
 	}
 	target := strings.TrimSpace(*to)
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
-	}
 	// A config directory has its manifest directly beneath the supplied path;
 	// an instance root has it beneath <root>/config. Catch the common mistake
 	// before layout expansion turns it into a confusing config/config error.

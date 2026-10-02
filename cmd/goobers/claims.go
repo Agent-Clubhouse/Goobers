@@ -109,16 +109,9 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "show only claims in this gaggle")
 	provider := fs.String("provider", "", "show only claims from this provider")
 	fs.Usage = helpUsage(stderr, "claims list")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	resp, err := runClaimAdmin(root, claimAdminRequest{
