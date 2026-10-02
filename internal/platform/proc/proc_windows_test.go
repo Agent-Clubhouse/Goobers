@@ -473,14 +473,34 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	}
 
 	var brokeredDescendant processIdentity
-	for _, descendant := range guestDescendants {
-		inJob, membershipErr := processInJob(descendant.pid, tree.job)
-		if membershipErr != nil {
-			t.Fatalf("query WSL descendant %d job membership: %v", descendant.pid, membershipErr)
+	for brokeredDescendant.pid == 0 && time.Now().Before(deadline) {
+		var snapshotErr error
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		if snapshotErr != nil {
+			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
 		}
-		if !inJob {
-			brokeredDescendant = descendant
-			break
+		for _, descendant := range guestDescendants {
+			inJob, membershipErr := processInJob(descendant.pid, tree.job)
+			if membershipErr != nil {
+				state := identityStateForPID(descendant.pid, descendant.startTime)
+				if state == identityGone {
+					continue
+				}
+				t.Fatalf(
+					"query WSL descendant %d job membership: recorded start %s, identity %s: %v",
+					descendant.pid, descendant.startTime.Format(time.RFC3339Nano), state, membershipErr,
+				)
+			}
+			if !inJob {
+				brokeredDescendant = descendant
+				break
+			}
+		}
+		if brokeredDescendant.pid == 0 {
+			if !Alive(wslPID) {
+				t.Fatalf("WSL process %d exited before retaining a brokered descendant", wslPID)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	if brokeredDescendant.pid == 0 {
@@ -500,8 +520,16 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if Alive(wslPID) {
 		t.Fatalf("WSL process %d survived tree termination", wslPID)
 	}
-	if identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime) == identityStatePresent {
-		t.Fatalf("WSL host descendant %d survived tree termination", brokeredDescendant.pid)
+	var brokeredState identityState
+	for brokeredState = identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime); brokeredState != identityGone && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		brokeredState = identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime)
+	}
+	if brokeredState != identityGone {
+		t.Fatalf(
+			"WSL host descendant %d did not reach gone after tree termination: recorded start %s, identity %s",
+			brokeredDescendant.pid, brokeredDescendant.startTime.Format(time.RFC3339Nano), brokeredState,
+		)
 	}
 }
 
