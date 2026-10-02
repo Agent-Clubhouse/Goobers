@@ -268,6 +268,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "baseline", takesArg: true, desc: "Coverage baseline file"},
 		{name: "write-baseline", desc: "Freeze the current per-class coverage into the baseline"},
 		{name: "timeout", takesArg: true, desc: "Per-fetch timeout for provenance checks"},
+		{name: "keep-dns-for-network-none", desc: "Deprecated migration escape: retain DNS for network:none"},
 		{name: "print-blob-endpoint", desc: "Print the blob endpoint (namespace, pod labels, port) as JSON and exit"},
 	},
 	"self-update": {

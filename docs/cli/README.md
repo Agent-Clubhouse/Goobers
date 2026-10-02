@@ -1263,6 +1263,7 @@ The --k8s check set, each row citing the shape-doc section it enforces:
 
   pod-security-admission optional #5284 rendered Linux/Windows stage pods (server dry-run)
   cluster-version    required  §1     cluster reachable, supported version
+  network-none-dns    optional  D12    class DNS grants; dataplane UNVERIFIED
   networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)
   rbac-install       required  §1/§3  permissions to install goobers-system
   rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces
@@ -2790,13 +2791,17 @@ construction. Each policy also carries the goobers.dev/runner-class-restrictions
 ANNOTATION — the human-readable restriction set behind the (possibly opaque)
 class value, so `kubectl get netpol -o yaml` answers "which class is this".
 
-Per class: a network:none class gets only DNS and the blob-endpoint data path;
+Per class: a network:none class gets only the blob-endpoint data path;
 every other class additionally gets the instance-configured egress.allowlist
 CIDR groups (instance.yaml egress: — operator-supplied; the render REFUSES
 CHANGE-ME documentation placeholders rather than emitting a stub). Every class,
 restricted included, carries the blob-endpoint egress row: it is the class's
 own artifact data path, and each cross-namespace grant is composed as
 namespaceSelector AND podSelector in a single peer element.
+
+--keep-dns-for-network-none temporarily retains DNS for migration. Deprecated at
+introduction; removed in the next minor. Upgrade the dispatcher to stamp Service
+host aliases before applying policies without DNS.
 
 --out writes one file per class plus a kustomization.yaml; without it the
 manifests stream to stdout.

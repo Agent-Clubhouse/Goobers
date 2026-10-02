@@ -269,7 +269,7 @@ func controlPlaneResources(o options, cfg *instance.Config, bundle preparedBundl
 
 	// Keep the base's selectors/probes/security posture, but omit its disabled
 	// operator, Windows deployment, example ingress, and unrelated CRD RBAC.
-	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml"} {
+	for _, name := range []string{"namespace.yaml", "api-rbac.yaml", "api-service.yaml", "worker-service-rbac.yaml"} {
 		docs, err := readDocs(filepath.Join(o.Reference, "goobers-system", name))
 		if err != nil {
 			return nil, err

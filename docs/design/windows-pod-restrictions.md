@@ -41,6 +41,7 @@ fields have different meanings or are unavailable:
 |---|---|---|
 | `spec.os.name` | Identifies the OS for admission; Linux-only restricted checks are OS-aware starting with the Kubernetes v1.25 policy. | Every dispatcher stage pod stamps `windows` or `linux` from its runner, including template pods. |
 | `securityContext.runAsNonRoot`, seccomp, capabilities | Linux-only checks depend on the namespace's PSA policy version and admission implementation. | Omitted on Windows; the historical worker reference retains `enforce: baseline` pending a fresh measurement. |
+| `spec.hostAliases` | Kubelet supports managed hosts entries for ordinary Windows pods (HostProcess excluded); see the [Kubernetes v1.35 kubelet implementation](https://github.com/kubernetes/kubernetes/blob/v1.35.0/pkg/kubelet/kubelet_pods.go#L244-L257). | Helper/shape and HTTPS-name tests cover both OS values; no live Windows probe was performed. Windows `network:none` remains undeclarable until D11. |
 | `runAsUser`, `runAsGroup`, `fsGroup` | Linux-only identity and group fields. | Omitted. |
 | `windowsOptions.runAsUserName` | Selects the Windows container identity. | `ContainerUser` is set on the init and worker containers. |
 | `windowsOptions.hostProcess` | Controls host-process access. | Explicitly `false` at pod and container scope. |

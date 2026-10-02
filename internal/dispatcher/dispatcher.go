@@ -72,6 +72,9 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 
 // Config is the dispatcher's per-instance wiring.
 type Config struct {
+	// NetworkNoneHostAliases carries verified Service IPs for pure pod rendering.
+	// The live dispatcher refreshes these from the API server on each dispatch.
+	NetworkNoneHostAliases []corev1.HostAlias
 	// GaggleNamespaces maps each gaggle name this dispatcher serves to the
 	// Kubernetes namespace its stage pods are created in — Gaggle.spec.
 	// isolation.namespace, keyed by gaggle name (#4897). A stage pod's
@@ -1054,12 +1057,16 @@ func (d *Dispatcher) renderFor(ctx context.Context, attempt Attempt, runner Runn
 }
 
 func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner RunnerSpec) (*corev1.Pod, error) {
+	cfg, err := d.configWithServiceAliases(ctx, runner)
+	if err != nil {
+		return nil, err
+	}
 	switch runner.HostKind {
 	case instance.RunnerHostImage:
 		if err := VerifySkew(d.cfg.EmbeddedCommit, d.cfg.EmbeddedVersion, runner.Host); err != nil {
 			return nil, err
 		}
-		return RenderPod(d.cfg, attempt, runner)
+		return RenderPod(cfg, attempt, runner)
 	case instance.RunnerHostDeployment:
 		namespace, err := d.cfg.namespaceFor(attempt.Gaggle)
 		if err != nil {
@@ -1074,7 +1081,7 @@ func (d *Dispatcher) renderHost(ctx context.Context, attempt Attempt, runner Run
 				return nil, err
 			}
 		}
-		return RenderFromTemplate(d.cfg, attempt, runner, deployment)
+		return RenderFromTemplate(cfg, attempt, runner, deployment)
 	default:
 		return nil, fmt.Errorf("dispatcher: runner %q host kind %q cannot be rendered as a pod", runner.Name, runner.HostKind)
 	}

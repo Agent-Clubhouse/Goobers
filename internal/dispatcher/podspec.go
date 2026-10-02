@@ -707,6 +707,9 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		pod.Spec.Tolerations = append(pod.Spec.Tolerations, windowsTolerations()...)
 	}
 
+	if err := stampServiceAliases(cfg, &pod.Spec, runner); err != nil {
+		return nil, err
+	}
 	pod.Spec.Containers = []corev1.Container{container}
 	return pod, nil
 }
@@ -830,6 +833,9 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 
 	stampClassRestrictionsAnnotation(annotations, runner)
 	stampIdentityAnnotations(annotations, attempt)
+	if err := stampServiceAliases(cfg, spec, runner); err != nil {
+		return nil, err
+	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),

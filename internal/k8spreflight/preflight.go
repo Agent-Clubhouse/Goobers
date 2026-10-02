@@ -170,6 +170,7 @@ func checkDefinitions() []checkDefinition {
 		{"cluster-version", checkClusterVersion},
 		{"pod-security-admission", checkPodSecurityAdmission},
 		{"networkpolicy-api", checkNetworkPolicySupport},
+		{"network-none-dns", checkNetworkNoneDNS},
 		{"apiserver-ipblock-drift", checkAPIServerIPBlockDrift},
 		{"rbac-install", checkInstallRBAC},
 		{"rbac-gaggle", checkGaggleRBAC},

@@ -10,6 +10,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/yaml"
 
 	"github.com/goobers/goobers/internal/netpolrender"
@@ -303,4 +305,24 @@ func splitYAMLDocs(raw []byte) [][]byte {
 		docs = append(docs, []byte(doc))
 	}
 	return docs
+}
+
+func TestGaggleBaseCannotReopenStageDNS(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "reference", "gaggle-namespace", "base", "networkpolicies.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range splitYAMLDocs(raw) {
+		var policy networkingv1.NetworkPolicy
+		if err := yaml.Unmarshal(doc, &policy); err != nil {
+			t.Fatal(err)
+		}
+		selector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if selector.Matches(labels.Set{runnercap.LabelRole: runnercap.RoleStage}) && len(policy.Spec.Egress) > 0 {
+			t.Fatalf("base %s grants stage egress and bypasses the class policy", policy.Name)
+		}
+	}
 }
