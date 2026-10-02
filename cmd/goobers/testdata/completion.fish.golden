@@ -142,6 +142,8 @@ complete -c goobers -n '__fish_seen_subcommand_from lint' -l strict -d 'promote 
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l to -r -d 'Target DSL version'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l instance-schema -d 'Add the schemaVersion a runners: inventory requires'
 complete -c goobers -n '__fish_seen_subcommand_from fix' -l write -d 'Apply migrations in place'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l psa-namespaces -r -d 'Namespaces for rendered pod admission checks'
+complete -c goobers -n '__fish_seen_subcommand_from doctor' -l psa-service-account -r -d 'Stage ServiceAccount for rendered pod admission checks'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l checks -r -d 'Comma-separated Kubernetes check IDs'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l apiserver-endpoint -r -d 'API-server comparison URL for egress policy drift'
 complete -c goobers -n '__fish_seen_subcommand_from doctor' -l image-pull-policy -r -a 'always never' -d 'Pull image or explicitly inspect cached artifact only'

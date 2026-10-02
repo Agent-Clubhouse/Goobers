@@ -240,6 +240,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "write", desc: "Apply migrations in place"},
 	},
 	"doctor": {
+		{name: "psa-namespaces", takesArg: true, desc: "Namespaces for rendered pod admission checks"},
+		{name: "psa-service-account", takesArg: true, desc: "Stage ServiceAccount for rendered pod admission checks"},
 		{name: "checks", takesArg: true, desc: "Comma-separated Kubernetes check IDs"},
 		{name: "apiserver-endpoint", takesArg: true, desc: "API-server comparison URL for egress policy drift"},
 		{name: "image-pull-policy", takesArg: true, values: []string{"always", "never"}, desc: "Pull image or explicitly inspect cached artifact only"},
