@@ -775,6 +775,16 @@ func advanceForwardFallbackCursor(ctx context.Context, fallback *forwardCuration
 	return advanceBacklogScanCursor(ctx, fallback.state, fallback.cursorKey, fallback.cursor, fallback.nextCursor)
 }
 
+func advanceBacklogAndFallbackCursors(ctx context.Context, opts backlogClaimOptions) error {
+	if err := advanceBacklogScanCursor(ctx, opts.state, opts.cursorKey, opts.scanCursor, opts.nextScanCursor); err != nil {
+		return fmt.Errorf("advance backlog scan cursor: %w", err)
+	}
+	if err := advanceForwardFallbackCursor(ctx, opts.forwardFallback); err != nil {
+		return fmt.Errorf("advance fallback backlog scan cursor: %w", err)
+	}
+	return nil
+}
+
 func excludeAlreadySelectedWorkItems(candidates, selected []providers.WorkItem) []providers.WorkItem {
 	if len(candidates) == 0 || len(selected) == 0 {
 		return candidates
@@ -916,7 +926,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	stdout, stderr := env.stdout, env.stderr
 	eligible, readOnlyResweep := opts.eligible, opts.readOnlyResweep
 	cursorKey := opts.cursorKey
-	scanCursor, nextScanCursor := opts.scanCursor, opts.nextScanCursor
 	observedRecords, remainingRecords := opts.observedRecords, opts.remainingRecords
 	verifiedSkips, observedSkips := opts.verifiedSkips, opts.observedSkips
 	maxItems, runID, workflow := opts.maxItems, opts.runID, opts.workflow
@@ -938,7 +947,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
+		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, opts.scanCursor, opts.nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
@@ -1035,12 +1044,8 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		eligible, observedSkips, claimed = session.eligible, session.observedSkips, session.claimed
 	}
 	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
-		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
-			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
-			return 1
-		}
-		if err := advanceForwardFallbackCursor(ctx, opts.forwardFallback); err != nil {
-			pf(stderr, "error: advance fallback backlog scan cursor: %v\n", err)
+		if err := advanceBacklogAndFallbackCursors(ctx, opts); err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		if err := persistResweepState(ctx); err != nil {
@@ -1077,12 +1082,8 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	// runner short-circuits on, rather than the old return 1. Batch-aware len
 	// check (#236) replaces #274's pointer-nil check.
 	if len(claimed) == 0 && len(readOnlyResweep) == 0 {
-		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
-			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
-			return 1
-		}
-		if err := advanceForwardFallbackCursor(ctx, opts.forwardFallback); err != nil {
-			pf(stderr, "error: advance fallback backlog scan cursor: %v\n", err)
+		if err := advanceBacklogAndFallbackCursors(ctx, opts); err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
 		}
 		if malformedReadyItems > 0 {
