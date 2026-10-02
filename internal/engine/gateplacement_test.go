@@ -647,7 +647,7 @@ func TestRepassedPlacedGateDispatchesUnderAFreshAttempt(t *testing.T) {
 		if a.Stage != "review" {
 			t.Fatalf("dispatcher attempt %+v for a self-placed stage", a)
 		}
-		gateNumbers = append(gateNumbers, a.Number)
+		gateNumbers = append(gateNumbers, a.IdentityAttempt())
 		gateDeltas = append(gateDeltas, a.WorkspaceDelta)
 	}
 	if fmt.Sprint(gateNumbers) != "[1 2]" {

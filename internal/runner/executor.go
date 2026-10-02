@@ -95,6 +95,12 @@ func (g *gooberInvocation) Invoke(ctx context.Context, env apiv1.InvocationEnvel
 }
 
 func (g *gooberInvocation) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	// One wrapper serves all retries of a gate. Rebind the delivery target to
+	// THIS durable dispatch, including a repeated number on a later visit.
+	if g.operatorMessageJournal != nil && env.Attempt > 0 {
+		g.operatorMessageAttempt = int(env.Attempt)
+		g.operatorMessageAddress = operatorMessageAddressForAttempt(g.operatorMessageJournal, g.operatorMessageRunID, g.operatorMessageStage, int(env.Attempt), g.operatorMessageAgent)
+	}
 	if err := g.prepare(); err != nil {
 		return apiv1.Verdict{}, err
 	}
@@ -159,9 +165,16 @@ func operatorMessageAddressForAttempt(jr executionJournal, runID, stage string, 
 		return ""
 	}
 	var startedSeq uint64
+	branch := 0
+	if scoped, ok := jr.(*branchJournal); ok {
+		branch = scoped.branch
+	}
 	for _, event := range events {
+		if event.Branch != branch {
+			continue
+		}
 		switch {
-		case event.Type == journal.EventStageStarted && event.Stage == stage && event.Attempt == attempt:
+		case (event.Type == journal.EventStageStarted || event.Type == journal.EventReviewerStarted) && event.Stage == stage && event.Attempt == attempt:
 			startedSeq = event.Seq
 		case event.Type == journal.EventGateStarted && event.Gate == stage && event.RepassAttempt() == attempt:
 			startedSeq = event.Seq

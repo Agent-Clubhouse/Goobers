@@ -347,7 +347,7 @@ func collectAttemptSpans(events []Event) (map[string][]attemptSpan, map[string]u
 	latest := make(map[string]uint64)
 	for _, event := range events {
 		switch event.Type {
-		case EventStageStarted:
+		case EventStageStarted, EventReviewerStarted:
 			if event.Stage == "" || event.Attempt < 1 {
 				continue
 			}
@@ -369,7 +369,7 @@ func collectAttemptSpans(events []Event) (map[string][]attemptSpan, map[string]u
 			if event.Seq > latest[event.Gate] {
 				latest[event.Gate] = event.Seq
 			}
-		case EventStageFinished:
+		case EventStageFinished, EventReviewerFinished:
 			if event.Stage == "" || event.Attempt < 1 {
 				continue
 			}

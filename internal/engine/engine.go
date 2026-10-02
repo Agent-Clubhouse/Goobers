@@ -1129,17 +1129,25 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// both zero-valued, which disables both short-circuits — precisely the
 		// pre-#3882 behaviour.
 		var review GateReviewResult
+		var reviewerAttempt int
 		if err := evaluateWithInfraRetry(ctx, g, rec, firstClass, func(ctx workflow.Context, class journal.AttemptClass) error {
-			if remote {
-				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
-				if err != nil {
-					return err
+			reviewerAttempt++
+			return recordReviewerDispatch(ctx, rec, g, reviewerAttempt, class, &review, func(ctx workflow.Context, class journal.AttemptClass) error {
+				if remote {
+					surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name), class, rec)
+					if err != nil {
+						return err
+					}
+					review = GateReviewResult{Verdict: surrendered, Reviewed: true}
+					return nil
 				}
-				review = GateReviewResult{Verdict: surrendered, Reviewed: true}
-				return nil
-			}
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta,
-				g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+				attemptEnv := env
+				if number, ok := reviewerNumber(ctx); ok {
+					attemptEnv.Attempt = int32(number)
+				}
+				return workflow.ExecuteActivity(ctx, ActReviewGoober, attemptEnv, workspaceBranch, workspaceDelta,
+					g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
+			})
 		}); err != nil {
 			return "", nil, GateReviewResult{}, err
 		}
