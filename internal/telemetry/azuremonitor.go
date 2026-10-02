@@ -170,7 +170,7 @@ func (c *azureMonitorClient) export(ctx context.Context, items []appinsights.Tel
 func (c *azureMonitorClient) sendPayload(ctx context.Context, raw []byte) error {
 	projected, err := azureJournalHealthPayload(raw)
 	if err != nil {
-		return err
+		return &azureMonitorMalformedError{cause: err}
 	}
 	if err := c.sendPayloadRequest(ctx, projected); err != nil {
 		return &azureMonitorDeliveryError{cause: err}
@@ -212,9 +212,9 @@ func (c *azureMonitorClient) sendPayloadRequest(ctx context.Context, raw []byte)
 		if err := json.Unmarshal(body, &result); err == nil && result.ItemsReceived == itemCount && result.ItemsAccepted == itemCount {
 			return nil
 		}
-		return fmt.Errorf("the Azure Monitor destination partially rejected telemetry (HTTP %d)", response.StatusCode)
+		return &azureMonitorRejectedError{status: response.StatusCode, partial: true}
 	}
-	return fmt.Errorf("the Azure Monitor destination rejected telemetry (HTTP %d)", response.StatusCode)
+	return &azureMonitorRejectedError{status: response.StatusCode}
 }
 
 func (c *azureMonitorClient) envelope(item appinsights.Telemetry) *contracts.Envelope {

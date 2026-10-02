@@ -80,6 +80,16 @@ starts with local-only telemetry and records a loud
 `telemetry_otlp_unavailable` event in the instance journal rather than
 refusing to start over a collector-trust misconfiguration.
 
+An export that keeps failing after startup (an unreachable collector, or one
+that answers `Unimplemented` because it has no pipeline for the signal) is
+logged as a warning and also recorded as a `telemetry_export_refused` error
+event in the instance journal: once on the first failure, then at most once per
+30-minute suppression window while it keeps failing, with the number of
+repeats. The event names the signal, the destination kind (`otlp` or
+`azure-monitor`), a bounded error class and the endpoint class; it never
+carries the endpoint URL, headers or raw error text. After the export recovers,
+the next failure is recorded immediately.
+
 ## Authentication
 
 Collector credentials are never stored inline. Configure each OTLP metadata

@@ -519,6 +519,12 @@ on the configured source:
   workflow snapshots, including across a restart. `--watch-config=false`
   explicitly disables local watching; use `goobers apply` to admit changes
   in that mode. `instance.yaml` itself still requires a restart.
+  The watcher checks filesystem metadata every second and reads content when
+  it sees a change. A full content check every 30 seconds also detects edits
+  hidden by coarse or stale filesystem metadata; such edits can take up to
+  that interval to be noticed. Referenced instructions, skill packages, and
+  assets participate in these checks. `goobers apply` always checks content
+  immediately, and candidate changes are hashed again before admission.
   The health API's `definitionReload` reports the applied and last-observed
   directory digests, observation time, watcher setting and state. `rejected`
   means disk contents differ from the last-known-good definitions; `unreadable`

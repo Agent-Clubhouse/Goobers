@@ -12,6 +12,12 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 )
 
+// withSynchronousObserver preserves a direct callback for journal conformance
+// tests; production intake uses WithContextObserver.
+func withSynchronousObserver(observer func(string, uint64)) Option {
+	return func(w *Writer) { w.observer = observer }
+}
+
 func testWriter(t *testing.T, opts ...Option) (*Writer, string) {
 	t.Helper()
 	runsDir := filepath.Join(t.TempDir(), "runs")
@@ -71,7 +77,7 @@ func readEvents(t *testing.T, runsDir, runID string) []journal.Event {
 
 func TestEmitCreatesJournalAtFirstEmitAndStampsOpTimes(t *testing.T) {
 	var observed []uint64
-	w, runsDir := testWriter(t, WithObserver(func(runID string, seq uint64) { observed = append(observed, seq) }))
+	w, runsDir := testWriter(t, withSynchronousObserver(func(runID string, seq uint64) { observed = append(observed, seq) }))
 	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	resp, err := w.Emit(context.Background(), openBatch("run-live", started))
 	if err != nil {
@@ -206,6 +212,69 @@ func TestEmitDedupSurvivesWriterRestart(t *testing.T) {
 	events := readEvents(t, runsDir, "run-restart")
 	if len(events) != 3 || events[2].Type != journal.EventStageFinished || events[2].Seq != 3 {
 		t.Fatalf("events after restart = %+v", events)
+	}
+}
+
+// A terminal replay must not wait for derived intake while holding Writer.mu.
+func TestTerminalReplayDoesNotObserveRecoveredWatermark(t *testing.T) {
+	original, runsDir := testWriter(t)
+	at := time.Now().UTC()
+	if _, err := original.Emit(context.Background(), openBatch("finished", at)); err != nil {
+		t.Fatal(err)
+	}
+	terminal := EmitRequest{RunID: "finished", Gaggle: "web", Ops: []Op{
+		appendOp("finished|0||0|1", at.Add(time.Minute), journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}),
+	}}
+	if _, err := original.Emit(context.Background(), terminal); err != nil {
+		t.Fatal(err)
+	}
+	original.Close()
+
+	observedTerminal := make(chan struct{}, 1)
+	release := make(chan struct{})
+	restarted, err := NewWriter(func(string) (string, bool) { return runsDir, true },
+		WithContextObserver(func(ctx context.Context, runID string, _ uint64) {
+			if runID != "finished" {
+				return
+			}
+			observedTerminal <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	defer close(release)
+	replayed := make(chan error, 1)
+	go func() {
+		_, err := restarted.Emit(context.Background(), terminal)
+		replayed <- err
+	}()
+	select {
+	case <-observedTerminal:
+		t.Fatal("unchanged terminal recovery waited for intake under the writer lock")
+	case err := <-replayed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal replay blocked")
+	}
+	unrelated := make(chan error, 1)
+	go func() {
+		_, err := restarted.Emit(context.Background(), openBatch("unrelated", at))
+		unrelated <- err
+	}()
+	select {
+	case err := <-unrelated:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("unrelated emit blocked behind terminal intake")
 	}
 }
 

@@ -1321,7 +1321,7 @@ func scopeGateVerdictStillParks(
 		}
 		verdict, ok := parseVerdictComment(comment.Body)
 		return ok &&
-			strings.Contains(comment.Body, scopeGateParkedCommentMarker) &&
+			hasScopeGateParkedMarker(comment.Body) &&
 			cachedVerdictUsable(verdict, digest, pr.HeadSHA, pr.BaseSHA), nil
 	}
 	return false, nil

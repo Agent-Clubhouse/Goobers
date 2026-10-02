@@ -63,6 +63,11 @@
     }
   ],
   "properties": {
+    "terminalCause": {
+      "description": "Versioned diagnostic explanation committed atomically with run.finished; absent in legacy journals.",
+      "$ref": "#/$defs/terminalCause",
+      "x-conformance": "excluded"
+    },
     "schema": {
       "description": "Versioned envelope id. A reader branches on this; a newer version is read leniently (unknown fields/types tolerated).",
       "const": "goobers.dev/journal/event/v1",
@@ -416,6 +421,141 @@
     }
   },
   "$defs": {
+    "terminalBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumed",
+        "allowed"
+      ],
+      "properties": {
+        "consumed": {
+          "description": "Additional executions actually consumed; excludes the initial execution.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        },
+        "allowed": {
+          "description": "Additional executions allowed by the pinned policy.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        }
+      }
+    },
+    "terminalCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "classification",
+        "selectorKind",
+        "code"
+      ],
+      "properties": {
+        "schema": {
+          "description": "Terminal cause record version.",
+          "type": "string",
+          "const": "goobers.dev/journal/terminal-cause/v1",
+          "x-conformance": "excluded"
+        },
+        "phase": {
+          "description": "Recorded terminal phase.",
+          "type": "string",
+          "enum": [
+            "failed",
+            "aborted",
+            "escalated"
+          ],
+          "x-conformance": "excluded"
+        },
+        "classification": {
+          "description": "Machine-readable terminal cause taxonomy.",
+          "type": "string",
+          "enum": [
+            "escalation",
+            "defined-abort",
+            "operator-abort",
+            "drain",
+            "signal",
+            "resume-refused",
+            "retry-exhaustion",
+            "policy-exhaustion",
+            "infrastructure-failure",
+            "stage-failure"
+          ],
+          "x-conformance": "excluded"
+        },
+        "selectorKind": {
+          "description": "Kind of causal selector.",
+          "type": "string",
+          "enum": [
+            "stage",
+            "gate",
+            "condition"
+          ],
+          "x-conformance": "excluded"
+        },
+        "selector": {
+          "description": "Name of the causal gate, stage or condition.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "branch": {
+          "description": "Causal parallel branch identifier.",
+          "type": "integer",
+          "minimum": 0,
+          "x-conformance": "excluded"
+        },
+        "verdict": {
+          "description": "Actual gate verdict selected.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "code": {
+          "description": "Stable machine-readable causal code.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "message": {
+          "description": "Human explanation scrubbed through journal policy.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "target": {
+          "description": "Actual selected branch target.",
+          "type": "string",
+          "x-conformance": "excluded"
+        },
+        "retry": {
+          "description": "Consumed and allowed dispatch retries.",
+          "$ref": "#/$defs/terminalBudget",
+          "x-conformance": "excluded"
+        },
+        "poll": {
+          "description": "Consumed and allowed timeout polls, separate from policy repasses.",
+          "$ref": "#/$defs/terminalBudget",
+          "x-conformance": "excluded"
+        },
+        "repass": {
+          "description": "Consumed and allowed gate re-entries.",
+          "$ref": "#/$defs/terminalBudget",
+          "x-conformance": "excluded"
+        },
+        "causalEventSeq": {
+          "description": "Sequence of the decisive event in this journal.",
+          "type": "integer",
+          "minimum": 1,
+          "x-conformance": "excluded"
+        },
+        "causalEmitKey": {
+          "description": "Deterministic engine op key resolved to the actual sequence by a live writer.",
+          "type": "string",
+          "x-conformance": "excluded"
+        }
+      }
+    },
     "ref": {
       "type": "object",
       "additionalProperties": false,

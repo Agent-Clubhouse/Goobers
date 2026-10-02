@@ -455,6 +455,9 @@ type podExecutorWiring struct {
 }
 
 // podAgenticExecutorInput assembles the executor input for a pod stage.
+// Daemon-host credential paths are deliberately absent: the kit carries scoped
+// credentials, not the daemon config or its credential-file mounts. Deployment
+// isolation must keep those host files out of the pod.
 //
 // FACTORED OUT SO THE DIRECTORY AGREEMENT IS OBSERVABLE. The bug this file's
 // change fixes crosses two edges: materializePodContext must be CALLED before

@@ -69,9 +69,8 @@ func escapeGlob(path string) string {
 
 // Ensure appends every pattern the repository at dir does not already carry to
 // its info/exclude, and is a no-op when all of them are present. The write is a
-// single append, so existing content — including an operator's own patterns —
-// is preserved by construction, and a concurrent caller can at worst duplicate
-// a line rather than truncate the file.
+// single append under the same lock used by scoped exclusions, so existing
+// operator patterns and concurrent invocation blocks are preserved.
 func Ensure(ctx context.Context, dir string, patterns ...Pattern) error {
 	if len(patterns) == 0 {
 		return nil
@@ -80,6 +79,11 @@ func Ensure(ctx context.Context, dir string, patterns ...Pattern) error {
 	if err != nil {
 		return err
 	}
+	held, err := acquireExclude(ctx, excludePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = held.Release() }()
 	existing, err := os.ReadFile(excludePath)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("gitexclude: read %s: %w", excludePath, err)

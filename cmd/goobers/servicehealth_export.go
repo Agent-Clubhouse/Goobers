@@ -170,6 +170,15 @@ func addAzureReplayHealth(record *telemetry.DiagnosticRecord, root string) {
 	record.Attributes["azureReplayPrunedAge"] = int64(min(pending.PrunedAge, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayPrunedBytes"] = int64(min(pending.PrunedBytes, uint64(math.MaxInt64)))
 	record.Attributes["azureReplayMalformed"] = int64(min(pending.Malformed, uint64(math.MaxInt64)))
+	// Delivery evidence (#5940): fixed classes and timestamps, no endpoint.
+	record.Attributes["azureReplayActiveFailure"] = pending.ActiveFailure
+	if !pending.LastSuccess.IsZero() {
+		record.Attributes["azureReplayLastSuccess"] = pending.LastSuccess.UTC().Format(time.RFC3339)
+	}
+	if !pending.LastFailure.IsZero() {
+		record.Attributes["azureReplayLastFailure"] = pending.LastFailure.UTC().Format(time.RFC3339)
+		record.Attributes["azureReplayFailureClass"] = pending.FailureClass
+	}
 }
 
 func emitFleetHealth(ctx context.Context, root string, store *history.Store, exporter *telemetry.DiagnosticExporter, fleet []fleetHealthSample, now time.Time) error {

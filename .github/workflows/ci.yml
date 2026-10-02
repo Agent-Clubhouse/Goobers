@@ -683,6 +683,19 @@ jobs:
           path: test-timings/unit-race.part*.json
           if-no-files-found: warn
 
+      # Per-test JUnit results (one report per go test process) written by the
+      # same capture; failing tests are also annotated on the run summary.
+      # Observability only: the upload can never change the job's verdict.
+      # See docs/guides/ci-test-results.md (#681).
+      - name: Upload race shard test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-race-linux-${{ strategy.job-index }}
+          path: test-timings/unit-race.part*.junit.xml
+          if-no-files-found: warn
+
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
@@ -808,6 +821,16 @@ jobs:
         with:
           name: test-timings-${{ runner.os }}
           path: test-timings/unit-${{ runner.os }}.json
+          if-no-files-found: warn
+
+      # See the race shards' "Upload race shard test results" step (#681).
+      - name: Upload test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-${{ runner.os }}
+          path: test-timings/unit-${{ runner.os }}.junit.xml
           if-no-files-found: warn
 
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
@@ -1710,7 +1733,7 @@ jobs:
       # Keep the large CLI/engine suites filtered; test/ci checks this selection
       # against every test in the journal export regression files.
       - name: Windows journal OTLP export
-        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./internal/runner ./cmd/goobers -run '^(TestCommitted.*|TestExportReader.*|TestJournalCatchup.*|TestJournalCoalescing.*|TestJournalLogs.*|TestAzureReplay.*|TestAzureMonitorJournalReplay.*|TestAzureMonitorHostIdentity.*|TestAzureMonitorCompression.*|TestRunnerTelemetryDispatchProbe.*|TestSchedulerTelemetryReplayStart.*|TestTelemetryInstanceIdentities|TestServiceHealthExportProductionWiring|TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
+        run: go test ./internal/journal ./internal/livejournal ./internal/telemetry ./internal/instance ./api/schemas ./internal/engine ./internal/runner ./cmd/goobers -run '^(TestNamed.*|TestCommitted.*|TestExportReader.*|TestJournalCatchup.*|TestJournalCoalescing.*|TestJournalLogs.*|TestAzureReplay.*|TestAzureMonitorJournalReplay.*|TestAzureMonitorHostIdentity.*|TestAzureMonitorCompression.*|TestRunnerTelemetryDispatchProbe.*|TestSchedulerTelemetryReplayStart.*|TestTelemetryInstanceIdentities|TestServiceHealthExportProductionWiring|TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun|TestClientShutdownExportsFinalJournalDropCauses|TestOTLPJournalLogs.*|TestInstanceSchemaJournalLogs|TestProjectionDoesNotExportHistoricalJournalEvents|TestConfigureOTLPJournalLogsGate|TestJournalRedactExportsLiveOTLPLog|TestClaimsReleaseExportsLiveOTLPLog|TestClaimLockDiagnosticsExportLiveOTLPLogs|TestCommandJournalTelemetrySharesRootLifetime|TestRunNoWaitReturnsAfterStandaloneDispatch)$' -count=1 -timeout=3m
 
       # The whole package, not one named test. #3064 added this step scoped to
       # TestCreateLegacyRuntimeAliasCreatesJunction only, which passed while the

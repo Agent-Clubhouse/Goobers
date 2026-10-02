@@ -49,7 +49,7 @@ func (s *azureReplaySpool) enforceIndexedBounds(ctx context.Context, tx *sql.Tx,
 				return err
 			}
 			if f.created == 0 {
-				s.malformed.Add(1)
+				s.recordMalformed()
 			} else {
 				s.prunedAge.Add(uint64(f.records))
 			}
@@ -121,7 +121,7 @@ func (s *azureReplaySpool) claimBatch(ctx context.Context) (azureReplayBatch, er
 			_, payload, readErr := readAzureReplayFile(path)
 			if readErr != nil {
 				if !errors.Is(readErr, os.ErrNotExist) {
-					s.malformed.Add(1)
+					s.recordMalformed()
 				}
 				if err = s.index.remove(ctx, tx, f); err != nil {
 					return err

@@ -64,6 +64,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 	// at most MaxInfrastructureAttempts-1 dispatches to the policy budget.
 	maxAttempts := policyMaxAttempts + runner.DefaultMaxInfrastructureAttempts - 1
 
+	var usageBudget runner.StageUsageBudget
 	var policyAttempts, infrastructureFailures int32
 	var lastErr error
 	nextRetryClass := journal.AttemptPolicy
@@ -113,6 +114,21 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			// where an attempt ran does not depend on whether it succeeded.
 			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
 			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+
+			if t.Type == apiv1.TaskAgentic && t.Limits != nil && (t.Limits.MaxTokens > 0 || t.Limits.MaxCostUSD > 0) && workflow.GetVersion(ctx, "cumulative-agentic-usage", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+				usage := dispatchFailureUsage(err)
+				if activityResult.Usage != nil {
+					usage = *activityResult.Usage
+				}
+				limits := apiv1.Limits{}
+				if t.Limits != nil {
+					limits = *t.Limits
+				}
+				// Worker-loss timeouts may hide an attempt that already spent
+				// budget. Require usage in that case even though the activity
+				// could not report it; pre-execution failures remain retryable.
+				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLossTimeout(err), &res, &err)
+			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {
 					rec.workspaceRevisionRefused(ctx, t.Name, int(attempt), class, rejection, identity)
@@ -168,6 +184,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			infrastructureFailures++
 			nextRetryClass = journal.AttemptInfra
 			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
+				rec.exhaustedTerminalRetry(t.Name, journal.AttemptInfra, int(infrastructureFailures), int(runner.DefaultMaxInfrastructureAttempts))
 				return apiv1.ResultEnvelope{}, fmt.Errorf(
 					"engine: journal stage %q: %w (attempt %d/%d)",
 					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
@@ -206,6 +223,7 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 			nextRetryClass = journal.AttemptInfra
 		}
 		if !shouldRetry {
+			rec.exhaustedTerminalRetry(t.Name, failureClass, int(retryCount), int(retryLimit))
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
 		}
 		retryDelay := infrastructureRetryDelay(err, backoff, workflow.Now(ctx))

@@ -40,8 +40,9 @@ const claimLockOperationAPIUnpushedWork = "api.journal.unpushed-work"
 
 // daemonRunJournalService serves the cross-run journal plane.
 type daemonRunJournalService struct {
-	layout instance.Layout
-	log    *journal.InstanceLog
+	operatorMessages engineOperatorMessageServices
+	layout           instance.Layout
+	log              *journal.InstanceLog
 }
 
 func newDaemonRunJournalService(layout instance.Layout, log *journal.InstanceLog) *daemonRunJournalService {

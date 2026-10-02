@@ -177,3 +177,27 @@ dispatch path is out of #3883's scope and is tracked separately.
 workflow stays open and its scheduler concurrency slot stays occupied, so an instance turning it on
 also chooses the window it can afford (`engine.hitl.window`, 24h by default). The run's *journal*
 is unaffected either way: the terminal is written before the hold, not after it.
+
+## Operator messages
+
+The authenticated `POST /api/v1/runs/{run}/operator-messages` endpoint uses the
+same idempotent, scrubbed journal backend for local and engine-owned runs.
+Engine requests append through the daemon's shared live writer rather than
+opening a competing journal handle. Authorization and run/gaggle containment
+are checked before any Temporal update.
+
+For an open engine run, the daemon waits for completion of the
+`goobers.operator-message.v1` update. History contains a hash reference to the
+durable request and its typed delivery outcome; it contains no message text,
+caller-provided idempotency key, principal, or bearer credential. Retries reuse
+the reference and preserve the original outcome. A failed receipt submission
+can be retried with the same idempotency key without repeating an already
+acknowledged adapter delivery.
+
+Live delivery is available only when the daemon can reach a registered adapter
+that advertises a supported live mode. Remote engine workers and dispatched
+stage pods currently have no addressed live-message channel; their requests
+receive `rejected` / `live_delivery_unsupported`. This does **not** mean the
+message is queued for a later attempt: the engine has no such consumer.
+Terminal runs receive `rejected` / `target_terminal` in their journal without
+trying to reopen or update a closed Temporal workflow.

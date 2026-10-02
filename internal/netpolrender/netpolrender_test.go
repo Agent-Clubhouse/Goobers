@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -116,8 +118,12 @@ func TestRenderPeerFormIsSingleElementAND(t *testing.T) {
 				}
 			}
 		}
-		if selectorRules != 2 {
-			t.Errorf("class %s: got %d selector rules, want 2 (DNS + blob endpoint)", value, selectorRules)
+		want := 2
+		if strings.Contains(policy.Annotations[runnercap.AnnotationRunnerClassRestrictions], "network:none") {
+			want = 1
+		}
+		if selectorRules != want {
+			t.Errorf("class %s: got %d selector rules, want %d (blob plus DNS only outside network:none)", value, selectorRules, want)
 		}
 	}
 }
@@ -148,8 +154,9 @@ func TestRenderEveryClassCarriesBlobAndDNS(t *testing.T) {
 				}
 			}
 		}
-		if !hasDNS {
-			t.Errorf("class %s carries no DNS egress row", value)
+		wantDNS := !strings.Contains(policy.Annotations[runnercap.AnnotationRunnerClassRestrictions], "network:none")
+		if hasDNS != wantDNS {
+			t.Errorf("class %s DNS=%v want %v", value, hasDNS, wantDNS)
 		}
 		if !hasBlob {
 			t.Errorf("class %s carries no blob-endpoint egress row (decision 012: restricted included)", value)
@@ -157,8 +164,7 @@ func TestRenderEveryClassCarriesBlobAndDNS(t *testing.T) {
 	}
 }
 
-// TestRenderNetworkNoneClassGrantsNoCIDRs: the deny-all class gets ONLY DNS
-// and the blob data path.
+// TestRenderNetworkNoneClassGrantsNoCIDRs: the deny-all class gets ONLY the blob data path.
 func TestRenderNetworkNoneClassGrantsNoCIDRs(t *testing.T) {
 	result, err := Render(fixtureInput())
 	if err != nil {
@@ -176,8 +182,8 @@ func TestRenderNetworkNoneClassGrantsNoCIDRs(t *testing.T) {
 			}
 		}
 	}
-	if got := len(policy.Spec.Egress); got != 2 {
-		t.Errorf("network:none class has %d egress rules, want exactly 2 (DNS + blob)", got)
+	if got := len(policy.Spec.Egress); got != 1 {
+		t.Errorf("network:none class has %d egress rules, want exactly 1 (blob)", got)
 	}
 }
 
@@ -561,4 +567,43 @@ func TestCheckProvenanceReportsFetchFailures(t *testing.T) {
 
 func sha256Hex(body []byte) string {
 	return fmt.Sprintf("%x", sha256.Sum256(body))
+}
+
+func TestKeepDNSMigrationEscapeOnlyChangesNetworkNone(t *testing.T) {
+	input := fixtureInput()
+	normal, err := Render(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.KeepDNSForNetworkNone = true
+	legacy, err := Render(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range normal.Classes {
+		a, b := normal.Policies[class.Value], legacy.Policies[class.Value]
+		if class.NetworkNone {
+			if len(a.Spec.Egress) != 1 || len(b.Spec.Egress) != 2 || b.Spec.Egress[0].Ports[0].Port.IntVal != 53 {
+				t.Fatalf("migration did not restore only DNS: %v %v", a.Spec.Egress, b.Spec.Egress)
+			}
+		} else if !reflect.DeepEqual(a, b) {
+			t.Fatalf("escape changed class %s", class.Value)
+		}
+	}
+}
+
+func TestNetworkNoneEgressGolden(t *testing.T) {
+	rendered, err := Render(Input{Runners: []Runner{{Name: "locked", Restrictions: []string{"network:none"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const golden = `[{"to":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"goobers-system"}},"podSelector":{"matchLabels":{"app.kubernetes.io/name":"goobers-api"}}}],"ports":[{"protocol":"TCP","port":8080}]}]`
+	var want []networkingv1.NetworkPolicyEgressRule
+	if err := json.Unmarshal([]byte(golden), &want); err != nil {
+		t.Fatal(err)
+	}
+	got := rendered.Policies[rendered.Classes[0].Value].Spec.Egress
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("egress=%+v want golden %+v", got, want)
+	}
 }

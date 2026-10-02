@@ -11,43 +11,52 @@ import (
 )
 
 func TestPRSelectSkipsUnchangedScopeGateParkedVerdict(t *testing.T) {
-	root := initDemo(t)
-	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	const baseSHA = "base-sha"
+	// #4219: the namespaced marker the writer emits, and the legacy spelling
+	// PRs parked before the rename still carry, must both keep the PR parked.
+	for name, park := range map[string]func(string) string{
+		"current marker": func(comment string) string { return renderScopeGateStateComment(comment, true) },
+		"legacy marker":  func(comment string) string { return comment + "\n\n" + legacyScopeGateParkedCommentMarker },
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			const baseSHA = "base-sha"
 
-	server.addIssue(10, "Parked oversized PR", scopeGateLabel)
-	server.addOpenPR(10, "goobers/implementation/parked", "main", "head-10", baseSHA, false, []string{scopeGateLabel}, nil)
-	server.addComment(10, renderScopeGateStateComment(renderVerdictComment(apiv1.Verdict{
-		Decision:    apiv1.VerdictPass,
-		Digest:      computeReviewDigest("head-10", baseSHA, []string{scopeGateLabel}),
-		SourceRunID: "prior-review",
-		HeadSHA:     "head-10",
-		BaseSHA:     baseSHA,
-	}), true))
+			server.addIssue(10, "Parked oversized PR", scopeGateLabel)
+			server.addOpenPR(10, "goobers/implementation/parked", "main", "head-10", baseSHA, false, []string{scopeGateLabel}, nil)
+			server.addComment(10, park(renderVerdictComment(apiv1.Verdict{
+				Decision:    apiv1.VerdictPass,
+				Digest:      computeReviewDigest("head-10", baseSHA, []string{scopeGateLabel}),
+				SourceRunID: "prior-review",
+				HeadSHA:     "head-10",
+				BaseSHA:     baseSHA,
+			})))
 
-	for _, number := range []int{11, 12} {
-		server.addIssue(number, "Eligible PR")
-		server.addOpenPR(number, "goobers/implementation/eligible", "main", "head-"+strconv.Itoa(number), baseSHA, false, nil, nil)
-	}
+			for _, number := range []int{11, 12} {
+				server.addIssue(number, "Eligible PR")
+				server.addOpenPR(number, "goobers/implementation/eligible", "main", "head-"+strconv.Itoa(number), baseSHA, false, nil, nil)
+			}
 
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-3133")
-	workDir := t.TempDir()
-	t.Chdir(workDir)
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-3133")
+			workDir := t.TempDir()
+			t.Chdir(workDir)
 
-	code, _, stderr := runArgs(t, "pr-select", root)
-	if code != 0 {
-		t.Fatalf("pr-select: code = %d, stderr = %q", code, stderr)
-	}
-	data, err := os.ReadFile(filepath.Join(workDir, "selected-pr.json"))
-	if err != nil {
-		t.Fatalf("read selected-pr.json: %v", err)
-	}
-	var selected map[string]string
-	if err := decodePRSelectionTestResult(data, &selected); err != nil {
-		t.Fatalf("unmarshal selected-pr.json: %v", err)
-	}
-	if selected["number"] != "11" {
-		t.Fatalf("selected PR = %q, want eligible PR #11 ahead of unchanged scope-gate parked PR #10", selected["number"])
+			code, _, stderr := runArgs(t, "pr-select", root)
+			if code != 0 {
+				t.Fatalf("pr-select: code = %d, stderr = %q", code, stderr)
+			}
+			data, err := os.ReadFile(filepath.Join(workDir, "selected-pr.json"))
+			if err != nil {
+				t.Fatalf("read selected-pr.json: %v", err)
+			}
+			var selected map[string]string
+			if err := decodePRSelectionTestResult(data, &selected); err != nil {
+				t.Fatalf("unmarshal selected-pr.json: %v", err)
+			}
+			if selected["number"] != "11" {
+				t.Fatalf("selected PR = %q, want eligible PR #11 ahead of unchanged scope-gate parked PR #10", selected["number"])
+			}
+		})
 	}
 }
 
