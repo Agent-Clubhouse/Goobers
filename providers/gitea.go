@@ -1576,6 +1576,8 @@ func (p *GiteaProvider) do(ctx context.Context, method, endpoint string, body, o
 // mostly inert. Every request carries `Authorization: token <token>`, Gitea's
 // native scheme.
 func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
+	maxRetries := mutationRetryBudget(ctx, method, p.maxRetries)
+	maxRateLimitRetries := mutationRetryBudget(ctx, method, p.maxRateLimitRetries)
 	maxWait := p.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
@@ -1597,7 +1599,7 @@ func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body 
 		featureusage.RecordProviderHTTP("gitea")
 		resp, err := httpClientOrDefault(p.Client).Do(req)
 		if err != nil {
-			if transientRetries < p.maxRetries {
+			if transientRetries < maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 					return nil, serr
 				}
@@ -1608,7 +1610,7 @@ func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body 
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
-			if rateLimitRetries >= p.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
+			if rateLimitRetries >= maxRateLimitRetries || wait > maxWait-rateLimitWaited {
 				ev.Outcome = RateLimitOutcomeExhausted
 				p.observeRateLimit(ctx, ev)
 				return resp, nil
@@ -1625,7 +1627,7 @@ func (p *GiteaProvider) send(ctx context.Context, method, endpoint string, body 
 			rateLimitRetries++
 			continue
 		}
-		if resp.StatusCode >= 500 && transientRetries < p.maxRetries {
+		if resp.StatusCode >= 500 && transientRetries < maxRetries {
 			_ = resp.Body.Close()
 			if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 				return nil, serr

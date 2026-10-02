@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/mutationreceipt"
 )
@@ -184,9 +185,9 @@ func continuationFixture(t *testing.T, kind ProviderKind) (*continuationForge, f
 	t.Cleanup(server.Close)
 	return forge, func(session *mutationreceipt.Session) continuationProvider {
 		if kind == ProviderGitHub {
-			return NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL; p.maxRetries = 0; p.mutationSession = session })
+			return NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL; p.mutationSession = session })
 		}
-		return NewGiteaProvider(server.URL, "token", func(p *GiteaProvider) { p.maxRetries = 0; p.mutationSession = session })
+		return NewGiteaProvider(server.URL, "token", func(p *GiteaProvider) { p.mutationSession = session })
 	}
 }
 func resumedSession(log *continuationLog) *mutationreceipt.Session {
@@ -394,5 +395,116 @@ func TestContinuationRESTCommentEditAndLabelRemoval(t *testing.T) {
 				t.Fatalf("human edit overwritten: %v", err)
 			}
 		})
+	}
+}
+
+// Exercise the real configured retry budgets: losing a response after commit
+// must leave an intent, never send a second mutation under that intent.
+func TestContinuationRESTCapturedWritesDoNotRetry(t *testing.T) {
+	for _, kind := range []ProviderKind{ProviderGitHub, ProviderGitea} {
+		for _, action := range []string{"comment", "review", "patch", "edit", "label"} {
+			for _, failure := range []string{"transport", "500"} {
+				t.Run(string(kind)+"/"+action+"/"+failure, func(t *testing.T) {
+					forge, makeProvider := continuationFixture(t, kind)
+					log := &continuationLog{}
+					source := makeProvider(mutationreceipt.NewSession("source", log, nil))
+					repo := RepositoryRef{Owner: "acme", Name: "app"}
+					path := "/repos/acme/app/issues/7/comments"
+					invoke := func(p continuationProvider) error {
+						_, err := p.CreateWorkItemComment(t.Context(), repo, "7", "body")
+						return err
+					}
+					switch action {
+					case "review":
+						path = "/repos/acme/app/pulls/7/reviews"
+						invoke = func(p continuationProvider) error {
+							_, err := p.SubmitPullRequestReview(t.Context(), PullRequestReviewRequest{Repository: repo, PullID: "7", CommitSHA: "head", Body: "verdict", Decision: ReviewDecisionApproved})
+							return err
+						}
+					case "patch":
+						path = "/repos/acme/app/issues/7"
+						invoke = func(p continuationProvider) error {
+							_, err := p.UpdateWorkItem(t.Context(), UpdateWorkItemRequest{Repository: repo, ID: "7", State: "closed"})
+							return err
+						}
+					case "edit":
+						path = "/repos/acme/app/issues/comments/1"
+						forge.comments = []restComment{{ID: 1, Body: "old", User: githubUser{Login: "bot"}}}
+						invoke = func(p continuationProvider) error { return p.UpdateComment(t.Context(), repo, "1", "edited") }
+					case "label":
+						path = "/repos/acme/app/issues/7/labels"
+						invoke = func(p continuationProvider) error {
+							_, err := p.UpdateWorkItem(t.Context(), UpdateWorkItemRequest{Repository: repo, ID: "7", AddLabels: []string{"ready"}})
+							return err
+						}
+					}
+					injectCommittedResponseLoss(t, source, path, failure)
+					if err := invoke(source); err == nil {
+						t.Fatal("ambiguous committed write reported success")
+					}
+					if got := forge.count(path); got != 1 {
+						t.Fatalf("public mutations=%d, want one", got)
+					}
+					if len(log.receipts) != 1 || log.receipts[0].Phase != "intent" {
+						t.Fatalf("uncertain write receipts=%+v", log.receipts)
+					}
+					if err := invoke(makeProvider(resumedSession(log))); err != nil {
+						t.Fatal(err)
+					}
+					if forge.count(path) != 1 || len(log.receipts) != 2 || log.receipts[1].Phase != "completed" {
+						t.Fatalf("reconciliation writes=%d receipts=%+v", forge.count(path), log.receipts)
+					}
+				})
+			}
+		}
+	}
+}
+
+func injectCommittedResponseLoss(t *testing.T, provider continuationProvider, path, failure string) {
+	t.Helper()
+	failed := false
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		response, err := http.DefaultTransport.RoundTrip(req)
+		if err != nil || req.Method == http.MethodGet || !strings.HasSuffix(req.URL.Path, path) || failed {
+			return response, err
+		}
+		failed = true
+		if failure == "500" {
+			response.StatusCode = http.StatusInternalServerError
+			return response, nil
+		}
+		if err := response.Body.Close(); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("connection lost after provider committed")
+	})}
+	switch p := provider.(type) {
+	case *GitHubProvider:
+		if p.maxRetries <= 0 {
+			t.Fatal("test disabled normal retry budget")
+		}
+		p.Client = client
+		p.sleep = func(context.Context, time.Duration) error { return nil }
+	case *GiteaProvider:
+		if p.maxRetries <= 0 {
+			t.Fatal("test disabled normal retry budget")
+		}
+		p.Client = client
+		p.sleep = func(context.Context, time.Duration) error { return nil }
+	default:
+		t.Fatal("unsupported test provider")
+	}
+}
+
+func TestContinuationRESTDormantGiteaRetainsLegacyRetries(t *testing.T) {
+	forge, makeProvider := continuationFixture(t, ProviderGitea)
+	provider := makeProvider(nil)
+	path := "/repos/acme/app/issues/7/comments"
+	injectCommittedResponseLoss(t, provider, path, "500")
+	if _, err := provider.CreateWorkItemComment(t.Context(), RepositoryRef{Owner: "acme", Name: "app"}, "7", "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	if forge.count(path) != 2 {
+		t.Fatal("dormant session changed existing transport retry behavior")
 	}
 }

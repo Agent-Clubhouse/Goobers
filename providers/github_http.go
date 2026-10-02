@@ -50,13 +50,15 @@ func (p *GitHubProvider) sendWithAccept(ctx context.Context, method, endpoint st
 // a GraphQL query (read) is exactly as safe to retry as a REST GET, but the
 // literal HTTP method alone can't tell the two apart (#2026).
 func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, endpoint string, body interface{}, accept string, retryable bool) (*http.Response, error) {
+	maxRetries := mutationRetryBudget(ctx, method, p.maxRetries)
+	maxRateLimitRetries := mutationRetryBudget(ctx, method, p.maxRateLimitRetries)
 	maxWait := p.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
 	}
 	var rateLimitWaited time.Duration
 	var rateLimitRetries, transientRetries int
-	authRetried := false
+	authRetried := capturedWrite(ctx, method)
 	for {
 		req, err := newJSONRequest(ctx, method, endpoint, body)
 		if err != nil {
@@ -88,7 +90,7 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 			// blind retry of those safe, so a lost response on a non-idempotent
 			// method is surfaced as an error rather than silently risking a
 			// duplicate. No response to close on this path.
-			if retryable && transientRetries < p.maxRetries {
+			if retryable && transientRetries < maxRetries {
 				if serr := p.sleep(ctx, backoffDuration(transientRetries)); serr != nil {
 					return nil, serr
 				}
@@ -109,7 +111,7 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 		if isRateLimited(resp) {
 			wait, ev := p.rateLimitPlan(resp, endpoint, rateLimitRetries)
 			_ = resp.Body.Close()
-			if rateLimitRetries >= p.maxRateLimitRetries || wait > maxWait-rateLimitWaited {
+			if rateLimitRetries >= maxRateLimitRetries || wait > maxWait-rateLimitWaited {
 				// Waiting can't help within this request's budget — the
 				// retry allowance is spent, or the reset is further out than
 				// the wait budget allows (#614). Fail FAST with the typed
@@ -132,7 +134,7 @@ func (p *GitHubProvider) sendWithAcceptRetryable(ctx context.Context, method, en
 			rateLimitRetries++
 			continue
 		}
-		if resp.StatusCode >= 500 && retryable && transientRetries < p.maxRetries {
+		if resp.StatusCode >= 500 && retryable && transientRetries < maxRetries {
 			// Server-side error: retry with backoff. GitHub 5xx is usually
 			// transient; without this a single blip fails the stage attempt.
 			// Restricted to idempotent methods (#2026) for the same reason as

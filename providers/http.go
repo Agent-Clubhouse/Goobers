@@ -722,3 +722,16 @@ func normalizeCommitChange(changeType string, exists bool) (CommitChangeType, er
 		return "", fmt.Errorf("unsupported commit change type %q", changeType)
 	}
 }
+
+// capturedWrite excludes reads performed while preparing a captured side effect.
+// The intent owns one attempt; only reconciliation can authorize its adoption.
+func capturedWrite(ctx context.Context, method string) bool {
+	return mutationreceipt.IsCapturedAction(ctx) && method != http.MethodGet && method != http.MethodHead
+}
+
+func mutationRetryBudget(ctx context.Context, method string, configured int) int {
+	if capturedWrite(ctx, method) {
+		return 0
+	}
+	return configured
+}
