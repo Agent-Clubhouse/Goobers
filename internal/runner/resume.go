@@ -512,6 +512,9 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in Res
 		}
 		if !finished {
 			res, err := r.finish(in.RunID, jr, phase, finalState, 0)
+			if err == nil && in.HumanDecision != nil {
+				err = fmt.Errorf("runner: run %q is %s and no longer awaiting a human gate decision", in.RunID, phase)
+			}
 			return res, true, err
 		}
 		res := Result{Phase: phase}

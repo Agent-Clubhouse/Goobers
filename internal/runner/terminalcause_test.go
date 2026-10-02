@@ -239,3 +239,20 @@ func TestTerminalCauseGateOverrideKeepsHumanRationale(t *testing.T) {
 		t.Fatalf("cause=%+v", c)
 	}
 }
+
+func TestTerminalCauseRecoveryStillRefusesStaleHumanDecision(t *testing.T) {
+	jr := terminalCauseRun(t, fixtureMachine(t))
+	appendCauseEvent(t, jr, journal.Event{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetAbort})
+	rd, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, done, err := (&Runner{}).resumeTerminalPhase(rd, jr, ResumeInput{RunID: "terminal-cause", HumanDecision: &HumanGateDecision{Gate: "review", Decision: "pass"}})
+	if err == nil || !done || res.Phase != journal.PhaseAborted {
+		t.Fatalf("resume=%+v %v %v", res, done, err)
+	}
+	c := readTerminalCause(t, jr.Dir())
+	if c.Target != workflow.TargetAbort {
+		t.Fatalf("stale decision changed target: %+v", c)
+	}
+}

@@ -10,6 +10,7 @@ const TerminalCauseSchema = "goobers.dev/journal/terminal-cause/v1"
 // policy stop or a failure of the execution infrastructure.
 type TerminalClassification string
 
+// Stable terminal classifications distinguish policy, operator and infrastructure causes.
 const (
 	TerminalEscalation            TerminalClassification = "escalation"
 	TerminalDefinedAbort          TerminalClassification = "defined-abort"
