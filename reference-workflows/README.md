@@ -24,8 +24,8 @@ self-hosting workflows.
 
 ## What's in here
 
-The shipped tree loads **11 goobers and 15 workflows**.
-<!-- reference-inventory: goobers=11 workflows=15 -->
+The shipped tree loads **11 goobers and 16 workflows**.
+<!-- reference-inventory: goobers=11 workflows=16 -->
 
 | Goober role | Purpose |
 |---|---|
@@ -44,6 +44,7 @@ The shipped tree loads **11 goobers and 15 workflows**.
 | Workflow | Purpose |
 |---|---|
 | `backlog-curation` | Curates maintainer-approved backlog items. |
+| `branch-cleanup` | Sweeps stale remote run branches of terminal runs daily; dry-run by default. |
 | `curate-resweep` | Revisits blocked dependencies and ready items on an independently bounded daily schedule. |
 | `decomposition` | Converts oversized approved work into validated child batches. |
 | `docs-updater` | Turns a documentation signal into a reviewed PR. |
@@ -113,6 +114,37 @@ exist; narrow the workflow's label scope or raise `maxItems` for a larger scan.
 An empty successful report contains `candidates: []`; provider failures fail the
 stage instead of masquerading as an empty report. Reports use ordinary run
 artifact retention. Only the human decides which items warrant remediation.
+
+## Scheduled branch cleanup
+
+`branch-cleanup` (#2509) runs `goobers reconcile-branches` once a day at 05:23
+against this gaggle's run-branch namespace on the provider. It reuses that
+command's rules unchanged: a branch is a deletion candidate only when its local
+run journal proves ownership, the owning run has been terminal for at least
+`minimumAge` (168h), the branch has had no remote activity in that window, and
+no open pull request uses it. Branches it cannot attribute to a terminal run of
+this instance are always preserved.
+
+The shipped workflow is a **dry run**: each run records its candidate
+decisions in `scheduler/events.jsonl` and writes `branch-reconcile.json`
+(scanned, candidates, deleted, preserved, `nextAfter`) to the run's artifacts.
+Nothing is deleted. To opt into deletion, set the task's `deleteBranches: "true"`
+and add `policyActions: [delete-branch]` to the same task, then validate and
+reload your config. The deletion path re-checks for an open pull request and
+deletes only if the branch tip still matches what was inspected.
+
+Each run inspects at most `maxBranches` (100, the command's ceiling) branches,
+in lexical order from the start of the namespace. Deleted branches drop out of
+the next run's window, so a backlog drains over successive days; if more than
+100 branches at the front of the namespace are all preserved, run
+`goobers reconcile-branches --after <nextAfter>` by hand to page past them.
+
+Local run refs in the managed mirrors are separate from provider branches and
+are not touched by this workflow. The daemon's periodic worktree retention sweep
+already deletes local run branches of terminal runs once they are merged into a
+base branch (enabled by default, with a first-enable grace window; see
+`retention` in the instance config). Age-based reaping of terminal-run local
+branches that were never merged is tracked in #2467.
 
 ## Guardrails (confirmed, not just described)
 
@@ -260,7 +292,7 @@ After the canonical quickstart has created and validated a regular instance:
 
    ```sh
    goobers validate ~/goobers-instance
-   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 15 workflow(s))
+   # OK: instance.yaml valid; config/ valid (1 gaggle(s), 11 goober(s), 16 workflow(s))
    ```
 
 4. **Bootstrap the label taxonomy** on the target repo (idempotent — safe to

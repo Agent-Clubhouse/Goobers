@@ -1,0 +1,36 @@
+# Scheduled remote run-branch cleanup (#2509). Dry-run by default: each run
+# journals which of this gaggle's run branches would be deleted. See
+# reference-workflows/README.md "Scheduled branch cleanup" to opt into deletion.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: branch-cleanup
+spec:
+  gaggle: goobers
+  displayName: Scheduled run-branch cleanup
+  triggers:
+    - type: schedule
+      schedule: "23 5 * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+    maxRunsPerDay: 1
+  start: reconcile-branches
+  tasks:
+    - name: reconcile-branches
+      type: deterministic
+      goal: >-
+        Report remote run branches whose owning run is terminal, past the
+        safety window, inactive, and without an open pull request.
+      run:
+        command: ["goobers", "reconcile-branches"]
+      inputs:
+        # Dry-run: report candidates only. To delete, set "true" and add
+        # `policyActions: [delete-branch]` to this task.
+        deleteBranches: "false"
+        maxBranches: "100"
+        minimumAge: "168h"
+        resultFile: "branch-reconcile.json"
+      capabilities:
+        - github:branch:delete
