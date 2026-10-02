@@ -54,36 +54,46 @@ func updateRESTWorkItem(ctx context.Context, c restWorkItemMutator, kind Provide
 	}
 
 	update := newCompoundUpdate(c, ExternalRef{Provider: kind, Ref: issueRef(req.Repository, req.ID), Operation: updateOperation(req)})
-	update.planIf(len(patch) > 0, "fields")
-	update.planIf(labelsChanged(req), "labels")
-	update.planIf(req.Comment != "", "comment")
+	steps := []compoundStep{}
 	if len(patch) > 0 {
-		if err := update.apply(ctx, "fields", patchFields, func() error {
+		steps = append(steps, compoundStep{effect: "fields", fields: patchFields, run: func() error {
 			return patchRESTIssue(ctx, c, baseURL, req.Repository, req.ID, patch)
-		}); err != nil {
-			return WorkItem{}, err
-		}
+		}})
 	}
-	if labelsChanged(req) {
-		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
-		labelFields := map[string]FieldDigest{"labels": {Before: digestLabels(before.Labels), After: digestLabels(after)}}
-		if err := update.apply(ctx, "labels", labelFields, func() error {
-			return c.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels)
-		}); err != nil {
-			return WorkItem{}, err
-		}
-	}
+	var comment, labels []compoundStep
 	if req.Comment != "" {
-		commentFields := map[string]FieldDigest{"comment": {After: digestString(req.Comment)}}
-		if err := update.apply(ctx, "comment", commentFields, func() error {
+		comment = []compoundStep{{effect: "comment", fields: map[string]FieldDigest{"comment": {After: digestString(req.Comment)}}, run: func() error {
 			return postOperationComment(ctx, c, baseURL, req.Repository, req.ID, req.IdempotencyKey, req.Comment, func(body string) error {
 				return c.postComment(ctx, req.Repository, req.ID, body)
 			})
-		}); err != nil {
-			return WorkItem{}, err
-		}
+		}}}
+	}
+	if labelsChanged(req) {
+		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
+		labels = []compoundStep{{effect: "labels", fields: map[string]FieldDigest{"labels": {Before: digestLabels(before.Labels), After: digestLabels(after)}}, run: func() error {
+			return c.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels)
+		}}}
+	}
+	// A keyed update applies its comment last, so the marker proves the
+	// whole update landed. An unkeyed one cannot dedupe and keeps the
+	// comment-before-labels order, so a label-triggered reader never sees a
+	// label before the comment explaining it.
+	if req.IdempotencyKey != "" {
+		steps = append(append(steps, labels...), comment...)
+	} else {
+		steps = append(append(steps, comment...), labels...)
+	}
+	if err := update.run(ctx, steps); err != nil {
+		return WorkItem{}, err
 	}
 	return update.finish(ctx, c, req.Repository, req.ID)
+}
+
+// compoundStep is one effect of a compound update.
+type compoundStep struct {
+	effect string
+	fields map[string]FieldDigest
+	run    func() error
 }
 
 // restWorkItemPatch builds the single field PATCH an update sends, plus the
@@ -239,6 +249,19 @@ func (u *compoundUpdate) planIf(planned bool, effect string) {
 	if planned {
 		u.pending = append(u.pending, effect)
 	}
+}
+
+// run plans and applies steps in order, stopping at the first failure.
+func (u *compoundUpdate) run(ctx context.Context, steps []compoundStep) error {
+	for _, step := range steps {
+		u.planIf(true, step.effect)
+	}
+	for _, step := range steps {
+		if err := u.apply(ctx, step.effect, step.fields, step.run); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // apply runs one planned effect. On failure it records the effects already
