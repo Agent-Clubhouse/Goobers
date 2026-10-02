@@ -619,6 +619,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/runtimeplan",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/safepath",
       "coverage": "none",
       "category": "not-selected",
@@ -919,6 +925,12 @@
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
     },
     {
+      "package": "test/cmdgoobersgrowth",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
       "package": "test/complexitygate",
       "coverage": "none",
       "category": "not-selected",
@@ -1055,6 +1067,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "Repository/CI tooling or cross-platform harness suite; runs on the Linux unit shards only."
+    },
+    {
+      "package": "test/soak",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pressure driver is Linux-only; pressure-free planning and fake-driver tests run on Linux unit shards."
     },
     {
       "package": "test/stackparity",
