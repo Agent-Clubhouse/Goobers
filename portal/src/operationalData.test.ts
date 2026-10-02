@@ -166,6 +166,49 @@ describe("loadOperationalSnapshot", () => {
 });
 
 describe("loadOperationalOverview", () => {
+  it("uses recovery-safe readiness when scheduler-backed instance data is gated", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.health.ready = false;
+    fixtures.health.healthy = true;
+    fixtures.health.startup = {
+      phase: "crash-resume",
+      target: "candidates=6",
+      since: "2026-10-02T16:00:00Z",
+      elapsedSeconds: 120,
+      budgetSeconds: 60,
+      budgetState: "exceeded",
+      blockingCandidate: {
+        progress: { total: 6, examined: 6, resumed: 5, reattached: 0, terminal: 0, skipped: 0 },
+        runId: "c423d482",
+        gaggle: "goobers",
+        workflow: "implement",
+        disposition: "resolving-generation",
+        operation: "resolve execution generation",
+        lastProgressAt: "2026-10-02T16:01:50Z",
+      },
+    };
+    fixtures.readiness = {
+      apiVersion: fixtures.instance.apiVersion,
+      schemaVersion: fixtures.instance.schemaVersion,
+      computerName: fixtures.instance.computerName,
+      instanceRoot: fixtures.instance.instanceRoot,
+      rootIdentity: fixtures.instance.rootIdentity,
+      ready: false,
+      recovery: fixtures.health.startup,
+    };
+    class RecoveryClient extends FixtureDaemonClient {
+      getInstance(): Promise<never> {
+        return Promise.reject(new Error("scheduler not ready"));
+      }
+    }
+
+    const overview = await loadOperationalOverview(new RecoveryClient(fixtures));
+
+    expect(overview.instance.status).toBe("starting");
+    expect(overview.health.startup?.blockingCandidate?.runId).toBe("c423d482");
+    expect(overview.sectionErrors?.instance).toBeUndefined();
+  });
+
   it("issues only bounded, phase-filtered run requests regardless of journal size (DASH-12)", async () => {
     const client = new FixtureDaemonClient(largeJournalFixtures({ completed: 80 }));
     const listRuns = vi.spyOn(client, "listRuns");

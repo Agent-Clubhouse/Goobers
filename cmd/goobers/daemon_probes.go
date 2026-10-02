@@ -117,6 +117,7 @@ func (d *daemonProbeState) readiness() httpapi.ReadinessStatus {
 				BudgetSeconds:     budget.Budget.Seconds(),
 				BudgetUsedPercent: budget.UsedPercent,
 				BudgetState:       budget.State,
+				BlockingCandidate: httpRecoveryCandidate(d.startup.recoverySnapshot(), now, false),
 			}
 		}
 	}
