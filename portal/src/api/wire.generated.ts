@@ -1663,7 +1663,8 @@ export const goWireFixtures = {
         "gaggle": "core"
       }
     },
-    "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n"
+    "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n",
+    "diagnostics": []
   },
   "configPreviewRequest": {
     "changeSet": {

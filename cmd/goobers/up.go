@@ -16,9 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
+	"github.com/goobers/goobers/internal/configauthoring"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
@@ -872,6 +874,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// A degraded topology already renders as degraded (#1928/#1933), so the
 	// absence is reported rather than silent.
 	apiHandlerOpts := daemonReadHandlerOptions(l.Root, setup)
+	sourceKind := apicontract.ConfigSourceLocal
+	sourceWritable := true
+	if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
+		sourceKind = apicontract.ConfigSourceGit
+		sourceWritable = false
+	}
+	configReader, err := configauthoring.NewReader(l.ConfigDir(), sourceKind, sourceWritable)
+	if err != nil {
+		return reportDaemonStartupError(stderr, "initialize configuration source reader", err)
+	}
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithConfigAuthoringReader(configReader))
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
 	// #3883 (decision 005 R8): give the intervention surface a second
 	// destination. Runner-driven runs keep the in-process path untouched;

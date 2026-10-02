@@ -936,6 +936,7 @@ func newWireFixtures() wireFixtures {
 			Revision:      configSource.Revision,
 			Document:      configDocumentDescriptor,
 			Content:       "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n",
+			Diagnostics:   []ConfigDiagnostic{},
 		},
 		ConfigPreviewRequest: ConfigChangePreviewRequest{
 			ChangeSet: configChangeSet,
