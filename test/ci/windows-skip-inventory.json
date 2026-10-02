@@ -157,12 +157,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/branchretention",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Pure terminal-age and protection policy; exercised on Linux unit shards. No Windows-specific seam identified."
-    },
-    {
       "package": "internal/builtincmd",
       "coverage": "none",
       "category": "not-selected",

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/instanceannotations"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -132,6 +133,6 @@ func finalizeTerminalRunWithClaimRelease(l instance.Layout, log *journal.Instanc
 }
 
 func worktreeDispositionJournaled(schedulerDir, runID, worktreeID, status string) (bool, error) {
-	recorded, err := annotationsForInstance(schedulerDir).worktreeState(schedulerDir, runID, worktreeID)
+	recorded, err := instanceannotations.ForInstance(schedulerDir).WorktreeState(schedulerDir, runID, worktreeID)
 	return recorded == status, err
 }

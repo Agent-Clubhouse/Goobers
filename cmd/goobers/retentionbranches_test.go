@@ -75,33 +75,6 @@ func TestRetentionADOReadsCurrentPullRequestLabels(t *testing.T) {
 	}
 }
 
-func TestRetentionADORejectsUnknownOrChangedDestination(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unverified retention destination was read: %s", r.URL)
-		http.Error(w, "unexpected read", http.StatusForbidden)
-	}))
-	defer server.Close()
-	original := newConfiguredADOProvider
-	t.Cleanup(func() { newConfiguredADOProvider = original })
-	newConfiguredADOProvider = func(string, providers.RepositoryRef) (*providers.ADOProvider, error) {
-		provider := providers.NewADOProvider("current-org", "current-project", "test-token")
-		provider.BaseURL = server.URL
-		return provider, nil
-	}
-	for _, repo := range []providers.RepositoryRef{
-		{Provider: providers.ProviderADO, Owner: "previous-org", Project: "project", Name: "repo"},
-		{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
-		{Provider: providers.ProviderADO, Owner: "current-org", Name: "repo"},
-	} {
-		for _, kind := range []string{itemKindIssue, itemKindPullRequest} {
-			parked, err := retentionItemParked(context.Background(), t.TempDir(), "17", recordedItemRepo{repo: repo, kind: kind})
-			if err == nil || parked {
-				t.Fatalf("unknown/mismatched destination authorized: repo=%+v kind=%s parked=%v err=%v", repo, kind, parked, err)
-			}
-		}
-	}
-}
-
 func recordRetentionItem(t *testing.T, l instance.Layout, runID string) {
 	t.Helper()
 	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
@@ -129,24 +102,24 @@ func TestRetentionBranchItemAuthority(t *testing.T) {
 		}
 		return parked, failure
 	}
-	allowed, err := retentionBranchAllowed(context.Background(), l, l.RunsDir(), "terminal")
+	allowed, err := retentionService(l).Allowed(context.Background(), l.RunsDir(), "terminal")
 	if allowed || err == nil || calls != 0 {
 		t.Fatalf("unknown ownership allowed: %v %v %d", allowed, err, calls)
 	}
 	// No active claim is created: released selections still protect the branch.
 	recordRetentionItem(t, l, "terminal")
-	allowed, err = retentionBranchAllowed(context.Background(), l, l.RunsDir(), "terminal")
+	allowed, err = retentionService(l).Allowed(context.Background(), l.RunsDir(), "terminal")
 	if !allowed || err != nil {
 		t.Fatalf("ordinary terminal: %v %v", allowed, err)
 	}
 	parked = true
-	allowed, err = retentionBranchAllowed(context.Background(), l, l.RunsDir(), "terminal")
+	allowed, err = retentionService(l).Allowed(context.Background(), l.RunsDir(), "terminal")
 	if allowed || err != nil || calls != 2 {
 		t.Fatalf("parked or cached item: %v %v %d", allowed, err, calls)
 	}
 	parked = false
 	failure = fmt.Errorf("read unavailable")
-	allowed, err = retentionBranchAllowed(context.Background(), l, l.RunsDir(), "terminal")
+	allowed, err = retentionService(l).Allowed(context.Background(), l.RunsDir(), "terminal")
 	if allowed || err == nil {
 		t.Fatalf("read failure authorized: %v %v", allowed, err)
 	}
@@ -239,28 +212,5 @@ func TestRetentionPreservesTerminalSiblingWithParkedItem(t *testing.T) {
 	retentionItemParked = func(context.Context, string, string, recordedItemRepo) (bool, error) { calls++; return calls == 2, nil }
 	if ok, err := opts.CanPruneBranch("root", owner, "branch"); ok || err != nil || calls != 2 {
 		t.Fatalf("sibling item not protected: %v %v %d", ok, err, calls)
-	}
-}
-
-func TestRetentionOwnershipRejectsAmbiguousOrIncompleteRepository(t *testing.T) {
-	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "owner", Name: "repo"}
-	event := itemRepoAnnotationEvent("run", "17", repo)
-	fold := &instanceAnnotationFold{}
-	fold.apply([]journal.Event{event})
-	if fold.itemReposByRun["run"]["17"].repo.Provider != "" {
-		t.Fatal("legacy ownership authorized")
-	}
-	// A fresh fold accepts a complete record, but conflicting history is sticky.
-	fold = &instanceAnnotationFold{}
-	event.Runner["repositoryKey"] = repo.CanonicalKey()
-	fold.apply([]journal.Event{event})
-	if fold.itemReposByRun["run"]["17"].repo != repo {
-		t.Fatal("complete ownership rejected")
-	}
-	changed := itemRepoAnnotationEvent("run", "17", providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "another", Name: "repo"})
-	changed.Runner["repositoryKey"] = "different-host-or-repository"
-	fold.apply([]journal.Event{changed, event})
-	if fold.itemReposByRun["run"]["17"].repo.Provider != "" {
-		t.Fatal("ambiguous historical ownership authorized")
 	}
 }

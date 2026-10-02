@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/instanceannotations"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -139,5 +140,6 @@ type recordedItemRepo struct {
 // item-repo annotations matching runID and any of itemIDs. Newest wins, so a
 // re-claim across attempts of the same run resolves to the latest write.
 func loadItemRepositories(l instance.Layout, runID string, itemIDs []string) (map[string]recordedItemRepo, error) {
-	return annotationsForInstance(l.SchedulerDir()).itemRepositories(l.SchedulerDir(), runID, itemIDs)
+	records, err := instanceannotations.ForInstance(l.SchedulerDir()).ItemRepositories(l.SchedulerDir(), runID, itemIDs)
+	return annotationRepositories(records), err
 }
