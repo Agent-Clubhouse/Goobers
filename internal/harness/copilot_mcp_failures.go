@@ -384,13 +384,13 @@ func copilotMCPEnterpriseBlockedServerName(line string) (string, bool) {
 	return quotedMCPServerName(line)
 }
 
-// copilotMCPLogShowsEnterpriseBlock reports whether this invocation's CLI log
-// shows the named server refused under an enterprise customization lockdown.
-func copilotMCPLogShowsEnterpriseBlock(logDir, name string) bool {
+// copilotMCPEnterpriseBlockedServers returns the servers this invocation's CLI
+// log shows refused under an enterprise customization lockdown.
+func copilotMCPEnterpriseBlockedServers(logDir string) map[string]struct{} {
 	if logDir == "" {
-		return false
+		return nil
 	}
-	return hasKey(scanCopilotMCPLog(logDir).enterpriseBlocked, name)
+	return scanCopilotMCPLog(logDir).enterpriseBlocked
 }
 
 // quotedMCPServerName returns the double-quoted name that follows "MCP
@@ -398,7 +398,7 @@ func copilotMCPLogShowsEnterpriseBlock(logDir, name string) bool {
 // Anchoring on the phrase keeps a structured record's own quoted keys from
 // being read as the name.
 func quotedMCPServerName(line string) (string, bool) {
-	if idx := strings.Index(line, "MCP server "); idx >= 0 {
+	if idx := strings.Index(line, "MCP server "); idx >= 0 && strings.Contains(line[idx:], `"`) {
 		line = line[idx:]
 	}
 	open := strings.Index(line, `"`)

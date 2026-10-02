@@ -134,12 +134,13 @@ func copilotRunnerMCPFailures(ctx context.Context, runner ProcessRunner, req Run
 		return nil
 	} // Unknown does not prove absence.
 	var failures []MCPServerFailure
+	blocked := copilotMCPEnterpriseBlockedServers(logPath)
 	for _, name := range copilotRegisteredMCPServers(req) {
 		status := controlledMCPFailureStatus(servers, name, controlled.readiness)
 		// #6358: the session list cannot say why a server is missing; the
 		// CLI's log can, and an enterprise lockdown wants its own action.
 		if status != "" && status != copilotMCPStatusRemovedAfterConnect &&
-			copilotMCPLogShowsEnterpriseBlock(logPath, name) {
+			hasKey(blocked, name) {
 			status = copilotMCPStatusEnterpriseBlocked
 		}
 		if status != "" {

@@ -57,7 +57,7 @@ func classifyCopilotEnterpriseBlock(runErr error, logDir string) error {
 	if !errors.Is(runErr, errRequiredMCPRejected) && !errors.Is(runErr, errRequiredMCPUnavailable) {
 		return runErr
 	}
-	if !copilotMCPLogShowsEnterpriseBlock(logDir, goobersIOServerName) {
+	if !hasKey(copilotMCPEnterpriseBlockedServers(logDir), goobersIOServerName) {
 		return runErr
 	}
 	return fmt.Errorf("%w: %s: %w", errRequiredMCPEnterpriseBlocked, requiredMCPEnterpriseBlockedDetail, runErr)

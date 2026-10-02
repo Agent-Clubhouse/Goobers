@@ -166,3 +166,12 @@ func TestExecutorFailsWhenRequiredGoobersIOWasEnterpriseBlocked(t *testing.T) {
 		t.Fatalf("result = %+v, want failure with code %q", result, ErrorCodeRequiredMCPEnterpriseBlocked)
 	}
 }
+
+// The quoted-name extraction is shared with the third-party policy parser. A
+// line that names the server before the "MCP server" phrase must still parse.
+func TestCopilotMCPPolicyRejectionNameBeforePhrase(t *testing.T) {
+	line := `"acme-tools" MCP server skipped: third-party policy is not enabled`
+	if got, ok := copilotMCPPolicyRejectedServerName(line); !ok || got != "acme-tools" {
+		t.Fatalf("server = %q, ok = %v, want acme-tools", got, ok)
+	}
+}
