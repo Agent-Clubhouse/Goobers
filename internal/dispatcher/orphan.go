@@ -86,6 +86,16 @@ type RunStates interface {
 	RunState(ctx context.Context, attempt PodAttempt) RunState
 }
 
+// OrphanReap records one pod deleted by the orphan sweep and the evidence
+// that made deleting it safe.
+type OrphanReap struct {
+	Pod       string
+	Namespace string
+	Reason    string
+}
+
+const orphanReapReasonOwningWorkflowTerminal = "owning workflow terminal"
+
 // SweepOrphans is the restart reconcile half of orphan cleanup (dispatcher
 // §5, constraint (a)): cross-namespace ownerReferences are NOT used (k8s GC
 // silently deletes a dependent whose namespaced owner lives in another
@@ -109,13 +119,27 @@ type RunStates interface {
 // Returns the names of the pods it disposed. A pod that could not be addressed
 // or deleted is left, and named in the aggregated error.
 func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string, error) {
+	reaped, err := d.SweepOrphansWithReport(ctx, runs)
+	deleted := make([]string, 0, len(reaped))
+	for _, reap := range reaped {
+		deleted = append(deleted, reap.Pod)
+	}
+	return deleted, err
+}
+
+// SweepOrphansWithReport is SweepOrphans with per-pod disposal reasons for
+// operator logs. A terminal owning workflow is the positive safety proof: no
+// workflow remains that can consume an unsurrendered workspace, so the retained
+// pod object is bounded to that run's lifetime instead of requiring durable
+// recovery custody forever.
+func (d *Dispatcher) SweepOrphansWithReport(ctx context.Context, runs RunStates) ([]OrphanReap, error) {
 	if runs == nil {
 		return nil, errors.New("dispatcher: orphan sweep requires a RunStates resolver")
 	}
 	if !instance.ValidIdentity(d.cfg.InstanceID) {
 		return nil, errors.New("dispatcher: orphan sweep requires Config.InstanceID to avoid crossing instance boundaries")
 	}
-	var deleted []string
+	var reaped []OrphanReap
 	var errs []error
 	for _, namespace := range distinctNamespaces(d.cfg.GaggleNamespaces) {
 		pods, err := d.pods.ListPods(ctx, namespace, sweepSelector(d.cfg.InstanceID))
@@ -144,17 +168,21 @@ func (d *Dispatcher) SweepOrphans(ctx context.Context, runs RunStates) ([]string
 			}
 			// One pod's delete error must not strand the rest of the batch.
 			// Accumulate and keep going; the aggregated error is returned after the
-			// loop, and `deleted` reflects every pod actually removed. Periodic
+			// loop, and `reaped` reflects every pod actually removed. Periodic
 			// reconciliation or a replacement worker retries it within the same
 			// durable instance scope.
-			if err := d.disposePod(ctx, pod, Attempt{RunID: attempt.RunID, Stage: attempt.Stage, Number: attempt.Attempt}); err != nil {
+			if err := d.pods.DeletePod(ctx, pod.Namespace, pod.Name); err != nil {
 				errs = append(errs, fmt.Errorf("dispatcher: delete orphaned stage pod %s/%s: %w", pod.Namespace, pod.Name, err))
 				continue
 			}
-			deleted = append(deleted, pod.Name)
+			reaped = append(reaped, OrphanReap{
+				Pod:       pod.Name,
+				Namespace: pod.Namespace,
+				Reason:    orphanReapReasonOwningWorkflowTerminal,
+			})
 		}
 	}
-	return deleted, errors.Join(errs...)
+	return reaped, errors.Join(errs...)
 }
 
 // distinctNamespaces returns the sorted, deduplicated namespace values a
