@@ -677,6 +677,9 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 			return nil, fmt.Errorf("resolve workcopies root for gaggle %q: %w", gaggle.Name, err)
 		}
 		workcopiesRoot := scoped.WorkcopiesDir()
+		if configuredProject, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && configuredProject.Pinned() {
+			workcopiesRoot = scoped.WorkcopiesBaseDir()
+		}
 		if seenRoots[workcopiesRoot] {
 			continue
 		}

@@ -7,12 +7,24 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
 func TestPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T) {
+	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, false)
+}
+
+func TestPRSelectDefersBranchOwnedInPinnedWorkspace(t *testing.T) {
+	testPRSelectDefersBranchOwnedByLiveImplementationRun(t, true)
+}
+
+func testPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T, pinned bool) {
+	t.Helper()
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const (
@@ -27,8 +39,32 @@ func TestPRSelectDefersBranchOwnedByLiveImplementationRun(t *testing.T) {
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return repo, nil }
 	t.Cleanup(func() { repoCloneURL = previousCloneURL })
 
+	layout := layoutFor(root)
+	if pinned {
+		cfg, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfg.Repos) != 1 {
+			t.Fatalf("configured repos = %d, want 1", len(cfg.Repos))
+		}
+		cfg.Repos[0].Workspace = &instance.RepoWorkspaceConfig{Pinned: true}
+		data, err := yaml.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(layout.ConfigFile(), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	t.Setenv(executor.GaggleEnvVar, "goobers")
-	manager, err := worktree.NewManager(layoutFor(root).ForGaggle("goobers").WorkcopiesDir())
+	scoped := layout.ForGaggle("goobers")
+	workcopiesRoot := scoped.WorkcopiesDir()
+	if pinned {
+		workcopiesRoot = scoped.WorkcopiesBaseDir()
+	}
+	manager, err := worktree.NewManager(workcopiesRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
