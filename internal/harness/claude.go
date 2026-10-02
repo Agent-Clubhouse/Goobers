@@ -71,6 +71,12 @@ func dropForeignAnthropicAPIKey(env []string) []string {
 // prefix ever changes, this is the one place to update.
 const anthropicOAuthTokenPrefix = "sk-ant-oat"
 
+// ClaudeAgentPlugin is the plugin identity the claude-code harness journals on
+// its agent lifecycle events. Its cost is Claude's vendor-reported USD
+// estimate (total_cost_usd), normalized to nano-AIU only so mixed-agent
+// totals are summable (#6353).
+const ClaudeAgentPlugin = "claude"
+
 // remapAnthropicOAuthToken moves a resolved agent:model credential shaped
 // like a Claude Code subscription OAuth token (anthropicOAuthTokenPrefix)
 // from ANTHROPIC_API_KEY to CLAUDE_CODE_OAUTH_TOKEN, so claude-code
@@ -454,7 +460,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	}
 
 	agentTelemetry, err := beginAdapterAgentTelemetry(
-		req, "claude", req.Model, req.Model,
+		req, ClaudeAgentPlugin, req.Model, req.Model,
 		requestedHarnessOption(req, "effort"), options["effort"],
 	)
 	if err != nil {

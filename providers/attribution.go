@@ -58,6 +58,10 @@ type CostReceipt struct {
 	CopilotPremiumRequests *float64 `json:"copilotPremiumRequests,omitempty"`
 	NanoAIU                *int64   `json:"nanoAiu,omitempty"`
 	CostUSD                *float64 `json:"costUsd,omitempty"`
+	// VendorEstimated marks a receipt whose amount includes a vendor-reported
+	// cost estimate (Claude's total_cost_usd) normalized to nano-AIU for
+	// totals, rather than an authoritative AI-credit bill (#6353).
+	VendorEstimated bool `json:"vendorEstimated,omitempty"`
 }
 
 // AttributionConfigurer is implemented by providers that can stamp authored
