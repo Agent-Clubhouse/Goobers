@@ -243,6 +243,41 @@ func TestEllipsisInAnAssertionIsEvidence(t *testing.T) {
 	}
 }
 
+// TestRepeatedLintMessageInANewFileIsPRIntroduced: the same lint text in a
+// second file is a second finding, not a duplicate of the inherited one.
+func TestRepeatedLintMessageInANewFileIsPRIntroduced(t *testing.T) {
+	const msg = ":12:6: Error return value of `f.Close` is not checked (errcheck)\n"
+	base := "/p/c/internal/a/a.go" + msg + "make: *** [lint] Error 1\n"
+	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: base}})
+	run := executor.FailureDiagnostic(nil, []byte("/w/r/internal/a/a.go"+msg+"/w/r/internal/b/b.go"+msg+"make: *** [lint] Error 1\n"))
+	decision, err := e.Classify(context.Background(), Request{
+		Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"make", "ci"},
+		FailureText: "command exited 2; failure: " + run,
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if decision.Class != ClassPRIntroduced {
+		t.Fatalf("class = %q (%s), want %q", decision.Class, decision.Reason, ClassPRIntroduced)
+	}
+}
+
+// TestBoilerplateOnlyFailureIsUnknown: a bare package verdict has no stable
+// signature, so a base failing one package cannot excuse another.
+func TestBoilerplateOnlyFailureIsUnknown(t *testing.T) {
+	e := newEvaluator(t, &stubProber{result: ProbeResult{Output: "FAIL\texample.com/x/a\t600.1s\n"}})
+	decision, err := e.Classify(context.Background(), Request{
+		Repo: "acme/web", BaseSHA: "abc123def456", Command: []string{"make", "ci"},
+		FailureText: "command exited 1; failure: FAIL\texample.com/x/b\t12.3s",
+	})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if decision.Class != ClassUnknown || decision.Park {
+		t.Fatalf("class = %q park = %v, want %q", decision.Class, decision.Park, ClassUnknown)
+	}
+}
+
 func TestFailureSignatureTextKeepsATrailerLookalikeInAnEarlierFinding(t *testing.T) {
 	got := FailureSignatureText("command exited 1; failure: a.go:1:2: saw '; hint: x'\nb.go:3:4: boom; 1 distinct failure line(s) recorded in failureDigest")
 	if !strings.Contains(got, "b.go:3:4: boom") || strings.Contains(got, "distinct failure") {
