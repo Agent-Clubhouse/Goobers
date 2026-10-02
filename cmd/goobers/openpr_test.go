@@ -344,7 +344,7 @@ func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("itemID"), "3295607")
 	t.Setenv(executor.InputEnvVar("itemTitle"), "Selected canary")
 
-	id, title, ok, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	id, title, ok, _, err := openPRIssueWithFallbackReason(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
 func TestOpenPRIssueRejectsTitleWithoutIdentity(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("itemTitle"), "Ambiguous item")
 
-	_, _, _, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	_, _, _, _, err := openPRIssueWithFallbackReason(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
 	if err == nil || !strings.Contains(err.Error(), "itemTitle requires itemID") {
 		t.Fatalf("openPRIssue error = %v, want itemTitle identity error", err)
 	}
@@ -383,7 +383,7 @@ func TestOpenPRIssueAcceptsMatchingClaimedIdentity(t *testing.T) {
 	}
 	t.Setenv(executor.InputEnvVar("itemID"), "42")
 
-	id, title, ok, err := openPRIssue(root, runID)
+	id, title, ok, _, err := openPRIssueWithFallbackReason(root, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestOpenPRIssueRecoversClaimedIdentityFromJournalPlane(t *testing.T) {
 	plane := newFileIssuesPlane(t, root)
 	plane.stampPodEnv(t, runID, "goobers")
 
-	id, title, ok, err := openPRIssue(t.TempDir(), runID)
+	id, title, ok, _, err := openPRIssueWithFallbackReason(t.TempDir(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +444,7 @@ func TestOpenPRIssueRejectsConflictingClaimedIdentity(t *testing.T) {
 	}
 	t.Setenv(executor.InputEnvVar("itemID"), "84")
 
-	_, _, _, err = openPRIssue(root, runID)
+	_, _, _, _, err = openPRIssueWithFallbackReason(root, runID)
 	if err == nil || !strings.Contains(err.Error(), `itemID "84" conflicts with claimed item "42"`) {
 		t.Fatalf("openPRIssue error = %v, want conflicting identity error", err)
 	}
