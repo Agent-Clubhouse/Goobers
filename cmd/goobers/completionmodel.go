@@ -313,6 +313,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
+		{name: "blob-endpoint", takesArg: true, desc: "HTTP(S) artifact plane alternative"},
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
