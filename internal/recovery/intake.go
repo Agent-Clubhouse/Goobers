@@ -45,6 +45,22 @@ func AcceptArchive(ctx context.Context, source io.Reader, request RetentionReque
 	// do not affect bundle/patch identity; host policy binds the durable record.
 	record.CreatedAt = request.IdentityTime
 	record.RetainUntil = request.RetainUntil
+	if retained, path, reused, err := acceptExistingCleanArchive(ctx, filepath.Join(directory, BundleFileName), record, request); err != nil {
+		return Record{}, "", err
+	} else if reused {
+		event, err := RetainedEvent(retained)
+		if err != nil {
+			return Record{}, "", err
+		}
+		event.Runner["recoveryCapture"] = true
+		if err := ctx.Err(); err != nil {
+			return Record{}, "", err
+		}
+		if err := acknowledge.Append(event); err != nil {
+			return Record{}, "", fmt.Errorf("acknowledge existing recovery archive: %w", err)
+		}
+		return retained, path, nil
+	}
 	// Reserve capacity under the inventory lock before importing objects or
 	// creating a host ref. Failed imports leave a bounded retry reservation.
 	retained, path, err := publishToInventory(ctx, request.Repository, request.InventoryRoot, request.CleanupRoots, record, request.MaxSnapshots, request.MaxArchiveBytes, func() error {
