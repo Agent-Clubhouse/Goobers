@@ -13,9 +13,12 @@ const defaultCreditLimit = 20
 //
 // This file is the PRODUCTION credit-attribution path: `goobers telemetry
 // query --aggregate credit-assignment`, the read API, and the portal all read
-// from here. internal/creditgraph is a separate, newer per-run graph contract
-// with no production caller; the two are unreconciled (issue #4523,
-// docs/design/credit-graph.md). Do not assume a change here is reflected there.
+// from here. internal/creditgraph is the separate per-run attribution path.
+// Where the two overlap (routed stages, cause location, aborted runs)
+// they must agree: internal/creditgraph/readmodel_conformance_test.go pins it,
+// and docs/design/credit-graph.md ("Conformance and compatibility", #6355)
+// documents the overlap. A change to what counts as a failure here must update
+// that test in the same commit.
 type CreditOptions struct {
 	Gaggle   string
 	Workflow string
