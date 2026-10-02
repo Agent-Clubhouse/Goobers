@@ -282,6 +282,34 @@ func TestAzureCLICredentialFailureReportsAmbiguousPathWithoutProbingAlternatives
 	assertAzureCLIDiagnosticWithholdsOutput(t, err)
 }
 
+func TestAzureCLICredentialFailureReportsAmbiguousPathAlongsideTimeoutAndCancel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cause      error
+		wantCode   string
+		wantDetail string
+	}{
+		"timeout":  {context.DeadlineExceeded, azureCLITimeoutCode, "command timed out"},
+		"canceled": {context.Canceled, azureCLICanceledCode, "command was canceled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := azureCLICommandError(context.Background(), &azureCLIPathAmbiguityError{
+				cause:          tc.cause,
+				candidateCount: 2,
+			}, []byte(azureCLIFailureCanary))
+			var failure *azureCLICommandFailure
+			if !errors.As(err, &failure) || failure.ErrorCode() != tc.wantCode {
+				t.Fatalf("error = %v, want code %q", err, tc.wantCode)
+			}
+			for _, want := range []string{tc.wantDetail, "found 2 Azure CLI launchers", "used the first"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+			assertAzureCLIDiagnosticWithholdsOutput(t, err)
+		})
+	}
+}
+
 func TestAzureCLICredentialFailureDoesNotDistractFromKnownCauseWhenPathIsAmbiguous(t *testing.T) {
 	exit := &exec.ExitError{}
 	err := azureCLICommandError(context.Background(), &azureCLIPathAmbiguityError{
