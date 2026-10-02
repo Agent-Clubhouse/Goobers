@@ -146,6 +146,51 @@ func TestPRSelectLeavesVerifiedRemediationUnderHumanHoldParked(t *testing.T) {
 	runPRSelectExpectingRunAbortedPark(t, server, number)
 }
 
+func TestPRSelectRestoresRunAbortedAfterConcurrentNewerAbort(t *testing.T) {
+	const number = 6411
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	remediatedAt := abortedAt.Add(time.Hour)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), remediatedAt)
+	server.mutatePullRequestAfterLabelRemoval(number, func(s *fakeGitHubServer, pr *fakePR) {
+		pr.labels = append(pr.labels, abortedRunLabel)
+		s.issues[number].labels = append(s.issues[number].labels, abortedRunLabel)
+		s.appendLabelEventAsLocked(number, abortedRunLabel, true, remediatedAt.Add(time.Minute), "canceller")
+	})
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
+func TestPRSelectRestoresRunAbortedAfterConcurrentUnresolvedThread(t *testing.T) {
+	const number = 6412
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), abortedAt.Add(time.Hour))
+	server.mutatePullRequestAfterLabelRemoval(number, func(_ *fakeGitHubServer, pr *fakePR) {
+		pr.inlineComments = append(pr.inlineComments, fakeInlineReviewComment{
+			id: 1, body: "new unresolved finding", path: "main.go", line: 1, thread: "thread-1",
+		})
+	})
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
+func TestPRSelectRestoresRunAbortedAfterConcurrentHumanHold(t *testing.T) {
+	const number = 6413
+	abortedAt := time.Date(2026, 10, 1, 19, 47, 43, 0, time.UTC)
+	server := newReviewedRunAbortedPRFixture(t, number)
+	server.setLabelEventTime(number, abortedRunLabel, true, abortedAt)
+	server.addCommentAtAs(number, "goobers", remediationResponseMarker("remediation-run"), abortedAt.Add(time.Hour))
+	server.mutatePullRequestAfterLabelRemoval(number, func(s *fakeGitHubServer, pr *fakePR) {
+		pr.labels = append(pr.labels, providers.LabelNeedsHuman)
+		s.issues[number].labels = append(s.issues[number].labels, providers.LabelNeedsHuman)
+	})
+
+	runPRSelectExpectingRunAbortedPark(t, server, number)
+}
+
 func TestPRSelectLeavesRunAbortedPRWithChangesRequestedReviewParked(t *testing.T) {
 	server := newReviewedRunAbortedPRFixture(t, 5439)
 	server.addPRReview(5439, "CHANGES_REQUESTED")

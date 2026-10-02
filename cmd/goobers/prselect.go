@@ -1236,11 +1236,67 @@ func clearStaleRunAbortedPR(
 		return pr, false, fmt.Errorf("remove %s: %w", abortedRunLabel, err)
 	}
 	refreshed.Labels = removeLabel(refreshed.Labels, abortedRunLabel)
-	return refreshed, true, nil
+	verified, safe, err := verifyClearedRunAbortedPR(ctx, provider, repo, pullID, refreshed, len(poll.CommentsSince) != 0)
+	if err == nil && safe {
+		return verified, true, nil
+	}
+	if _, restoreErr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: repo,
+		ID:         pullID,
+		AddLabels:  []string{abortedRunLabel},
+	}); restoreErr != nil {
+		if err != nil {
+			return pr, false, fmt.Errorf("revalidate cleared %s: %v; restore label: %w", abortedRunLabel, err, restoreErr)
+		}
+		return pr, false, fmt.Errorf("restore %s after unsafe revalidation: %w", abortedRunLabel, restoreErr)
+	}
+	if !hasAnyLabel(verified.Labels, []string{abortedRunLabel}) {
+		verified.Labels = append(verified.Labels, abortedRunLabel)
+	}
+	return verified, false, nil
 }
 
 type runAbortedLabelHistoryProvider interface {
 	ListWorkItemLabelTransitionsForItem(context.Context, providers.RepositoryRef, string, string) ([]providers.WorkItemLabelTransition, error)
+}
+
+func verifyClearedRunAbortedPR(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pullID string,
+	pr providers.PullRequestSummary,
+	reviewedRemediation bool,
+) (providers.PullRequestSummary, bool, error) {
+	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return pr, false, err
+	}
+	refreshed := pullRequestSummaryFromPoll(pr, poll)
+	if poll.State != "open" || poll.Draft || poll.CheckState != providers.CheckStatePassing ||
+		poll.Mergeable == nil || !*poll.Mergeable ||
+		hasAnyLabel(refreshed.Labels, []string{
+			abortedRunLabel,
+			noMergeReviewLabel,
+			providers.LabelNeedsHuman,
+			needsRemediationLabel,
+			remediationEscalatedLabel,
+			scopeGateLabel,
+		}) {
+		return refreshed, false, nil
+	}
+	if reviewedRemediation {
+		safe, err := runAbortedPRHasVerifiedRemediation(ctx, provider, repo, pullID, refreshed.Labels, poll)
+		return refreshed, safe, err
+	}
+	if len(poll.CommentsSince) != 0 {
+		return refreshed, false, nil
+	}
+	reviewed, err := runAbortedPRHasReviewAttention(ctx, provider, repo, pullID, poll)
+	return refreshed, !reviewed && err == nil, err
 }
 
 func runAbortedPRHasVerifiedRemediation(
@@ -1279,13 +1335,19 @@ func runAbortedPRHasVerifiedRemediation(
 	if err != nil {
 		return false, err
 	}
-	var latest providers.WorkItemLabelTransition
+	var latest, latestAdded providers.WorkItemLabelTransition
 	for _, transition := range transitions {
 		if transition.OccurredAt.After(latest.OccurredAt) {
 			latest = transition
 		}
+		if transition.Added && transition.OccurredAt.After(latestAdded.OccurredAt) {
+			latestAdded = transition
+		}
 	}
-	if !latest.Added || latest.OccurredAt.IsZero() || !latest.OccurredAt.Before(responseAt) {
+	if latestAdded.OccurredAt.IsZero() || !latestAdded.OccurredAt.Before(responseAt) {
+		return false, nil
+	}
+	if hasAnyLabel(labels, []string{abortedRunLabel}) != latest.Added {
 		return false, nil
 	}
 	threads, err := provider.ListPullRequestReviewThreads(ctx, repo, pullID)

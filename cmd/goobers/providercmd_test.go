@@ -206,6 +206,7 @@ type fakeGitHubServer struct {
 	commentsFailureBody   map[int]string
 	reviewThreadsFailure  map[int]int
 	pullGetMutations      map[int][]func(*fakeGitHubServer, *fakePR)
+	labelRemovalMutations map[int][]func(*fakeGitHubServer, *fakePR)
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -238,6 +239,15 @@ func (s *fakeGitHubServer) mutatePullRequestOnNextGet(number int, mutate func(*f
 		s.pullGetMutations = map[int][]func(*fakeGitHubServer, *fakePR){}
 	}
 	s.pullGetMutations[number] = append(s.pullGetMutations[number], mutate)
+}
+
+func (s *fakeGitHubServer) mutatePullRequestAfterLabelRemoval(number int, mutate func(*fakeGitHubServer, *fakePR)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.labelRemovalMutations == nil {
+		s.labelRemovalMutations = map[int][]func(*fakeGitHubServer, *fakePR){}
+	}
+	s.labelRemovalMutations[number] = append(s.labelRemovalMutations[number], mutate)
 }
 
 // setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
@@ -1153,6 +1163,9 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			issue.labels = append(issue.labels, label)
+			if pr := s.prs[num]; pr != nil {
+				pr.labels = append(pr.labels, label)
+			}
 			s.appendLabelEventAsLocked(num, label, true, time.Now().UTC(), requestActor(r))
 		}
 		writeFakeJSON(w, []map[string]string{})
@@ -1168,8 +1181,17 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		issue.labels = kept
+		if pr := s.prs[num]; pr != nil {
+			pr.labels = removeLabel(pr.labels, label)
+		}
 		if removed {
 			s.appendLabelEventAsLocked(num, label, false, time.Now().UTC(), requestActor(r))
+		}
+		if mutations := s.labelRemovalMutations[num]; removed && len(mutations) > 0 {
+			delete(s.labelRemovalMutations, num)
+			for _, mutate := range mutations {
+				mutate(s, s.prs[num])
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 	default:
