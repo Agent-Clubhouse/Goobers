@@ -12,5 +12,5 @@ func changedTime(info os.FileInfo) syscall.Timespec {
 
 func changedAt(info os.FileInfo) time.Time {
 	ts := info.Sys().(*syscall.Stat_t).Ctim
-	return time.Unix(int64(ts.Sec), int64(ts.Nsec))
+	return time.Unix(ts.Unix())
 }
