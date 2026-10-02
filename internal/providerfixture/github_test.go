@@ -231,6 +231,36 @@ func TestExistingCanonicalFixtureBytesSurviveCheckCycle(t *testing.T) {
 	}
 }
 
+func TestRefreshMatchesExistingCanonicalFixtureBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "test", "providers", "testdata", "github_contract.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := Refresh(context.Background(), RefreshConfig{
+		Repository: baseline.Repository,
+		Issue:      baseline.Issue,
+		Token:      "dedicated-token",
+		Client:     fixtureReplayClient(t, baseline),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonical(refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = append(after, '\n')
+	if !bytes.Equal(before, after) {
+		t.Fatalf("canonical GitHub fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestCheckContractReplaysRecordedRequests(t *testing.T) {
 	t.Parallel()
 	if err := CheckContract(context.Background(), validFixture()); err != nil {
@@ -373,6 +403,36 @@ func fixtureHTTPResponse(status int, body []byte) *http.Response {
 		Header:     make(http.Header),
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
+}
+
+func fixtureReplayClient(t *testing.T, fixture Fixture) HTTPClient {
+	t.Helper()
+	exchanges := append([]Exchange(nil), fixture.Exchanges...)
+	return httpClientFunc(func(req *http.Request) (*http.Response, error) {
+		if len(exchanges) == 0 {
+			return nil, fmt.Errorf("unexpected request %s %s", req.Method, req.URL.RequestURI())
+		}
+		exchange := exchanges[0]
+		exchanges = exchanges[1:]
+		if req.Method != exchange.Method || req.URL.RequestURI() != exchange.Path {
+			return nil, fmt.Errorf(
+				"request = %s %s, want %s %s",
+				req.Method,
+				req.URL.RequestURI(),
+				exchange.Method,
+				exchange.Path,
+			)
+		}
+		headers := make(http.Header, len(exchange.Response.Headers))
+		for name, value := range exchange.Response.Headers {
+			headers.Set(name, value)
+		}
+		return &http.Response{
+			StatusCode: exchange.Response.Status,
+			Header:     headers,
+			Body:       io.NopCloser(bytes.NewReader(exchange.Response.Body)),
+		}, nil
+	})
 }
 
 func validFixture() Fixture {

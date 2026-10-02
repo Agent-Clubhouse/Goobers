@@ -179,6 +179,37 @@ func TestRefreshADOPreservesMaxResponseSizeError(t *testing.T) {
 	}
 }
 
+func TestRefreshADOMatchesExistingCanonicalFixtureBytes(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "test", "providers", "testdata", "ado_contract.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := RefreshADO(context.Background(), ADORefreshConfig{
+		OrganizationURL: "https://dev.azure.com/" + baseline.Repository.Owner,
+		Project:         baseline.Repository.Name,
+		WorkItem:        baseline.Issue,
+		Token:           "ado-pat",
+		Client:          fixtureReplayClient(t, baseline),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonical(refreshed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = append(after, '\n')
+	if !bytes.Equal(before, after) {
+		t.Fatalf("canonical ADO fixture bytes changed after refresh\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestADOProviderFixtureWorkflowIsDispatchOnly(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join("..", "..")
