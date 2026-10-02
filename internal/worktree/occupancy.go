@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -41,6 +42,14 @@ func (m *Manager) BranchOccupancies(ctx context.Context, repoURL string) (map[st
 	if err != nil {
 		return nil, fmt.Errorf("worktree: inspect branch occupancy: %w", err)
 	}
+	return m.branchOccupanciesFromEntries(ctx, repoURL, key, repoDir, entries)
+}
+
+func (m *Manager) branchOccupanciesFromEntries(
+	ctx context.Context,
+	repoURL, key, repoDir string,
+	entries []registeredWorktree,
+) (map[string]BranchOccupancy, error) {
 	occupancies := make(map[string]BranchOccupancy)
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Branch, "refs/heads/") {
@@ -49,10 +58,24 @@ func (m *Manager) BranchOccupancies(ctx context.Context, repoURL string) (map[st
 		branch := strings.TrimPrefix(entry.Branch, "refs/heads/")
 		directory, err := m.containedRunDirectory(key, entry.Path)
 		if err != nil {
+			released, revalidateErr := releasedOccupancyEntry(ctx, repoDir, entry, err)
+			if revalidateErr != nil {
+				return nil, fmt.Errorf("worktree: revalidate branch %q occupant %s: %w", branch, entry.Path, revalidateErr)
+			}
+			if released {
+				continue
+			}
 			return nil, fmt.Errorf("worktree: inspect branch %q occupant %s: %w", branch, entry.Path, err)
 		}
 		ownership, err := readMarker(m.ownershipPath(key, directory))
 		if err != nil {
+			released, revalidateErr := releasedOccupancyEntry(ctx, repoDir, entry, err)
+			if revalidateErr != nil {
+				return nil, fmt.Errorf("worktree: revalidate branch %q occupant %s: %w", branch, entry.Path, revalidateErr)
+			}
+			if released {
+				continue
+			}
 			return nil, fmt.Errorf("worktree: inspect branch %q occupant %s ownership record: %w", branch, entry.Path, err)
 		}
 		if ownership.Directory == "" || ownership.Directory != directory || !validRunID(ownership.RunID) ||
@@ -61,6 +84,13 @@ func (m *Manager) BranchOccupancies(ctx context.Context, repoURL string) (map[st
 		}
 		primary, err := readMarker(m.markerPath(key, ownership.RunID))
 		if err != nil {
+			released, revalidateErr := releasedOccupancyEntry(ctx, repoDir, entry, err)
+			if revalidateErr != nil {
+				return nil, fmt.Errorf("worktree: revalidate branch %q occupant %s: %w", branch, entry.Path, revalidateErr)
+			}
+			if released {
+				continue
+			}
 			return nil, fmt.Errorf("worktree: inspect branch %q occupant %s run marker: %w", branch, entry.Path, err)
 		}
 		if !sameWorkspaceIdentity(primary, ownership) {
@@ -81,4 +111,25 @@ func (m *Manager) BranchOccupancies(ctx context.Context, repoURL string) (map[st
 		}
 	}
 	return occupancies, nil
+}
+
+func releasedOccupancyEntry(
+	ctx context.Context,
+	repoDir string,
+	entry registeredWorktree,
+	inspectionErr error,
+) (bool, error) {
+	if !errors.Is(inspectionErr, os.ErrNotExist) {
+		return false, nil
+	}
+	current, err := registeredWorktrees(ctx, repoDir)
+	if err != nil {
+		return false, err
+	}
+	for _, candidate := range current {
+		if sameWorktreePath(candidate.Path, entry.Path) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
