@@ -971,7 +971,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
-	apiHandlerOpts = append(apiHandlerOpts, withDaemonRunJournalServices(l, setup.InstanceLog)...)
+	journalService := newDaemonRunJournalService(l, setup.InstanceLog)
+	withEngineOperatorMessageServices(journalService, liveJournals, engineClient, engineGuards)
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
