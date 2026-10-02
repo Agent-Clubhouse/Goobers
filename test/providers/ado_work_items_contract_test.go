@@ -477,6 +477,88 @@ func TestContract_ADOCreateWorkItemIdempotentOnRetry(t *testing.T) {
 	}
 }
 
+// TestContract_ADOCreateWorkItemIdempotentBeforeFullTextIndex pins the retry
+// window the footer search cannot see: Azure Boards indexes descriptions for
+// WIQL CONTAINS WORDS asynchronously, so a retry moments after the first
+// create gets no full-text hit. The recency query (this identity's items since
+// yesterday, store-backed fields only) must still find the item, so the retry
+// returns it instead of filing a duplicate.
+func TestContract_ADOCreateWorkItemIdempotentBeforeFullTextIndex(t *testing.T) {
+	var createRequests int
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/wiql", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode WIQL request: %v", err)
+		}
+		query := body["query"]
+		queries = append(queries, query)
+		if strings.Contains(query, "CONTAINS WORDS") {
+			// Not indexed yet.
+			writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{}})
+			return
+		}
+		for _, clause := range []string{"[System.CreatedBy] = @me", "[System.CreatedDate] >= @today - 1", "ORDER BY [System.Id] DESC"} {
+			if !strings.Contains(query, clause) {
+				t.Errorf("recency WIQL %q lacks %q", query, clause)
+			}
+		}
+		if got := r.URL.Query().Get("$top"); got != "200" {
+			t.Errorf("recency $top = %q, want 200", got)
+		}
+		// Newest first: an unrelated newer item, then ours.
+		writeJSON(t, w, map[string]interface{}{"workItems": []map[string]int{{"id": 57}, {"id": 56}}})
+	})
+	for id, description := range map[int]string{
+		57: "someone else's item\n\n---\ngoobers run-id: run-other",
+		56: "details\n\n---\ngoobers run-id: run-fresh",
+	} {
+		mux.HandleFunc(fmt.Sprintf("/org/project/_apis/wit/workitems/%d", id), func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, map[string]interface{}{
+				"id": id, "rev": 1, "url": "item-url",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue",
+					"System.Title":        "Fresh work",
+					"System.Description":  description,
+					"System.State":        "Active",
+				},
+			})
+		})
+	}
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/Issue/states", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"value": []adoContractState{
+			{Name: "Active", Category: "InProgress"},
+		}})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitems/$Issue", func(w http.ResponseWriter, _ *http.Request) {
+		createRequests++
+		http.Error(w, "duplicate create", http.StatusConflict)
+	})
+	server := httptest.NewServer(withADOWorkItemsBatch(t, mux))
+	defer server.Close()
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+
+	item, err := provider.CreateWorkItem(context.Background(), providers.CreateWorkItemRequest{
+		Repository: providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project"},
+		Type:       "Issue",
+		Title:      "Fresh work",
+		Body:       "details",
+		RunID:      "run-fresh",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkItem: %v", err)
+	}
+	if item.ID != "56" || createRequests != 0 {
+		t.Fatalf("CreateWorkItem = item %s with %d create request(s), want the existing item 56 and none", item.ID, createRequests)
+	}
+	if len(queries) != 2 || !strings.Contains(queries[0], "CONTAINS WORDS") {
+		t.Fatalf("WIQL queries = %q, want the full-text search then the recency query", queries)
+	}
+}
+
 func TestContract_ADOUpdateReportsCommittedFieldsWhenCommentFails(t *testing.T) {
 	backend := newADOWorkItemBackend()
 	backend.commentStatus = http.StatusInternalServerError
