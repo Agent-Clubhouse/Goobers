@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/retryutil"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -390,6 +390,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	if maxInterval <= 0 {
 		maxInterval = DefaultMaxPollInterval
 	}
+	pollRetryPolicy := retryutil.Policy{Base: interval, Max: maxInterval}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = e.Timeout
@@ -467,7 +468,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			if now().After(deadline) {
 				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
-			if serr := sleep(ctx, backoff(interval, maxInterval, attempt)); serr != nil {
+			if serr := sleep(ctx, retryutil.JitteredExponential(pollRetryPolicy, attempt)); serr != nil {
 				if ciPollDeadlineExceeded(parentCtx, ctx) {
 					return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 				}
@@ -512,7 +513,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 		if now().After(deadline) {
 			return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 		}
-		if err := sleep(ctx, backoff(interval, maxInterval, attempt)); err != nil {
+		if err := sleep(ctx, retryutil.JitteredExponential(pollRetryPolicy, attempt)); err != nil {
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
 				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
@@ -961,17 +962,6 @@ func ciPollOutcome(checkState providers.CheckState, summary, pullID string) apiv
 		Outputs: map[string]interface{}{OutputCIStatus: string(checkState), OutputPRNumber: pullID},
 		Summary: summary,
 	}
-}
-
-// backoff returns a jittered duration between half and all of base<<attempt,
-// with the exponential ceiling capped at max.
-func backoff(base, max time.Duration, attempt int) time.Duration {
-	ceiling := base << attempt
-	if ceiling <= 0 || ceiling > max {
-		ceiling = max
-	}
-	floor := ceiling / 2
-	return floor + time.Duration(rand.Int64N(int64(ceiling-floor)+1))
 }
 
 // contextSleep waits for d or until ctx is cancelled, whichever comes first —
