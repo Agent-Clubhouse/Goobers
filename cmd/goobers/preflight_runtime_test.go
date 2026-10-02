@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sigs.k8s.io/yaml"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
