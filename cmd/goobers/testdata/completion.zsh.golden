@@ -231,7 +231,7 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=(--api --json --follow --summary --verdicts --transcripts --transcript)
+            flags+=(--api --json --follow --after-seq --summary --verdicts --transcripts --transcript)
             ;;
         e2e)
             case "${words[3]:-}" in

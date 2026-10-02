@@ -202,7 +202,7 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=" --api --json --follow --summary --verdicts --transcripts --transcript"
+            flags+=" --api --json --follow --after-seq --summary --verdicts --transcripts --transcript"
             ;;
         e2e)
             case "${COMP_WORDS[2]:-}" in
