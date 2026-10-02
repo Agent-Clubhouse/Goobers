@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -329,6 +330,68 @@ func TestHTTPStoreFallbackErrorAndWriteContentType(t *testing.T) {
 	}
 	if contentType != "application/json" {
 		t.Fatalf("content type = %q", contentType)
+	}
+}
+
+func TestHTTPStoreReadResponseBodyCeiling(t *testing.T) {
+	for name, size := range map[string]int{
+		"at limit":   MaxValueBytes,
+		"over limit": MaxValueBytes + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(HeaderETag, `"etag"`)
+				_, _ = io.WriteString(w, strings.Repeat("x", size))
+			}))
+			t.Cleanup(server.Close)
+			store := planeClient(t, server)
+
+			value, err := store.Get(t.Context(), KeyBlockedRecords)
+			if size == MaxValueBytes {
+				if err != nil || len(value.Data) != MaxValueBytes {
+					t.Fatalf("Get() returned %d bytes, %v; want %d bytes", len(value.Data), err, MaxValueBytes)
+				}
+				return
+			}
+			want := "answered more than the " + strconv.Itoa(MaxValueBytes) + "-byte value limit"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Get() error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestHTTPStorePutErrorResponseBodyCeiling(t *testing.T) {
+	const limit = 4 << 20
+	envelope := `{"error":{"code":"bounded","message":"decoded"}}`
+
+	for name, padding := range map[string]int{
+		"at limit":   limit - len(envelope),
+		"over limit": limit - len(envelope) + 1,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = io.WriteString(w, strings.Repeat(" ", padding)+envelope)
+			}))
+			t.Cleanup(server.Close)
+			store := planeClient(t, server)
+
+			_, err := store.Put(t.Context(), KeyBlockedRecords, []byte(`{}`), "")
+			var planeErr *Error
+			if !errors.As(err, &planeErr) {
+				t.Fatalf("Put() error = %v, want *Error", err)
+			}
+			if name == "at limit" {
+				if planeErr.Code != "bounded" || planeErr.Message != "decoded" {
+					t.Fatalf("Put() error = %#v, want decoded envelope at %d bytes", planeErr, limit)
+				}
+				return
+			}
+			if planeErr.Code != "http_502" {
+				t.Fatalf("Put() error = %#v, want fallback above %d bytes", planeErr, limit)
+			}
+		})
 	}
 }
 
