@@ -572,7 +572,7 @@ func TestCIWorkflowKeepsRulesetPinnedRequiredCheckName(t *testing.T) {
 	// The name is an expression only so a skipped title/body-edit run cannot
 	// shadow it (#6360); every run that validates code renders the pinned name,
 	// which TestCIRunsOnBaseRetargetNotMetadataEdits evaluates per event.
-	const requiredCheckName = "    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (not re-run for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}"
+	const requiredCheckName = "    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}"
 	requiredCI := workflowJob(string(data), "required-ci")
 	if !slices.Contains(strings.Split(requiredCI, "\n"), requiredCheckName) {
 		t.Errorf("required-ci name must remain %q because repository ruleset 19093039 pins that exact required-check context", strings.TrimSpace(requiredCheckName))

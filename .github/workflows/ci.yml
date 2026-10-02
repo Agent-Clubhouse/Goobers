@@ -1623,7 +1623,7 @@ jobs:
         run: make vulncheck
 
   required-ci:
-    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (not re-run for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}
+    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}
     if: ${{ always() && github.event_name != 'push' && !(github.event.action == 'edited' && !github.event.changes.base) }}
     # unit-gate — the pre-parallelization `make ci` monolith — was retired once
     # every check it ran had a dedicated job; it duplicated the
