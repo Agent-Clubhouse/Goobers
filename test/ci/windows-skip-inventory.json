@@ -787,6 +787,12 @@
       "reason": "Only the two runtime-alias dedup tests run ('Windows rollup migration alias dedup'); the rest of the ~15s suite is not Windows-sensitive."
     },
     {
+      "package": "internal/sweepreport",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Sweep error reporting extracted from cmd/goobers; the Windows CLI test selection did not run its rate-limit unit test. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/telemetry",
       "coverage": "partial",
       "category": "seam-selection",
