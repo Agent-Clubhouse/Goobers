@@ -510,6 +510,10 @@ type Config struct {
 	// RequiredCapabilities never invokes it, so the default is inert until a
 	// gaggle/stage opts in.
 	ToolchainVerifier ToolchainVerifier
+	// HandoffSchemaLoader opt-ins deterministic pre-consumption validation of
+	// schema-bound JSON handoffs for agentic stages. Nil preserves historical
+	// behavior.
+	HandoffSchemaLoader HandoffSchemaLoader
 	// LookPathFunc resolves an executable name to a full path, exactly like
 	// exec.LookPath (#1380's ciCommand preflight — a name containing a path
 	// separator is tried directly, PATH is not consulted, matching what
@@ -3986,6 +3990,9 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	case apiv1.TaskAgentic:
 		ag, err := ex.agentic(t.Goober)
 		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, nil, err
+		}
+		if ctx, err = r.handoffValidationContext(ctx, jr, in.Machine, t, attempt, class, env.ContextPointers); err != nil {
 			return apiv1.ResultEnvelope{}, nil, nil, err
 		}
 		agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, t.Name, attempt, t.Goober)

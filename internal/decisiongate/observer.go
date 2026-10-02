@@ -44,6 +44,16 @@ func (o *Observer) Wait() { o.wg.Wait() }
 // Observe schedules a shadow scoring of reply. sampleKey (the run id) makes
 // sampling stable per run. Only non-empty replies are eligible.
 func (o *Observer) Observe(sampleKey, reply string) {
+	o.observe(sampleKey, reply, nil)
+}
+
+// ObserveValidated schedules a shadow scoring of reply against deterministic
+// input-validity ground truth.
+func (o *Observer) ObserveValidated(sampleKey string, inputValid bool, reply string) {
+	o.observe(sampleKey, reply, &inputValid)
+}
+
+func (o *Observer) observe(sampleKey, reply string, inputValid *bool) {
 	if o == nil || o.Gate == nil || reply == "" || !Sampled(sampleKey, o.Sample) {
 		return
 	}
@@ -60,6 +70,10 @@ func (o *Observer) Observe(sampleKey, reply string) {
 		defer func() { _ = recover() }()
 		ctx, cancel := context.WithTimeout(context.Background(), o.Timeout)
 		defer cancel()
+		if inputValid != nil {
+			o.Record(o.Gate.Shadow(ctx, *inputValid, ClaimsBadInput(reply), reply))
+			return
+		}
 		o.Record(o.Gate.ShadowReply(ctx, ClaimsBadInput(reply), reply))
 	}()
 }

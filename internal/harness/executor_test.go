@@ -18,6 +18,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
@@ -403,6 +404,36 @@ func TestExecutorJournalsGoobersIOInputInspectionReceipts(t *testing.T) {
 	if event.Type != journal.EventRunnerAnnotation || event.Stage != "implement" ||
 		event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
 		t.Fatalf("receipt annotation = %+v", event)
+	}
+}
+
+func TestExecutorAddsHandoffValidationOutput(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+		return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+			Status: apiv1.ResultSuccess,
+		})
+	}}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := handoffcheck.WithReport(context.Background(), handoffcheck.Report{InputValid: handoffcheck.InputValidTrue})
+	result, err := exec.Invoke(ctx, testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, ok := handoffcheck.ReportFromOutputs(result.Outputs)
+	if !ok || report.InputValid != handoffcheck.InputValidTrue {
+		t.Fatalf("handoff validation output = %#v", result.Outputs[handoffcheck.OutputKey])
 	}
 }
 
