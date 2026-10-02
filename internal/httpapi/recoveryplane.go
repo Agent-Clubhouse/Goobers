@@ -44,15 +44,23 @@ func recoveryPlanePath(path string) bool {
 	return len(parts) == 2 && apiv1.ValidRunID(parts[0]) && parts[1] == "recovery"
 }
 
+func recoveryRequestScope(w http.ResponseWriter, request *http.Request) (run, key, issue string, ok bool) {
+	run = request.PathValue("run")
+	if !podRunContained(w, request, run, "recovery") {
+		return "", "", "", false
+	}
+	key, issue = request.URL.Query().Get("repositoryKey"), request.URL.Query().Get("issue")
+	if !apiv1.ValidRunID(run) || key == "" || len(key) > 4096 || issue == "" || len(issue) > 256 {
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "recovery requires bounded run, repository, and issue identities")
+		return "", "", "", false
+	}
+	return run, key, issue, true
+}
+
 func recoveryArchiveHandler(service RecoveryService, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, request *http.Request) {
-		run := request.PathValue("run")
-		if !podRunContained(w, request, run, "recovery") {
-			return
-		}
-		key, issue := request.URL.Query().Get("repositoryKey"), request.URL.Query().Get("issue")
-		if !apiv1.ValidRunID(run) || key == "" || len(key) > 4096 || issue == "" || len(issue) > 256 {
-			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "recovery requires bounded run, repository, and issue identities")
+		run, key, issue, ok := recoveryRequestScope(w, request)
+		if !ok {
 			return
 		}
 		if service == nil {

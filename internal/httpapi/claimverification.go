@@ -44,13 +44,11 @@ func registerClaimVerificationRoute(router *Router, claims ClaimService, errorLo
 			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
-		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
-			if principal.Subject != podPrincipalSubject(input.RunID) {
-				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only report as its own run")
-				return
-			}
-			input.PodScoped = true
+		podScoped, ok := applyPodClaimScope(w, request, input.RunID, "report as its own run")
+		if !ok {
+			return
 		}
+		input.PodScoped = podScoped
 		response, err := service.RecordVerification(request.Context(), input)
 		if err != nil {
 			writePlaneError(w, errorLog, "record claim verification", err)
