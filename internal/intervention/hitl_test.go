@@ -1,6 +1,6 @@
-package main
+package intervention
 
-// enginehitl_test.go is the daemon half of #3883's acceptance surface.
+// hitl_test.go is the daemon half of #3883's acceptance surface.
 //
 // The engine half (internal/engine/hitl_test.go, hitlreplay_test.go) proves
 // the workflow decides correctly. This half proves the daemon reaches it: that
@@ -23,14 +23,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -77,7 +75,7 @@ func (d refusingDeterministic) Run(context.Context, apiv1.InvocationEnvelope, ap
 
 // engineHITLFixture builds an escalated, engine-driven run with a deliverer
 // attached and a runner that fails the test if it is used.
-func engineHITLFixture(t *testing.T, runID string, deliverer hitlDeliverer) (*runInterventionService, string) {
+func engineHITLFixture(t *testing.T, runID string, deliverer HITLDeliverer) (*Service, string) {
 	t.Helper()
 	machine := interventionTerminalTestMachine(t, apiv1.EvaluatorAgentic)
 	service, runDir := newInterventionServiceTestRunWithDeterministic(t, machine, runID, []journal.Event{
@@ -154,31 +152,6 @@ func TestEngineHITLApproveDeliversIntentAndTouchesNoRunner(t *testing.T) {
 	}
 }
 
-// TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection proves the
-// intervention service uses the shared owned-run resolver (#4858). The
-// authoritative scoped journal is escalated and carries generation one; the
-// independent legacy projection is deliberately left running, making the
-// selected generation a direct assertion that resolution preferred scoped.
-func TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection(t *testing.T) {
-	deliverer := &recordingDeliverer{ack: engine.HITLAck{Resumed: true, ResumeState: "implement"}}
-	const runID = "engine-hitl-dual-projection"
-	service, _ := engineHITLFixture(t, runID, deliverer)
-	definitions := service.definitions.Snapshot()
-	definitions.legacyRunner = definitions.runners["example"]
-	service.definitions.Replace(definitions)
-	createDriverRun(t, service.layout.RunsDir(), runID, "terminal-intervention", "example", journal.DriverEngine, time.Now(), nil)
-
-	if _, err := service.Approve(context.Background(), httpapi.InterventionRequest{
-		RunID: runID, Stage: "review", Actor: "ops", Decision: "pass", IdempotencyKey: "dual-projection-key",
-	}); err != nil {
-		t.Fatalf("approve dual-projected engine run: %v", err)
-	}
-	intent := deliverer.last(t)
-	if intent.ExpectedTerminalGeneration != 1 {
-		t.Fatalf("terminal generation = %d, want scoped journal generation 1", intent.ExpectedTerminalGeneration)
-	}
-}
-
 // TestEngineHITLVerbsTranslateToTheirIntents pins every verb's mapping. A verb
 // silently translating to the wrong intent would resolve an operator's
 // escalation as something they did not ask for.
@@ -186,7 +159,7 @@ func TestEngineHITLVerbsTranslateToTheirIntents(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name       string
-		call       func(*runInterventionService, httpapi.InterventionRequest) error
+		call       func(*Service, httpapi.InterventionRequest) error
 		input      httpapi.InterventionRequest
 		kind       engine.HITLIntentKind
 		resolution string
@@ -194,7 +167,7 @@ func TestEngineHITLVerbsTranslateToTheirIntents(t *testing.T) {
 	}{
 		{
 			name: "approve",
-			call: func(s *runInterventionService, in httpapi.InterventionRequest) error {
+			call: func(s *Service, in httpapi.InterventionRequest) error {
 				_, err := s.Approve(ctx, in)
 				return err
 			},
@@ -204,7 +177,7 @@ func TestEngineHITLVerbsTranslateToTheirIntents(t *testing.T) {
 		},
 		{
 			name: "override",
-			call: func(s *runInterventionService, in httpapi.InterventionRequest) error {
+			call: func(s *Service, in httpapi.InterventionRequest) error {
 				_, err := s.Override(ctx, in)
 				return err
 			},
@@ -221,7 +194,7 @@ func TestEngineHITLVerbsTranslateToTheirIntents(t *testing.T) {
 		},
 		{
 			name: "rerun",
-			call: func(s *runInterventionService, in httpapi.InterventionRequest) error {
+			call: func(s *Service, in httpapi.InterventionRequest) error {
 				_, err := s.RerunStage(ctx, in)
 				return err
 			},
@@ -240,7 +213,7 @@ func TestEngineHITLVerbsTranslateToTheirIntents(t *testing.T) {
 		},
 		{
 			name: "deny",
-			call: func(s *runInterventionService, in httpapi.InterventionRequest) error {
+			call: func(s *Service, in httpapi.InterventionRequest) error {
 				_, err := s.AcceptDenyEscalation(ctx, ctx, in)
 				return err
 			},
@@ -474,40 +447,28 @@ func TestTerminalGenerationCountsTerminals(t *testing.T) {
 	}
 }
 
-// TestEngineHITLPolicyIsOptIn pins the rollback posture at its source: an
-// instance that did not configure engine.hitl pins NO policy, which is
-// byte-identical to every run started before the protocol existed.
-func TestEngineHITLPolicyIsOptIn(t *testing.T) {
-	if policy := engineHITLPolicy(&instance.Config{}); policy != nil {
-		t.Fatalf("policy = %+v on an instance with no engine.hitl block, want nil", policy)
+// markRunYAMLEngineDriven stamps the engine driver into a fixture run's
+// run.yaml. run.yaml is a single YAML map, so appending the key is the same
+// bytes journal.Create would have written for an engine-authored run.
+func markRunYAMLEngineDriven(t *testing.T, runDir string) {
+	t.Helper()
+	path := filepath.Join(runDir, "run.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	off := &instance.Config{Engine: &instance.EngineConfig{
-		HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q",
-		HITL: &instance.EngineHITLConfig{Enabled: false, Window: "4h"},
-	}}
-	if policy := engineHITLPolicy(off); policy != nil {
-		t.Fatalf("policy = %+v on a disabled engine.hitl block, want nil", policy)
+	if err := os.WriteFile(path, append(raw, []byte("driver: engine\n")...), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	on := &instance.Config{Engine: &instance.EngineConfig{
-		HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q",
-		HITL: &instance.EngineHITLConfig{Enabled: true, Window: "4h", Actors: []string{"ops"}},
-	}}
-	policy := engineHITLPolicy(on)
-	if policy == nil || !policy.Enabled {
-		t.Fatalf("policy = %+v on an enabled engine.hitl block, want an enabled policy", policy)
+	rd, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if policy.WaitSeconds != 4*60*60 {
-		t.Fatalf("policy window = %ds, want 14400", policy.WaitSeconds)
+	id, err := rd.Identity()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(policy.Actors) != 1 || policy.Actors[0] != "ops" {
-		t.Fatalf("policy actors = %v, want the configured set", policy.Actors)
-	}
-	// An unbounded window is refused at load rather than silently defaulting.
-	bad := instance.EngineHITLConfig{Enabled: true, Window: "4hr"}
-	if err := bad.Validate(); err == nil {
-		t.Fatal("an unparsable hold window was accepted")
-	}
-	if err := (instance.EngineHITLConfig{Enabled: true, Window: "-1h"}).Validate(); err == nil {
-		t.Fatal("a negative hold window was accepted")
+	if !id.EngineDriven() {
+		t.Fatalf("fixture run.yaml is not engine-driven after stamping: %+v", id)
 	}
 }

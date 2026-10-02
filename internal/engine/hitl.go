@@ -98,7 +98,7 @@ const (
 )
 
 // HITL resolutions for HITLResolveEscalation, matching the daemon's
-// intervention verbs one for one (cmd/goobers/interventions.go).
+// intervention verbs one for one (internal/intervention/service.go).
 const (
 	// HITLResolutionApprove clears the escalation on the gate's own branch.
 	// Permitted for human and agentic gates.
@@ -874,7 +874,7 @@ func (s *hitlSession) startsOf(stage string) int {
 // evaluatedInSegment reports whether a gate produced a verdict in the CURRENT
 // run segment — since the last operator resume, or since the run started if
 // there has not been one. It is gateEvaluatedInCurrentSegment's rule
-// (cmd/goobers/interventions.go): an operator may only resolve a gate whose
+// (internal/intervention/service.go): an operator may only resolve a gate whose
 // verdict belongs to the escalation in front of them, never one from a
 // segment an earlier intervention already closed.
 func (s *hitlSession) evaluatedInSegment(gate string) bool {
