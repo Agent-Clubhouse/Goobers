@@ -70,6 +70,10 @@ type Request struct {
 	// failureCount output). The digest is size-bounded; a digest holding fewer
 	// distinct failure lines than this was cut and is not a complete roster.
 	FailureCount int
+	// OutputTruncated reports that the stage kept only the head of its
+	// output, so everything derived from it — window, digest, count — is
+	// blind to what followed, and identity with the baseline is unprovable.
+	OutputTruncated bool
 	// RunID and Waiter identify who is waiting on a shared blocker: the run,
 	// and the durable subject (backlog item or pull request) to release when
 	// the baseline recovers. Both may be empty for a classification-only call.
@@ -180,6 +184,10 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	}
 	if strings.TrimSpace(req.BaseSHA) == "" || len(req.Command) == 0 {
 		decision.Reason = "no pinned base SHA or command to compare against"
+		return decision, nil
+	}
+	if req.OutputTruncated {
+		decision.Reason = "the run kept only the head of its output, so its failures cannot be shown identical to the baseline"
 		return decision, nil
 	}
 	if !hasRoster(req) {

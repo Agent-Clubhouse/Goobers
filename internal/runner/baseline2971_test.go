@@ -246,6 +246,25 @@ func TestInheritedPlatformDeadcodeFailureParksTheRun(t *testing.T) {
 	}
 }
 
+// TestBaselineRequestCarriesTheStageRoster pins the runner's half of #4477:
+// the stage's failure roster, its count and its head-only truncation flags
+// reach the classifier.
+func TestBaselineRequestCarriesTheStageRoster(t *testing.T) {
+	health := &stubBaselineHealth{baseSHA: "abc123def4567890", decision: baseline.Decision{Class: baseline.ClassUnknown}}
+	runLocalCIFailureWith(t, "run-roster-request", health, baselineCIFailureSummary, "command exited 2", map[string]any{
+		executor.FailureDigestOutput:   "x.go:1:2: boom",
+		executor.FailureCountOutput:    float64(1),
+		executor.StderrTruncatedOutput: true,
+	})
+	if len(health.requests) != 1 {
+		t.Fatalf("classify calls = %d, want 1", len(health.requests))
+	}
+	req := health.requests[0]
+	if req.FailureDigest != "x.go:1:2: boom" || req.FailureCount != 1 || !req.OutputTruncated {
+		t.Fatalf("request digest/count/truncated = %q/%d/%v, want the stage's outputs", req.FailureDigest, req.FailureCount, req.OutputTruncated)
+	}
+}
+
 // TestPRIntroducedFailureRoutesUnchanged pins the other half of the
 // classification: when the baseline is healthy the failure stays the run's own
 // and its pre-existing routing (a plain failed run here) is untouched.
