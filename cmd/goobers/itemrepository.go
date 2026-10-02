@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/instanceannotations"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
@@ -100,7 +101,7 @@ type claimedItem struct {
 // claimedItemsForRun resolves every item runID's claim ledger entries name,
 // paired with the repository identity recordItemRepository recorded for
 // each at selection time. This is the circuit breaker's and terminal
-// notifier's own lookup (applyCircuitBreaker, resetCircuitBreaker) — a
+// notifier's own lookup (escalationnotify.State.ClaimedItems) — a
 // separate, richer sibling of claimedItemIDsForRun (whose plain []string
 // contract other callers, e.g. runner.Config.ClaimedItems and
 // implementcontext.go, still want unchanged). Fails closed with
@@ -139,5 +140,6 @@ type recordedItemRepo struct {
 // item-repo annotations matching runID and any of itemIDs. Newest wins, so a
 // re-claim across attempts of the same run resolves to the latest write.
 func loadItemRepositories(l instance.Layout, runID string, itemIDs []string) (map[string]recordedItemRepo, error) {
-	return annotationsForInstance(l.SchedulerDir()).itemRepositories(l.SchedulerDir(), runID, itemIDs)
+	records, err := instanceannotations.ForInstance(l.SchedulerDir()).ItemRepositories(l.SchedulerDir(), runID, itemIDs)
+	return annotationRepositories(records), err
 }

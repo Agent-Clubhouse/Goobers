@@ -289,7 +289,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		return runner.Config{}, nil, err
 	}
 
-	rc := runner.Config{
+	rc := withSelfExecutionPolicy(runner.Config{
 		ConfigGeneration: input.ConfigGeneration,
 		RecoveryEvents:   recoveryRunEvents(l),
 		RunControls:      cfg.RunConditions.RunControls(),
@@ -372,7 +372,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
 		LookPathFunc: runnerLookPath,
-	}
+	}, cfg, tel)
 	if tel != nil {
 		rc.Telemetry = tel
 	}
@@ -702,7 +702,7 @@ func (e *workflowCompileError) Unwrap() error {
 // follow-up introduces one.
 //
 // knownTelemetryConnectors (#4475) is the instance's configured
-// external-telemetry connector names (knownExternalTelemetryConnectorNames).
+// external-telemetry connector names (instance.Config.ExternalTelemetryConnectorNames).
 // Non-nil — even empty — rejects any task whose inputs.connector names a
 // connector the instance does not configure, at compile time rather than when
 // a run reaches the stage. Nil skips the check, for callers that compile
@@ -782,22 +782,6 @@ func compileWorkflowMachines(set *instance.ConfigSet, goobers map[string]apiv1.G
 		machines[localscheduler.WorkflowIdentity{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name}] = m
 	}
 	return machines, nil
-}
-
-// knownExternalTelemetryConnectorNames returns cfg's configured
-// external-telemetry connector names for compiledMachinesWithWarnings'
-// authoring-time connector check (#4475). It is never nil for a non-nil cfg:
-// an instance with no connectors configured must still reject a workflow that
-// references one.
-func knownExternalTelemetryConnectorNames(cfg *instance.Config) []string {
-	if cfg == nil {
-		return nil
-	}
-	names := make([]string, 0, len(cfg.ExternalTelemetry.Connectors))
-	for _, connector := range cfg.ExternalTelemetry.Connectors {
-		names = append(names, connector.Name)
-	}
-	return names
 }
 
 func admitGooberHarnessConfigs(adapterRegistry *harness.Registry, goobers map[string]apiv1.GooberSpec) (map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {

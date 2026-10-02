@@ -1,4 +1,13 @@
-package main
+// Package intervention is the daemon's human-in-the-loop intervention
+// service: approve, override, rerun-stage and deny-escalation on a run that a
+// gate paused or escalated (#3066). Runner-driven runs resume through the
+// in-process runner; engine-driven runs are answered by the workflow that owns
+// them over the versioned HITL protocol (hitl.go).
+//
+// The daemon's own collaborators (run location, the live runner registry,
+// pinned execution generations and the claim ledger) are supplied through
+// Config, so the package never depends on cmd/goobers.
+package intervention
 
 import (
 	"context"
@@ -8,7 +17,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,77 +24,91 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	gateevaluator "github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/httpapi"
-	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
-type runInterventionService struct {
-	layout         instance.Layout
-	definitions    *interventionDefinitionRegistry
-	runnerRegistry *daemonRunnerRegistry
-	instanceLog    *journal.InstanceLog
-	errorLog       *log.Logger
+// Definitions is the slice of the daemon's current workflow definitions an
+// intervention resolves a run against. The daemon swaps it on config reload,
+// so the service reads it afresh for every request.
+type Definitions struct {
+	Runners       map[string]*runner.Runner
+	LegacyRunner  *runner.Runner
+	Machines      map[localscheduler.WorkflowIdentity]*workflow.Machine
+	GooberDigests map[localscheduler.WorkflowIdentity]string
+	RepoRefs      map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+}
+
+// Execution is the runner and workflow definition a run is resumed under.
+type Execution struct {
+	Runner       *runner.Runner
+	Machine      *workflow.Machine
+	GooberDigest string
+	RepoRef      apiv1.RepoRef
+}
+
+// RunnerRegistry is the daemon's live run-owner registry.
+type RunnerRegistry interface {
+	Resolve(runID, gaggle string, fallback *runner.Runner) (*runner.Runner, bool)
+	TrackCompatible(runID string, owner *runner.Runner) (func(), bool)
+}
+
+// ClaimStore is the daemon's claim ledger as an intervention uses it: a
+// resumed terminal run must re-prove ownership of the work items it claimed,
+// and give them back if the resume ends terminal again.
+type ClaimStore interface {
+	// History returns the durable claim set the run proved ownership of.
+	History(runID string, fallbackProvider apiv1.Provider) ([]localscheduler.ClaimEntry, error)
+	// Reclaim re-acquires claims for the run under the claims lock. When it
+	// cannot, holder names the run that now holds them.
+	Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (acquired bool, holder string, err error)
+	// Release releases every claim the run owns.
+	Release(runID string) error
+}
+
+// Config supplies the daemon collaborators the service needs.
+type Config struct {
+	// Definitions returns the daemon's current definitions.
+	Definitions func() Definitions
+	// Runners is the live run-owner registry.
+	Runners RunnerRegistry
+	// PinnedExecution resolves the execution generation a run is pinned to.
+	PinnedExecution func(context.Context, journal.RunIdentity) (Execution, error)
+	// LocateRun finds the one retained run directory for runID across the
+	// declared gaggles (and the legacy root when includeLegacy is set). gaggle
+	// is empty for a legacy run. Its error is returned to the API client
+	// as-is, so it should be an *httpapi.InterventionError.
+	LocateRun func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
+	// Claims is the claim ledger.
+	Claims ClaimStore
+	// EngineDrivenRefusal explains why action cannot touch an engine-driven
+	// run when this daemon has no HITL deliverer attached.
+	EngineDrivenRefusal func(runID, action string) error
+	// WaitGroup, when set, tracks in-flight interventions for daemon drain.
+	WaitGroup *sync.WaitGroup
+	// ErrorLog receives failures of interventions accepted in the background.
+	ErrorLog *log.Logger
+}
+
+// Service performs operator interventions on retained runs.
+type Service struct {
+	definitions         func() Definitions
+	runnerRegistry      RunnerRegistry
+	pinnedExecution     func(context.Context, journal.RunIdentity) (Execution, error)
+	locateRun           func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
+	claims              ClaimStore
+	engineDrivenRefusal func(runID, action string) error
+	errorLog            *log.Logger
 	// hitl delivers operator intents to engine-driven runs (#3883). When it
 	// is nil — a daemon with no engine client — engine-driven runs keep the
 	// #3847 refusal exactly as they had it.
-	hitl      atomic.Pointer[hitlDeliverer]
+	hitl      atomic.Pointer[HITLDeliverer]
 	scheduler atomic.Pointer[localscheduler.Scheduler]
 	wg        *sync.WaitGroup
 	activeMu  sync.Mutex
 	active    map[string]struct{}
-}
-
-type interventionDefinitionSet struct {
-	featureDrivers   map[localscheduler.WorkflowIdentity]string
-	runners          map[string]*runner.Runner
-	legacyRunner     *runner.Runner
-	machines         map[localscheduler.WorkflowIdentity]*workflow.Machine
-	gooberDigests    map[localscheduler.WorkflowIdentity]string
-	repoRefs         map[localscheduler.WorkflowIdentity]apiv1.RepoRef
-	backlogObservers map[localscheduler.WorkflowIdentity]backlogObservationReader
-}
-
-type interventionDefinitionRegistry struct {
-	current atomic.Pointer[interventionDefinitionSet]
-}
-
-func newInterventionDefinitionRegistry(definitions interventionDefinitionSet) *interventionDefinitionRegistry {
-	registry := &interventionDefinitionRegistry{}
-	registry.Replace(definitions)
-	return registry
-}
-
-func (r *interventionDefinitionRegistry) Replace(definitions interventionDefinitionSet) {
-	if r == nil {
-		return
-	}
-	r.current.Store(&definitions)
-}
-
-func (r *interventionDefinitionRegistry) Snapshot() interventionDefinitionSet {
-	if r == nil {
-		return interventionDefinitionSet{}
-	}
-	definitions := r.current.Load()
-	if definitions == nil {
-		return interventionDefinitionSet{}
-	}
-	return *definitions
-}
-
-func interventionDefinitions(definitions *schedulerDefinitions, legacyRunner *runner.Runner) interventionDefinitionSet {
-	return interventionDefinitionSet{
-		runners:          definitions.Runners,
-		featureDrivers:   featureDriverConfiguration(definitions.Entries),
-		legacyRunner:     legacyRunner,
-		machines:         definitions.Machines,
-		gooberDigests:    definitions.GooberDigests,
-		repoRefs:         definitions.RepoRefs,
-		backlogObservers: admittedBacklogObservers(definitions.Entries),
-	}
 }
 
 type resolvedInterventionRun struct {
@@ -112,14 +134,17 @@ type resolvedInterventionRun struct {
 	generation uint64
 }
 
-func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup, errorLog *log.Logger) *runInterventionService {
-	return &runInterventionService{
-		layout:         layout,
-		definitions:    setup.Interventions,
-		runnerRegistry: setup.RunnerRegistry,
-		instanceLog:    setup.InstanceLog,
-		errorLog:       errorLog,
-		wg:             wg,
+// New builds the intervention service over the daemon's collaborators.
+func New(cfg Config) *Service {
+	return &Service{
+		definitions:         cfg.Definitions,
+		runnerRegistry:      cfg.Runners,
+		pinnedExecution:     cfg.PinnedExecution,
+		locateRun:           cfg.LocateRun,
+		claims:              cfg.Claims,
+		engineDrivenRefusal: cfg.EngineDrivenRefusal,
+		errorLog:            cfg.ErrorLog,
+		wg:                  cfg.WaitGroup,
 	}
 }
 
@@ -127,7 +152,7 @@ func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg
 // attached after boot, once the engine client and its workflow-id resolver
 // exist, for the same reason the scheduler is: the intervention service is
 // constructed before either.
-func (s *runInterventionService) AttachHITLDeliverer(deliverer hitlDeliverer) {
+func (s *Service) AttachHITLDeliverer(deliverer HITLDeliverer) {
 	if s == nil || deliverer == nil {
 		return
 	}
@@ -136,7 +161,7 @@ func (s *runInterventionService) AttachHITLDeliverer(deliverer hitlDeliverer) {
 
 // hitlDelivery returns the attached deliverer, or nil when this daemon has no
 // engine client and engine-driven runs must keep the #3847 refusal.
-func (s *runInterventionService) hitlDelivery() hitlDeliverer {
+func (s *Service) hitlDelivery() HITLDeliverer {
 	if s == nil {
 		return nil
 	}
@@ -147,21 +172,25 @@ func (s *runInterventionService) hitlDelivery() hitlDeliverer {
 	return *deliverer
 }
 
-func (s *runInterventionService) AttachScheduler(scheduler *localscheduler.Scheduler) {
+// AttachScheduler hands the service the scheduler that admits resumed runs.
+func (s *Service) AttachScheduler(scheduler *localscheduler.Scheduler) {
 	if s != nil {
 		s.scheduler.Store(scheduler)
 	}
 }
 
-func (s *runInterventionService) Approve(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+// Approve resolves a paused or terminal gate and waits for the resumed run.
+func (s *Service) Approve(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.approve(ctx, ctx, input, false)
 }
 
-func (s *runInterventionService) AcceptApprove(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+// AcceptApprove admits an approval within admission and finishes it in the
+// background under execution.
+func (s *Service) AcceptApprove(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.approve(admission, execution, input, true)
 }
 
-func (s *runInterventionService) prepareIntervention(
+func (s *Service) prepareIntervention(
 	execution context.Context,
 	action hitlAction,
 	replayAction string,
@@ -191,7 +220,7 @@ func finishIntervention(action string, resolved resolvedInterventionRun, err err
 	return interventionResult(resolved)
 }
 
-func (s *runInterventionService) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
+func (s *Service) approve(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	resolved, result, done, err := s.prepareIntervention(execution, hitlActionApprove, "approve", input)
 	if done {
 		return *result, err
@@ -264,15 +293,19 @@ func (s *runInterventionService) approve(admission, execution context.Context, i
 	return finishIntervention("approve", resolved, err)
 }
 
-func (s *runInterventionService) Override(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+// Override reopens an escalated or failed run past a non-deterministic gate
+// and waits for the resumed run.
+func (s *Service) Override(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.override(ctx, ctx, input, false)
 }
 
-func (s *runInterventionService) AcceptOverride(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+// AcceptOverride admits an override within admission and finishes it in the
+// background under execution.
+func (s *Service) AcceptOverride(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.override(admission, execution, input, true)
 }
 
-func (s *runInterventionService) override(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
+func (s *Service) override(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	rationale := strings.TrimSpace(input.Rationale)
 	if rationale == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("rationale_required", "override rationale is required")
@@ -319,15 +352,19 @@ func (s *runInterventionService) override(admission, execution context.Context, 
 	return finishIntervention("override", resolved, err)
 }
 
-func (s *runInterventionService) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+// RerunStage reruns a stage of an escalated run with an instruction addendum
+// and waits for the rerun.
+func (s *Service) RerunStage(ctx context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.rerunStage(ctx, ctx, input, false)
 }
 
-func (s *runInterventionService) AcceptRerunStage(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+// AcceptRerunStage admits a stage rerun within admission and finishes it in
+// the background under execution.
+func (s *Service) AcceptRerunStage(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	return s.rerunStage(admission, execution, input, true)
 }
 
-func (s *runInterventionService) rerunStage(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
+func (s *Service) rerunStage(admission, execution context.Context, input httpapi.InterventionRequest, background bool) (httpapi.InterventionResult, error) {
 	addendum := strings.TrimSpace(input.InstructionAddendum)
 	if addendum == "" {
 		return httpapi.InterventionResult{}, interventionBadRequest("addendum_required", "instruction addendum is required")
@@ -389,7 +426,7 @@ func scanEscalationResolution(events []journal.Event, key, fingerprint string) (
 // resolution event — actor, rationale, idempotency key — is journaled; a
 // replay of the same Idempotency-Key returns the current result without a
 // second event, and a reused key with a different payload is refused.
-func (s *runInterventionService) AcceptDenyEscalation(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+func (s *Service) AcceptDenyEscalation(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	if err := admission.Err(); err != nil {
 		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
 			http.StatusServiceUnavailable, "request_budget_exceeded", "the resolution was not accepted within the request budget", err,
@@ -421,7 +458,7 @@ func (s *runInterventionService) AcceptDenyEscalation(admission, execution conte
 // replay, then journal the resolution under the run's active-intervention
 // slot. Split out so the replay/append race is testable with a genuinely
 // stale resolved snapshot.
-func (s *runInterventionService) denyEscalation(resolved resolvedInterventionRun, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+func (s *Service) denyEscalation(resolved resolvedInterventionRun, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
 	rationale := strings.TrimSpace(input.Rationale)
 	fingerprint, err := interventionFingerprint("deny", input)
 	if err != nil {
@@ -502,22 +539,22 @@ func (s *runInterventionService) denyEscalation(resolved resolvedInterventionRun
 	return currentInterventionResult(resolved)
 }
 
-func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun, error) {
+func (s *Service) resolve(runID string) (resolvedInterventionRun, error) {
 	if !apiv1.ValidRunID(runID) {
 		return resolvedInterventionRun{}, interventionBadRequest("invalid_run_id", "run ID is invalid")
 	}
-	definitions := s.definitions.Snapshot()
-	gaggles := make([]string, 0, len(definitions.runners))
-	for gaggle := range definitions.runners {
+	definitions := s.definitions()
+	gaggles := make([]string, 0, len(definitions.Runners))
+	for gaggle := range definitions.Runners {
 		gaggles = append(gaggles, gaggle)
 	}
-	found, err := locateOwnedRun(s.layout, gaggles, runID, definitions.legacyRunner != nil)
+	foundDir, foundGaggle, err := s.locateRun(gaggles, runID, definitions.LegacyRunner != nil)
 	if err != nil {
 		return resolvedInterventionRun{}, err
 	}
 	var fallbackRunner *runner.Runner
-	if found.gaggle == "" {
-		fallbackRunner = definitions.legacyRunner
+	if foundGaggle == "" {
+		fallbackRunner = definitions.LegacyRunner
 		if fallbackRunner == nil {
 			// Preserve the intervention service's previous ownership boundary:
 			// a flat journal is not actionable when this daemon did not retain a
@@ -525,9 +562,9 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			return resolvedInterventionRun{}, httpapi.NewInterventionError(http.StatusNotFound, "run_not_found", "run was not found", nil)
 		}
 	} else {
-		fallbackRunner = definitions.runners[found.gaggle]
+		fallbackRunner = definitions.Runners[foundGaggle]
 	}
-	reader, err := journal.OpenRead(found.dir)
+	reader, err := journal.OpenRead(foundDir)
 	if err != nil {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "run_read_failed", "run journal could not be read", err,
@@ -539,7 +576,7 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			http.StatusInternalServerError, "run_read_failed", "run identity could not be read", err,
 		)
 	}
-	if found.gaggle != "" && identity.Gaggle != found.gaggle {
+	if foundGaggle != "" && identity.Gaggle != foundGaggle {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
 			http.StatusInternalServerError, "run_identity_mismatch", "run identity does not match its runtime scope", nil,
 		)
@@ -563,16 +600,16 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		if s.hitlDelivery() == nil {
 			return resolvedInterventionRun{}, interventionConflict(
 				"run_engine_driven",
-				engineDrivenRefusal(identity.RunID, "an operator intervention").Error(),
+				s.engineDrivenRefusal(identity.RunID, "an operator intervention").Error(),
 			)
 		}
-		return s.resolveEngineDriven(runID, found.dir, identity.Gaggle, identity.Workflow, reader)
+		return s.resolveEngineDriven(runID, foundDir, identity.Gaggle, identity.Workflow, reader)
 	}
 	execution, err := s.interventionExecution(identity, definitions, fallbackRunner)
 	if err != nil {
 		return resolvedInterventionRun{}, err
 	}
-	fallbackRunner, machine, gooberDigest, repoRef := execution.runner, execution.machine, execution.gooberDigest, execution.repoRef
+	fallbackRunner, machine, gooberDigest, repoRef := execution.Runner, execution.Machine, execution.GooberDigest, execution.RepoRef
 	// Never reinterpret a historical run under the current workflow merely
 	// because the name still matches (#3376, same rule as the daemon resume
 	// scan's interruptedRunMachine): when the config drifted after this run
@@ -623,7 +660,7 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		machine:      machine,
 		gooberDigest: gooberDigest,
 		repoRef:      repoRef,
-		runDir:       found.dir,
+		runDir:       foundDir,
 		gaggle:       identity.Gaggle,
 		workflow:     identity.Workflow,
 		phase:        phase,
@@ -637,7 +674,7 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 // — to report the run back to the operator and to compute the compare-and-set
 // token — and for no other: every decision about whether the intent may land
 // is the workflow's to make.
-func (s *runInterventionService) resolveEngineDriven(runID, runDir, gaggle, workflowName string, reader *journal.Reader) (resolvedInterventionRun, error) {
+func (s *Service) resolveEngineDriven(runID, runDir, gaggle, workflowName string, reader *journal.Reader) (resolvedInterventionRun, error) {
 	phase, err := reader.Phase()
 	if err != nil {
 		return resolvedInterventionRun{}, httpapi.NewInterventionError(
@@ -672,7 +709,7 @@ func latestTerminalSequence(events []journal.Event) uint64 {
 }
 
 type interventionExecutionLease struct {
-	service          *runInterventionService
+	service          *Service
 	scheduler        *localscheduler.Scheduler
 	resolved         resolvedInterventionRun
 	releaseAdmission func()
@@ -683,7 +720,7 @@ type interventionExecutionLease struct {
 	releaseRetained  bool
 }
 
-func (s *runInterventionService) execute(
+func (s *Service) execute(
 	admission context.Context,
 	execution context.Context,
 	background bool,
@@ -741,7 +778,7 @@ func (s *runInterventionService) execute(
 	return s.finishExecution(execution, lease, run)
 }
 
-func (s *runInterventionService) finishExecution(
+func (s *Service) finishExecution(
 	ctx context.Context,
 	lease *interventionExecutionLease,
 	run func(context.Context) (runner.Result, error),
@@ -768,7 +805,7 @@ func (s *runInterventionService) finishExecution(
 	return result, runErr
 }
 
-func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
+func (s *Service) beginExecution(resolved resolvedInterventionRun, reacquireClaims bool) (*interventionExecutionLease, error) {
 	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
 	if !exclusive {
 		return nil, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
@@ -809,7 +846,7 @@ func (s *runInterventionService) beginExecution(resolved resolvedInterventionRun
 	return lease, nil
 }
 
-func (s *runInterventionService) trackActiveIntervention(runID string) (func(), bool) {
+func (s *Service) trackActiveIntervention(runID string) (func(), bool) {
 	s.activeMu.Lock()
 	if s.active == nil {
 		s.active = make(map[string]struct{})
@@ -831,7 +868,10 @@ func (s *runInterventionService) trackActiveIntervention(runID string) (func(), 
 	}, true
 }
 
-func (s *runInterventionService) interventionActive(runID string) bool {
+// Active reports whether an intervention currently holds runID's slot. The
+// daemon's stale-claim sweep consults it so it never releases claims an
+// intervention has just reacquired.
+func (s *Service) Active(runID string) bool {
 	s.activeMu.Lock()
 	defer s.activeMu.Unlock()
 	_, active := s.active[runID]
@@ -887,30 +927,17 @@ func (l *interventionExecutionLease) releaseReacquiredClaims() error {
 	if l == nil || !l.reacquiredClaims {
 		return nil
 	}
-	return releaseClaimsForRun(l.service.layout, l.service.instanceLog, l.resolved.runID)
+	return l.service.claims.Release(l.resolved.runID)
 }
 
-func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRun) error {
-	claims, err := s.claimHistory(resolved)
+func (s *Service) reacquireClaims(resolved resolvedInterventionRun) error {
+	claims, err := s.claims.History(resolved.runID, resolved.repoRef.Provider)
 	if err != nil {
 		return httpapi.NewInterventionError(
 			http.StatusInternalServerError, "claim_history_failed", "run claim history could not be read", err,
 		)
 	}
-	var acquired bool
-	var holder string
-	lockPath := filepath.Join(s.layout.SchedulerDir(), claimLockFileName)
-	err = withClaimLockForRun(lockPath, claimLockOperationIntervention, resolved.gaggle, resolved.runID, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(s.layout.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(s.instanceLog),
-		)
-		if err != nil {
-			return err
-		}
-		acquired, holder, err = ledger.ReclaimAll(claims, resolved.runID, resolved.workflow, DefaultClaimLease)
-		return err
-	})
+	acquired, holder, err := s.claims.Reclaim(claims, resolved.gaggle, resolved.runID, resolved.workflow)
 	if err != nil {
 		return httpapi.NewInterventionError(
 			http.StatusInternalServerError, "claim_reacquire_failed", "run claims could not be reacquired", err,
@@ -925,8 +952,23 @@ func (s *runInterventionService) reacquireClaims(resolved resolvedInterventionRu
 	return nil
 }
 
-func (s *runInterventionService) claimHistory(resolved resolvedInterventionRun) ([]localscheduler.ClaimEntry, error) {
-	return claimHistoryForRun(s.layout, resolved.runID, resolved.repoRef.Provider)
+// interventionExecution picks the runner and definition a run resumes under:
+// its pinned execution generation when it has one, otherwise the current
+// definitions.
+func (s *Service) interventionExecution(identity journal.RunIdentity, definitions Definitions, fallback *runner.Runner) (Execution, error) {
+	if identity.ConfigGeneration != "" {
+		pinned, err := s.pinnedExecution(context.Background(), identity)
+		if err != nil {
+			return Execution{}, interventionConflict("config_generation_unavailable", err.Error())
+		}
+		return pinned, nil
+	}
+	key := localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}
+	machine := definitions.Machines[key]
+	if machine == nil {
+		return Execution{}, interventionConflict("workflow_unavailable", fmt.Sprintf("workflow %q for run %q is no longer available", identity.Workflow, identity.RunID))
+	}
+	return Execution{Runner: fallback, Machine: machine, GooberDigest: definitions.GooberDigests[key], RepoRef: definitions.RepoRefs[key]}, nil
 }
 
 func interventionBranch(machine *workflow.Machine, events []journal.Event, gateName, decision string) (apiv1.Gate, string, error) {

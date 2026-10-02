@@ -51,7 +51,7 @@ func workflowMutationHandlerOptions(service *workflowMutationService) []httpapi.
 // automatically, so it drives reloader.pollOnce itself.
 //
 // reloader is attached after construction (AttachReloader), mirroring
-// runInterventionService.AttachScheduler — up.go wires the HTTP handler
+// intervention.Service.AttachScheduler — up.go wires the HTTP handler
 // before the reloader exists, so this service is constructed first and the
 // reloader filled in once it's built.
 type workflowMutationService struct {

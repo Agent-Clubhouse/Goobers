@@ -499,7 +499,7 @@ const maxTriggerDedupeRecords = 10000
 // through the exact scheduler path the poll-loop/sweep uses. The scheduler
 // is attached after construction (the HTTP handler is built before the
 // scheduler exists at daemon startup), mirroring
-// runInterventionService.AttachScheduler.
+// intervention.Service.AttachScheduler.
 type daemonTriggerService struct {
 	sched atomic.Pointer[localscheduler.Scheduler]
 	now   func() time.Time
@@ -806,50 +806,5 @@ func triggerPlaneError(err error) error {
 		return httpapi.NewInterventionError(http.StatusBadRequest, "workflow_ambiguous", err.Error(), err)
 	default:
 		return err
-	}
-}
-
-// escalationResolutionAdapter maps the HITL plane's resolution vocabulary
-// (approve/deny/redirect) onto the intervention service's existing escalated-
-// run operations, so the plane reuses the resume/override machinery — and its
-// journaling — rather than forking it.
-type escalationResolutionAdapter struct {
-	interventions *runInterventionService
-}
-
-func newEscalationResolutionAdapter(interventions *runInterventionService) *escalationResolutionAdapter {
-	return &escalationResolutionAdapter{interventions: interventions}
-}
-
-func (a *escalationResolutionAdapter) AcceptResolve(admission, execution context.Context, input httpapi.EscalationResolutionRequest) (httpapi.InterventionResult, error) {
-	request := httpapi.InterventionRequest{
-		RunID:          input.RunID,
-		Stage:          input.Gate,
-		IdempotencyKey: input.IdempotencyKey,
-		Actor:          input.Actor,
-		Decision:       input.Decision,
-		Rationale:      input.Rationale,
-	}
-	switch input.Resolution {
-	case httpapi.EscalationResolutionApprove:
-		if strings.TrimSpace(input.Gate) == "" {
-			return httpapi.InterventionResult{}, interventionBadRequest("gate_required", "approve requires the escalated gate")
-		}
-		return a.interventions.AcceptApprove(admission, execution, request)
-	case httpapi.EscalationResolutionRedirect:
-		if strings.TrimSpace(input.Gate) == "" {
-			return httpapi.InterventionResult{}, interventionBadRequest("gate_required", "redirect requires the escalated gate")
-		}
-		if strings.TrimSpace(input.Decision) == "" {
-			return httpapi.InterventionResult{}, interventionBadRequest("decision_required", "redirect requires a branch decision")
-		}
-		return a.interventions.AcceptOverride(admission, execution, request)
-	case httpapi.EscalationResolutionDeny:
-		return a.interventions.AcceptDenyEscalation(admission, execution, request)
-	default:
-		return httpapi.InterventionResult{}, interventionBadRequest(
-			"invalid_resolution",
-			fmt.Sprintf("resolution %q must be approve, deny, or redirect", input.Resolution),
-		)
 	}
 }

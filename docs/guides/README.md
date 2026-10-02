@@ -80,7 +80,7 @@ cannot leave it outside the documented navigation surfaces.
 - [Daemon supervision (systemd · launchd · Windows Service)](supervision.md)
 - [Export to multiple named destinations](telemetry-destinations.md)
 - [Telemetry load and v0.5.0 validation](telemetry-load-validation.md)
-- [Temporal payload codec library](temporal-payload-codec.md)
+- [Temporal payload encryption](temporal-payload-codec.md)
 - [Test timing artifacts and budgets](test-timing.md)
 - [Tutor config-only write-boundary](tutor-write-boundary.md)
 - [Windows large-repo runbook](windows-large-repo-runbook.md)

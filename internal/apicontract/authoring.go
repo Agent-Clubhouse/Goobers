@@ -42,6 +42,16 @@ func V1ConfigAuthoringRoutes() []Route {
 	return slices.Clone(v1ConfigAuthoringRoutes)
 }
 
+// V1ConfigAuthoringRoute looks up a configuration-authoring route by ID.
+func V1ConfigAuthoringRoute(id RouteID) (Route, bool) {
+	for _, route := range v1ConfigAuthoringRoutes {
+		if route.ID == id {
+			return route, true
+		}
+	}
+	return Route{}, false
+}
+
 // ConfigSourceKind describes how a source is governed without exposing its
 // resolved checkout or host filesystem location.
 type ConfigSourceKind string
@@ -131,6 +141,7 @@ type ConfigDocument struct {
 	Revision      string                   `json:"revision"`
 	Document      ConfigDocumentDescriptor `json:"document"`
 	Content       string                   `json:"content"`
+	Diagnostics   []ConfigDiagnostic       `json:"diagnostics"`
 }
 
 // ConfigChangeOperation is one candidate document operation.

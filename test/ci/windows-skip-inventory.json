@@ -157,12 +157,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/branchretention",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Pure terminal-age and protection policy; exercised on Linux unit shards. No Windows-specific seam identified."
-    },
-    {
       "package": "internal/builtincmd",
       "coverage": "none",
       "category": "not-selected",
@@ -199,6 +193,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/configauthoring",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/configdiff",
       "coverage": "none",
       "category": "not-selected",
@@ -227,6 +227,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/credentialoverride",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#6519), whose Windows steps never selected these validate --check-repos override tests; the probe plan and probe dedupe run on the Linux unit shards only."
     },
     {
       "package": "internal/creditgraph",
@@ -319,6 +325,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/escalationnotify",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#3054), whose Windows steps never selected the terminal-handler tests; the notification policy runs against in-memory fakes on the Linux unit shards only."
+    },
+    {
       "package": "internal/externaltelemetry/adx",
       "coverage": "none",
       "category": "not-selected",
@@ -407,6 +419,12 @@
       "coverage": "partial",
       "category": "seam-selection",
       "reason": "Only the read-model definition invalidation test runs, in the 'Windows worktree and event stream' step."
+    },
+    {
+      "package": "internal/intervention",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#3066), whose Windows CLI step never selected the intervention tests; no Windows-specific seam identified, runs on the Linux unit shards only."
     },
     {
       "package": "internal/intsplit",
@@ -511,6 +529,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/nowork",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No-work verdict domain tests extracted from cmd/goobers; the Windows CLI test selection did not run these tests. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/oidcauth",
       "coverage": "none",
       "category": "not-selected",
@@ -605,6 +629,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/pushrejection",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Extracted from cmd/goobers (#6519), whose Windows steps never selected these push-rejection classifier tests; pure string classification runs on the Linux unit shards only."
     },
     {
       "package": "internal/readprobe",
@@ -766,7 +796,7 @@
       "package": "internal/temporalcodec",
       "coverage": "none",
       "category": "not-selected",
-      "reason": "Portable AES-GCM/protobuf codec and HTTP role checks have no Windows-specific seam; tests run in Linux unit shards."
+      "reason": "Portable codec, bounded TLS/OIDC server and ephemeral Temporal history/replay tests run in Linux unit shards; no Windows-specific seam."
     },
     {
       "package": "internal/temporaldial",

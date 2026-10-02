@@ -32,6 +32,7 @@ type fakeDelegateStarter struct {
 	mu       sync.Mutex
 	calls    int
 	requests []localscheduler.StartRequest
+	started  chan struct{}
 }
 
 func (f *fakeDelegateStarter) Start(_ context.Context, req localscheduler.StartRequest) (localscheduler.StartResult, error) {
@@ -39,6 +40,12 @@ func (f *fakeDelegateStarter) Start(_ context.Context, req localscheduler.StartR
 	defer f.mu.Unlock()
 	f.calls++
 	f.requests = append(f.requests, req)
+	if f.started != nil {
+		select {
+		case f.started <- struct{}{}:
+		default:
+		}
+	}
 	return f.result, f.err
 }
 
@@ -779,7 +786,11 @@ func TestPollFinalResponseRemovesQueuedAck(t *testing.T) {
 }
 
 func TestStartupSweepRecoversAcknowledgedActiveTrigger(t *testing.T) {
-	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	started := make(chan struct{}, 1)
+	starter := &fakeDelegateStarter{
+		result:  localscheduler.StartResult{Phase: journal.PhaseCompleted},
+		started: started,
+	}
 	sched, schedulerDir := newTestDelegateScheduler(t, []localscheduler.WorkflowEntry{{
 		Workflow: "implement",
 		Starter:  starter,
@@ -808,6 +819,11 @@ func TestStartupSweepRecoversAcknowledgedActiveTrigger(t *testing.T) {
 	}
 	if runID == "" {
 		t.Fatal("recovered active trigger returned an empty run id")
+	}
+	select {
+	case <-started:
+	case <-time.After(testResponseWait):
+		t.Fatal("timed out waiting for recovered dispatch to reach the starter")
 	}
 	if starter.count() != 1 {
 		t.Fatalf("starter calls = %d, want recovered dispatch", starter.count())

@@ -163,7 +163,7 @@ func runtimeHarnessReadiness(ctx context.Context, cfg *instance.Config, stage ru
 // uses strict admission. Only the typed harness-model/options failure gets this
 // diagnostic path; all workflow structural checks and digest code are shared.
 func compileRuntimePreflight(configDir string, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, instructions map[string]string, cfg *instance.Config) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, error) {
-	machines, digests, resolved, _, err := compiledMachinesWithGooberDigestsAndWarnings(configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, true, nil, knownExternalTelemetryConnectorNames(cfg))
+	machines, digests, resolved, _, err := compiledMachinesWithGooberDigestsAndWarnings(configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, true, nil, cfg.ExternalTelemetryConnectorNames())
 	var mismatch *gooberHarnessConfigError
 	if !errors.As(err, &mismatch) {
 		return machines, digests, resolved, err
@@ -181,7 +181,7 @@ func compileRuntimePreflight(configDir string, set *instance.ConfigSet, goobers 
 			return nil, nil, nil, errors.New("invalid MCP configuration; diagnostic values omitted")
 		}
 	}
-	machines, err = compileWorkflowMachines(set, goobers, registry.Names(), knownExternalTelemetryConnectorNames(cfg))
+	machines, err = compileWorkflowMachines(set, goobers, registry.Names(), cfg.ExternalTelemetryConnectorNames())
 	if err != nil {
 		return nil, nil, nil, err
 	}

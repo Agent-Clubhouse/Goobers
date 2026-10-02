@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -136,18 +136,18 @@ func pushBranchWithRetry(dir, branch string, auth pushBranchAuthEnv, stderr io.W
 		if err == nil {
 			return nil
 		}
-		// Checked ahead of isPushRaceError: a policy-protected or
+		// Checked ahead of pushrejection.IsRace: a policy-protected or
 		// workflow-permission rejection also prints "failed to push some
 		// refs" (git's own generic trailer for ANY rejected update), which
-		// isPushRaceError alone would misread as a ref race worth a
+		// pushrejection.IsRace alone would misread as a ref race worth a
 		// fetch-rebase-retry. Rebasing and pushing again hits the identical
 		// refusal, so this returns immediately instead of spending the retry
 		// budget (and, for a never-created branch, failing the rebase with a
 		// "couldn't find remote ref" that buries the real cause, #5502).
-		if isTerminalPushRejection(err) {
+		if pushrejection.IsTerminal(err) {
 			return err
 		}
-		if attempt >= pushRaceAttempts || !isPushRaceError(err) {
+		if attempt >= pushRaceAttempts || !pushrejection.IsRace(err) {
 			return err
 		}
 		pf(stderr, "warning: push attempt %d rejected as a ref race; rebasing onto the remote tip and retrying: %v\n", attempt, err)
@@ -195,25 +195,6 @@ func pushBranchAuth(dir string) (pushBranchAuthEnv, error) {
 		return nil, err
 	}
 	return func() ([]string, error) { return pushBranchEnvironment(dir) }, nil
-}
-
-// isPushRaceError classifies a push failure as a ref race worth a
-// fetch-rebase-retry, from git's own stable rejection phrasing. Everything
-// else (auth failures, unreachable remotes, missing refs) is not retryable
-// at this layer.
-func isPushRaceError(err error) bool {
-	msg := err.Error()
-	for _, marker := range []string{
-		"failed to push some refs",
-		"fetch first",
-		"non-fast-forward",
-		"cannot lock ref",
-	} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 // rebaseOntoRemoteBranch fetches branch's current remote tip and rebases the
@@ -505,118 +486,10 @@ func gitPushBranch(dir, branch string, env []string) error {
 	cmd.Env = composeGitEnv(dir, env)
 	out, err := workspaceGitCombinedOutput(cmd)
 	if err != nil {
-		return classifyRejectedPush(branch, string(out), err)
+		return pushrejection.Classify(branch, string(out), err)
 	}
 	return nil
 }
-
-// classifyRejectedPush wraps a failed push's error with git's combined output
-// and, when that output names a refusal no retry can clear, types it so
-// callers stop instead of treating it as a ref race or a credential problem.
-// Shared by gitPushBranch and forcePushWithLeaseWithAuth.
-func classifyRejectedPush(branch, output string, err error) error {
-	wrapped := fmt.Errorf("%w: %s", err, strings.TrimSpace(output))
-	if isADOPolicyProtectedPush(output) {
-		return &policyProtectedPushError{branch: branch, err: wrapped}
-	}
-	if isGitHubWorkflowPermissionPush(output) {
-		return &workflowPermissionPushError{branch: branch, err: wrapped}
-	}
-	return wrapped
-}
-
-// isTerminalPushRejection reports whether err is a typed push refusal that
-// retrying — as a ref race or with a fresh credential — can never clear.
-func isTerminalPushRejection(err error) bool {
-	var policyErr *policyProtectedPushError
-	var workflowErr *workflowPermissionPushError
-	return errors.As(err, &policyErr) || errors.As(err, &workflowErr)
-}
-
-// githubWorkflowPermissionPrefix and githubWorkflowPermissionVerb bracket
-// GitHub's refusal of a push that creates or updates a file under
-// .github/workflows/ by a credential not allowed to change workflows. The
-// credential named between them varies — "a GitHub App" (missing the
-// installation's `workflows` permission, as on #5502), "a Personal Access
-// Token" or "an OAuth App" (missing the `workflow` scope):
-//
-//	! [remote rejected] <ref> -> <ref> (refusing to allow a GitHub App to
-//	create or update workflow `.github/workflows/ci.yml` without `workflows`
-//	permission)
-//
-// The parenthetical can reach a log truncated ("workflow `.github/wo..."),
-// so only these two fragments are matched (lower-cased).
-const (
-	githubWorkflowPermissionPrefix = "refusing to allow "
-	githubWorkflowPermissionVerb   = " to create or update workflow"
-)
-
-// isGitHubWorkflowPermissionPush reports whether output — git's combined
-// stdout+stderr from a rejected push — is GitHub's refusal of a
-// workflow-file change by a credential lacking permission to change
-// workflows (#5502). Like TF402455 it carries git's generic "failed to push
-// some refs" trailer, so it is checked ahead of isPushRaceError.
-func isGitHubWorkflowPermissionPush(output string) bool {
-	for _, line := range strings.Split(strings.ToLower(output), "\n") {
-		i := strings.Index(line, githubWorkflowPermissionPrefix)
-		if i >= 0 && strings.Contains(line[i:], githubWorkflowPermissionVerb) {
-			return true
-		}
-	}
-	return false
-}
-
-// workflowPermissionPushError reports that GitHub refused a push because the
-// diff touches .github/workflows/ and the pushing credential (normally the
-// GitHub App installation) is not allowed to change workflows. The diff is
-// fine and the branch did not race: no retry can succeed until the
-// credential is granted that permission, so its message leads with the
-// remedy rather than the raw git rejection alone. classifyProviderError maps
-// it to a distinct non-retryable code.
-type workflowPermissionPushError struct {
-	branch string
-	err    error
-}
-
-func (e *workflowPermissionPushError) Error() string {
-	return fmt.Sprintf("push of branch %q was refused because it creates or updates a file under .github/workflows/ and the pushing credential lacks permission to change workflows; grant the GitHub App installation the `workflows` (Workflows: read and write) permission (or a personal/OAuth token the `workflow` scope), or push this change manually (retrying cannot succeed): %v", e.branch, e.err)
-}
-
-func (e *workflowPermissionPushError) Unwrap() error { return e.err }
-
-// isADOPolicyProtectedPush reports whether output — git's combined
-// stdout+stderr from a rejected push — carries the markers ADO's Git provider
-// attaches to a push refused by an enabled branch policy: TF402455 in the
-// human-readable "remote rejected" line, and
-// GitRefUpdateRejectedByPolicyException in the underlying exception name.
-// Neither ever appears in a GitHub or Gitea rejection, so this never fires
-// for those remotes.
-//
-// Design §5 ADO-N26 (F8): any enabled blocking policy makes the ref
-// PR-only — a direct push (or force-push) to it is refused outright, not
-// merely delayed by a race, so this is checked ahead of isPushRaceError
-// rather than folded into it.
-func isADOPolicyProtectedPush(output string) bool {
-	return strings.Contains(output, "TF402455") ||
-		strings.Contains(output, "GitRefUpdateRejectedByPolicyException")
-}
-
-// policyProtectedPushError reports that a push (or force-push) was refused
-// because the target branch is protected by an enabled ADO branch policy —
-// never a credential problem. Its message names the policy, not the
-// credential, so a caller does not misdiagnose it as an auth failure; see
-// classifyProviderError, which maps it to a distinct non-retryable code and
-// never sends it through an auth retry.
-type policyProtectedPushError struct {
-	branch string
-	err    error
-}
-
-func (e *policyProtectedPushError) Error() string {
-	return fmt.Sprintf("branch %q is protected by an ADO branch policy and cannot be pushed to directly (land the change through a pull request instead): %v", e.branch, e.err)
-}
-
-func (e *policyProtectedPushError) Unwrap() error { return e.err }
 
 // pushBranchEnvironment is the Git environment push-branch pushes with: the
 // repo:push credential the stage was delivered, sent the way origin's forge

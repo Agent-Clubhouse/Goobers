@@ -66,8 +66,8 @@ func engineOperatorMessageFixture(t *testing.T) (*daemonRunJournalService, strin
 	}
 	sink := &operatorReceiptSink{}
 	service := newDaemonRunJournalService(layout, nil)
-	service.operatorMessages.writer = writer
-	service.operatorMessages.deliverer = sink
+	service.operatorMessages.Writer = writer
+	service.operatorMessages.Deliverer = sink
 	return service, address, sink
 }
 
@@ -145,7 +145,7 @@ func TestEngineOperatorMessageAuthorizationAndTerminalTargets(t *testing.T) {
 		t.Fatalf("denial = %+v, %v; receipts %d", response, err, len(sink.receipts))
 	}
 	event := journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}
-	_, err = service.operatorMessages.writer.Emit(context.Background(), livejournal.EmitRequest{
+	_, err = service.operatorMessages.Writer.Emit(context.Background(), livejournal.EmitRequest{
 		RunID: "engine-message-run", Gaggle: crossRunTestGaggle,
 		Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "finished", Time: time.Now(), Event: &event}},
 	})
@@ -155,23 +155,5 @@ func TestEngineOperatorMessageAuthorizationAndTerminalTargets(t *testing.T) {
 	response, err = service.SubmitOperatorMessage(context.Background(), engineMessageRequest(address, "terminal"))
 	if err != nil || response.Record.Outcome == nil || response.Record.Outcome.Code != "target_terminal" || len(sink.receipts) != 0 {
 		t.Fatalf("terminal = %+v, %v; receipts %d", response, err, len(sink.receipts))
-	}
-}
-
-func TestEngineOperatorMessageRecoversAcknowledgedDelivery(t *testing.T) {
-	service, address, _ := engineOperatorMessageFixture(t)
-	backend := service.operatorMessages.writer.OperatorMessages(crossRunTestGaggle, "engine-message-run")
-	request := acceptedOperatorMessageRequest("acknowledged", address, invoke.OperatorMessageModeBetweenTurn)
-	if _, _, err := backend.AcceptOperatorMessage(request); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := backend.AcknowledgeOperatorMessage(operatorMessageAcknowledgement(request)); err != nil {
-		t.Fatal(err)
-	}
-	// Simulate restart after adapter acknowledgement, before outcome append.
-	// No target is registered now, but the durable acknowledgement still wins.
-	response, err := service.SubmitOperatorMessage(context.Background(), engineMessageRequest(address, "acknowledged"))
-	if err != nil || response.Record.Outcome == nil || response.Record.Outcome.Status != apiv1.OperatorMessageDelivered {
-		t.Fatalf("acknowledged recovery = %+v, %v", response, err)
 	}
 }

@@ -108,17 +108,18 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		triggerRef = req.def.Name
 	}
 	return engine.StartSpec{
-		ConfigGeneration: req.configGeneration,
-		RunID:            runID,
-		Gaggle:           req.gaggle,
-		RepoRef:          req.project,
-		Item:             req.item,
-		TriggerKind:      triggerKind,
-		TriggerRef:       triggerRef,
-		BranchNamespace:  branchNamespacesByGaggle(req.set)[req.gaggle],
-		LiveJournal:      req.liveJournal,
-		Placements:       placements,
-		RunControls:      controls,
+		ConfigGeneration:    req.configGeneration,
+		RunID:               runID,
+		Gaggle:              req.gaggle,
+		RepoRef:             req.project,
+		Item:                req.item,
+		TriggerKind:         triggerKind,
+		TriggerRef:          triggerRef,
+		BranchNamespace:     branchNamespacesByGaggle(req.set)[req.gaggle],
+		LiveJournal:         req.liveJournal,
+		Placements:          placements,
+		SelfExecutionDenied: req.cfg.SelfExecutionDenied(),
+		RunControls:         controls,
 		// #294/#3528: an agentic gate's reviewer capabilities are instance
 		// policy, pinned into the run at start and read back from the run's
 		// own snapshot afterwards — the daemon's credential plane resolves a

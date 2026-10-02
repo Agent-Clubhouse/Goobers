@@ -120,8 +120,8 @@ func (s *daemonRunJournalService) resolveOperatorMessageJournal(gaggle, runID, t
 	if run, ok := runner.DefaultOperatorMessageDeliveryRegistry.ResolveVisitJournal(targetAddress); ok {
 		return run, true
 	}
-	if s.operatorMessages.writer != nil {
-		return s.operatorMessages.writer.OperatorMessages(gaggle, runID), true
+	if s.operatorMessages.Writer != nil {
+		return s.operatorMessages.Writer.OperatorMessages(gaggle, runID), true
 	}
 	if !s.operatorMessageTargetAddressLive(gaggle, runID, targetAddress) {
 		return nil, false

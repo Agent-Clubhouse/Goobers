@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestAzureReplayStartGateRetainsAndReleases(t *testing.T) {
 		}
 	}
 	close(start)
-	assertStartGateDelivered(t, sent, payload)
+	assertStartGateDelivered(t, s, sent, payload)
 }
 
 func TestAzureReplayStartGateCloseBeforeReadyRetainsForRestart(t *testing.T) {
@@ -140,8 +141,8 @@ func TestAzureReplayStartGateCloseBeforeReadyRetainsForRestart(t *testing.T) {
 		t.Fatalf("fully accounted failed startup omitted its durable record: %+v", stats)
 	}
 	cfg.start = nil
-	_ = startGateTestSpool(t, cfg, func(_ context.Context, b []byte) error { sent <- string(b); return nil })
-	assertStartGateDelivered(t, sent, payload)
+	restarted := startGateTestSpool(t, cfg, func(_ context.Context, b []byte) error { sent <- string(b); return nil })
+	assertStartGateDelivered(t, restarted, sent, payload)
 }
 
 func TestAzureReplayStartGateCancellationAndIsolation(t *testing.T) {
@@ -162,7 +163,7 @@ func TestAzureReplayStartGateCancellationAndIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	assertStartGateDelivered(t, freeSent, payload)
+	assertStartGateDelivered(t, free, freeSent, payload)
 	if err := free.close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,7 @@ func TestAzureReplayStartGateCancellationAndIsolation(t *testing.T) {
 	if err := held.close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	assertStartGateDelivered(t, heldSent, payload)
+	assertStartGateDelivered(t, held, heldSent, payload)
 	// Exporters created after readiness must start without a second release.
 	late := startGateTestSpool(t, azureReplayConfig{dir: t.TempDir(), start: start}, func(_ context.Context, b []byte) error {
 		freeSent <- string(b)
@@ -187,7 +188,7 @@ func TestAzureReplayStartGateCancellationAndIsolation(t *testing.T) {
 	if err := late.submit(t.Context(), []byte(payload)); err != nil {
 		t.Fatal(err)
 	}
-	assertStartGateDelivered(t, freeSent, payload)
+	assertStartGateDelivered(t, late, freeSent, payload)
 }
 
 func startGateTestSpool(t *testing.T, cfg azureReplayConfig, send func(context.Context, []byte) error) *azureReplaySpool {
@@ -214,7 +215,7 @@ func assertStartGateHeld(t *testing.T, sent <-chan string) {
 	}
 }
 
-func assertStartGateDelivered(t *testing.T, sent <-chan string, want string) {
+func assertStartGateDelivered(t *testing.T, s *azureReplaySpool, sent <-chan string, want string) {
 	t.Helper()
 	select {
 	case got := <-sent:
@@ -222,6 +223,37 @@ func assertStartGateDelivered(t *testing.T, sent <-chan string, want string) {
 			t.Fatalf("replayed payload = %q, want %q", got, want)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("record did not replay")
+		t.Fatalf("record did not replay: %s", startGateIndexDiagnostics(s))
 	}
+}
+
+// startGateIndexDiagnostics reports the shared index state that stats()
+// deliberately hides behind its bounded query: whether initialization has
+// finished (and its first and final errors), the accounting query error, and
+// any batch still waiting in the bootstrap area. A delivery timeout otherwise
+// cannot distinguish a slow or failing initialization from a held gate (#6554).
+func startGateIndexDiagnostics(s *azureReplaySpool) string {
+	if s == nil || s.index == nil {
+		return "no replay index"
+	}
+	x := s.index
+	ready := "initializing"
+	select {
+	case <-x.ready:
+		ready = fmt.Sprintf("ready (err=%v)", x.err)
+	default:
+	}
+	first := "first attempt still running"
+	select {
+	case <-x.firstAttempt:
+		first = fmt.Sprintf("first attempt err=%v", x.firstErr)
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	stats, statsErr := x.stats(ctx, s.stream, time.Now())
+	cancel()
+	bootstrap, globErr := filepath.Glob(filepath.Join(bootstrapDir(x.root, s.stream), "*"+azureReplayFileSuffix))
+	return fmt.Sprintf("index %s; %s; accounting ready=%t pending=%d err=%v; bootstrap batches=%d (glob err=%v); accepted=%d delivered=%d retried=%d",
+		ready, first, stats.AccountingReady, stats.PendingRecords, statsErr, len(bootstrap), globErr,
+		s.accepted.Load(), s.delivered.Load(), s.retried.Load())
 }

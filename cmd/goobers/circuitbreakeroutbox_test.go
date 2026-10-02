@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/escalationnotify"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -119,7 +120,7 @@ func TestCircuitBreakerParkFailurePersistedAndSurfaced(t *testing.T) {
 
 	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	var lastErr error
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		lastErr = h("run-cb-fail", journal.PhaseEscalated, "open-pr-gate")
 	}
 	if lastErr == nil {
@@ -140,8 +141,8 @@ func TestCircuitBreakerParkFailurePersistedAndSurfaced(t *testing.T) {
 	if entry.Attempts < 1 || entry.LastError == "" {
 		t.Fatalf("outbox entry = %+v, want an attempt count and a retained diagnostic", entry)
 	}
-	if entry.FailureStreak < failureStreakThreshold {
-		t.Fatalf("outbox entry streak = %d, want at least %d", entry.FailureStreak, failureStreakThreshold)
+	if entry.FailureStreak < escalationnotify.FailureStreakThreshold {
+		t.Fatalf("outbox entry streak = %d, want at least %d", entry.FailureStreak, escalationnotify.FailureStreakThreshold)
 	}
 	if _, err := os.Stat(circuitBreakerOutboxPath(l)); err != nil {
 		t.Fatalf("outbox file not persisted: %v", err)
@@ -157,7 +158,7 @@ func TestCircuitBreakerOutboxReconciledOnNextTerminal(t *testing.T) {
 	installCircuitBreakerFake(t, fake)
 
 	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		_ = h("run-cb-fail", journal.PhaseEscalated, "open-pr-gate")
 	}
 	if pending, err := snapshotCircuitBreakerOutbox(l); err != nil || len(pending) != 1 {
@@ -201,7 +202,7 @@ func TestCircuitBreakerOutboxClearedByCompletedTerminal(t *testing.T) {
 	l := circuitBreakerTestLayout(t)
 	seedCircuitBreakerClaim(t, l, "43", "run-cb-ok")
 	repo := circuitBreakerTestRepo()
-	if err := recordCircuitBreakerMutationFailure(l, repo, "43", "run-cb-old", "implement", failureStreakThreshold, errors.New("provider unreachable")); err != nil {
+	if err := recordCircuitBreakerMutationFailure(l, repo, "43", "run-cb-old", "implement", escalationnotify.FailureStreakThreshold, errors.New("provider unreachable")); err != nil {
 		t.Fatalf("recordCircuitBreakerMutationFailure: %v", err)
 	}
 
@@ -233,7 +234,7 @@ func TestCircuitBreakerOutboxSuccessLeavesNoResidue(t *testing.T) {
 	installCircuitBreakerFake(t, fake)
 
 	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
-	for i := 0; i < failureStreakThreshold; i++ {
+	for i := 0; i < escalationnotify.FailureStreakThreshold; i++ {
 		if err := h("run-cb-good", journal.PhaseEscalated, "open-pr-gate"); err != nil {
 			t.Fatalf("call %d: %v", i+1, err)
 		}

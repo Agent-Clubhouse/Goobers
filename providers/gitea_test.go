@@ -969,6 +969,35 @@ func TestGiteaProviderRequestReviewPostsRequestedReviewers(t *testing.T) {
 	}
 }
 
+func TestGiteaProviderRequestReviewRecordsOrderedDigestAndRequiresPullID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/repos/acme/app/pulls/9/requested_reviewers" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	recorder := &reviewMutationRecorder{}
+	provider := NewGiteaProvider(server.URL, "token", WithGiteaMutationRecorder(recorder))
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+	if err := provider.RequestReview(context.Background(), ReviewRequest{
+		Repository: repo, PullID: "9", Reviewers: []string{"zeta", "alpha"},
+	}); err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+	if len(recorder.refs) != 1 {
+		t.Fatalf("recorded refs = %+v, want one request-review mutation", recorder.refs)
+	}
+	ref := recorder.refs[0]
+	if ref.Operation != "request-review" || ref.Fields["reviewers"].After != digestString("zeta,alpha") {
+		t.Fatalf("recorded ref = %+v, want caller-ordered reviewer digest", ref)
+	}
+	if err := provider.RequestReview(context.Background(), ReviewRequest{Repository: repo}); !errors.Is(err, errPullIDRequired) {
+		t.Fatalf("missing PullID error = %v, want %v", err, errPullIDRequired)
+	}
+}
+
 func TestGiteaProviderPublishPullRequestStatusResolvesHeadSHAThenPosts(t *testing.T) {
 	var gotBody map[string]interface{}
 	var statusPath string

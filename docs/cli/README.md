@@ -149,6 +149,8 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers telemetry prune-orphans`](#goobers-telemetry-prune-orphans) | report or delete old orphan and unfinished run directories |
 | [`goobers telemetry stats`](#goobers-telemetry-stats) | success rate and duration aggregates per workflow and stage |
 | [`goobers telemetry test`](#goobers-telemetry-test) | send one secret-safe Application Insights connectivity probe |
+| [`goobers temporal`](#goobers-temporal) | operate Temporal payload services |
+| [`goobers temporal codec-server`](#goobers-temporal-codec-server) | serve authenticated Temporal payload decoding over TLS |
 | [`goobers versions`](#goobers-versions) | print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output) |
 | [`goobers work-items`](#goobers-work-items) | list pull requests and issues changed by Goobers |
 | [`goobers worker`](#goobers-worker) | host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental) |
@@ -521,11 +523,15 @@ whichever appears earliest in selectionPriority. Unset (the default)
 preserves plain FIFO exactly. fieldOrder is an optional comma-separated
 field[:asc|desc] list applied within each label-priority tier before FIFO.
 
-A separate scheduled workflow uses --claim --resweep with bounded
-resweepMaxItems to recheck blocked dependencies and ready items. Forward
+A separate scheduled workflow uses --claim --resweep to recheck blocked
+dependencies and ready items; a bounded resweepMaxItems enables it. Forward
 candidates reserve maxItems capacity first but are never claimed by this
 mode. The sweep uses leftover capacity and rotates within selectionPriority
-tiers. Cadence belongs to workflow schedule/readiness; resweepInterval and
+tiers. The two lanes have independent budgets: resweepMaxItems bounds
+ready-drift reviews, and resweepDependencyMaxItems (default 25, at most
+250) bounds how many blocked items have their native blockers rechecked.
+Both lanes share the leftover batch capacity, dependency rechecks first.
+Cadence belongs to workflow schedule/readiness; resweepInterval and
 inline re-sweep inputs on ordinary --claim runs are retired. Ready items
 already in implementation/review are emitted as read-only context and are
 never claimed.
@@ -1266,7 +1272,7 @@ $ goobers docs-churn --format churn-digest
 preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 
 ~~~text
-Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
+Usage: goobers doctor --k8s [--instance <root>] [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--temporal-hostport <host:port>] [--temporal-namespace <name>]
                           [--overlay-dir <dir>] [--image-runtime docker|podman]
@@ -1275,6 +1281,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--image-tools <tool,...>] [--image-ca <root.pem>]
                           [--psa-namespaces <namespace,...>] [--psa-service-account <name>]
                           [--checks <id,...>] [--apiserver-endpoint <url>] [--timeout <duration>]
+       goobers doctor --temporal-codec [--report text|json] [instance-root]
        goobers doctor --repo [--report text|json] [instance-root]
        goobers doctor --harness-auth [--report text|json] [instance-root]
        goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
@@ -1343,6 +1350,9 @@ correlate of enforcement — a CNI can serve it and still ignore policies
 silently. This check is API-discovery only; enforcement can only be proven
 by a denied attempt from an in-cluster negative control, never by doctor
 --k8s alone.
+
+--temporal-codec reports per-instance opt-in and strict mode without probing keys.
+--k8s --instance <root> applies the instance Temporal TLS and payload codec.
 
 --repo diffs each configured repo's declared forge-policy manifest
 (<instance-root>/instance.yaml repos[].policy: required merge method,
@@ -4927,6 +4937,38 @@ Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 
 ~~~console
 $ goobers telemetry-query --window 24h --format candidate-findings
+~~~
+
+## `goobers temporal`
+
+operate Temporal payload services
+
+~~~text
+Usage: goobers temporal codec-server [flags] [path]
+
+Serve Temporal Web UI payload decoding over TLS with the instance OIDC view role.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem
+~~~
+
+## `goobers temporal codec-server`
+
+serve authenticated Temporal payload decoding over TLS
+
+~~~text
+Usage: goobers temporal codec-server --tls-cert <pem> --tls-key <pem> [--listen 127.0.0.1:8444] [--allow-origin https://temporal.example.com] [path]
+
+Requires temporal.payloadCodec.keyRef and api.auth.oidc. Every encode/decode POST requires an OIDC bearer token with view permission. Repeat --allow-origin for each exact Web UI origin. No anonymous mode.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers temporal codec-server --tls-cert server.pem --tls-key server-key.pem
 ~~~
 
 ## `goobers trace`

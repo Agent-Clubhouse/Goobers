@@ -14,6 +14,25 @@ require explicit adopter configuration, not a broad egress bypass.
 Every manifest carries a comment citing the shape-doc section it implements, so drift
 between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy/reference`).
 
+## Workflow execution policy
+
+Use [`instance.yaml`](instance.yaml) as the hosted instance policy baseline
+when provisioning the API and worker roots. It explicitly sets
+`placement.selfExecution: deny` and declares a Linux dispatcher runner; create
+its `goobers-work` Deployment template and configure repositories, credentials,
+and API TLS in your overlay. This file is instance configuration, not a
+Kubernetes resource, and is not passed to kustomize. Keep the deny setting in
+both the daemon and worker configuration mirrors. Validate the finished
+instance before enabling the API replica or admitting workflow work. For an
+existing deployment, drain work and restart the daemon and workers after
+changing this startup-scoped instance policy.
+
+Every workflow task and agentic reviewer must place remotely. The built-in
+implementation workflows may contain instance-root-only commands and need
+migration before this policy can be enabled. See the
+[self execution migration guide](../../docs/guides/instance-placement.md#deny-execution-on-the-daemon).
+Local installs retain the compatible `allow` default.
+
 ## Layout
 
 | Path | Contents | Shape doc |
@@ -76,7 +95,10 @@ namespace is a required step, not follow-up hardening; bring the stack up in thi
    and wait for the Job to complete
    (`kubectl wait --for=condition=complete -n goobers-temporal job/goobers-temporal-namespace`).
    The Job is idempotent — safe to reapply on every chart upgrade or cluster rebuild.
-4. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
+4. For the authenticated reference, provision the dedicated [Temporal wrapping
+   key](temporal-codec/README.md) before the daemon and worker. Its generator opts
+   into payload encryption by default; keep the key with history backups.
+5. Bring up `goobers-system/` (worker/engine connect to the namespace the Job just
    registered).
 
 `namespace-job.yaml`'s `TEMPORAL_NAMESPACE`/`RETENTION` env vars are the single source for

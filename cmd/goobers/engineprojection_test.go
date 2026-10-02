@@ -31,7 +31,7 @@ import (
 func noDaemonEngineClient(t *testing.T, cfg *instance.Config) *daemonEngineClient {
 	t.Helper()
 	previousDial := dialDaemonEngine
-	dialDaemonEngine = func(string, string, *temporaldial.TLS) (client.Client, error) {
+	dialDaemonEngine = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 		return nil, errors.New("daemon dialed Temporal unexpectedly")
 	}
 	t.Cleanup(func() { dialDaemonEngine = previousDial })
@@ -120,7 +120,7 @@ func TestDaemonDialsTemporalOnceForEveryEngineConsumer(t *testing.T) {
 	var dials int
 	shared := &countingTemporalClient{}
 	previousDial := dialDaemonEngine
-	dialDaemonEngine = func(string, string, *temporaldial.TLS) (client.Client, error) {
+	dialDaemonEngine = func(string, string, *temporaldial.TLS, ...converter.DataConverter) (client.Client, error) {
 		dials++
 		return shared, nil
 	}

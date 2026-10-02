@@ -400,6 +400,7 @@ type statusJSONSummary struct {
 
 type statusJSONOutput struct {
 	TelemetryExporterHealth *readservice.TelemetryExporterHealthStatus `json:"telemetryExporterHealth,omitempty"`
+	SelfExecution           instance.SelfExecutionStats                `json:"selfExecution"`
 	ClusterChecks           []clustercheck.Result                      `json:"clusterChecks,omitempty"`
 	Root                    *statusRootIdentity                        `json:"root,omitempty"`
 	QueueEligibility        *statusQueueEvidence                       `json:"queueEligibility,omitempty"`
@@ -1237,7 +1238,7 @@ func statusCompiledHarnessWarnings(
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		false, modelCredential, knownExternalTelemetryConnectorNames(cfg),
+		false, modelCredential, cfg.ExternalTelemetryConnectorNames(),
 	)
 	if err != nil {
 		printValidationWarnings(stderr, cliWarnings)
@@ -1557,6 +1558,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		var storageHealth *readservice.StorageHealthStatus
 		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var isolationMandates map[string][]string
+		selfExecution := cfg.SelfExecutionStats()
 		var stageServiceAccounts map[string]string
 		var engineFallbacks []readmodel.EngineFallback
 		var workerConfigDivergence []readservice.WorkerConfigDivergenceStatus
@@ -1576,6 +1578,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				storageHealth = status.StorageHealth
 				refusedWorkflows = status.RefusedWorkflows
 				isolationMandates = status.IsolationMandates
+				selfExecution = status.SelfExecution
 				stageServiceAccounts = status.StageServiceAccounts
 				engineFallbacks = status.EngineFallbacks
 				workerConfigDivergence = status.WorkerConfigDivergence
@@ -1602,6 +1605,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			StorageHealth:           storageHealth,
 			RefusedWorkflows:        refusedWorkflows,
 			IsolationMandates:       isolationMandates,
+			SelfExecution:           selfExecution,
 			StageServiceAccounts:    stageServiceAccounts,
 			Summary:                 fleetSummary,
 			ParkedBacklog:           parked,
@@ -1609,11 +1613,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Collection:              runLoader.collectionStatus(),
 			Runs:                    statusRecoverySummaries(l, runs, now),
 		}
-		if err := json.NewEncoder(stdout).Encode(output); err != nil {
-			pf(stderr, "error: encode status: %v\n", err)
-			return 2
-		}
-		return 0
+		return writeStatusJSON(stdout, stderr, output)
 	}
 
 	// Skipped in --json mode since the structured summary has no plain-text
@@ -1628,6 +1628,15 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	renderStatus(stdout, runs, now)
 	printStatusRecovery(stdout, l, runs, now)
 	renderOlderRunsHint(stdout, olderRuns)
+	return 0
+}
+
+// writeStatusJSON keeps CLI encoding and exit-code handling at one boundary.
+func writeStatusJSON(stdout, stderr io.Writer, output statusJSONOutput) int {
+	if err := json.NewEncoder(stdout).Encode(output); err != nil {
+		pf(stderr, "error: encode status: %v\n", err)
+		return 2
+	}
 	return 0
 }
 

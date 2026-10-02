@@ -40,6 +40,7 @@ type ProjectionObserver func(context.Context, string, uint64) error
 // before. Reconcile is bounded to one visibility page; successive calls
 // continue pagination and cycle back to the newest page.
 type CompletedRunReconciler struct {
+	dataConverter converter.DataConverter
 	client        CompletedRunClient
 	namespace     string
 	runsDirs      map[string]string
@@ -135,7 +136,7 @@ func (r *CompletedRunReconciler) reportDivergence(runID, detail string) {
 
 // NewCompletedRunReconciler constructs a reconciler scoped to configured
 // gaggle names and their journal roots.
-func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs map[string]string, observe ProjectionObserver) (*CompletedRunReconciler, error) {
+func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs map[string]string, observe ProjectionObserver, dc ...converter.DataConverter) (*CompletedRunReconciler, error) {
 	if c == nil {
 		return nil, errors.New("engine: Temporal client is required")
 	}
@@ -145,7 +146,7 @@ func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs 
 	if len(runsDirs) == 0 {
 		return nil, errors.New("engine: at least one gaggle runs directory is required")
 	}
-	return &CompletedRunReconciler{client: c, namespace: namespace, runsDirs: runsDirs, observe: observe}, nil
+	return &CompletedRunReconciler{client: c, namespace: namespace, runsDirs: runsDirs, observe: observe, dataConverter: memoDataConverter(dc)}, nil
 }
 
 // Reconcile processes one bounded page of closed workflow executions.
@@ -174,7 +175,7 @@ func (r *CompletedRunReconciler) Reconcile(ctx context.Context) (int, error) {
 			continue
 		}
 		var gaggle string
-		if err := converter.GetDefaultDataConverter().FromPayload(memo, &gaggle); err != nil {
+		if err := r.dataConverter.FromPayload(memo, &gaggle); err != nil {
 			errs = append(errs, fmt.Errorf("engine: decode gaggle memo for %q: %w", info.GetExecution().GetWorkflowId(), err))
 			continue
 		}

@@ -211,33 +211,10 @@ func runClaimsActive(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %s\n", resp.Error)
 		return 2
 	}
-	now := time.Now().UTC()
-	view := readservice.ActiveClaimList{ObservedAt: now, Claims: readservice.ActiveClaimsFromEntries(resp.Entries, now)}
-
-	if *jsonOutput {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(view); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-		return 0
-	}
-	if len(view.Claims) == 0 {
-		pln(stdout, "no active claims")
-		return 0
-	}
-	pln(stdout, "ITEM ID\tGAGGLE\tPROVIDER\tWORKFLOW\tRUN ID\tHOLDER\tAGE")
-	for _, claim := range view.Claims {
-		pf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			claim.ItemID,
-			claimScopeValue(claim.Gaggle),
-			claimScopeValue(claim.Provider),
-			claim.Workflow,
-			claim.RunID,
-			claim.Holder,
-			(time.Duration(claim.AgeSeconds) * time.Second).String(),
-		)
+	view := readservice.ActiveClaimListAt(resp.Entries, time.Now().UTC())
+	if err := readservice.WriteActiveClaims(stdout, view, *jsonOutput); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 	return 0
 }
@@ -257,20 +234,13 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	provider := fs.String("provider", "", "provider owning the claim")
 	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
 	fs.Usage = helpUsage(stderr, "claims release")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		fs.Usage()
+	itemID, root, ok := parseRequiredArgOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	if (*gaggle == "") != (*provider == "") {
 		pf(stderr, "error: --gaggle and --provider must be supplied together\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 
 	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
@@ -291,7 +261,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	entry, code, message := selectClaimForRelease(previewResp.Entries, claimAdminRequest{
-		ItemID:   fs.Arg(0),
+		ItemID:   itemID,
 		Gaggle:   *gaggle,
 		Provider: *provider,
 	})
@@ -317,7 +287,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	defer stopTelemetry()
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation:         claimAdminOperationRelease,
-		ItemID:            fs.Arg(0),
+		ItemID:            itemID,
 		Gaggle:            *gaggle,
 		Provider:          *provider,
 		ExpectedRunID:     entry.RunID,

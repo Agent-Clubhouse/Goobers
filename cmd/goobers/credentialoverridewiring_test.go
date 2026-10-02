@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentialoverride"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 )
@@ -47,14 +48,21 @@ func credentialOverrideFixture() (*instance.Config, *instance.ConfigSet) {
 	return cfg, set
 }
 
-func summarizeOverrideProbes(probes []credentialOverrideProbe) []string {
+func overrideProbeRepoName(repo instance.RepoRef) string {
+	if repo.Project != "" {
+		return repo.Owner + "/" + repo.Project + "/" + repo.Name
+	}
+	return repo.Owner + "/" + repo.Name
+}
+
+func summarizeOverrideProbes(probes []credentialoverride.Probe) []string {
 	var summary []string
 	for _, probe := range probes {
 		kind := "git"
 		if probe.Metadata {
 			kind = "metadata"
 		}
-		summary = append(summary, fmt.Sprintf("%s credentials[%d] %s -> %s (%s)", probe.Gaggle, probe.Credential, probe.Capability, repoDisplayName(probe.Repo), kind))
+		summary = append(summary, fmt.Sprintf("%s credentials[%d] %s -> %s (%s)", probe.Gaggle, probe.Credential, probe.Capability, overrideProbeRepoName(probe.Repo), kind))
 	}
 	return summary
 }
