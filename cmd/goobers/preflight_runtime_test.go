@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnersolve"
+	"github.com/goobers/goobers/internal/runtimeplan"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -25,8 +26,8 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 		"--execution-identity", "actual",
 		"--json",
 	}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("runRuntimePreflight exit %d, stderr:\n%s", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("runRuntimePreflight exit %d, want 1 for unsupported worker identity; stderr:\n%s", code, stderr.String())
 	}
 	output := stdout.String()
 	for _, leaked := range []string{"super-secret-token", "SECRET_FROM_INSTRUCTIONS", "GOOBERS_COPILOT_TOKEN"} {
@@ -120,8 +121,8 @@ func TestRuntimePreflightHumanReportRedactsSecrets(t *testing.T) {
 		"--instance", root,
 		"--workflow", "implement",
 	}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("runRuntimePreflight exit %d, stderr:\n%s", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("runRuntimePreflight exit %d, want 1 for unsupported worker identity; stderr:\n%s", code, stderr.String())
 	}
 	output := stdout.String()
 	for _, want := range []string{
@@ -283,6 +284,14 @@ func normalizedRuntimePreflightJSON(t *testing.T, report runtimePreflightReport)
 	report.Instance.ConfigDir = "<instance-config>"
 	report.Workflow.Digest = "sha256:<workflow>"
 	report.Workflow.GooberDigest = "sha256:<goober>"
+	report.Execution.Process = runtimeplan.Process{PID: 1, OS: "<host-os>", UID: "<effective-user>", GID: "<effective-group>", Source: runtimeplan.Source{Fidelity: "observed", Detail: "current process OS and effective identity"}}
+	for i := range report.Checks {
+		report.Checks[i].Process = &report.Execution.Process
+	}
+	for i := range report.Execution.Plan.Paths {
+		report.Execution.Plan.Paths[i].Path = "<" + report.Execution.Plan.Paths[i].Purpose + ">"
+	}
+
 	for si := range report.Stages {
 		normalizeRunner := func(runner *runtimePreflightRunner) {
 			if runner != nil && runner.Kind == "self" && runner.OS != "" {
@@ -456,5 +465,55 @@ func writeRuntimePreflightFile(t *testing.T, root, rel, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestRuntimePreflightIdentityAndPlanAcrossDSLVersions(t *testing.T) {
+	for _, version := range []string{"2.0", "3.0"} {
+		t.Run(version, func(t *testing.T) {
+			root := writeRuntimePreflightFixture(t)
+			workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "implement.yaml")
+			raw, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = bytes.Replace(raw, []byte(`dslVersion: "2.0"`), []byte(`dslVersion: "`+version+`"`), 1)
+			if version == "3.0" {
+				raw = bytes.Replace(raw, []byte("metadata:\n  name: implement"), []byte("metadata:\n  annotations:\n    goobers.dev/allow-preview-features: \"true\"\n  name: implement"), 1)
+				raw = bytes.Replace(raw, []byte("      requiredCapabilities:\n        - node@20"), []byte("      runsOn:\n        capabilities:\n          - node@20"), 1)
+				gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+				gaggle, err := os.ReadFile(gagglePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gaggle = bytes.Replace(gaggle, []byte("  requiredCapabilities:\n    - node@20"), []byte("  runsOn:\n    capabilities:\n      - node@20"), 1)
+				if err := os.WriteFile(gagglePath, gaggle, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(workflowPath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			report, err := buildRuntimePreflightReport(root, "implement", "actual")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Execution.Process.PID != os.Getpid() || report.Workflow.DSLVersion != version {
+				t.Fatalf("process/workflow facts missing: %+v", report.Execution)
+			}
+			if len(report.Execution.Plan.Paths) == 0 || len(report.Execution.Plan.CredentialSources) == 0 {
+				t.Fatalf("plan missing: %+v", report.Execution.Plan)
+			}
+			for _, stage := range report.Stages {
+				if stage.Identity.Outcome != "unsupported" || stage.Identity.Code != "worker_identity_unobservable" {
+					t.Fatalf("local CLI claimed worker equivalence: %+v", stage)
+				}
+			}
+			for _, check := range report.Checks {
+				if check.Process == nil || check.Process.PID != os.Getpid() {
+					t.Fatalf("check lost process provenance: %+v", check)
+				}
+			}
+		})
 	}
 }
