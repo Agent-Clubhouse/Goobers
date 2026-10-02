@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/goobers/goobers/internal/backlogdefaults"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -22,8 +22,8 @@ type issueOwnershipScope struct {
 
 func issueOwnershipScopeFromInputs() issueOwnershipScope {
 	scope := issueOwnershipScope{
-		assignees:  splitLabelList(providerInput(backlogdefaults.OwnershipAssigneesInput, "")),
-		unassigned: strings.ToLower(strings.TrimSpace(providerInput(backlogdefaults.OwnershipUnassignedInput, ""))),
+		assignees:  splitLabelList(providerInput(executor.InputOwnershipAssignees, "")),
+		unassigned: strings.ToLower(strings.TrimSpace(providerInput(executor.InputOwnershipUnassigned, ""))),
 	}
 	if scope.unassigned == "" && len(scope.assignees) > 0 {
 		scope.unassigned = ownershipUnassignedRefuse
