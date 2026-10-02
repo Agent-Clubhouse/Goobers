@@ -4855,7 +4855,7 @@ $ goobers telemetry stats --json
 send one secret-safe Application Insights connectivity probe
 
 ~~~text
-Usage: goobers telemetry test [--json] [--timeout DURATION] [path]
+Usage: goobers telemetry test [--destination NAME] [--json] [--timeout DURATION] [path]
 
 Resolve the configured connection-string reference and send one fixed,
 identity-free connectivity record directly to Application Insights. The probe

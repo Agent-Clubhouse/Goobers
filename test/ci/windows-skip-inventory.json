@@ -16,7 +16,7 @@
       "package": "api/schemas",
       "coverage": "partial",
       "category": "seam-selection",
-      "reason": "Only the journal-logs schema tests run, in the 'Windows journal OTLP export' step."
+      "reason": "Journal-logs and named-exporter schema tests run in the 'Windows journal OTLP export' step."
     },
     {
       "package": "api/validate",

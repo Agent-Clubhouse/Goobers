@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -65,7 +66,9 @@ func buildTelemetryClient(
 	// still usable for local-only telemetry, so callers must not treat every
 	// non-nil error here as a construction failure. See daemon.go's call
 	// site for the degrade handling.
-	return telemetry.New(ctx, cfg)
+	namedErr := configureNamedTelemetry(ctx, &cfg, telemetryConfig, l.Root, registry, stores, false)
+	client, err := telemetry.New(ctx, cfg)
+	return client, errors.Join(namedErr, err)
 }
 
 func configureAzureMonitor(

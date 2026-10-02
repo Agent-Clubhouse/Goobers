@@ -76,7 +76,8 @@ func prepareNamedDestinations(cfg Config) Config {
 			if c.AzureMonitorConnectionString != "" {
 				mode = "azure-monitor"
 			}
-			c.ExporterHealth = cfg.ExporterHealth.destination(destinations[i].Name, mode, c.OTLPEndpoint)
+			c.ExporterHealth = cfg.ExporterHealth.Destination(destinations[i].Name, mode, c.OTLPEndpoint)
+			c.ExporterHealth.setReplayRoot(c.AzureMonitorReplayRoot)
 		}
 	}
 	cfg.Destinations = destinations
@@ -89,6 +90,7 @@ func namedSpanProcessors(ctx context.Context, cfg Config) (parallelSpanProcessor
 	for _, destination := range cfg.Destinations {
 		exporters, err := spanExporters(ctx, destination.Config)
 		if err != nil {
+			destination.Config.ExporterHealth.RecordUnavailable(err)
 			errs = append(errs, fmt.Errorf("%w: destination %s: %w", ErrOTLPUnavailable, destination.Name, err))
 			if destination.Config.AzureMonitorTraces {
 				destination.Config.ExporterHealth.RecordTraceFailure(err)
@@ -145,7 +147,11 @@ func (c *Client) configureAllJournalLogs(ctx context.Context, cfg Config, res *r
 		childCfg := destination.Config
 		childCfg.JournalRoot = "" // The parent alone owns the root registration.
 		if err := child.configureJournalLogs(ctx, childCfg, res); err != nil {
+			childCfg.ExporterHealth.RecordUnavailable(err)
 			errs = append(errs, fmt.Errorf("%w: destination %s: %w", ErrOTLPUnavailable, destination.Name, err))
+		}
+		if childCfg.ExporterHealth != nil {
+			childCfg.ExporterHealth.observeJournal(child.JournalExportStats)
 		}
 		if child.journalLogs == nil {
 			continue
