@@ -27,6 +27,17 @@ func init() {
 			return canonicalWorkItemURL(values[0], values[1], values[2], values[3]), nil
 		},
 	)
+	sqlite.MustRegisterDeterministicScalarFunction(
+		"goobers_work_item_repository",
+		2,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			values := make([]string, len(args))
+			for i, arg := range args {
+				values[i], _ = arg.(string)
+			}
+			return workItemRepository(values[0], values[1]), nil
+		},
+	)
 }
 
 // WorkItemQuery filters and bounds a work-item rollup query.
@@ -83,13 +94,26 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 		WITH normalized AS (
 			SELECT
 				pm.*,
+				COALESCE(r.gaggle, '') AS gaggle,
 				goobers_work_item_url(
 					pm.provider, pm.kind, pm.external_id, COALESCE(pm.url, '')
 				) AS canonical_url
 			FROM provider_mutations pm
+			LEFT JOIN runs r ON r.run_id = pm.run_id
 			WHERE pm.kind IN ('pr', 'issue')
 				AND (? = '' OR pm.provider = ?)
 				AND (? = '' OR pm.kind = ?)
+		),
+		known_gaggle_identity AS (
+			SELECT provider, kind, external_id, gaggle,
+			       CASE
+				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+					       THEN MAX(canonical_url)
+				       ELSE ''
+			       END AS inferred_url
+			FROM normalized
+			WHERE canonical_url <> ''
+			GROUP BY provider, kind, external_id, gaggle
 		),
 		known_identity AS (
 			SELECT provider, kind, external_id,
@@ -107,10 +131,12 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				normalized.*,
 				COALESCE(
 					NULLIF(canonical_url, ''),
+					NULLIF(known_gaggle_identity.inferred_url, ''),
 					NULLIF(known_identity.inferred_url, ''),
 					''
 				) AS item_url
 			FROM normalized
+			LEFT JOIN known_gaggle_identity USING (provider, kind, external_id, gaggle)
 			LEFT JOIN known_identity USING (provider, kind, external_id)
 		),
 		ranked AS (
@@ -125,7 +151,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				pm.operation,
 				pm.occurred_at,
 				pm.run_id,
-				COALESCE(r.gaggle, '') AS gaggle,
+				pm.gaggle,
 				COALESCE(r.workflow, '') AS workflow,
 				COALESCE(r.status, '') AS status,
 				ROW_NUMBER() OVER (
@@ -197,16 +223,9 @@ func (db *DB) WorkItemActions(
 	if itemURL != "" {
 		where += ` AND (
 			lower(pm.item_url) = lower(?)
-			OR (
-				pm.canonical_url = ''
-				AND pm.gaggle IN (
-					SELECT matching.gaggle
-					FROM resolved matching
-					WHERE lower(matching.item_url) = lower(?)
-				)
-			)
+			OR lower(goobers_work_item_repository(pm.provider, pm.item_url)) = lower(?)
 		)`
-		args = append(args, itemURL, itemURL)
+		args = append(args, itemURL, repository)
 	}
 	args = append(args, MaxWorkItemActions+1)
 	rows, err := db.readDB().QueryContext(ctx, `
@@ -221,6 +240,17 @@ func (db *DB) WorkItemActions(
 				) AS canonical_url
 			FROM provider_mutations pm
 			LEFT JOIN runs r ON r.run_id = pm.run_id
+		),
+		known_gaggle_identity AS (
+			SELECT provider, kind, external_id, gaggle,
+			       CASE
+				       WHEN MIN(lower(canonical_url)) = MAX(lower(canonical_url))
+					       THEN MAX(canonical_url)
+				       ELSE ''
+			       END AS inferred_url
+			FROM normalized
+			WHERE canonical_url <> ''
+			GROUP BY provider, kind, external_id, gaggle
 		),
 		known_identity AS (
 			SELECT provider, kind, external_id,
@@ -238,10 +268,12 @@ func (db *DB) WorkItemActions(
 				normalized.*,
 				COALESCE(
 					NULLIF(canonical_url, ''),
+					NULLIF(known_gaggle_identity.inferred_url, ''),
 					NULLIF(known_identity.inferred_url, ''),
 					''
 				) AS item_url
 			FROM normalized
+			LEFT JOIN known_gaggle_identity USING (provider, kind, external_id, gaggle)
 			LEFT JOIN known_identity USING (provider, kind, external_id)
 		)
 		SELECT pm.run_id, pm.seq, pm.item_url, COALESCE(pm.operation, ''),
@@ -408,11 +440,46 @@ func canonicalWorkItemURL(provider, kind, externalID, rawURL string) string {
 	if repository == "" {
 		repository = workItemRepositoryFromAPI(provider, rawURL)
 	}
+	if strings.EqualFold(provider, "ado") && repository != "" {
+		return canonicalADOWorkItemURL(rawURL, kind, externalID)
+	}
 	if canonicalURL := workItemURL(provider, repository, kind, externalID); canonicalURL != "" {
 		return canonicalURL
 	}
 	if fragment := strings.IndexByte(rawURL, '#'); fragment >= 0 {
 		return rawURL[:fragment]
+	}
+	return rawURL
+}
+
+func canonicalADOWorkItemURL(rawURL, kind, externalID string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	marker := "_workitems"
+	if kind == "pr" {
+		marker = "_git"
+	}
+	for index, part := range parts {
+		if !strings.EqualFold(part, marker) {
+			continue
+		}
+		if kind == "pr" {
+			if len(parts) <= index+1 {
+				return rawURL
+			}
+			parts = append(parts[:index+2], "pullrequest", externalID)
+		} else {
+			parts = append(parts[:index+1], "edit", externalID)
+		}
+		parsed.Path = "/" + strings.Join(parts, "/")
+		parsed.RawPath = ""
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		parsed.RawFragment = ""
+		return parsed.String()
 	}
 	return rawURL
 }

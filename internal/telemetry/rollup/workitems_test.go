@@ -112,21 +112,67 @@ func TestWorkItemsKeepSameNumberedRepositoriesSeparate(t *testing.T) {
 			formatTime(at.Add(time.Duration(index)*time.Minute))); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := db.sql.Exec(`
+			INSERT INTO provider_mutations
+				(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+			VALUES (?, 2, 'github', 'issue', '42', NULL, 'label', ?)`,
+			runID, formatTime(at.Add(time.Duration(index)*time.Minute+time.Second))); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	items, _, err := db.WorkItems(context.Background(), WorkItemQuery{Kind: "issue", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 2 || items[0].Repository == items[1].Repository {
+	if len(items) != 2 || items[0].Repository == items[1].Repository ||
+		items[0].ActionCount != 2 || items[1].ActionCount != 2 {
 		t.Fatalf("items = %#v", items)
 	}
 	actions, _, err := db.WorkItemActions(context.Background(), "github", "acme/app", "issue", "42")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(actions) != 1 || actions[0].RunID != "run-acme/app" {
+	if len(actions) != 2 || actions[0].RunID != "run-acme/app" ||
+		actions[0].Operation != "label" {
 		t.Fatalf("actions = %#v", actions)
+	}
+}
+
+func TestWorkItemsPreserveSelfHostedADOAuthority(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := db.sql.Exec(`
+		INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+		VALUES ('run-ado', 'implementation', 1, 'ado-core', 'completed', ?)`,
+		formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`
+		INSERT INTO provider_mutations
+			(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+		VALUES ('run-ado', 1, 'ado', 'issue', '7',
+			'https://tfs.corp.example:8080/org/proj/_workitems/edit/7#discussion',
+			'update', ?)`, formatTime(at)); err != nil {
+		t.Fatal(err)
+	}
+
+	items, _, err := db.WorkItems(context.Background(), WorkItemQuery{Provider: "ado", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 ||
+		items[0].URL != "https://tfs.corp.example:8080/org/proj/_workitems/edit/7" ||
+		items[0].Repository != "org/proj" {
+		t.Fatalf("items = %#v", items)
+	}
+
+	actions, truncated, err := db.WorkItemActions(context.Background(), "ado", "org/proj", "issue", "7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(actions) != 1 || actions[0].URL != items[0].URL {
+		t.Fatalf("actions = %#v, truncated = %v", actions, truncated)
 	}
 }
 
