@@ -339,6 +339,9 @@ func (c *StorageHealthConfig) validate() error {
 }
 
 func (c RetentionConfig) validate() error {
+	if _, err := c.TerminalBranchMaxAgeDuration(); err != nil {
+		return err
+	}
 	if c.MaxRetainedWorktreeBytes < 0 {
 		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
 	}

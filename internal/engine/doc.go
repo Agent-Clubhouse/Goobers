@@ -33,10 +33,11 @@
 // closing them is follow-on work, not a reason to weaken the conformance
 // surface to make a fixture pass:
 //
-//   - Cumulative agentic usage budgets (limits.maxTokens / maxCostUSD) are not
-//     enforced here — the local runner fails closed via enforceStageBudget.
-//     Moot until the agentic executor seam is wired (stages needing it fail
-//     closed today), but it must land with that wiring.
+// Cumulative agentic usage budgets are enforced for in-process execution
+// (#2875), using canonical runner arithmetic over activity-history usage on
+// successful and failed attempts. Remote pod execution remains explicitly
+// refused for budgeted agentic tasks until surrender carries trusted usage.
+//
 //   - The context-manifest artifact is journaled even when workspace
 //     provisioning failed; the gate-evaluator has no per-attempt deadline; and
 //     InputsFrom failures produce no stage-attributed events.

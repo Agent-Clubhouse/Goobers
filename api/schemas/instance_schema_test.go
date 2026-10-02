@@ -652,16 +652,14 @@ func TestInstanceSchemaDescriptionsCarryTheColdStartTraps(t *testing.T) {
 	}
 }
 
-// Retention's local-branch rule is ancestry-only today (#4861). Keep that
-// limitation in the operator-facing schema until a separate policy decision
-// chooses authoritative squash/queue/legacy landing evidence.
+// #2467 adds separate age authority without claiming alternate landing proof.
 func TestInstanceSchemaDescribesLocalBranchRetentionLimit(t *testing.T) {
 	raw, err := FS.ReadFile("instance.schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	document := string(raw)
-	for _, want := range []string{"requires Git ancestry", "squash", "merge-queue", "legacy", "may leave local branches behind"} {
+	for _, want := range []string{"Git ancestry", "terminalBranchMaxAge", "720h", "Parked runs/items", "unknown ownership"} {
 		if !strings.Contains(document, want) {
 			t.Errorf("instance schema no longer documents local branch retention limit %q", want)
 		}

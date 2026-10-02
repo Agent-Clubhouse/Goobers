@@ -137,7 +137,7 @@ func selectEngineForPinnedEntry(def wfpkg.Definition, placements []engine.Pinned
 	// Asked LAST, so a lane that is disqualified on placement grounds still
 	// reports the placement reason — the one an operator can act on with a
 	// runsOn edit.
-	if err := engine.RefuseDefinition(def.Name, def.Spec); err != nil {
+	if err := engine.RefusePlacedDefinition(def.Name, def.Spec, placements); err != nil {
 		return engineSelection{
 			ReasonClass:    "definition_refused",
 			Refusal:        err,

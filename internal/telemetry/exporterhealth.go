@@ -27,6 +27,10 @@ type ExporterHealth struct {
 	journal  *journal.InstanceLog
 	trace    exporterSignalHealth
 	metric   exporterSignalHealth
+	// now and refusedWindow are injectable for tests; zero values use the
+	// wall clock and the export error log's suppression window.
+	now           func() time.Time
+	refusedWindow time.Duration
 }
 
 type endpointHealth struct {
@@ -75,10 +79,19 @@ type exporterSignalHealth struct {
 	suppressedFailureEvents uint64
 	journaledRecoveries     uint64
 	journaledFailures       uint64
+	// Persistent-failure instance-log events (#6417): the first failure, then
+	// one per suppression window while the signal keeps failing.
+	lastRefusedAt  time.Time
+	refusedRepeats uint64
+	pendingRefused *journal.Event
 }
 
 const (
 	exporterHealthTransitionAnnotation = "telemetry.exporter.transition"
+	exporterHealthRefusedAnnotation    = "telemetry.exporter.refused"
+	// exporterHealthRefusedCode is the instance-log failure code for an
+	// export that keeps failing, beside telemetry_otlp_unavailable.
+	exporterHealthRefusedCode          = "telemetry_export_refused"
 	exporterHealthStateUnhealthy       = "unhealthy"
 	exporterHealthStateRecovered       = "recovered"
 	exporterHealthExporterDefault      = "default"
@@ -255,11 +268,18 @@ func (h *ExporterHealth) installedExporters(signal *exporterSignalHealth) []stri
 	return exporters
 }
 
+func (h *ExporterHealth) clock() time.Time {
+	if h.now != nil {
+		return h.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignalHealth, exporter string) {
 	if h == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := h.clock()
 	h.mu.Lock()
 	signal.configured = true
 	signal.lastSuccessAt = now
@@ -276,6 +296,8 @@ func (h *ExporterHealth) recordSuccess(signalName string, signal *exporterSignal
 		signal.consecutiveFailures = 0
 		signal.lastTransitionAt = now
 		signal.recoveryTransitions++
+		// A later failure is a new first occurrence, not a repeat.
+		signal.lastRefusedAt, signal.refusedRepeats = time.Time{}, 0
 		event = h.transitionEventLocked(signalName, exporterHealthStateRecovered, signal.lastFailureReason, now)
 		if log != nil {
 			signal.journaledRecoveries = signal.recoveryTransitions
@@ -289,7 +311,7 @@ func (h *ExporterHealth) recordFailure(signalName string, signal *exporterSignal
 	if h == nil {
 		return
 	}
-	now := time.Now().UTC()
+	now := h.clock()
 	h.mu.Lock()
 	signal.configured = true
 	signal.lastFailureAt = now
@@ -301,19 +323,67 @@ func (h *ExporterHealth) recordFailure(signalName string, signal *exporterSignal
 	signal.failingExporters[boundedExporterHealthExporter(exporter)] = signal.lastFailureReason
 	if signal.unhealthy {
 		signal.suppressedFailureEvents++
+		refused := h.refusedEventLocked(signalName, signal, exporter, now)
+		log := h.journal
 		h.mu.Unlock()
+		appendExporterHealthTransition(log, refused)
 		return
 	}
 	signal.unhealthy = true
 	signal.lastTransitionAt = now
 	signal.failureTransitions++
 	event := h.transitionEventLocked(signalName, exporterHealthStateUnhealthy, signal.lastFailureReason, now)
+	refused := h.refusedEventLocked(signalName, signal, exporter, now)
 	log := h.journal
 	if log != nil {
 		signal.journaledFailures = signal.failureTransitions
 	}
 	h.mu.Unlock()
-	appendExporterHealthTransition(log, event)
+	appendExporterHealthTransitions(log, []*journal.Event{event, refused})
+}
+
+// refusedEventLocked returns the telemetry_export_refused failure event for
+// the first failure of a failing period and for the first repeat after each
+// suppression window, mirroring the export error log's cadence. Repeats in
+// between are counted into the next event. Before the instance log is
+// attached, the latest due event is held for AttachInstanceLog.
+func (h *ExporterHealth) refusedEventLocked(signalName string, signal *exporterSignalHealth, exporter string, now time.Time) *journal.Event {
+	window := h.refusedWindow
+	if window <= 0 {
+		window = exportErrorRepeatWindow
+	}
+	if !signal.lastRefusedAt.IsZero() {
+		signal.refusedRepeats++
+		if now.Sub(signal.lastRefusedAt) < window {
+			return nil
+		}
+	}
+	runner := map[string]any{
+		"annotation":  exporterHealthRefusedAnnotation,
+		"signal":      signalName,
+		"destination": boundedExporterHealthExporter(exporter),
+		"errorClass":  signal.lastFailureReason,
+		"mode":        h.mode,
+	}
+	if signal.refusedRepeats > 0 {
+		runner["repeats"] = signal.refusedRepeats
+		runner["window"] = window.String()
+	}
+	if h.endpoint.class != "" {
+		runner["endpointClass"] = h.endpoint.class
+	}
+	event := &journal.Event{
+		Type:   journal.EventError,
+		Time:   now,
+		Error:  &journal.ErrorDetail{Code: exporterHealthRefusedCode, Message: signal.lastFailureReason},
+		Runner: runner,
+	}
+	signal.lastRefusedAt, signal.refusedRepeats = now, 0
+	if h.journal == nil {
+		signal.pendingRefused = event
+		return nil
+	}
+	return event
 }
 
 // Snapshot returns a copy of the current bounded health state.
@@ -461,17 +531,21 @@ func exporterFailureReason(err error) string {
 }
 
 func (h *ExporterHealth) pendingTransitionEventsLocked() []*journal.Event {
-	events := make([]*journal.Event, 0, 2)
+	events := make([]*journal.Event, 0, 4)
 	events = append(events, h.pendingTransitionEventLocked("trace", &h.trace)...)
 	events = append(events, h.pendingTransitionEventLocked("metric", &h.metric)...)
 	return events
 }
 
 func (h *ExporterHealth) pendingTransitionEventLocked(signalName string, signal *exporterSignalHealth) []*journal.Event {
-	events := make([]*journal.Event, 0, 2)
+	events := make([]*journal.Event, 0, 3)
 	if signal.failureTransitions > signal.journaledFailures {
 		events = append(events, h.transitionEventLocked(signalName, exporterHealthStateUnhealthy, signal.lastFailureReason, signal.lastTransitionAt))
 		signal.journaledFailures = signal.failureTransitions
+	}
+	if signal.pendingRefused != nil {
+		events = append(events, signal.pendingRefused)
+		signal.pendingRefused = nil
 	}
 	if signal.recoveryTransitions > signal.journaledRecoveries {
 		events = append(events, h.transitionEventLocked(signalName, exporterHealthStateRecovered, signal.lastFailureReason, signal.lastTransitionAt))

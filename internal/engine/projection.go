@@ -398,19 +398,6 @@ func validateProjection(proj JournalProjection) error {
 	if last.Kind != opAppend || last.Event == nil || last.Event.Type != journal.EventRunFinished {
 		return fmt.Errorf("%w: history has no terminal run.finished event", ErrUnprojectable)
 	}
-	if len(proj.SchedulerOps) > 1 {
-		return fmt.Errorf("%w: history produced %d scheduler trigger events", ErrUnprojectable, len(proj.SchedulerOps))
-	}
-	for i, op := range proj.SchedulerOps {
-		if op.Kind != opAppend || op.Event == nil || op.Event.Type != journal.EventTriggerFired {
-			return fmt.Errorf("%w: scheduler op %d is not trigger.fired", ErrUnprojectable, i)
-		}
-		ev := op.Event
-		if op.Time.IsZero() || ev.Workflow == "" || ev.Gaggle == "" || ev.RunID == "" ||
-			ev.RunID != proj.Identity.RunID || ev.Reason != "scheduled" {
-			return fmt.Errorf("%w: scheduler trigger op %d has incomplete identity", ErrUnprojectable, i)
-		}
-	}
 	return nil
 }
 
@@ -500,21 +487,6 @@ func ProjectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, r
 	return ProjectRun(runsDir, proj, opts...)
 }
 
-// ProjectCompletedScheduledRun projects both sides of a schedule fire: the
-// standard trigger.fired event in scheduler/events.jsonl and the run journal.
-// claimID is the Schedule action workflow ID; its deterministic child owns the
-// journal query.
-func ProjectCompletedScheduledRun(ctx context.Context, q projectionQuerier, claimID, runsDir, schedulerDir string) (string, error) {
-	proj, err := queryProjection(ctx, q, scheduledRunWorkflowID(claimID))
-	if err != nil {
-		return "", err
-	}
-	if err := ProjectSchedulerEvents(schedulerDir, proj); err != nil {
-		return "", err
-	}
-	return ProjectRun(runsDir, proj)
-}
-
 func queryProjection(ctx context.Context, q projectionQuerier, workflowID string) (JournalProjection, error) {
 	val, err := q.QueryWorkflow(ctx, workflowID, "", JournalQuery)
 	if err != nil {
@@ -525,42 +497,4 @@ func queryProjection(ctx context.Context, q projectionQuerier, workflowID string
 		return JournalProjection{}, fmt.Errorf("engine: decode journal projection for %q: %w", workflowID, err)
 	}
 	return proj, nil
-}
-
-// ProjectSchedulerEvents appends a scheduled run's instance-level projection.
-// A sequential retry is a no-op for an already-projected run ID.
-func ProjectSchedulerEvents(schedulerDir string, proj JournalProjection) error {
-	if err := validateProjection(proj); err != nil {
-		return err
-	}
-	if len(proj.SchedulerOps) == 0 {
-		return nil
-	}
-	clock := &projectionClock{}
-	log, _, err := journal.OpenInstanceLog(schedulerDir, journal.WithClock(clock.now), journal.WithoutCommittedEventExport())
-	if err != nil {
-		return fmt.Errorf("engine: open projected scheduler journal: %w", err)
-	}
-	defer func() { _ = log.Close() }()
-	existing, err := journal.ReadInstanceLog(schedulerDir)
-	if err != nil {
-		return fmt.Errorf("engine: read projected scheduler journal: %w", err)
-	}
-	projected := make(map[string]bool)
-	for _, ev := range existing {
-		if ev.Type == journal.EventTriggerFired {
-			projected[ev.RunID] = true
-		}
-	}
-	for i, op := range proj.SchedulerOps {
-		if projected[op.Event.RunID] {
-			continue
-		}
-		clock.set(op.Time)
-		if err := log.Append(*op.Event); err != nil {
-			return fmt.Errorf("engine: project scheduler event %d: %w", i, err)
-		}
-		projected[op.Event.RunID] = true
-	}
-	return nil
 }

@@ -52,6 +52,7 @@ func TestGoCommandArgsRoutesTimedTestsThroughCapture(t *testing.T) {
 		"run", "./test/testtiming", "capture",
 		"-job", "unit",
 		"-out", "test-timings/unit.json",
+		"-junit", "test-timings/unit.junit.xml",
 		"--",
 		"-race", "./...",
 	}

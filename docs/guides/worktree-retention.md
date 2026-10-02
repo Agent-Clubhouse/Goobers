@@ -21,23 +21,33 @@ Tracked edits and deletions are still captured when that selection is empty.
 A failed handoff preserves the worktree. Do not delete it or broaden capture to
 include ignored files to bypass the failure.
 
-## Local-branch limitation
+## Local branches
 
-Local run-branch cleanup currently proves that a branch landed only when its tip
-is a Git ancestor of another local branch. This is valid for fast-forward and
-ordinary merge-commit histories. A squash merge creates a different commit, so
-the original run-branch tip is not an ancestor of the target branch. Merge-queue
-and legacy landing paths likewise do not currently provide alternate authority
-to this retention rule.
+A local run branch can qualify either because its tip is a Git ancestor of
+another local branch, or because its owning run completed, failed, or was
+aborted at least `retention.terminalBranchMaxAge` ago. The latter defaults to
+`720h` (30 days), allowing old unmerged branches to expire, including branches
+left behind by squash merges. Set it to `"0s"` to disable the branch-age rule,
+or another nonnegative Go duration to change the age floor.
 
-Consequently, local branches from squash, merge-queue, or legacy landings may
-remain after a retention sweep. The retained-worktree age and byte rules still
-apply to retained failure worktrees, but operators must not treat the local
-run-branch rule as a complete disk bound for those landing modes.
+The age comes from the durable root `run.finished` event, never a commit date
+or file modification time. Missing, inconsistent, or future timestamps do not
+authorize age-based cleanup. Missing journals and legacy branches whose item
+ownership cannot be established remain on disk and are reported as skipped.
 
-The daemon fails closed: a terminal run and an unprotected branch are necessary
-but not sufficient for deletion. It does not infer landing from a matching
-commit message, a similar patch, or the absence of an open pull request.
+Both rules protect active and parked runs, including escalated runs and runs
+waiting at a gate. Current provider item or pull-request state is checked using
+the repository recorded when the item was selected, even after its claim has
+been released. Needs-human, escalated, blocked, paused, and parked items protect
+their branches. A provider read failure preserves the branch. Branches referenced
+by another protected run are also preserved.
 
-This limitation is tracked by [issue #4861](https://github.com/Agent-Clubhouse/Goobers/issues/4861).
-Choosing an additional source of landing authority is a separate policy change.
+Candidates use the existing dry-run and first-enable grace window. Immediately
+before deletion, the sweep rechecks the branch tip, run state, item state, and
+age or ancestry authority. Deletion failures are reported. No remote branch or
+provider item is modified.
+
+Git ancestry alone still does not prove a squash or merge-queue landing. The age
+rule supplies separate terminal-run authority; it does not infer landing from a
+commit message, patch similarity, or the absence of an open pull request. Broader
+landing proof is tracked in [issue #4861](https://github.com/Agent-Clubhouse/Goobers/issues/4861).
