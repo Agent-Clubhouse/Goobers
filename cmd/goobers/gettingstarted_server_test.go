@@ -263,6 +263,38 @@ func TestGettingStartedCompleteRuntimeChoices(t *testing.T) {
 	}
 }
 
+func TestGettingStartedSupervisionPreviewUsesCurrentStatus(t *testing.T) {
+	server := newCompletionTestServer(t)
+	server.platform = "windows"
+	server.execAction = func(_ context.Context, argv ...string) (guidedExecResult, error) {
+		call := strings.Join(argv, " ")
+		status := map[string]any{
+			"installed": true,
+			"running":   false,
+			"state":     "stopped",
+		}
+		if strings.Contains(call, "task-status") {
+			status["account"] = "CONTOSO\\alice"
+		}
+		data, err := json.Marshal(status)
+		return guidedExecResult{exitCode: 1, stdout: string(data)}, err
+	}
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/supervision")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	preview := decodeGuidedResponse[guidedSupervisionPreviewBody](t, recorder)
+	if !strings.Contains(preview.ScheduledTask.Command, `"task-start"`) ||
+		strings.Contains(preview.ScheduledTask.Command, "task-install") {
+		t.Fatalf("scheduled task preview = %+v", preview.ScheduledTask)
+	}
+	if !strings.Contains(preview.MachineService.Command, `"start"`) ||
+		strings.Contains(preview.MachineService.Command, `"install"`) {
+		t.Fatalf("machine service preview = %+v", preview.MachineService)
+	}
+}
+
 func TestGettingStartedCompleteRejectsScheduledTaskOutsideWindows(t *testing.T) {
 	server := newCompletionTestServer(t)
 	server.platform = "linux"

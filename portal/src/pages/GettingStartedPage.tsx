@@ -11,6 +11,7 @@ import {
   type GuidedRepositoryInspection,
   type GuidedRepositoryReadiness,
   type GuidedState,
+  type GuidedSupervisionPreview,
   type GuidedWorkflow,
   type RuntimeMode,
 } from "../guided/client";
@@ -238,6 +239,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const [completeResult, setCompleteResult] = useState<GuidedCompleteResult | null>(
     null,
   );
+  const [supervisionPreview, setSupervisionPreview] =
+    useState<GuidedSupervisionPreview | null>(null);
 
   const statePass = useRef<{ generation: number; controller: AbortController | null }>({
     generation: 0,
@@ -396,6 +399,35 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     }
   }, [pageIndex, pages.length, setPageIndex]);
 
+  const onCompletePage =
+    pages[Math.min(pageIndex, pages.length - 1)]?.id === "complete";
+  useEffect(() => {
+    if (!onCompletePage || state?.platform !== "windows" || completeResult) {
+      return;
+    }
+    let canceled = false;
+    setSupervisionPreview(null);
+    client.getSupervisionPreview().then(
+      (preview) => {
+        if (!canceled) {
+          setSupervisionPreview(preview);
+        }
+      },
+      (error: unknown) => {
+        if (!canceled) {
+          setActionError(
+            `Unable to inspect Windows supervision: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      },
+    );
+    return () => {
+      canceled = true;
+    };
+  }, [client, completeResult, onCompletePage, state?.platform]);
+
   if (query.status === "loading") {
     return (
       <section aria-live="polite" className="daemon-state" role="status">
@@ -457,19 +489,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         ? `az repos clone --organization https://dev.azure.com/${inspection.owner} --project "${inspection.project}" --repository "${inspection.name}"`
         : "";
   const foregroundCommand = quotedCommand(state.executable, "up", state.instancePath);
-  const scheduledTaskCommand = quotedCommand(
-    state.executable,
-    "service",
-    "task-install",
-    state.instancePath,
-  );
-  const machineServiceCommand = quotedCommand(
-    state.executable,
-    "service",
-    "install",
-    "--acknowledge-local-system",
-    state.instancePath,
-  );
+  const scheduledTaskPreview = supervisionPreview?.scheduledTask;
+  const machineServicePreview = supervisionPreview?.machineService;
 
   const runAction = async <T,>(
     kind: Exclude<BusyAction, null>,
@@ -1456,7 +1477,15 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                           <strong>Start automatically for me</strong>
                           <small>
                             Per-user Scheduled Task as {state.runtimeIdentity}:{" "}
-                            <code>{scheduledTaskCommand}</code>
+                            {scheduledTaskPreview ? (
+                              scheduledTaskPreview.command ? (
+                                <code>{scheduledTaskPreview.command}</code>
+                              ) : (
+                                <strong>already running; no start/install command will run</strong>
+                              )
+                            ) : (
+                              <span>checking current status…</span>
+                            )}
                           </small>
                         </span>
                       </label>
@@ -1469,7 +1498,18 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                         />
                         <span>
                           <strong>Advanced machine service</strong>
-                          <small>LocalSystem: <code>{machineServiceCommand}</code></small>
+                          <small>
+                            LocalSystem:{" "}
+                            {machineServicePreview ? (
+                              machineServicePreview.command ? (
+                                <code>{machineServicePreview.command}</code>
+                              ) : (
+                                <strong>already running; no start/install command will run</strong>
+                              )
+                            ) : (
+                              <span>checking current status…</span>
+                            )}
+                          </small>
                         </span>
                       </label>
                     </>
@@ -1505,7 +1545,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   className="reconnect-button"
                   disabled={
                     busy !== null ||
-                    (runtimeMode === "machine-service" && !confirmLocalSystem)
+                    (runtimeMode === "machine-service" && !confirmLocalSystem) ||
+                    ((runtimeMode === "scheduled-task" ||
+                      runtimeMode === "machine-service") &&
+                      supervisionPreview === null)
                   }
                   onClick={finishSetup}
                   type="button"
