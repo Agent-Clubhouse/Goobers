@@ -755,10 +755,11 @@ func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName stri
 	for attempt := 1; ; attempt++ {
 		number := previous + attempt
 		env.Attempt = int32(number)
-		if err := recordReviewerStart(e.Journal, g, number, class); err != nil {
-			return false, err
+		attemptCtx, startErr := recordReviewerStart(ctx, e.Journal, g, number, class)
+		if startErr != nil {
+			return false, startErr
 		}
-		attemptCtx := context.WithValue(ctx, reviewerAttemptClassKey{}, class)
+		attemptCtx = context.WithValue(attemptCtx, reviewerAttemptClassKey{}, class)
 		var cancel context.CancelFunc
 		if timeoutSeconds > 0 {
 			attemptCtx, cancel = context.WithTimeout(attemptCtx, time.Duration(timeoutSeconds)*time.Second)

@@ -380,6 +380,12 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 // failed every unrelated workflow's activity that triggered the build
 // (#5949). Any other preflight error still fails the build closed.
 func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	// Key-holding controllers can dispatch remote work, but must never probe a
+	// local harness or resolve its credentials. Execution admission is separate.
+	if cfg.HasControllerSigningKey() {
+		return nil, nil, nil
+	}
+
 	info, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
 	if err == nil {
 		return info, nil, nil

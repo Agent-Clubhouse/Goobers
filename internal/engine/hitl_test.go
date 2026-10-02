@@ -305,7 +305,9 @@ func deliverWhileExecutingNth(t *testing.T, env *testsuite.TestWorkflowEnvironme
 	var mu sync.Mutex
 	seen := 0
 	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		if info.ActivityType.Name != activityType {
+		// The local receipt version gate retains the old activity for legacy
+		// histories and schedules the prepared variant for current dispatches.
+		if info.ActivityType.Name != activityType && (activityType != ActInvokeGoober || info.ActivityType.Name != actInvokeGooberPrepared) {
 			return
 		}
 		mu.Lock()

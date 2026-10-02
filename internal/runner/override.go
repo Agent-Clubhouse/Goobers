@@ -27,6 +27,9 @@ type OverrideGateInput struct {
 // OverrideGate records an operator's rationale and continues a terminal run
 // down the selected agentic or human gate branch.
 func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result, error) {
+	if r.cfg.ExecutionRefusal != nil {
+		return Result{}, r.cfg.ExecutionRefusal
+	}
 	if !apiv1.ValidRunID(in.RunID) {
 		return Result{}, fmt.Errorf("runner: invalid run id %q", in.RunID)
 	}

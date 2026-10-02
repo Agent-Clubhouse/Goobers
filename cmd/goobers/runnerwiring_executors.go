@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
@@ -543,6 +544,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 }
 
 type agenticExecutorInput struct {
+	LaunchReceipts   launchreceipt.Recorder
 	GooberName       string
 	Goobers          map[string]apiv1.GooberSpec
 	Instructions     map[string]string
@@ -621,6 +623,7 @@ func buildAgenticExecutor(input agenticExecutorInput) (invoke.Goober, error) {
 		return nil, fmt.Errorf("runner secret registrar does not implement journal.Scrubber")
 	}
 	opts := []harness.Option{
+		harness.WithLaunchReceipts(input.LaunchReceipts),
 		harness.WithGuardedCredentialPaths(input.GuardedCredentialPaths),
 		harness.WithHarnessConfig(spec.Model, spec.HarnessOptions),
 		harness.WithHarnessVersion(input.HarnessInfo[harnessName].Version),
@@ -777,4 +780,22 @@ func buildExternalTelemetryRegistry(
 		}
 	}
 	return registry, nil
+}
+
+func runnerHostAdmission(cfg *instance.Config, config runner.Config) runner.Config {
+	if cfg.HasControllerSigningKey() {
+		return runner.RefuseExecution(config, errors.Join(harness.ErrGuardedCredentialFiles, launchreceipt.ErrControllerKey))
+	}
+	return config
+}
+
+func preflightLocalTelemetry(cfg *instance.Config, registry *journal.RegistryScrubber) error {
+	if cfg.HasControllerSigningKey() {
+		return nil
+	}
+	_, err := buildExternalTelemetryRegistry(cfg.ExternalTelemetry, registry)
+	if err != nil {
+		return fmt.Errorf("preflight external telemetry connectors: %w", err)
+	}
+	return nil
 }

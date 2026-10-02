@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
@@ -87,6 +88,12 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 		return nil, err
 	} else if signed != nil {
 		opts = append(opts, livejournal.WithControllerStartAuthority(signed))
+	} else {
+		local, err := podauth.NewLocalStartAuthority()
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, livejournal.WithControllerStartAuthority(local))
 	}
 	if blobs != nil {
 		opts = append(opts, livejournal.WithSpanSource(blobs))

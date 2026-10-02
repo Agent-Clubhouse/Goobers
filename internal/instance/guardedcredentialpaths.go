@@ -112,3 +112,9 @@ func collectGuardedPaths(v reflect.Value, seen map[string]struct{}, depth int) {
 		}
 	}
 }
+
+// HasControllerSigningKey reports configured reusable bearer-signing authority.
+// It does not inspect or disclose the file path, existence, or permissions.
+func (c *Config) HasControllerSigningKey() bool {
+	return c != nil && strings.TrimSpace(c.API.PodTokenKeyFile) != ""
+}

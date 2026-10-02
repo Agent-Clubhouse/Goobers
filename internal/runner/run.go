@@ -249,6 +249,7 @@ type journalAppender interface {
 }
 
 type executionJournal interface {
+	AppendWithSeq(journal.Event) (uint64, error)
 	journalAppender
 	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 	AppendBatchIfAbsent(context.Context, []journal.Event, func(journal.Event) string) (int, error)
@@ -442,6 +443,9 @@ type Config struct {
 	SelfExecutionDenied bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
+	// ExecutionRefusal is host-owned admission policy, checked before any local
+	// run preparation. Workflow and goober settings cannot override it.
+	ExecutionRefusal error
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
 	ConfigGeneration string
 	// RecoveryEvents supplies verified retained-state observations after a
@@ -998,6 +1002,9 @@ func boundFailureMessage(s string) string {
 // Start in its own goroutine per run rather than block its own dispatch loop
 // on it.
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
+	if r.cfg.ExecutionRefusal != nil {
+		return Result{}, r.cfg.ExecutionRefusal
+	}
 	in.instanceID = r.cfg.InstanceID
 	in.configGeneration = r.cfg.ConfigGeneration
 	if in.RunID == "" {
@@ -4616,6 +4623,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 // value rather than as two parallel argument lists that drift apart field by
 // field (#4235) — the same reason walk takes a *walkState.
 type taskFrame struct {
+	startedSeq      uint64
 	artifactVisit   uint64
 	jr              executionJournal
 	in              StartInput
@@ -4776,7 +4784,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			}
 		}
 
-		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
+		attemptCtx, heartbeat := r.startTaskAttemptHeartbeat(attemptCtx, tf, branch, int(attempt), class)
 		attemptAddendum := instructionAddendum
 		var usage attemptUsageCollector
 		if t.Type == apiv1.TaskAgentic {

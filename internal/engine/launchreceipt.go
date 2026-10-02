@@ -10,11 +10,20 @@ import (
 )
 
 const remoteLaunchReceiptChange = "remote-launch-receipt-v1"
+const localLaunchReceiptChange = "local-launch-receipt-v1"
 
 // Old histories schedule their original payload. An old outstanding activity
 // without a binding fails closed at the new dispatcher; completed activities
 // still replay unchanged. No binding is reconstructed from pod-authored data.
 func (r *runJournal) remoteLaunchBinding(ctx workflow.Context, stage string, review bool) *launchreceipt.Binding {
+	return r.launchBinding(ctx, stage, review, remoteLaunchReceiptChange)
+}
+
+func (r *runJournal) localLaunchBinding(ctx workflow.Context, stage string, review bool) *launchreceipt.Binding {
+	return r.launchBinding(ctx, stage, review, localLaunchReceiptChange)
+}
+
+func (r *runJournal) launchBinding(ctx workflow.Context, stage string, review bool, change string) *launchreceipt.Binding {
 	kind := journal.EventStageStarted
 	if review {
 		kind = journal.EventReviewerStarted
@@ -29,7 +38,7 @@ func (r *runJournal) remoteLaunchBinding(ctx workflow.Context, stage string, rev
 		seq := uint64(i + 1)
 		// Gate each durable start independently: a legacy dispatch keeps its
 		// payload, while a later retry/new visit can acquire the new binding.
-		changeID := fmt.Sprintf("%s/%s/%d", remoteLaunchReceiptChange, stage, seq)
+		changeID := fmt.Sprintf("%s/%s/%d", change, stage, seq)
 		if workflow.GetVersion(ctx, changeID, workflow.DefaultVersion, 1) == workflow.DefaultVersion {
 			return nil
 		}

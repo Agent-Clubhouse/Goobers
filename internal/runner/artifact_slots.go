@@ -1,20 +1,25 @@
 package runner
 
 import (
+	"context"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 )
 
 func (tf *taskFrame) recordTaskStarted(attempt int, class journal.AttemptClass) error {
 	started := taskStartedEvent(tf.t, attempt, class)
 	if len(tf.t.ArtifactSlots) > 0 {
-		tf.artifactVisit = tf.jr.Seq() + 1
 		if started.Runner == nil {
 			started.Runner = map[string]any{}
 		}
-		started.Runner["artifactVisit"] = tf.artifactVisit
+		started.Runner["artifactVisit"] = uint64(0)
 	}
-	return tf.jr.Append(started)
+	seq, err := tf.jr.AppendWithSeq(started)
+	tf.startedSeq = seq
+	tf.artifactVisit = seq
+	return err
 }
 
 func (tf taskFrame) pinPublicationAuthority(env *apiv1.InvocationEnvelope, attempt int) {
@@ -31,4 +36,9 @@ func (tf taskFrame) pinPublicationAuthority(env *apiv1.InvocationEnvelope, attem
 		parent := apiv1.StagePlatformAuthority(*env, "result")
 		env.ParentPlatformPolicy = &parent
 	}
+}
+
+func (r *Runner) startTaskAttemptHeartbeat(ctx context.Context, tf taskFrame, branch, attempt int, class journal.AttemptClass) (context.Context, stageHeartbeat) {
+	ctx = launchreceipt.WithJournalStart(ctx, tf.jr, journal.Event{Type: journal.EventStageStarted, Stage: tf.t.Name, Branch: branch, Attempt: attempt, AttemptClass: class}, tf.startedSeq)
+	return r.startStageHeartbeat(ctx, tf.jr, tf.t.Name, attempt, class)
 }

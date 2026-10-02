@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/launchreceipt"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -1373,7 +1374,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		pf(stderr, "error: append harness validation warnings: %v\n", err)
 		return 2
 	}
-	warnings := report.CLIWarnings()
+	warnings := localExecutionWarnings(cfg, report.CLIWarnings())
 	showManualWorkflowDetails := !supportsWatch || showAllWorkflows
 	textWorkflows, hiddenManualWorkflows := statusTextWorkflows(set.Workflows, showManualWorkflowDetails, *workflowFilter)
 	textWarnings := statusTextWarnings(warnings, set.Workflows, hiddenManualWorkflows, showManualWorkflowDetails, *workflowFilter)
@@ -2191,4 +2192,11 @@ func reportUpdateCheck(instanceRoot string, stdout io.Writer) {
 	}
 	pf(stdout, "update check: %s (%s channel, checked %s ago)\n",
 		selfupdate.Notice(result, selfupdate.Supervised(instanceRoot)), result.Channel, age)
+}
+
+func localExecutionWarnings(cfg *instance.Config, warnings []validate.CodedWarning) []validate.CodedWarning {
+	if cfg.HasControllerSigningKey() {
+		warnings = append(warnings, validate.CodedWarning{Severity: validate.Warning, Scope: "local/self execution", Explanation: launchreceipt.ErrControllerKey.Error()})
+	}
+	return warnings
 }
