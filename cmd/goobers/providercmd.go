@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/internal/pushrejection"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
@@ -441,9 +442,9 @@ const (
 	errorCodePolicyNotMet = "provider_policy_not_met"
 	// errorCodeBranchPolicyProtected is a direct push (or force-push)
 	// refused because the target branch is protected by an enabled ADO
-	// branch policy (policyProtectedPushError, from git's own TF402455 /
-	// GitRefUpdateRejectedByPolicyException rejection of the raw `git
-	// push`, ADO-N26). Distinct from errorCodePolicyNotMet, which is the
+	// branch policy (pushrejection.PolicyProtectedError, from git's own
+	// TF402455 / GitRefUpdateRejectedByPolicyException rejection of the raw
+	// `git push`, ADO-N26). Distinct from errorCodePolicyNotMet, which is the
 	// REST completion API's own 403 refusal of a pull request that is
 	// already open — this is the git-protocol refusal of a push that never
 	// became a PR at all. Never an auth failure and never retried: retrying
@@ -452,8 +453,9 @@ const (
 	// errorCodeWorkflowPermissionDenied is a push (or force-push) GitHub
 	// refused because it creates or updates a .github/workflows/ file and
 	// the pushing App installation lacks the `workflows` permission
-	// (workflowPermissionPushError, #5502). Never an auth failure and never
-	// retried: only granting the permission (or a manual push) clears it.
+	// (pushrejection.WorkflowPermissionError, #5502). Never an auth failure
+	// and never retried: only granting the permission (or a manual push)
+	// clears it.
 	errorCodeWorkflowPermissionDenied = "github_workflow_permission_denied"
 	// errorCodeProvider is the fallback for a provider-originated failure
 	// that doesn't classify into any of the above (e.g. a non-401/403/5xx
@@ -522,11 +524,11 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	// push's underlying git failure carries no HTTP status a credential
 	// classifier could recognize, but its message text alone must never be
 	// misread as a credential problem either.
-	var policyPush *policyProtectedPushError
+	var policyPush *pushrejection.PolicyProtectedError
 	if errors.As(err, &policyPush) {
 		return errorCodeBranchPolicyProtected, false, nil
 	}
-	var workflowPush *workflowPermissionPushError
+	var workflowPush *pushrejection.WorkflowPermissionError
 	if errors.As(err, &workflowPush) {
 		return errorCodeWorkflowPermissionDenied, false, nil
 	}

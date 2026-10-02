@@ -127,7 +127,7 @@ func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, s
 	overflowRoot := recoveryOverflowRoot(layout)
 	promoted := false
 	visit := func(repositories []string) error {
-		repository, err := recoveryOverflowSource(ctx, repositories, record)
+		repository, err := recovery.OverflowSource(ctx, repositories, record)
 		if err != nil || repository == "" {
 			return err
 		}
@@ -141,12 +141,12 @@ func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, s
 			// removing the overflow record, and a renewal has since moved the
 			// overflow deadline, so the retry no longer matches the bundle's
 			// published deadline. Carry the move onto that bundle instead.
-			publishedPath, err = promotedOverflowBundle(ctx, root, record)
+			publishedPath, err = recovery.PromotedOverflowBundle(ctx, root, record)
 		}
 		if err != nil {
 			return err
 		}
-		if err := carryOverflowDeadline(ctx, entry.RecordPath, publishedPath, record.RetainUntil, policy.MaxArchiveBytesEffective()); err != nil {
+		if err := recovery.CarryOverflowDeadline(ctx, entry.RecordPath, publishedPath, record.RetainUntil, policy.MaxArchiveBytesEffective()); err != nil {
 			return err
 		}
 		if err := recovery.DeleteOverflowEntry(overflowRoot, record); err != nil {
@@ -165,60 +165,6 @@ func promoteRecoveryOverflowEntry(ctx context.Context, layout instance.Layout, s
 		}
 	}
 	return false, fmt.Errorf("recovery overflow promotion requires an existing managed repository")
-}
-
-// recoveryOverflowSource picks the managed repository that still holds the
-// pin. A record may have been captured into the mirror while a pinned clone
-// never saw it, so "the first repository" is not good enough.
-func recoveryOverflowSource(ctx context.Context, repositories []string, record recovery.Record) (string, error) {
-	for _, repository := range repositories {
-		if recovery.HasSnapshotRef(ctx, repository, record) {
-			return repository, nil
-		}
-	}
-	return "", nil
-}
-
-// carryOverflowDeadline makes the promoted bundle's effective deadline at
-// least the overflow record's (#5403). It re-reads the overflow record after
-// the bundle is published rather than trusting the copy promotion started
-// from: a terminal renewal that moved it in between must not be lost when the
-// overflow record is deleted. Extension is forward-only, so a bundle that
-// already carries a later deadline is left as it is.
-func carryOverflowDeadline(ctx context.Context, overflowPath, bundlePath string, deadline time.Time, maxArchiveBytes int64) error {
-	if current, err := recovery.ReadOverflowRecord(overflowPath); err == nil && current.RetainUntil.After(deadline) {
-		deadline = current.RetainUntil
-	}
-	published, err := recovery.ReadRetainedRecord(bundlePath)
-	if err != nil {
-		return err
-	}
-	if !deadline.After(published.RetainUntil) {
-		return nil
-	}
-	_, err = recovery.RenewRetention(ctx, bundlePath, deadline, maxArchiveBytes)
-	return err
-}
-
-// promotedOverflowBundle finds the bundle an interrupted promotion already
-// published for record: the same identity in every field but the deadline,
-// which is the one field a renewal may have moved since.
-func promotedOverflowBundle(ctx context.Context, root string, record recovery.Record) (string, error) {
-	entries, _, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
-	if err != nil {
-		return "", err
-	}
-	want := record
-	want.RetainUntil = time.Time{}
-	for _, entry := range entries {
-		got := entry.Record
-		got.RetainUntil = time.Time{}
-		got.ArchiveDigest, got.ArchiveBytes, got.ArchiveFormat = "", 0, ""
-		if got == want {
-			return entry.RecordPath, nil
-		}
-	}
-	return "", recovery.ErrRecordConflict
 }
 
 // readRecoveryEntryRecord reads the current record for an entry in EITHER
@@ -268,7 +214,7 @@ func importRecoveryObjects(ctx context.Context, layout instance.Layout, cfg *ins
 	}
 	imported := false
 	found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
-		source, err := recoveryOverflowSource(ctx, repositories, record)
+		source, err := recovery.OverflowSource(ctx, repositories, record)
 		if err != nil || source == "" {
 			return err
 		}

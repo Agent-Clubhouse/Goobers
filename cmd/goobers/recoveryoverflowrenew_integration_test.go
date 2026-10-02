@@ -71,7 +71,7 @@ func TestIntegrationTerminalOverflowRenewalSkipsAnUnresolvablePin(t *testing.T) 
 	}
 	skipped := false
 	for _, event := range events {
-		if event.Error != nil && event.Error.Code == "recovery_overflow_renewal_skipped" && strings.Contains(event.Error.Message, captured.Ref) {
+		if event.Error != nil && event.Error.Code == recovery.OverflowRenewalSkippedCode && strings.Contains(event.Error.Message, captured.Ref) {
 			skipped = true
 		}
 	}

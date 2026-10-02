@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -26,29 +24,12 @@ import (
 // is a no-op, never a refusal; an entry no scan can interpret carries no run
 // identity, so it is not this run's and skipping it renews nothing.
 //
-// Overflow records are read separately (renewableOverflowEntries): renewal
+// Overflow records are read separately (recovery.ReadOverflowForRun): renewal
 // here rebinds a record to its archive (recovery.RenewRetention verifies the
 // bundle's size and digest), and an overflow entry holds a pinned ref instead
 // of an archive, so it is renewed by recovery.RenewOverflowRetention instead.
 func renewableRecoveryEntries(ctx context.Context, root, runID string) ([]recovery.InventoryEntry, error) {
 	entries, _, err := recovery.ReadInventoryTolerant(ctx, root, recovery.MaxInventoryEntries)
-	if err != nil {
-		return nil, err
-	}
-	var matching []recovery.InventoryEntry
-	for _, entry := range entries {
-		if entry.Record.RunID == runID {
-			matching = append(matching, entry)
-		}
-	}
-	return matching, nil
-}
-
-// renewableOverflowEntries finds this run's overflow-tier records. Like the
-// inventory read above it is tolerant: an entry no scan can interpret carries
-// no run identity, so it is not this run's.
-func renewableOverflowEntries(ctx context.Context, layout instance.Layout, runID string) ([]recovery.InventoryEntry, error) {
-	entries, _, err := readConfiguredRecoveryOverflow(ctx, layout)
 	if err != nil {
 		return nil, err
 	}
@@ -156,9 +137,9 @@ func renewTerminalRecovery(layout instance.Layout, manager *worktree.Manager, ru
 // run's terminal finalization: the failure is journaled and the run's
 // overflow records, if any, keep their capture-time deadline.
 func terminalOverflowEntries(ctx context.Context, layout instance.Layout, log recoveryCleanupJournal, runID string) []recovery.InventoryEntry {
-	overflow, err := renewableOverflowEntries(ctx, layout, runID)
+	overflow, err := recovery.ReadOverflowForRun(ctx, recoveryOverflowRoot(layout), runID)
 	if err != nil {
-		journalOverflowRenewalSkipped(log, runID, "", fmt.Sprintf("overflow tier unreadable: %v", err))
+		recovery.JournalOverflowRenewalSkipped(log, runID, "", fmt.Sprintf("overflow tier unreadable: %v", err))
 		return nil
 	}
 	return overflow
@@ -179,70 +160,29 @@ func terminalOverflowEntries(ctx context.Context, layout instance.Layout, log re
 // write or journal a verified extension is returned.
 func renewTerminalOverflow(ctx context.Context, layout instance.Layout, manager *worktree.Manager, log recoveryCleanupJournal, entries []recovery.InventoryEntry, deadline time.Time) error {
 	cfg, cfgErr := instance.LoadConfig(layout.ConfigFile())
-	for _, entry := range entries {
-		if !entry.Record.RetainUntil.Before(deadline) {
-			continue
-		}
-		var renewed *recovery.Record
-		skipped := "no managed repository manager"
+	return recovery.RenewOverflowEntries(entries, deadline, func(entry recovery.InventoryEntry) (*recovery.Record, string, error) {
 		switch {
 		case cfgErr != nil:
-			skipped = fmt.Sprintf("instance configuration unavailable: %v", cfgErr)
+			return nil, fmt.Sprintf("instance configuration unavailable: %v", cfgErr), nil
 		case manager != nil:
-			var err error
-			renewed, skipped, err = renewOverflowEntry(ctx, cfg, manager, entry, deadline)
-			if err != nil {
-				return err
-			}
+			return renewOverflowEntry(ctx, cfg, manager, entry, deadline)
 		}
-		if renewed == nil {
-			if skipped != "" {
-				journalOverflowRenewalSkipped(log, entry.Record.RunID, entry.Record.Ref, skipped)
-			}
-			continue
-		}
-		event, err := recovery.RetainedEvent(*renewed)
-		if err != nil {
-			return err
-		}
-		// The same tier marker the capture acknowledgement carries, so the
-		// renewal is never mistaken for bundle-durable work.
-		event.Runner["recoveryOverflow"] = true
-		if err := log.Append(event); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil, "no managed repository manager", nil
+	}, log)
 }
 
 // renewOverflowEntry renews one overflow entry in whichever managed copy
-// still pins it, under the same per-repository lock promotion holds. A nil
-// record with a nil error means nothing was renewed; skipped then says why,
-// and is empty when the record was promoted or retired meanwhile, which is
-// not a skip (the later inventory read renews a promoted bundle).
+// still pins it, under the same per-repository lock promotion holds; see
+// recovery.RenewOverflowInRepositories for what a nil record means.
 func renewOverflowEntry(ctx context.Context, cfg *instance.Config, manager *worktree.Manager, entry recovery.InventoryEntry, deadline time.Time) (renewed *recovery.Record, skipped string, err error) {
 	url, err := recoveryRetentionCloneURL(cfg, entry.Record.RepositoryKey)
 	if err != nil {
 		return nil, fmt.Sprintf("recovery repository unresolved: %v", err), nil
 	}
-	skipped = "no managed repository holds the snapshot ref"
+	skipped = recovery.OverflowSkipNoSnapshotRef
 	var renewErr error
 	found, err := manager.WithRecoveryRepositories(ctx, url, func(repositories []string) error {
-		source, _ := recoveryOverflowSource(ctx, repositories, entry.Record)
-		if source == "" {
-			return nil
-		}
-		record, err := recovery.RenewOverflowRetention(ctx, source, entry.RecordPath, deadline)
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-			skipped = ""
-		case errors.Is(err, recovery.ErrOverflowRefUnresolved):
-			// Already the default skip reason.
-		case err != nil:
-			renewErr = err
-		default:
-			renewed, skipped = &record, ""
-		}
+		renewed, skipped, renewErr = recovery.RenewOverflowInRepositories(ctx, repositories, entry, deadline)
 		return nil
 	})
 	if renewErr != nil {
@@ -255,20 +195,4 @@ func renewOverflowEntry(ctx context.Context, cfg *instance.Config, manager *work
 		return nil, "no managed repository exists", nil
 	}
 	return renewed, skipped, nil
-}
-
-// journalOverflowRenewalSkipped records why an overflow record kept its
-// capture-time deadline at terminal finalization. Best-effort by
-// construction, like journalRecoveryPolicyFallback: the explanation must not
-// become the reason finalization is deferred.
-func journalOverflowRenewalSkipped(log recoveryCleanupJournal, runID, ref, reason string) {
-	subject := "run " + runID
-	if ref != "" {
-		subject += " ref " + ref
-	}
-	message := fmt.Sprintf("recovery overflow record for %s not renewed at terminal finalization: %s", subject, reason)
-	_ = log.Append(journal.Event{
-		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "recovery_overflow_renewal_skipped", Message: message},
-	})
 }
