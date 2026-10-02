@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/durability"
@@ -122,6 +123,54 @@ func publishOverflowRecord(path string, record Record) (Record, error) {
 		return Record{}, err
 	}
 	return record, nil
+}
+
+// ErrOverflowRefUnresolved reports that an overflow record's pinned ref no
+// longer resolves to its recorded snapshot in the repository it was checked
+// against. It is the overflow tier's equivalent of an archive that no longer
+// matches its binding: there is nothing restorable whose lifetime a renewal
+// could extend.
+var ErrOverflowRefUnresolved = errors.New("recovery overflow ref does not resolve to its snapshot")
+
+// RenewOverflowRetention is RenewRetention for the overflow tier (#5403). A
+// retained record is renewed only after its archive is verified against its
+// binding; an overflow record has no archive, so the equivalent check is that
+// repository still pins the exact snapshot the record names. The deadline is
+// then extended the same way — forward only, derived by the caller from a
+// durable terminal event — so a run whose capture overflowed carries the same
+// retainUntil after finalization as one whose capture was bundled.
+//
+// The overflow record itself is what every reader of this tier consults
+// (ReadOverflow, promotion, retirement, restore), so the extension is written
+// into it rather than into a sidecar no overflow reader overlays; this is the
+// forward-only move publishOverflowRecord already permits. A record that has
+// been promoted or retired meanwhile is reported as os.ErrNotExist and never
+// recreated. Success is not journal acknowledgement; the caller appends it.
+func RenewOverflowRetention(ctx context.Context, repository, path string, deadline time.Time) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+	if deadline.IsZero() {
+		return Record{}, fmt.Errorf("empty recovery renewal deadline")
+	}
+	record, err := ReadOverflowRecord(path)
+	if err != nil {
+		return Record{}, err
+	}
+	if filepath.Base(filepath.Dir(path)) != inventoryDirectoryName(record) {
+		return Record{}, ErrRecordConflict
+	}
+	if !HasSnapshotRef(ctx, repository, record) {
+		return Record{}, ErrOverflowRefUnresolved
+	}
+	if !deadline.After(record.RetainUntil) {
+		return record, nil
+	}
+	record.RetainUntil = deadline.UTC()
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+	return publishOverflowRecord(path, record)
 }
 
 // encodeOverflowRecord serialises the SAME Record schema a retained record
