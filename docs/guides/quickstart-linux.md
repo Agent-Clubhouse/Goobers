@@ -116,6 +116,11 @@ repository by claiming an issue, pushing a branch, opening a PR, and updating
 the issue. Use a provisioned test host and a disposable issue/repository where
 those changes are expected.
 
+There is no separate CI echo workflow for this path: the former opt-in GHCP echo
+drift gate was removed (#6345) because it needed a provisioned Copilot token on
+a public repository and never ran. Real Copilot stages exercise this path, so
+this live-smoke is the check for Copilot CLI authentication on Linux.
+
 ### Prerequisites
 
 | Component | Live-smoke requirement |
