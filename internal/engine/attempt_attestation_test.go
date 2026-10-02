@@ -155,6 +155,7 @@ func assertAttestationArtifacts(t *testing.T, dir string, expected map[string]la
 
 func TestStageAttemptAttestationRejectsUnassembledProjection(t *testing.T) {
 	var forged launchreceipt.Projection
+	//nolint:staticcheck // Security regression: generic JSON cannot populate sealed evidence.
 	if err := json.Unmarshal([]byte(`{"binding":{"runId":"fake"},"raw":"forged","fidelity":"authenticated"}`), &forged); err != nil {
 		t.Fatal(err)
 	}
