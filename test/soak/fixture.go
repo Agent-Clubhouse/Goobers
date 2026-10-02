@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // The native fixture subcommand is small real work, never a pressure injector.
@@ -88,7 +89,7 @@ func churnFixture(ctx context.Context) (err error) {
 }
 
 func fixtureGit(ctx context.Context, dir string, stdin *os.File, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := testgit.CommandContext(ctx, args...)
 	cmd.Dir = dir
 	if stdin != nil {
 		cmd.Stdin = stdin
@@ -96,6 +97,7 @@ func fixtureGit(ctx context.Context, dir string, stdin *os.File, args ...string)
 	cmd.WaitDelay = time.Second
 	// Exclude ambient repositories, templates, hooks, signing, filters and
 	// command-line configuration. Only this newly created repository is used.
+	cmd.Env = nil
 	for _, value := range cleanEnv() {
 		if !strings.HasPrefix(value, "GIT_") {
 			cmd.Env = append(cmd.Env, value)
