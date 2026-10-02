@@ -156,7 +156,8 @@ func instanceWireFixture(warning validate.CodedWarning, startedAt, finishedAt ti
 			Tier: "admission-stopped", Path: "/instances/fixture", FreeBytes: 1 << 30, TotalBytes: 100 << 30,
 			WarningFloorBytes: 10 << 30, CriticalFloorBytes: 5 << 30, MeasuredAt: startedAt,
 		},
-		TelemetryRetention: telemetryRetentionWireFixture(startedAt, finishedAt),
+		TelemetryRetention:      telemetryRetentionWireFixture(startedAt, finishedAt),
+		TelemetryExporterHealth: telemetryExporterHealthWireFixture(startedAt, finishedAt),
 		RecoveryInventory: &readservice.RecoveryInventoryStatus{
 			State: readservice.RecoveryInventoryWarning, Used: 104, Limit: 128, Unreadable: 2, Overflow: 0,
 			HighWaterPercent:    readservice.RecoveryInventoryHighWaterPercent,
@@ -170,6 +171,22 @@ func telemetryRetentionWireFixture(startedAt, finishedAt time.Time) *readservice
 	return &readservice.TelemetryRetentionStatus{
 		Enabled: true, Window: "90d", MaxRuns: 500, FirstEnable: "gracePeriod",
 		EnforceAt: &finishedAt, LastPassAt: &startedAt, LastPassMode: "dry-run", CandidateCount: 7,
+	}
+}
+
+func telemetryExporterHealthWireFixture(startedAt, finishedAt time.Time) *readservice.TelemetryExporterHealthStatus {
+	return &readservice.TelemetryExporterHealthStatus{
+		Enabled: true, Mode: "otlp",
+		Trace: readservice.TelemetryExporterSignalState{
+			Configured: true, State: "healthy", LastSuccessAt: &finishedAt, LastFailureAt: &startedAt,
+			LastFailureReason: "collector_unavailable", LastTransitionAt: &finishedAt,
+			ConsecutiveFailures: 0, FailureTransitions: 1, RecoveryTransitions: 1, SuppressedFailureEvents: 2,
+		},
+		Metric: readservice.TelemetryExporterSignalState{
+			Configured: true, State: "unhealthy", LastFailureAt: &finishedAt,
+			LastFailureReason: "signal_unimplemented", LastTransitionAt: &finishedAt,
+			ConsecutiveFailures: 3, FailureTransitions: 1, SuppressedFailureEvents: 2,
+		},
 	}
 }
 
@@ -423,6 +440,7 @@ func newWireFixtures() wireFixtures {
 				Channel:        "stable",
 				CheckedAt:      timestamp,
 			},
+			TelemetryExporterHealth: telemetryExporterHealthWireFixture(startedAt, finishedAt),
 		},
 		Instance: instanceWireFixture(warning, startedAt, finishedAt),
 		PortalConfig: readservice.PortalConfig{

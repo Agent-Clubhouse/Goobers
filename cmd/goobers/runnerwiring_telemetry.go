@@ -30,6 +30,7 @@ func buildTelemetryClient(
 	registry *journal.RegistryScrubber,
 	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
+	exporterHealth *telemetry.ExporterHealth,
 	// Nil keeps one-shot setup immediate; the daemon supplies its readiness signal.
 	replayStart <-chan struct{},
 ) (*telemetry.Client, error) {
@@ -42,6 +43,7 @@ func buildTelemetryClient(
 		Batch:                   true,
 		JournalRoot:             l.Root,
 		AzureMonitorReplayStart: replayStart,
+		ExporterHealth:          exporterHealth,
 	}
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
 	// Carry it on every signal as a resource attribute so operators can correlate
