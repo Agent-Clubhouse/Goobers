@@ -500,11 +500,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	l := instance.NewLayout(root)
 	pf(stdout, "startup: validating instance configuration\n")
-	if err := instance.RecoverConfigTransaction(l); err != nil {
-		pf(stderr, "error: recover configuration: %v\n", err)
-		return 2
-	}
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := prepareDaemonStartupRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
