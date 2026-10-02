@@ -20,17 +20,13 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+type podRecoveryTrace func(phase string, elapsed time.Duration, err error)
+
 // publishPodRecovery belongs to the supervisor, not the stage subprocess.
 // It uses the existing parent bearer and never exports additional authority.
 // Success acknowledges host custody of both dirty and committed work; it does
 // not make either eligible as a successful cross-stage workspace delta.
-func publishPodRecovery(ctx context.Context, repository string) error {
-	return publishPodRecoveryWithTrace(ctx, repository, nil)
-}
-
-type podRecoveryTrace func(phase string, elapsed time.Duration, err error)
-
-func publishPodRecoveryWithTrace(ctx context.Context, repository string, trace podRecoveryTrace) error {
+func publishPodRecovery(ctx context.Context, repository string, trace podRecoveryTrace) error {
 	if !stageWorkspaceIsWritableRepo() {
 		return nil
 	}
