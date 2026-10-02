@@ -9,8 +9,41 @@ import (
 	"go.temporal.io/sdk/converter"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/internal/temporaldial"
 )
+
+// ResolveTemporalOptions applies instance transport and payload settings to the
+// preflight. Explicit targets take precedence; without an instance, empty targets
+// remain empty so the Temporal check stays optional. Construction performs no key
+// operation or Temporal dial.
+func ResolveTemporalOptions(root string, opts Options) (Options, error) {
+	cfg := &instance.Config{}
+	if root != "" {
+		var err error
+		cfg, err = instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+		if err != nil {
+			return Options{}, err
+		}
+	}
+	dc, err := temporalcodec.DataConverter(cfg)
+	if err != nil {
+		return Options{}, fmt.Errorf("temporal payload codec: %w", err)
+	}
+	engineConfig := cfg.EffectiveEngineConfig()
+	opts.TemporalTLS = engineConfig.TLS
+	opts.TemporalDataConverter = dc
+	if root != "" {
+		if opts.TemporalHostPort == "" {
+			opts.TemporalHostPort = engineConfig.HostPort
+		}
+		if opts.TemporalNamespace == "" {
+			opts.TemporalNamespace = engineConfig.Namespace
+		}
+	}
+	return opts, nil
+}
 
 // temporalNamespaceDescriber is the narrow slice of client.Client this
 // package needs — just enough to check namespace existence, so a test can

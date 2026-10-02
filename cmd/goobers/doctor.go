@@ -19,7 +19,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/k8spreflight"
 	"github.com/goobers/goobers/internal/secretstore"
-	"github.com/goobers/goobers/internal/temporalcodec"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -232,19 +231,12 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: --instance applies to --k8s only\n")
 		return 2
 	}
-	if *codecMode {
+	if !*k8sMode {
 		if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
 		}
-		return runDoctorTemporalCodec(fs.Arg(0), *reportFormat, stdout, stderr)
-	}
-	if *repoMode || *harnessAuthMode || *avMode {
-		if fs.NArg() > 1 {
-			fs.Usage()
-			return 2
-		}
-		return runDoctorInstanceMode(fs.Arg(0), *reportFormat, *workRoot, *repoMode, *harnessAuthMode, *avMode, stdout, stderr)
+		return runDoctorInstanceMode(fs.Arg(0), *reportFormat, *workRoot, *repoMode, *harnessAuthMode, *avMode, *codecMode, stdout, stderr)
 	}
 
 	if fs.NArg() != 0 {
@@ -258,30 +250,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	cfg := &instance.Config{}
-	if *instanceRoot != "" {
-		cfg, err = instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-	}
-	dc, err := temporalcodec.DataConverter(cfg)
-	if err != nil {
-		pf(stderr, "error: temporal payload codec: %v\n", err)
-		return 2
-	}
-	engineConfig := cfg.EffectiveEngineConfig()
-	if *instanceRoot != "" {
-		if *temporalHostPort == "" {
-			*temporalHostPort = engineConfig.HostPort
-		}
-		if *temporalNamespace == "" {
-			*temporalNamespace = engineConfig.Namespace
-		}
-	}
-	report := k8spreflight.Run(context.Background(), client, k8spreflight.Options{
-		TemporalTLS: engineConfig.TLS, TemporalDataConverter: dc,
+	opts, err := k8spreflight.ResolveTemporalOptions(*instanceRoot, k8spreflight.Options{
 		Checks:            checkIDs,
 		PSANamespaces:     splitCommaList(*psaNamespaces),
 		PSAServiceAccount: *psaAccount,
@@ -298,6 +267,11 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		TemporalNamespace: *temporalNamespace,
 		Timeout:           *timeout,
 	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	report := k8spreflight.Run(context.Background(), client, opts)
 	report.Target = host
 
 	if *reportFormat == "json" {
@@ -350,11 +324,13 @@ var newDoctorGitHubProvider = func(token string) providers.PolicyProvider {
 	return providers.NewGitHubProvider(token)
 }
 
-func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnessAuthMode, avMode bool, stdout, stderr io.Writer) int {
+func runDoctorInstanceMode(root, reportFormat, workRoot string, repoMode, harnessAuthMode, avMode, codecMode bool, stdout, stderr io.Writer) int {
 	if root == "" {
 		root = "."
 	}
 	switch {
+	case codecMode:
+		return runDoctorTemporalCodec(root, reportFormat, stdout, stderr)
 	case avMode:
 		return runDoctorAVExclusions(root, workRoot, reportFormat, stdout, stderr, realAVExclusionDeps())
 	case harnessAuthMode:
