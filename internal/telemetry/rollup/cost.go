@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math/big"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/intsplit"
 )
 
 const (
@@ -989,34 +990,9 @@ func splitMeasures(measures costMeasures, targets []string, weights map[string]i
 }
 
 func splitInt64(value int64, targets []string, weights map[string]int64) map[string]int64 {
-	out := make(map[string]int64, len(targets))
-	totalWeight := weightTotal(targets, weights)
-	type remainder struct {
-		target string
-		value  *big.Int
-	}
-	remainders := make([]remainder, 0, len(targets))
-	var assigned int64
-	divisor := big.NewInt(totalWeight)
-	for _, target := range targets {
-		product := new(big.Int).Mul(big.NewInt(value), big.NewInt(targetWeight(target, targets, weights)))
-		quotient, rem := new(big.Int), new(big.Int)
-		quotient.QuoRem(product, divisor, rem)
-		share := quotient.Int64()
-		out[target] = share
-		assigned += share
-		remainders = append(remainders, remainder{target: target, value: rem})
-	}
-	sort.SliceStable(remainders, func(i, j int) bool {
-		if cmp := remainders[i].value.Cmp(remainders[j].value); cmp != 0 {
-			return cmp > 0
-		}
-		return remainders[i].target < remainders[j].target
+	return intsplit.LargestRemainder(value, targets, func(target string) int64 {
+		return targetWeight(target, targets, weights)
 	})
-	for i := int64(0); i < value-assigned; i++ {
-		out[remainders[i%int64(len(remainders))].target]++
-	}
-	return out
 }
 
 func weightTotal(targets []string, weights map[string]int64) int64 {
