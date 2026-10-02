@@ -110,9 +110,7 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 		return err
 	}
 	if !terminal {
-		if err := worktree.VerifyCleanupTargetPreservedByGit(ctx, target); err == nil {
-			return nil
-		}
+		return nil
 	}
 	// A checkout that never reached a commit and holds no tracked, staged, or
 	// non-ignored untracked content has nothing a snapshot could capture, in

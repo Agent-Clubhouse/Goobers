@@ -74,43 +74,6 @@ func VerifyCleanupTargetUnchanged(ctx context.Context, target CleanupTarget) err
 	return nil
 }
 
-// VerifyCleanupTargetPreservedByGit proves that removing an intermediate
-// worktree cannot discard its current state. A clean unchanged checkout is
-// disposable, and a clean advanced checkout is safe when HEAD is anchored by
-// its local branch, which survives git worktree removal.
-func VerifyCleanupTargetPreservedByGit(ctx context.Context, target CleanupTarget) error {
-	status, err := runCleanupGitOutput(ctx, target.Path, "inspect cleanup status", "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil {
-		return fmt.Errorf("worktree cleanup cannot inspect working-tree state: %w", err)
-	}
-	if status != "" {
-		return fmt.Errorf("worktree cleanup target contains unretained changes")
-	}
-	head, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup HEAD", "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		return fmt.Errorf("worktree cleanup cannot resolve HEAD: %w", err)
-	}
-	startRef := strings.TrimSpace(target.StartRef)
-	if startRef != "" {
-		start, startErr := runCleanupGitOutput(ctx, target.Path, "resolve cleanup start", "rev-parse", "--verify", startRef+"^{commit}")
-		if startErr == nil && head == start {
-			return nil
-		}
-	}
-	branch, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup branch", "symbolic-ref", "--quiet", "HEAD")
-	if err != nil || !strings.HasPrefix(branch, "refs/heads/") {
-		return fmt.Errorf("worktree cleanup target advanced without a durable local branch")
-	}
-	branchHead, err := runCleanupGitOutput(ctx, target.Path, "resolve cleanup branch HEAD", "rev-parse", "--verify", branch+"^{commit}")
-	if err != nil {
-		return fmt.Errorf("worktree cleanup cannot resolve local branch: %w", err)
-	}
-	if branchHead != head {
-		return fmt.Errorf("worktree cleanup HEAD is not anchored by its local branch")
-	}
-	return nil
-}
-
 // VerifyCleanupTargetEmptyWithoutHEAD proves that a checkout never reached a
 // commit and has no tracked, staged, or untracked content to recover.
 func VerifyCleanupTargetEmptyWithoutHEAD(ctx context.Context, target CleanupTarget) error {
