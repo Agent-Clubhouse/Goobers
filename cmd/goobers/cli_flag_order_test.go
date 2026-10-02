@@ -61,6 +61,71 @@ func TestParseOptionalRoot(t *testing.T) {
 	}
 }
 
+func TestParseRequiredArgOptionalRoot(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantArg    string
+		wantRoot   string
+		wantOK     bool
+		wantOutput string
+	}{
+		{
+			name:       "missing required arg",
+			wantOutput: "command-specific usage\n",
+		},
+		{
+			name:     "required only",
+			args:     []string{"required"},
+			wantArg:  "required",
+			wantRoot: ".",
+			wantOK:   true,
+		},
+		{
+			name:     "required plus root",
+			args:     []string{"required", "instance"},
+			wantArg:  "required",
+			wantRoot: "instance",
+			wantOK:   true,
+		},
+		{
+			name:       "too many args",
+			args:       []string{"required", "instance", "extra"},
+			wantOutput: "command-specific usage\n",
+		},
+		{
+			name:       "parse error",
+			args:       []string{"--unknown"},
+			wantOutput: "flag provided but not defined: -unknown\ncommand-specific usage\n",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var output strings.Builder
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			fs.SetOutput(&output)
+			fs.Usage = func() {
+				_, _ = io.WriteString(&output, "command-specific usage\n")
+			}
+
+			arg, root, ok := parseRequiredArgOptionalRoot(fs, testCase.args)
+
+			if arg != testCase.wantArg {
+				t.Errorf("arg = %q, want %q", arg, testCase.wantArg)
+			}
+			if root != testCase.wantRoot {
+				t.Errorf("root = %q, want %q", root, testCase.wantRoot)
+			}
+			if ok != testCase.wantOK {
+				t.Errorf("ok = %t, want %t", ok, testCase.wantOK)
+			}
+			if got := output.String(); got != testCase.wantOutput {
+				t.Errorf("output = %q, want %q", got, testCase.wantOutput)
+			}
+		})
+	}
+}
+
 func TestCommandsExplainFlagsAfterPath(t *testing.T) {
 	tests := []struct {
 		name string

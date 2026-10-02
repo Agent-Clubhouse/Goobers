@@ -257,20 +257,13 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	provider := fs.String("provider", "", "provider owning the claim")
 	force := fs.Bool("force", false, "release a claim held by a non-terminal run")
 	fs.Usage = helpUsage(stderr, "claims release")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		fs.Usage()
+	itemID, root, ok := parseRequiredArgOptionalRoot(fs, args)
+	if !ok {
 		return 2
 	}
 	if (*gaggle == "") != (*provider == "") {
 		pf(stderr, "error: --gaggle and --provider must be supplied together\n")
 		return 2
-	}
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 
 	if err := prepareManualRoot(instance.NewLayout(root), stderr); err != nil {
@@ -291,7 +284,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	entry, code, message := selectClaimForRelease(previewResp.Entries, claimAdminRequest{
-		ItemID:   fs.Arg(0),
+		ItemID:   itemID,
 		Gaggle:   *gaggle,
 		Provider: *provider,
 	})
@@ -317,7 +310,7 @@ func runClaimsRelease(args []string, stdout, stderr io.Writer) int {
 	defer stopTelemetry()
 	resp, err := runClaimAdmin(root, claimAdminRequest{
 		Operation:         claimAdminOperationRelease,
-		ItemID:            fs.Arg(0),
+		ItemID:            itemID,
 		Gaggle:            *gaggle,
 		Provider:          *provider,
 		ExpectedRunID:     entry.RunID,
