@@ -254,6 +254,12 @@ _goobers_completion()
         reconcile-branches)
             flags+=" --delete --max --min-age --after"
             ;;
+        push-branch)
+            flags+=" --config-repo"
+            ;;
+        open-pr)
+            flags+=" --config-repo"
+            ;;
         set-milestone)
             flags+=" --item --milestone"
             ;;

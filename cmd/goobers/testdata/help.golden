@@ -754,7 +754,7 @@ Clone the instance CONFIG repository (the workflowSource repository) at
 its tracked ref into [dir] (default: the configRepoDir input, else
 "config-repo", relative to the stage workspace) and check out the run's
 branch there, so a stage can edit the config tree and push-branch/open-pr
-(input target: config-repo) can publish it. Requires the stage to declare
+(--config-repo) can publish it. Requires the stage to declare
 configrepo:write. The credential authenticates the clone through the git
 environment only; it is never written to .git/config.
 
