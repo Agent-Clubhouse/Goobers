@@ -201,13 +201,25 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 	if err != nil {
 		return errors.Join(recoveryErr, err)
 	}
+	// One owner index per root for this pass, so legacy-marker owner
+	// resolution lists each runs directory at most once (#6359).
+	ownersByRoot := make(map[string]*runOwnerIndex, len(runsByRoot))
+	for root, runsDir := range runsByRoot {
+		ownersByRoot[root] = newRunOwnerIndex(runsDir)
+	}
+	ownersFor := func(root string) *runOwnerIndex {
+		if owners, ok := ownersByRoot[root]; ok {
+			return owners
+		}
+		return newRunOwnerIndex(runsByRoot[root])
+	}
 	results, warnings, err := worktree.PruneRetained(ctx, managers, worktree.RetentionOptions{
 		Now:              now,
 		Delete:           !dryRun,
 		MaxRetainedBytes: cfg.MaxRetainedWorktreeBytes,
 		MaxAge:           maxAge,
 		IsTerminalFailure: func(root, worktreeID, ownerRunID string) (bool, error) {
-			phase, found, err := retainedWorktreePhase(runsByRoot[root], worktreeID, ownerRunID)
+			phase, found, err := retainedWorktreePhase(ownersFor(root), worktreeID, ownerRunID)
 			return found && terminalFailurePhase(phase), err
 		},
 		IsRunTerminal: func(root, runID string) (bool, error) {
@@ -219,7 +231,7 @@ func pruneConfiguredRetention(ctx context.Context, l instance.Layout, setup *sch
 			return protected, nil
 		},
 		JournalMissing: func(root, worktreeID, ownerRunID string) (bool, error) {
-			return retainedWorktreeJournalMissing(runsByRoot[root], worktreeID, ownerRunID)
+			return retainedWorktreeJournalMissing(ownersFor(root), worktreeID, ownerRunID)
 		},
 		JournalGraceAge: journalGraceAge,
 	})
@@ -373,26 +385,27 @@ func addRetentionManager(managers *[]*worktree.Manager, runsByRoot map[string]st
 	return nil
 }
 
-func retainedWorktreePhase(runsDir, worktreeID, ownerRunID string) (journal.RunPhase, bool, error) {
-	owner, err := resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID)
+func retainedWorktreePhase(owners *runOwnerIndex, worktreeID, ownerRunID string) (journal.RunPhase, bool, error) {
+	owner, err := owners.resolveRetainedWorktreeOwner(worktreeID, ownerRunID)
 	if err != nil {
 		return "", false, err
 	}
 	if owner == "" {
 		return "", false, nil
 	}
-	return readRunPhase(runsDir, owner)
+	return readRunPhase(owners.runsDir, owner)
 }
 
 // retainedWorktreeJournalMissing reports whether the retained worktree's
-// owning run journal directory does not exist under runsDir at all — #2052's
-// grace-window trigger. This is deliberately narrower than "found=false" from
-// retainedWorktreePhase, which also covers a journal that exists but is
-// unreadable or errors reading its phase; only a confirmed-absent directory
-// (e.g. already removed by telemetry retention) counts as "missing" here, so
-// a merely-corrupt-but-present journal is never treated as gone.
-func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (bool, error) {
-	owner, err := resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID)
+// owning run journal directory does not exist under the index's runs
+// directory at all — #2052's grace-window trigger. This is deliberately
+// narrower than "found=false" from retainedWorktreePhase, which also covers a
+// journal that exists but is unreadable or errors reading its phase; only a
+// confirmed-absent directory (e.g. already removed by telemetry retention)
+// counts as "missing" here, so a merely-corrupt-but-present journal is never
+// treated as gone.
+func retainedWorktreeJournalMissing(owners *runOwnerIndex, worktreeID, ownerRunID string) (bool, error) {
+	owner, err := owners.resolveRetainedWorktreeOwner(worktreeID, ownerRunID)
 	if err != nil {
 		return false, err
 	}
@@ -404,7 +417,7 @@ func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (boo
 		// what the grace window exists to eventually resolve.
 		return true, nil
 	}
-	if _, err := os.Stat(filepath.Join(runsDir, owner)); err != nil {
+	if _, err := os.Stat(filepath.Join(owners.runsDir, owner)); err != nil {
 		if os.IsNotExist(err) {
 			return true, nil
 		}
@@ -413,28 +426,66 @@ func retainedWorktreeJournalMissing(runsDir, worktreeID, ownerRunID string) (boo
 	return false, nil
 }
 
+// runOwnerIndex resolves retained-worktree owners against one runs
+// directory, listing that directory at most once (#6359). Legacy markers
+// predate the stamped OwnerRunID and resolve by name prefix, which needs the
+// whole run-directory listing; re-reading it per candidate made a sweep
+// O(candidates x runs). An index is scoped to a single sweep pass — callers
+// build a fresh one per Reap or retention pass, never a long-lived one — so a
+// later pass always sees runs created since. A failed listing is not cached:
+// the next candidate retries it, exactly as before the index existed.
+type runOwnerIndex struct {
+	runsDir string
+	// readDir is os.ReadDir outside tests; tests count calls through it.
+	readDir func(string) ([]os.DirEntry, error)
+
+	mu     sync.Mutex
+	loaded bool
+	runIDs []string
+}
+
+func newRunOwnerIndex(runsDir string) *runOwnerIndex {
+	return &runOwnerIndex{runsDir: runsDir, readDir: os.ReadDir}
+}
+
+// runDirectoryNames returns the directory names under runsDir, reading the
+// directory only until the first successful listing. A missing runs
+// directory is a valid (empty) listing and is cached like any other.
+func (x *runOwnerIndex) runDirectoryNames() ([]string, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.loaded {
+		return x.runIDs, nil
+	}
+	entries, err := x.readDir(x.runsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read runs directory: %w", err)
+	}
+	var runIDs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			runIDs = append(runIDs, entry.Name())
+		}
+	}
+	x.runIDs, x.loaded = runIDs, true
+	return runIDs, nil
+}
+
 // resolveRetainedWorktreeOwner identifies the run ID that owns a retained
 // worktree marker: the stamped OwnerRunID when present, or (for legacy
 // markers predating that field) the longest runsDir entry whose name
 // prefixes the worktree ID. Returns "" — not an error — when no owner can be
 // resolved by either means.
-func resolveRetainedWorktreeOwner(runsDir, worktreeID, ownerRunID string) (string, error) {
+func (x *runOwnerIndex) resolveRetainedWorktreeOwner(worktreeID, ownerRunID string) (string, error) {
 	if ownerRunID != "" {
 		return ownerRunID, nil
 	}
-	entries, err := os.ReadDir(runsDir)
+	runIDs, err := x.runDirectoryNames()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("read runs directory: %w", err)
+		return "", err
 	}
 	var owner string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		runID := entry.Name()
+	for _, runID := range runIDs {
 		if worktreeID != runID && !strings.HasPrefix(worktreeID, runID+"-") {
 			continue
 		}
@@ -493,9 +544,14 @@ func settledRunPhase(phase journal.RunPhase) bool {
 // worktreeRunTerminal it forwards the marker's stamped owner run ID, so the
 // journal is resolved exactly when one is present and only falls back to
 // prefix matching for legacy markers that predate the field.
+//
+// Every call builds a fresh owner index, so callers call it once per Reap
+// pass: the runs directory is listed at most once per pass (#6359) and the
+// next pass still sees runs created since.
 func worktreeRunAbandoned(runsDir string) func(string, string) (bool, error) {
+	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID, ownerRunID string) (bool, error) {
-		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, ownerRunID)
+		phase, found, err := retainedWorktreePhase(owners, worktreeID, ownerRunID)
 		if err != nil {
 			return false, err
 		}
