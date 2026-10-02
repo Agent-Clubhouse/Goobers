@@ -352,27 +352,22 @@ func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) 
 
 // runStages returns the stage names recorded for a run, in stable order.
 func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
-	db, release, err := s.readHandle()
+	var out []string
+	err := s.withReadRows(ctx,
+		`SELECT stage FROM run_stage WHERE run_id = ? ORDER BY stage`,
+		[]any{runID},
+		fmt.Sprintf("readmodel: read stages for %s", runID),
+		fmt.Sprintf("readmodel: stage rows for %s", runID),
+		func(rows *sql.Rows) error {
+			var stage string
+			if err := rows.Scan(&stage); err != nil {
+				return fmt.Errorf("readmodel: scan stage: %w", err)
+			}
+			out = append(out, stage)
+			return nil
+		})
 	if err != nil {
 		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx,
-		`SELECT stage FROM run_stage WHERE run_id = ? ORDER BY stage`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: read stages for %s: %w", runID, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var stage string
-		if err := rows.Scan(&stage); err != nil {
-			return nil, fmt.Errorf("readmodel: scan stage: %w", err)
-		}
-		out = append(out, stage)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: stage rows for %s: %w", runID, err)
 	}
 	return out, nil
 }
@@ -383,27 +378,23 @@ func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
 // becomes one indexed aggregate over phase = 'running'". It is served by
 // idx_run_phase_recency without touching a journal.
 func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, error) {
-	db, release, err := s.readHandle()
+	out := map[journal.RunPhase]int{}
+	err := s.withReadRows(ctx,
+		`SELECT phase, COUNT(*) FROM run GROUP BY phase`,
+		nil,
+		"readmodel: count by phase",
+		"readmodel: phase count rows",
+		func(rows *sql.Rows) error {
+			var phase string
+			var n int
+			if err := rows.Scan(&phase, &n); err != nil {
+				return fmt.Errorf("readmodel: scan phase count: %w", err)
+			}
+			out[journal.RunPhase(phase)] = n
+			return nil
+		})
 	if err != nil {
 		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `SELECT phase, COUNT(*) FROM run GROUP BY phase`)
-	if err != nil {
-		return nil, fmt.Errorf("readmodel: count by phase: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	out := map[journal.RunPhase]int{}
-	for rows.Next() {
-		var phase string
-		var n int
-		if err := rows.Scan(&phase, &n); err != nil {
-			return nil, fmt.Errorf("readmodel: scan phase count: %w", err)
-		}
-		out[journal.RunPhase(phase)] = n
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: phase count rows: %w", err)
 	}
 	return out, nil
 }
@@ -411,30 +402,25 @@ func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, err
 // ActiveRunCounts returns active counts grouped by workflow from the stored
 // phase projection.
 func (s *Store) ActiveRunCounts(ctx context.Context) ([]WorkflowCount, error) {
-	db, release, err := s.readHandle()
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	rows, err := db.QueryContext(ctx, `
+	var out []WorkflowCount
+	err := s.withReadRows(ctx, `
 		SELECT gaggle, workflow, COUNT(*)
 		FROM run
 		WHERE phase = ?
-		GROUP BY gaggle, workflow`, journal.PhaseRunning)
+		GROUP BY gaggle, workflow`,
+		[]any{journal.PhaseRunning},
+		"readmodel: count active runs by workflow",
+		"readmodel: active workflow count rows",
+		func(rows *sql.Rows) error {
+			var count WorkflowCount
+			if err := rows.Scan(&count.Gaggle, &count.Workflow, &count.Count); err != nil {
+				return fmt.Errorf("readmodel: scan active workflow count: %w", err)
+			}
+			out = append(out, count)
+			return nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("readmodel: count active runs by workflow: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []WorkflowCount
-	for rows.Next() {
-		var count WorkflowCount
-		if err := rows.Scan(&count.Gaggle, &count.Workflow, &count.Count); err != nil {
-			return nil, fmt.Errorf("readmodel: scan active workflow count: %w", err)
-		}
-		out = append(out, count)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("readmodel: active workflow count rows: %w", err)
+		return nil, err
 	}
 	return out, nil
 }
