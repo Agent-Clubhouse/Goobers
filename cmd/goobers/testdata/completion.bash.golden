@@ -221,7 +221,7 @@ _goobers_completion()
         telemetry)
             case "${COMP_WORDS[2]:-}" in
                 configure) flags+=" --connection-string-env --connection-string-file --connection-string-store --profile --disable --json" ;;
-                test) flags+=" --json --timeout" ;;
+                test) flags+=" --destination --json --timeout" ;;
                 merges) flags+=" --compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
                 stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;

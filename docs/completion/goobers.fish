@@ -350,6 +350,7 @@ complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_s
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from configure' -l profile -r -a 'health journal standard diagnostic' -d 'Telemetry collection profile'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from configure' -l disable -d 'Remove the direct Azure Monitor destination'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from configure' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from test' -l destination -r -d 'Named Azure destination to probe'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from test' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from test' -l timeout -r -d 'Connectivity deadline'
 complete -c goobers -n '__fish_seen_subcommand_from telemetry; and __fish_seen_subcommand_from merges' -l compare-github -r -d 'Compare an explicit GitHub owner/repository'
