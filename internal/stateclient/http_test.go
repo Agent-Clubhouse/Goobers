@@ -126,6 +126,21 @@ func planeClient(t *testing.T, server *httptest.Server) *HTTP {
 	return store
 }
 
+func TestNewHTTPPreservesConfigurationErrors(t *testing.T) {
+	for name, test := range map[string]struct {
+		cfg  HTTPConfig
+		want string
+	}{
+		"no base url": {HTTPConfig{Token: "t", Gaggle: "g"}, "stateclient: HTTP backend requires a base URL"},
+		"no token":    {HTTPConfig{BaseURL: "http://d", Gaggle: "g"}, "stateclient: HTTP backend requires a bearer token"},
+		"no gaggle":   {HTTPConfig{BaseURL: "http://d", Token: "t"}, "stateclient: HTTP backend requires the caller's gaggle"},
+	} {
+		if _, err := NewHTTP(test.cfg); err == nil || err.Error() != test.want {
+			t.Errorf("%s: NewHTTP error = %v, want %q", name, err, test.want)
+		}
+	}
+}
+
 // TestHTTPStoreRoundTrip pins the client onto the route's contract: a 404 is
 // the absent key's zero value, a create carries If-None-Match, and a replace
 // carries the ETag that was read.
@@ -287,6 +302,7 @@ func TestHTTPStoreSurfacesForeignGaggleRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, err = store.Get(t.Context(), KeyBlockedRecords)
 	if err == nil {
 		t.Fatal("a foreign-gaggle read succeeded")
@@ -294,6 +310,25 @@ func TestHTTPStoreSurfacesForeignGaggleRefusals(t *testing.T) {
 	var planeErr *Error
 	if !errors.As(err, &planeErr) || planeErr.Status != http.StatusForbidden || planeErr.Code != "gaggle_mismatch" {
 		t.Fatalf("err = %v, want a typed 403 gaggle_mismatch", err)
+	}
+}
+
+func TestHTTPStoreFallbackErrorAndWriteContentType(t *testing.T) {
+	var contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		contentType = request.Header.Get("Content-Type")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("  " + strings.Repeat("x", 401) + "  "))
+	}))
+	t.Cleanup(server.Close)
+	store := planeClient(t, server)
+	_, err := store.Put(t.Context(), KeyBlockedRecords, []byte(`{}`), "")
+	var planeErr *Error
+	if !errors.As(err, &planeErr) || planeErr.Code != "http_502" || planeErr.Message != strings.Repeat("x", 400)+"…" {
+		t.Fatalf("error = %#v", planeErr)
+	}
+	if contentType != "application/json" {
+		t.Fatalf("content type = %q", contentType)
 	}
 }
 

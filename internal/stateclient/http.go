@@ -3,16 +3,15 @@ package stateclient
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // Headers the scheduler-state plane speaks. Restated from the server for the
@@ -64,17 +63,22 @@ type HTTPConfig struct {
 
 // HTTP is the scheduler-state plane backend.
 type HTTP struct {
-	cfg HTTPConfig
+	cfg   HTTPConfig
+	plane *planehttp.Client
 }
 
 // NewHTTP constructs the plane backend.
 func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
-	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if cfg.BaseURL == "" {
-		return nil, errors.New("stateclient: HTTP backend requires a base URL")
-	}
-	if strings.TrimSpace(cfg.Token) == "" {
-		return nil, errors.New("stateclient: HTTP backend requires a bearer token")
+	plane, err := planehttp.New(planehttp.Config{
+		BaseURL:      cfg.BaseURL,
+		Token:        cfg.Token,
+		Client:       cfg.Client,
+		Timeout:      DefaultHTTPTimeout,
+		BaseURLError: errors.New("stateclient: HTTP backend requires a base URL"),
+		TokenError:   errors.New("stateclient: HTTP backend requires a bearer token"),
+	})
+	if err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(cfg.Gaggle) == "" {
 		return nil, errors.New("stateclient: HTTP backend requires the caller's gaggle")
@@ -88,10 +92,9 @@ func NewHTTP(cfg HTTPConfig) (*HTTP, error) {
 	if !plainPathElement(cfg.Gaggle) {
 		return nil, fmt.Errorf("stateclient: %q is not a valid gaggle for the scheduler-state plane", cfg.Gaggle)
 	}
-	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: DefaultHTTPTimeout}
-	}
-	return &HTTP{cfg: cfg}, nil
+	cfg.BaseURL = plane.BaseURL()
+	cfg.Client = plane.HTTPClient()
+	return &HTTP{cfg: cfg, plane: plane}, nil
 }
 
 // plainPathElement reports whether value is a single, ordinary path element.
@@ -110,31 +113,21 @@ func (h *HTTP) Gaggle() string { return h.cfg.Gaggle }
 // the gaggle comes from the stage's own environment, but a containment check
 // must never resolve an input it has not encoded.
 func (h *HTTP) endpoint(key string) string {
+	return h.cfg.BaseURL + h.endpointPath(key)
+}
+
+func (h *HTTP) endpointPath(key string) string {
 	path := apicontract.GaggleStateKeyPath
 	path = strings.ReplaceAll(path, "{gaggle}", url.PathEscape(h.cfg.Gaggle))
 	path = strings.ReplaceAll(path, "{key}", url.PathEscape(key))
-	return h.cfg.BaseURL + path
+	return path
 }
 
 // planeError decodes a non-success response into a typed refusal.
 func planeError(status int, raw []byte) *Error {
-	planeErr := &Error{Status: status}
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(raw, &envelope) == nil && envelope.Error.Code != "" {
-		planeErr.Code, planeErr.Message = envelope.Error.Code, envelope.Error.Message
-		return planeErr
-	}
-	detail := strings.TrimSpace(string(raw))
-	if len(detail) > 400 {
-		detail = detail[:400] + "…"
-	}
-	planeErr.Code, planeErr.Message = "http_"+fmt.Sprint(status), detail
-	return planeErr
+	return planehttp.DecodeError(status, raw, func(status int, code, message string) error {
+		return &Error{Status: status, Code: code, Message: message}
+	}, planehttp.ErrorFallback{CodePrefix: "http_", DetailLimit: 400, Ellipsis: "…"}).(*Error)
 }
 
 // Get implements Store over the route's read half. A 404 is the key's ABSENT
@@ -145,17 +138,16 @@ func (h *HTTP) Get(ctx context.Context, key string) (Value, error) {
 		return Value{}, err
 	}
 	endpoint := h.endpoint(key)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	response, err := h.plane.DoRaw(ctx, http.MethodGet, h.endpointPath(key), nil, nil)
 	if err != nil {
-		return Value{}, fmt.Errorf("stateclient: build request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	response, err := h.cfg.Client.Do(request)
-	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return Value{}, fmt.Errorf("stateclient: build request: %w", requestErr.Err)
+		}
 		return Value{}, fmt.Errorf("stateclient: %s: %w", endpoint, err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, MaxValueBytes+1))
+	raw, err := planehttp.ReadBounded(response.Body, MaxValueBytes+1)
 	if err != nil {
 		return Value{}, fmt.Errorf("stateclient: read response from %s: %w", endpoint, err)
 	}
@@ -190,23 +182,23 @@ func (h *HTTP) Put(ctx context.Context, key string, data []byte, ifMatch string)
 		return Value{}, err
 	}
 	endpoint := h.endpoint(key)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(data))
-	if err != nil {
-		return Value{}, fmt.Errorf("stateclient: build request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	request.Header.Set("Content-Type", "application/json")
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
 	if ifMatch == "" {
-		request.Header.Set(HeaderIfNoneMatch, IfNoneMatchAny)
+		headers.Set(HeaderIfNoneMatch, IfNoneMatchAny)
 	} else {
-		request.Header.Set(HeaderIfMatch, `"`+ifMatch+`"`)
+		headers.Set(HeaderIfMatch, `"`+ifMatch+`"`)
 	}
-	response, err := h.cfg.Client.Do(request)
+	response, err := h.plane.DoRaw(ctx, http.MethodPut, h.endpointPath(key), bytes.NewReader(data), headers)
 	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return Value{}, fmt.Errorf("stateclient: build request: %w", requestErr.Err)
+		}
 		return Value{}, fmt.Errorf("stateclient: %s: %w", endpoint, err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	raw, err := planehttp.ReadBounded(response.Body, 4<<20)
 	if err != nil {
 		return Value{}, fmt.Errorf("stateclient: read response from %s: %w", endpoint, err)
 	}
