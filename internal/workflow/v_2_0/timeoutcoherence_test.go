@@ -174,6 +174,85 @@ func TestStageTimeoutCoherence(t *testing.T) {
 	}
 }
 
+// TestUncappedWaitBudgetWarnings covers #3288: a stage whose inputs declare a
+// bounded-wait budget but whose task declares no ceiling rides the engine's
+// 1-hour fallback, and CheckWarnings must say so.
+func TestUncappedWaitBudgetWarnings(t *testing.T) {
+	queueWatch := pollTask([]string{"goobers", "merge-queue-poll"}, map[string]string{
+		boundedwait.InputPollTimeout: "25m",
+		boundedwait.InputTimeout:     "30m",
+	})
+	tests := []struct {
+		name       string
+		task       apiv1.Task
+		wantDetail []string // empty means no warning
+	}{
+		{
+			name: "queue-watch shape with input budgets and no ceiling",
+			task: queueWatch,
+			wantDetail: []string{
+				`task "queue-watch"`,
+				`inputs.pollTimeoutSeconds "25m" and inputs.timeout "30m"`,
+				"no task-level ceiling",
+				"1h0m0s fallback stage timeout",
+			},
+		},
+		{
+			name:       "dynamic poll budget with no ceiling",
+			task:       withInputsFrom(pollTask([]string{"watch-queue"}, nil), map[string]string{boundedwait.InputPollTimeout: "budget"}),
+			wantDetail: []string{"inputsFrom.pollTimeoutSeconds"},
+		},
+		{
+			name: "static poll budget with dynamic timeout",
+			task: withInputsFrom(pollTask([]string{"watch-queue"}, map[string]string{boundedwait.InputPollTimeout: "25m"}),
+				map[string]string{boundedwait.InputTimeout: "budget"}),
+			wantDetail: []string{`inputs.pollTimeoutSeconds "25m" and inputsFrom.timeout`},
+		},
+		{name: "blank poll budget", task: pollTask([]string{"watch-queue"}, map[string]string{boundedwait.InputPollTimeout: "  "})},
+		{name: "timeoutSeconds ceiling", task: withTimeout(queueWatch, 1800)},
+		{name: "limits ceiling", task: withLimits(queueWatch, 1800)},
+		{name: "no wait budget declared", task: pollTask([]string{"watch-queue"}, nil)},
+		{name: "legacy stage timeout alone", task: pollTask([]string{"sh", "check.sh"}, map[string]string{boundedwait.InputTimeout: "30s"})},
+		{name: "agentic stage is out of scope", task: func() apiv1.Task {
+			task := queueWatch
+			task.Type = apiv1.TaskAgentic
+			return task
+		}()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := uncappedWaitBudgetWarnings(Definition{Name: "wf", Spec: apiv1.WorkflowSpec{
+				Start: tc.task.Name,
+				Tasks: []apiv1.Task{tc.task},
+			}})
+			if len(tc.wantDetail) == 0 {
+				if len(got) != 0 {
+					t.Fatalf("warnings = %v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("warnings = %v, want one", got)
+			}
+			for _, detail := range tc.wantDetail {
+				if !strings.Contains(got[0], detail) {
+					t.Errorf("warning %q missing %q", got[0], detail)
+				}
+			}
+		})
+	}
+
+	// The warning reaches validate through CheckWarnings.
+	def := Definition{Name: "wf", Spec: apiv1.WorkflowSpec{Start: queueWatch.Name, Tasks: []apiv1.Task{queueWatch}}}
+	var found bool
+	for _, warning := range CheckWarnings(def) {
+		found = found || strings.Contains(warning, "no task-level ceiling")
+	}
+	if !found {
+		t.Fatalf("CheckWarnings(%v) omits the uncapped wait budget warning", CheckWarnings(def))
+	}
+}
+
 func TestShippedWorkflowsHaveCoherentBoundedWaits(t *testing.T) {
 	for _, root := range shippedWorkflowRoots() {
 		entries, err := os.ReadDir(root)
