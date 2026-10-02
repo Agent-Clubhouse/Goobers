@@ -25,52 +25,19 @@ import (
 // sidesteps this package's lack of a typed HTTP-status error to match against
 // (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return PullRequestResult{}, err
-	}
-	if existing, ok, err := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); err != nil {
-		return PullRequestResult{}, err
-	} else if ok {
-		return p.updatePullRequest(ctx, req, existing.Number)
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
-	if err != nil {
-		return PullRequestResult{}, err
-	}
-	prBody := withRunIDFooter(req.Body, req.RunID)
-	body := map[string]interface{}{
-		"title": req.Title,
-		"body":  prBody,
-		"head":  req.Head,
-		"base":  req.Base,
-		"draft": req.Draft,
-	}
-	var out githubPullRequest
-	if err := p.do(ctx, http.MethodPost, endpoint, body, &out); err != nil {
-		if IsPullRequestAlreadyExistsError(err) {
-			// #1767: lost a create race against a concurrent open-pr call for
-			// this same head/base between the check above and this POST.
-			// OpenPullRequest's own doc comment promises convergence on the
-			// PR that already exists rather than a duplicate — honor that
-			// here instead of surfacing the race as a stage failure.
-			if existing, ok, ferr := p.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); ferr == nil && ok {
-				return p.updatePullRequest(ctx, req, existing.Number)
+	return openRESTPullRequest(ctx, p, ProviderGitHub, p.BaseURL, req, restOpenPullRequestHooks{
+		title: func(req PullRequestRequest) string { return req.Title },
+		createBody: func(req PullRequestRequest, title, body string) interface{} {
+			return map[string]interface{}{
+				"title": title,
+				"body":  body,
+				"head":  req.Head,
+				"base":  req.Base,
+				"draft": req.Draft,
 			}
-		}
-		return PullRequestResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
-		URL:       out.HTMLURL,
-		Operation: "open",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(prBody)},
 		},
+		isCreateRaceError: IsPullRequestAlreadyExistsError,
 	})
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
 }
 
 // FindPullRequestByBranch looks up an open PR for head/base, returning
@@ -148,34 +115,6 @@ func (p *GitHubProvider) ListOpenPullRequests(ctx context.Context, repo Reposito
 		prs = append(prs, OpenPRSummary{Head: pr.Head.Ref, Labels: labels})
 	}
 	return prs, nil
-}
-
-// updatePullRequest applies title/body edits to an already-open PR (its
-// number found by FindPullRequestByBranch) — the repass path: the same run
-// branch already has an open PR, so this call updates it in place instead of
-// opening a duplicate.
-func (p *GitHubProvider) updatePullRequest(ctx context.Context, req PullRequestRequest, existingNumber int) (PullRequestResult, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", strconv.Itoa(existingNumber))
-	if err != nil {
-		return PullRequestResult{}, err
-	}
-	prBody := withRunIDFooter(req.Body, req.RunID)
-	var out githubPullRequest
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"title": req.Title, "body": prBody}, &out); err != nil {
-		return PullRequestResult{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
-		URL:       out.HTMLURL,
-		Operation: "update",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"title": {After: digestString(req.Title)},
-			"body":  {After: digestString(prBody)},
-		},
-	})
-	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
 }
 
 // PollPullRequest reports mergeability, review decision, combined check state,
@@ -1754,29 +1693,7 @@ func normalizeCheckRunState(status, conclusion string) CheckState {
 
 // RequestReview requests GitHub reviewers for a pull request.
 func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) error {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return err
-	}
-	if req.PullID == "" {
-		return errPullIDRequired
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
-	if err != nil {
-		return err
-	}
-	body := map[string][]string{"reviewers": req.Reviewers}
-	if err := p.do(ctx, http.MethodPost, endpoint, body, nil); err != nil {
-		return err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.PullID),
-		Operation: "request-review",
-		Fields: map[string]FieldDigest{
-			"reviewers": {After: digestString(strings.Join(req.Reviewers, ","))},
-		},
-	})
-	return nil
+	return requestRESTReview(ctx, p, ProviderGitHub, p.BaseURL, req)
 }
 
 // SubmitPullRequestReview publishes a SHA-pinned native GitHub review. GitHub
