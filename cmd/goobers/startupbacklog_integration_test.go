@@ -17,11 +17,13 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // Exercise the real daemon startup wiring, not a standalone Reap call: moving
 // pending cleanup ahead of readiness must fail even if Reap's unit tests pass.
 func TestIntegrationStartupWithLargeTerminalCleanupBacklog(t *testing.T) {
+	testdep.Require(t, "git")
 	const population = 1009
 	layout := instance.NewLayout(initDeterministicDemo(t))
 	scoped := layout.ForGaggle("example")
