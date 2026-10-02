@@ -3,6 +3,7 @@ package decisiongate
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -107,6 +108,14 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 		return nil, fmt.Errorf("decisionGate: %w", err)
 	}
 	cfg := s.Gate
+	// Copy before defaulting so Resolve never mutates the caller's settings.
+	cfg.Thresholds = maps.Clone(cfg.Thresholds)
+	if cfg.Thresholds == nil {
+		cfg.Thresholds = map[string]Threshold{}
+	}
+	if _, ok := cfg.Thresholds[ClaimQuestion]; !ok {
+		cfg.Thresholds[ClaimQuestion] = DefaultClaimThreshold
+	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second
 	}

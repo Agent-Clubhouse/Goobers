@@ -100,3 +100,26 @@ func TestNoKeyShapedStringsCommitted(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveDefaultsClaimThreshold(t *testing.T) {
+	s := &Settings{Mode: ModeShadow, BaseURLEnv: "B_URL", KeyEnv: "B_KEY", ModelEnv: "B_MODEL", Fallback: FallbackAgent}
+	env := map[string]string{"B_URL": "http://127.0.0.1:1", "B_KEY": "k", "B_MODEL": "m"}
+	g, err := s.Resolve(func(k string) string { return env[k] }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.cfg.Thresholds[ClaimQuestion]; got != DefaultClaimThreshold {
+		t.Fatalf("claim threshold = %+v, want default", got)
+	}
+	if s.Gate.Thresholds != nil {
+		t.Fatal("Resolve must not mutate the caller's settings")
+	}
+	s.Gate.Thresholds = map[string]Threshold{ClaimQuestion: {Accept: 0.8, Reject: 0.2}}
+	g, err = s.Resolve(func(k string) string { return env[k] }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.cfg.Thresholds[ClaimQuestion]; got.Accept != 0.8 {
+		t.Fatalf("explicit threshold overridden: %+v", got)
+	}
+}

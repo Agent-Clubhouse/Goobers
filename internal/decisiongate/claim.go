@@ -10,6 +10,11 @@ import (
 // ClaimQuestion is the threshold key for the spurious-claim question.
 const ClaimQuestion = "claims_bad_input"
 
+// DefaultClaimThreshold applies when settings declare none for ClaimQuestion.
+// Probe values on the live scorer were 0.002 for a clean success and 0.037 for
+// a genuine block, against 0.96 or higher for bad-input claims.
+var DefaultClaimThreshold = Threshold{Accept: 0.9, Reject: 0.1}
+
 // ClaimVerdict says what to do with an agent reply that may claim its input
 // was corrupted, incomplete or unreadable.
 type ClaimVerdict string
