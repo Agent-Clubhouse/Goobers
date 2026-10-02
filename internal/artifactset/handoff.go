@@ -37,6 +37,7 @@ func (e *HandoffError) Error() string {
 	return fmt.Sprintf("%v: entry %q is not a valid JSON handoff: %s", ErrInvalid, e.Entry, strings.Join(parts, "; "))
 }
 
+// Is reports a HandoffError as ErrInvalid so callers can match it with errors.Is.
 func (e *HandoffError) Is(target error) bool { return target == ErrInvalid }
 
 // checkJSONHandoff deterministically classifies structural JSON problems
