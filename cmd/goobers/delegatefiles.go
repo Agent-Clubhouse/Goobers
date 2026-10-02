@@ -19,6 +19,8 @@ type delegateFileProtocol struct {
 	requestSuffix               string
 	responseSuffix              string
 	errorPrefix                 string
+	requestDirLabel             string
+	requestLabel                string
 	staleAfter                  time.Duration
 	distinguishNonDirectoryPath bool
 }
@@ -29,13 +31,29 @@ func writeDelegateRequest[T any](
 	req T,
 	mutate func(*T),
 ) (string, error) {
+	return writeDelegateRequestWithID(schedulerDir, cfg, "", req, mutate, nil)
+}
+
+func writeDelegateRequestWithID[T any](
+	schedulerDir string,
+	cfg delegateFileProtocol,
+	requestID string,
+	req T,
+	mutate func(*T),
+	beforeCreate func(string) error,
+) (string, error) {
 	reqDir := filepath.Join(schedulerDir, cfg.pendingDir)
 	if err := os.MkdirAll(reqDir, 0o755); err != nil {
-		return "", fmt.Errorf("%s: create request dir: %w", cfg.errorPrefix, err)
+		return "", fmt.Errorf("%s: create %s: %w", cfg.errorPrefix, cfg.requestDirectoryLabel(), err)
+	}
+	if beforeCreate != nil {
+		if err := beforeCreate(reqDir); err != nil {
+			return "", err
+		}
 	}
 	f, err := os.CreateTemp(reqDir, ".pending-*")
 	if err != nil {
-		return "", fmt.Errorf("%s: create request: %w", cfg.errorPrefix, err)
+		return "", fmt.Errorf("%s: create %s: %w", cfg.errorPrefix, cfg.requestFileLabel(), err)
 	}
 	tmpPath := f.Name()
 	cleanup := func() {
@@ -53,19 +71,74 @@ func writeDelegateRequest[T any](
 	}
 	if _, err := f.Write(data); err != nil {
 		cleanup()
-		return "", fmt.Errorf("%s: write request: %w", cfg.errorPrefix, err)
+		return "", fmt.Errorf("%s: write %s: %w", cfg.errorPrefix, cfg.requestFileLabel(), err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("%s: close request: %w", cfg.errorPrefix, err)
+		return "", fmt.Errorf("%s: close %s: %w", cfg.errorPrefix, cfg.requestFileLabel(), err)
 	}
-	requestID := strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
+	if requestID == "" {
+		requestID = strings.TrimPrefix(filepath.Base(tmpPath), ".pending-")
+	}
 	finalPath := filepath.Join(reqDir, requestID+cfg.requestSuffix)
 	if err := durability.ReplaceFile(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("%s: publish request: %w", cfg.errorPrefix, err)
+		return "", fmt.Errorf("%s: publish %s: %w", cfg.errorPrefix, cfg.requestFileLabel(), err)
 	}
 	return requestID, nil
+}
+
+func (cfg delegateFileProtocol) requestDirectoryLabel() string {
+	if cfg.requestDirLabel != "" {
+		return cfg.requestDirLabel
+	}
+	return "request dir"
+}
+
+func (cfg delegateFileProtocol) requestFileLabel() string {
+	if cfg.requestLabel != "" {
+		return cfg.requestLabel
+	}
+	return "request"
+}
+
+func readAndRemoveDelegateJSON[T any](path string) (T, bool) {
+	var value T
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return value, false
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return value, false
+	}
+	_ = os.Remove(path)
+	return value, true
+}
+
+type delegateJSONEncodeError struct {
+	err error
+}
+
+func (e *delegateJSONEncodeError) Error() string {
+	return e.err.Error()
+}
+
+func (e *delegateJSONEncodeError) Unwrap() error {
+	return e.err
+}
+
+func writeDelegateJSON[T any](path string, value T) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return &delegateJSONEncodeError{err: err}
+	}
+	return journal.WriteFileAtomic(path, data, 0o644)
+}
+
+func removeExpiredDelegateArtifact(path string, info os.FileInfo, now time.Time, staleAfter time.Duration) {
+	if now.Sub(info.ModTime()) > staleAfter {
+		_ = os.Remove(path)
+	}
 }
 
 func pollDelegateResponse[T any](
@@ -78,12 +151,8 @@ func pollDelegateResponse[T any](
 	respPath := filepath.Join(schedulerDir, cfg.pendingDir, requestID+cfg.responseSuffix)
 	deadline := time.Now().Add(timeout)
 	for {
-		if data, err := os.ReadFile(respPath); err == nil {
-			var resp T
-			if err := json.Unmarshal(data, &resp); err == nil {
-				_ = os.Remove(respPath)
-				return resp, nil
-			}
+		if resp, ok := readAndRemoveDelegateJSON[T](respPath); ok {
+			return resp, nil
 		}
 		if time.Now().After(deadline) {
 			var zero T
@@ -133,8 +202,8 @@ func sweepDelegateRequests[Req, Resp any](
 		path := filepath.Join(reqDir, entry.Name())
 		if strings.HasSuffix(entry.Name(), cfg.responseSuffix) {
 			info, err := entry.Info()
-			if err == nil && now().Sub(info.ModTime()) > cfg.staleAfter {
-				_ = os.Remove(path)
+			if err == nil {
+				removeExpiredDelegateArtifact(path, info, now(), cfg.staleAfter)
 			}
 			continue
 		}
@@ -162,12 +231,12 @@ func sweepDelegateRequests[Req, Resp any](
 		if dispatch {
 			resp = handle(req)
 		}
-		respData, err := json.Marshal(resp)
-		if err != nil {
-			sweepErr = errors.Join(sweepErr, fmt.Errorf("%s: encode response %s: %w", cfg.errorPrefix, requestID, err))
-			continue
-		}
-		if err := journal.WriteFileAtomic(filepath.Join(reqDir, requestID+cfg.responseSuffix), respData, 0o644); err != nil {
+		if err := writeDelegateJSON(filepath.Join(reqDir, requestID+cfg.responseSuffix), resp); err != nil {
+			var encodeErr *delegateJSONEncodeError
+			if errors.As(err, &encodeErr) {
+				sweepErr = errors.Join(sweepErr, fmt.Errorf("%s: encode response %s: %w", cfg.errorPrefix, requestID, err))
+				continue
+			}
 			sweepErr = errors.Join(sweepErr, fmt.Errorf("%s: write response %s: %w", cfg.errorPrefix, requestID, err))
 		}
 	}
