@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: hello-world
+  annotations:
+    goobers.dev/purpose: "Smoke-test example that confirms Goobers can read the configured backlog and build the project."
 spec:
   gaggle: example
   displayName: Hello world

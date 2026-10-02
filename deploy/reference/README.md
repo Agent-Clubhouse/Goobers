@@ -132,6 +132,11 @@ scale-to-zero default.
   class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
   decision 016 — the rendered output is the only authoritative copy, and the render
   refuses unfilled documentation-CIDR placeholders instead of shipping stubs).
+- **Policies compose additively**: NetworkPolicy has no deny and no precedence, so
+  the effective egress of a pod is the union of every policy selecting it. Never
+  grant to `goobers.dev/role=stage` without a runner-class label; a generic grant
+  makes every per-class policy a no-op. See
+  [NetworkPolicy composition](../../docs/design/networkpolicy-composition.md).
 - **Image**: containers reference the image name `goobers`; the kustomize `images:`
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can

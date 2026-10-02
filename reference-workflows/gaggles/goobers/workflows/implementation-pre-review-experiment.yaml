@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: implementation-pre-review-experiment
+  annotations:
+    goobers.dev/purpose: "Opt-in variant of the implementation workflow that adds a pre-review validation step, used to compare its outcomes against the canonical issue-to-PR path."
 spec:
   gaggle: goobers
   displayName: Implementation pre-review validation experiment
