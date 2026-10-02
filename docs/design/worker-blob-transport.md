@@ -1,5 +1,10 @@
 # Resident worker blob transport
 
+Status: approved — blob endpoint transport is implemented; surrender read transport pending.
+Pending-delivery: #5293
+Scope-delta: Blob transport is delivered here; worker surrender Seen/Get transport and removal of its directory mount remain in the second #5293 PR.
+Verified: 1b53150b1 (2026-10-02)
+
 An instance-backed worker requires exactly one artifact-store mode:
 
 - `--blob-store <directory>` (default `GOOBERS_BLOB_STORE`) uses the existing
