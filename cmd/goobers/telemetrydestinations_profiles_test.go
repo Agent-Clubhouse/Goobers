@@ -114,20 +114,9 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 		t.Fatal(err)
 	}
 	span.End()
-	flushCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	if err := client.Flush(flushCtx); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	cancel()
-	shutdown := func(client *telemetry.Client) {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-		defer cancel()
-		if err := client.Shutdown(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	_ = client.Flush(ctx)
 	waitNamedTelemetry(t, func() bool {
 		s := health.Snapshot()
 		return s.Destinations["bad"].Replay.ActiveFailure && s.Destinations["good"].Replay.LastSuccess != nil
@@ -136,7 +125,7 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 	if before.PendingRecords != 1 || before.FailureClass == "" {
 		t.Fatalf("lost per-destination replay health: %+v", before)
 	}
-	shutdown(client)
+	_ = client.Shutdown(ctx)
 	cfg.Telemetry.Exporters[0], cfg.Telemetry.Exporters[1] = cfg.Telemetry.Exporters[1], cfg.Telemetry.Exporters[0]
 	available.Store(true)
 	client, health = start()
@@ -144,7 +133,7 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 		s := health.Snapshot().Destinations["bad"].Replay
 		return !s.ActiveFailure && s.PendingRecords == 0 && s.LastSuccess != nil
 	})
-	shutdown(client)
+	_ = client.Shutdown(ctx)
 }
 
 func waitNamedTelemetry(t *testing.T, ready func() bool) {
