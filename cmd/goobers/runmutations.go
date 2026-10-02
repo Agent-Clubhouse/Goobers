@@ -211,6 +211,21 @@ func callDaemonMutationAPIWithKey[Req, Resp any](
 	input Req,
 	key string,
 ) (Resp, *apicontract.APIError, error) {
+	return callDaemonMutationAPIWithKeyContext[Req, Resp](context.Background(), layout, endpoint, routeID, pathValues, input, key)
+}
+
+// callDaemonMutationAPIWithKeyContext is callDaemonMutationAPIWithKey bounded
+// by ctx as well as the client timeout, so a caller re-asking under the same
+// key can cap the whole exchange.
+func callDaemonMutationAPIWithKeyContext[Req, Resp any](
+	ctx context.Context,
+	layout instance.Layout,
+	endpoint string,
+	routeID apicontract.RouteID,
+	pathValues map[string]string,
+	input Req,
+	key string,
+) (Resp, *apicontract.APIError, error) {
 	var zero Resp
 	baseURL := endpoint
 	if baseURL == "" {
@@ -225,7 +240,7 @@ func callDaemonMutationAPIWithKey[Req, Resp any](
 		baseURL = daemonAPIScheme(config) + "://" + address
 	}
 	return callDaemonJSON[Req, Resp](daemonJSONCall[Req]{
-		Context:         context.Background(),
+		Context:         ctx,
 		Endpoint:        baseURL,
 		RouteID:         routeID,
 		PathValues:      pathValues,
