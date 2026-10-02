@@ -58,6 +58,7 @@ func (f LocalFacts) valid() bool {
 // outside workspaces, but same-UID integrity remains explicitly unverified.
 type LocalRecorder struct{ Root string }
 
+// Record consumes one local-only grant and persists its immutable receipt.
 func (l LocalRecorder) Record(ctx context.Context, receipt Receipt) error {
 	if receipt.Local == nil {
 		return ErrInvalid

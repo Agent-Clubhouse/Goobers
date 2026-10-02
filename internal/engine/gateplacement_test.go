@@ -578,7 +578,9 @@ func TestPlacedGateQueueRoutingAndHistoryReplay(t *testing.T) {
 			scheduled = append(scheduled, attrs.ActivityType.Name+"@"+attrs.TaskQueue.Name)
 		}
 	}
-	if want := "InvokeGoober@" + workflowQueue + ",DispatchStage@" + remoteGatePin().Queue + ",RunDeterministic@" + workflowQueue; strings.Join(scheduled, ",") != want {
+	// Newly recorded histories use prepared local activities. The checked-in
+	// legacy activity payloads are covered by TestContinuityPreChangeHistoryReplays.
+	if want := actInvokeGooberPrepared + "@" + workflowQueue + ",DispatchStage@" + remoteGatePin().Queue + "," + actRunDeterministicPrepared + "@" + workflowQueue; strings.Join(scheduled, ",") != want {
 		t.Fatalf("scheduled activities = %v, want %s (no ReviewGoober anywhere)", scheduled, want)
 	}
 	replayer := temporalworker.NewWorkflowReplayer()
