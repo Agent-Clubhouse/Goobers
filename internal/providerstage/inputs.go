@@ -178,6 +178,8 @@ var inputSchemas = map[string][]Input{
 		booleansIn("allowPendingChecks", "respectAssignee"), stringListsIn("excludeLabels", "headPrefixes"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
+	"advisory-pr-select":   schema(stringsIn("reviewType"), pathsIn("resultFile"), durationsIn("timeout")),
+	"advisory-pr-publish":  schema(stringsIn("expectedAuthor", "reviewType", "reviewerStage", "selectionStage"), pathsIn("resultFile"), durationsIn("timeout")),
 	"preflight-repo-write": schema(stringsIn("branch"), durationsIn("timeout")),
 	"publish-batch":        schema(stringsIn("planFile", "validationFile"), pathsIn("resultFile"), durationsIn("timeout")),
 	"push-remediated":      schema(pathsIn("resultFile"), durationsIn("timeout")),

@@ -229,6 +229,9 @@ var noWorkStreakKeyPattern = regexp.MustCompile(`^no-work-streak-[0-9a-f]{64}\.j
 // `<!-- verdict-json: ... -->` payload embedded in a PR comment.
 var verdictStateKeyPattern = regexp.MustCompile(`^remediation-verdict-[0-9a-f]{64}\.json$`)
 
+// One private disposition per repository, review type, and PR number.
+var advisoryPRKeyPattern = regexp.MustCompile(`^advisory-pr-[0-9a-f]{64}\.json$`)
+
 // The backlog-health READY-TRANSITION cursor (Goobers#3948), the one key in
 // this namespace that does not live directly in the scheduler directory and
 // the one whose name is not a digest.
@@ -377,6 +380,11 @@ func RemediationVerdictKey(digest string) string {
 	return "remediation-verdict-" + digest + ".json"
 }
 
+// AdvisoryPRKey names a private advisory review disposition.
+func AdvisoryPRKey(digest string) string {
+	return "advisory-pr-" + digest + ".json"
+}
+
 // ValidKey reports whether key is one of the closed scheduler-state keys.
 func ValidKey(key string) bool {
 	switch key {
@@ -390,7 +398,8 @@ func ValidKey(key string) bool {
 		backlogHealthCursorKeyPattern.MatchString(key) ||
 		failureStreakKeyPattern.MatchString(key) ||
 		noWorkStreakKeyPattern.MatchString(key) ||
-		verdictStateKeyPattern.MatchString(key)
+		verdictStateKeyPattern.MatchString(key) ||
+		advisoryPRKeyPattern.MatchString(key)
 }
 
 // Value is one scheduler-state read: the bytes and the ETag that addresses

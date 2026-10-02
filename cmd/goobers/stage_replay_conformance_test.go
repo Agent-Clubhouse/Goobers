@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -208,6 +209,13 @@ const (
 
 func stageReplayCases() []stageReplayCase {
 	return []stageReplayCase{
+		{
+			stage: "advisory-pr-publish", provider: providers.ProviderGitHub,
+			setup:   replayAdvisoryPRPublishGitHub,
+			first:   map[string]int{replayGitHubCommentCreate: 1},
+			replay:  map[string]int{},
+			creates: []string{replayGitHubCommentCreate},
+		},
 		{
 			stage: "resolve-review-threads", provider: providers.ProviderGitHub,
 			setup:   replayResolveReviewThreadsGitHub,
@@ -756,6 +764,33 @@ func replayFileIssuesGitHub(t *testing.T) replayFixture {
 	}
 }
 
+func replayAdvisoryPRPublishGitHub(t *testing.T) replayFixture {
+	server, root := advisoryFixture(t)
+	advisoryPR(t, server, 4, false)
+	selection := selectedAdvisory(t, root)
+	data, err := json.Marshal(advisoryReview{
+		Schema: advisorySchema, ReviewType: selection.ReviewType, Number: 4,
+		HeadSHA: selection.SelectedHeadSHA, Decision: "interesting",
+		Comment: "This new DSL field changes the declarative contract for every workflow author.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(advisoryReviewFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	counter := recordGitHubWrites(t, server)
+	return replayFixture{
+		run:    replayStageRun("advisory-pr-publish", root),
+		writes: counter,
+		owned: func(t *testing.T) map[string][]string {
+			return map[string][]string{"advisory comment": ownedGitHubComments(t, server, 4, func(body string) bool {
+				return strings.Contains(body, "<!-- goobers-advisory:architecture:")
+			})}
+		},
+	}
+}
+
 // replayExempt classifies every registered stage that is not a replay case,
 // with the reason it is not one. A reason starts with its class:
 //
@@ -766,6 +801,7 @@ func replayFileIssuesGitHub(t *testing.T) replayFixture {
 // There is no deferral class: a stage that reads back text Goobers wrote,
 // its own or another stage's, is a replay case.
 var replayExempt = map[string]string{
+	"advisory-pr-select":     "read-only: lists PRs and writes only a private claim and selection artifact, with no provider mutation",
 	"recovery-resume":        "read-only: re-attaches a recovered run's branch; local state only",
 	"backlog-dedupe":         "read-only: scores candidate duplicates into its result file (footer-free similarity: backlogdedupeattribution_test.go)",
 	"backlog-assignment":     "no read-back: assigns items without a comment",

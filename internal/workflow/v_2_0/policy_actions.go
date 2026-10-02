@@ -41,6 +41,7 @@ var policyActionContracts = map[string]policyActionContract{
 	"modify-repository":             {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"open-or-update-pr":             {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
 	"publish-review":                {requiredCapabilities: []capability.Capability{capability.GitHubPRReview}},
+	"comment-on-pr-advisory":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"push-repository-branch":        {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"push-pr-branch":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
 	"rebase-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
@@ -68,6 +69,7 @@ var policyActionContracts = map[string]policyActionContract{
 }
 
 var commandPolicyActions = map[string][]string{
+	"advisory-pr-publish":    {"comment-on-pr-advisory"},
 	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
 	"cancel-pending-ci":      {"cancel-pending-ci"},
