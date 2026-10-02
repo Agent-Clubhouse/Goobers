@@ -265,20 +265,6 @@ func TestResolveConfigRepoTargetPodFallbackFromInputs(t *testing.T) {
 	}
 }
 
-func TestProviderTargetRejectsUnknownValue(t *testing.T) {
-	if ok, err := providerTargetIsConfigRepo(); ok || err != nil {
-		t.Fatalf("unset target = %v, %v", ok, err)
-	}
-	t.Setenv(executor.InputEnvVar(configRepoTargetInput), "config-repo")
-	if ok, err := providerTargetIsConfigRepo(); !ok || err != nil {
-		t.Fatalf("config-repo target = %v, %v", ok, err)
-	}
-	t.Setenv(executor.InputEnvVar(configRepoTargetInput), "config")
-	if _, err := providerTargetIsConfigRepo(); err == nil {
-		t.Fatal("a typo'd target must fail rather than fall back to the product repository")
-	}
-}
-
 func TestConfigRepoWriteTokenReadsOnlyItsOwnCapability(t *testing.T) {
 	// Product-repo credentials present, config credential absent: fail closed.
 	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "product-push")
@@ -318,7 +304,6 @@ func configRepoCheckoutFixture(t *testing.T) (dir string) {
 func configRepoPushEnv(t *testing.T, workDir string) {
 	t.Helper()
 	t.Setenv(executor.InputEnvVar(configRepoInput), "acme/workflows")
-	t.Setenv(executor.InputEnvVar(configRepoTargetInput), configRepoTargetValue)
 	t.Setenv(executor.InputEnvVar(configRepoDirInput), "config-repo")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", t.TempDir())
 	t.Chdir(workDir)
@@ -329,7 +314,7 @@ func TestPushBranchConfigTargetPushesConfigCheckout(t *testing.T) {
 	configRepoPushEnv(t, filepath.Dir(dir))
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
 
-	code, stdout, stderr := runArgs(t, "push-branch")
+	code, stdout, stderr := runArgs(t, "push-branch", "--config-repo")
 	if code != 0 {
 		t.Fatalf("push-branch: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -346,7 +331,7 @@ func TestPushBranchConfigTargetFailsClosedWithoutConfigCredential(t *testing.T) 
 	// The product-repo push credential must not be accepted for the config repo.
 	t.Setenv(executor.CredentialEnvVar(string(capability.RepoPush)), "product-push")
 
-	code, _, stderr := runArgs(t, "push-branch")
+	code, _, stderr := runArgs(t, "push-branch", "--config-repo")
 	if code == 0 || !strings.Contains(stderr, "configrepo:write") {
 		t.Fatalf("push-branch: code = %d, stderr = %q, want a configrepo:write failure", code, stderr)
 	}
@@ -358,7 +343,7 @@ func TestPushBranchConfigTargetRefusesNonConfigOrigin(t *testing.T) {
 	configRepoPushEnv(t, filepath.Dir(dir))
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
 
-	code, _, stderr := runArgs(t, "push-branch")
+	code, _, stderr := runArgs(t, "push-branch", "--config-repo")
 	if code == 0 || !strings.Contains(stderr, "not the config repository") {
 		t.Fatalf("push-branch: code = %d, stderr = %q, want an origin refusal", code, stderr)
 	}
@@ -381,7 +366,7 @@ func TestPushBranchDefaultTargetIgnoresConfigCredential(t *testing.T) {
 }
 
 // TestOpenPRConfigTargetOpensInConfigRepoWithConfigCredential is the open-pr
-// half: with target config-repo the PR is opened in the config repository (not
+// half: with --config-repo the PR is opened in the config repository (not
 // the gaggle's routed repo), authenticated by configrepo:write alone, based on
 // the configured base, with write-boundary paths relative to the config root.
 func TestOpenPRConfigTargetOpensInConfigRepoWithConfigCredential(t *testing.T) {
@@ -397,7 +382,7 @@ func TestOpenPRConfigTargetOpensInConfigRepoWithConfigCredential(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("actionRoots"), "gaggles/alpha,skills")
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
 
-	code, stdout, stderr := runArgs(t, "open-pr", t.TempDir())
+	code, stdout, stderr := runArgs(t, "open-pr", "--config-repo", t.TempDir())
 	if code != 0 {
 		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
@@ -421,7 +406,7 @@ func TestOpenPRConfigTargetEnforcesBoundaryInConfigCheckout(t *testing.T) {
 	t.Setenv(executor.InputEnvVar("actionRoots"), "reference-workflows") // product-repo layout: not the config tree
 	t.Setenv(executor.CredentialEnvVar(string(capability.ConfigRepoWrite)), "config-write")
 
-	code, _, stderr := runArgs(t, "open-pr", t.TempDir())
+	code, _, stderr := runArgs(t, "open-pr", "--config-repo", t.TempDir())
 	if code == 0 || !strings.Contains(stderr, "write-boundary") {
 		t.Fatalf("open-pr: code = %d, stderr = %q, want a write-boundary refusal", code, stderr)
 	}
@@ -439,7 +424,7 @@ func TestOpenPRConfigTargetFailsClosedWithProductCredentialOnly(t *testing.T) {
 	configRepoPushEnv(t, filepath.Dir(dir))
 	t.Setenv(executor.InputEnvVar("head"), "goobers/tutor/run-1")
 
-	code, _, stderr := runArgs(t, "open-pr", t.TempDir())
+	code, _, stderr := runArgs(t, "open-pr", "--config-repo", t.TempDir())
 	if code == 0 || !strings.Contains(stderr, "configrepo:write") {
 		t.Fatalf("open-pr: code = %d, stderr = %q, want a configrepo:write failure", code, stderr)
 	}

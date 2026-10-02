@@ -173,7 +173,7 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
-		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "target", "title", "tutorConfigSource"),
+		stringsIn("base", "body", "configRepo", "configRepoBase", "configRepoDir", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
 		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
 		stringListsIn("actionRoots", "docsRoots"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -240,7 +240,7 @@ var inputSchemas = map[string][]Input{
 	// an explicit empty schema distinguishes them from external/unknown
 	// commands and makes a newly added consumer fail the structural parity
 	// test until its contract is declared here.
-	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "target")),
+	"push-branch":        schema(stringsIn("configRepo", "configRepoBase", "configRepoDir")),
 	"config-checkout":    schema(stringsIn("configRepo", "configRepoBase", "configRepoDir", "head")),
 	"recovery-restore":   {},
 	"recovery-resume":    {},

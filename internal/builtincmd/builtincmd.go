@@ -51,6 +51,7 @@ var names = []string{
 	"cancel-pending-ci",
 	"check-fail-first",
 	"check-issue-staleness",
+	"config-checkout",
 	"docs-churn",
 	"elect-lander",
 	"file-issues",

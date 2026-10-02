@@ -1,17 +1,12 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
@@ -22,7 +17,7 @@ import (
 //
 // A tutor workflow runs in one gaggle but its improvement PRs belong in the
 // instance CONFIG repository, the one workflowSource loads definitions from.
-// push-branch and open-pr gain an opt-in `target: config-repo` input that
+// push-branch and open-pr gain an opt-in --config-repo flag that
 // re-aims them at that repository and authenticates them with the stage's
 // declared configrepo:write credential — a credential minted from
 // workflowSource's own auth, never from a gaggle's product-repo token. The two
@@ -31,9 +26,6 @@ import (
 // product-repo stage never reads GOOBERS_CRED_CONFIGREPO_WRITE.
 
 const (
-	// configRepoTargetInput names the opt-in input; its only non-empty value.
-	configRepoTargetInput = "target"
-	configRepoTargetValue = "config-repo"
 	// configRepoInput / configRepoBaseInput address the config repository
 	// where no instance config is readable (a stage pod): owner/name and the
 	// base branch. They are verified against workflowSource when it IS
@@ -62,33 +54,24 @@ func (t configRepoTarget) CloneURL() string {
 	return "https://" + configRepoHost + "/" + t.Repo.Owner + "/" + t.Repo.Name + ".git"
 }
 
-// providerTargetIsConfigRepo reports whether the stage opted into the
-// config-repo target, rejecting any other non-empty value so a typo cannot
-// silently fall back to the product repository.
-func providerTargetIsConfigRepo() (bool, error) {
-	switch v := strings.TrimSpace(providerInput(configRepoTargetInput, "")); v {
-	case "":
-		return false, nil
-	case configRepoTargetValue:
-		return true, nil
-	default:
-		return false, fmt.Errorf("unknown target %q: the only supported value is %q (omit it for the gaggle's repository)", v, configRepoTargetValue)
-	}
-}
-
 func configRepoDir() string {
-	if d := strings.TrimSpace(providerInput(configRepoDirInput, "")); d != "" {
+	if d := strings.TrimSpace(providerInput("configRepoDir", "")); d != "" {
 		return d
 	}
 	return defaultConfigRepoDir
 }
 
-// pushBranchConfigTarget resolves the config target (push-branch, open-pr) when
-// the stage opted in; root is where the instance config is looked up.
-func pushBranchConfigTarget(root string) (configRepoTarget, bool, error) {
-	isConfig, err := providerTargetIsConfigRepo()
-	if err != nil || !isConfig {
-		return configRepoTarget{}, false, err
+// configRepoFlag is the opt-in flag name push-branch and open-pr share. It is a
+// flag rather than an input so the provider-stage manifest, which sees a
+// stage's args, can swap the stage's required capability from the product
+// repo's (repo:push / provider:pr:write) to configrepo:write at admission.
+const configRepoFlag = "config-repo"
+
+// configRepoTargetFor resolves the config target (push-branch, open-pr) when
+// the stage passed --config-repo; root is where the instance config is looked up.
+func configRepoTargetFor(enabled bool, root string) (configRepoTarget, bool, error) {
+	if !enabled {
+		return configRepoTarget{}, false, nil
 	}
 	target, err := resolveConfigRepoTarget(root)
 	return target, true, err
@@ -138,8 +121,8 @@ func configRepoTargetFromSource(source *instance.WorkflowSource) (configRepoTarg
 // configRepo/configRepoBase inputs serve a stage pod, which carries no
 // instance config, and must agree with workflowSource wherever both exist.
 func resolveConfigRepoTarget(root string) (configRepoTarget, error) {
-	inputRepo := strings.TrimSpace(providerInput(configRepoInput, ""))
-	inputBase := strings.TrimSpace(providerInput(configRepoBaseInput, ""))
+	inputRepo := strings.TrimSpace(providerInput("configRepo", ""))
+	inputBase := strings.TrimSpace(providerInput("configRepoBase", ""))
 
 	cfg, loadErr := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
 	if loadErr == nil {
@@ -233,96 +216,4 @@ func withWorkingDir(dir string, fn func() error) (err error) {
 		}
 	}()
 	return fn()
-}
-
-const configCheckoutHelp = "Usage: goobers config-checkout [dir]\n\n" +
-	"Clone the instance CONFIG repository (the workflowSource repository) at\n" +
-	"its tracked ref into [dir] (default: the configRepoDir input, else\n" +
-	"\"config-repo\", relative to the stage workspace) and check out the run's\n" +
-	"branch there, so a stage can edit the config tree and push-branch/open-pr\n" +
-	"(input target: config-repo) can publish it. Requires the stage to declare\n" +
-	"configrepo:write. The credential authenticates the clone through the git\n" +
-	"environment only; it is never written to .git/config.\n\n" +
-	"Inputs: head (branch to create/reuse; default the run's stable branch),\n" +
-	"configRepoDir, and for stage pods without instance config, configRepo\n" +
-	"(owner/name) and configRepoBase.\n" +
-	"A pre-existing branch on the remote (a repass) is checked out and\n" +
-	"continued rather than recreated. A non-empty [dir] is refused.\n" +
-	"Exit codes: 0 = checked out, 1 = business error, 2 = usage/IO error.\n"
-
-const configCheckoutTimeout = 5 * time.Minute
-
-func runConfigCheckout(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("config-checkout", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "config-checkout")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	dir := configRepoDir()
-	if fs.NArg() == 1 {
-		dir = fs.Arg(0)
-	}
-	root := providerStageRoot("")
-	target, err := resolveConfigRepoTarget(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	token, err := configRepoWriteToken()
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	runID, workflow, err := providerRunContext()
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	head := providerInput("head", preferredOpenPRHead(root, runID, workflow))
-
-	if entries, readErr := os.ReadDir(dir); readErr == nil && len(entries) > 0 {
-		pf(stderr, "error: %s already exists and is not empty\n", dir)
-		return 1
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), configCheckoutTimeout)
-	defer cancel()
-	if err := checkoutConfigRepo(ctx, dir, target, head, token); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	pf(stdout, "checked out %s/%s@%s into %s on branch %s\n", target.Repo.Owner, target.Repo.Name, target.Base, dir, head)
-	return 0
-}
-
-// checkoutConfigRepo clones the config repository's base branch into dir and
-// puts head checked out there: the remote head when it already exists (a
-// repass), otherwise a new branch off base.
-func checkoutConfigRepo(ctx context.Context, dir string, target configRepoTarget, head, token string) error {
-	authEnv := append(gitAuthEnvFor(capability.ConfigRepoWrite, token), "GIT_TERMINAL_PROMPT=0")
-	clone := exec.CommandContext(ctx, "git", "clone", "--quiet", "--branch", target.Base, "--single-branch", target.CloneURL(), dir)
-	clone.Env = authEnv
-	if out, err := clone.CombinedOutput(); err != nil {
-		return fmt.Errorf("clone config repository %s/%s@%s: %w: %s", target.Repo.Owner, target.Repo.Name, target.Base, err, strings.TrimSpace(string(out)))
-	}
-	git := func(env []string, args ...string) ([]byte, error) {
-		cmd := workspaceGitCommand(dir, args...)
-		cmd.Env = composeGitEnv(dir, env)
-		return workspaceGitCombinedOutput(cmd)
-	}
-	// A repass: continue the branch a previous attempt already pushed.
-	if _, err := git(authEnv, "fetch", "--quiet", "origin", head); err == nil {
-		if out, err := git(nil, "checkout", "--quiet", "-B", head, "FETCH_HEAD"); err != nil {
-			return fmt.Errorf("check out existing branch %q: %w: %s", head, err, strings.TrimSpace(string(out)))
-		}
-		return nil
-	}
-	if out, err := git(nil, "checkout", "--quiet", "-b", head); err != nil {
-		return fmt.Errorf("create branch %q: %w: %s", head, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }

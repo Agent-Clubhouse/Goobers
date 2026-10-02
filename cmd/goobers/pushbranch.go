@@ -32,7 +32,7 @@ import (
 // provider pushes with the runner-injected repo:push token; an Azure DevOps
 // origin must be the routed repository and gets the ADO header in the scheme
 // the daemon delivered beside the token (pushBranchEnvironment).
-const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
+const pushBranchHelp = "Usage: goobers push-branch [--config-repo] [path]\n\n" +
 	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
 	"configured repository credential — never the host's ambient git\n" +
 	"credentials, and never persisted to .git/config.\n" +
@@ -44,7 +44,7 @@ const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"App lacking the `workflows` permission for a .github/workflows change)\n" +
 	"fails immediately without retrying.\n" +
 	"[path] defaults to the current directory (the stage's worktree).\n\n" +
-	"Input target: config-repo (TUT-A8) pushes the instance CONFIG repository\n" +
+	"Flag --config-repo (TUT-A8) pushes the instance CONFIG repository\n" +
 	"checkout instead — [path] defaults to the configRepoDir input (default\n" +
 	"\"config-repo\", as created by `goobers config-checkout`) — authenticated\n" +
 	"with the stage's declared configrepo:write credential, never repo:push. The\n" +
@@ -57,6 +57,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("push-branch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "push-branch")
+	configRepo := fs.Bool(configRepoFlag, false, "push the instance config repository checkout with configrepo:write")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -75,7 +76,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 	baseBranch := ""
 	var env pushBranchAuthEnv
 	factDir := dir
-	configTarget, isConfig, err := pushBranchConfigTarget(providerStageRoot(""))
+	configTarget, isConfig, err := configRepoTargetFor(*configRepo, providerStageRoot(""))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

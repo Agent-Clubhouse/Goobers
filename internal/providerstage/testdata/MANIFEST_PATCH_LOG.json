@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "f7c814fb3c69c75cb13664db8a87d5e0190083a3ab2a0918ec41205dfbe31ad3",
+  "snapshotSha256": "93acf9ac8e362ed84a0c7ca2ec8d9199b7746ec2d7d1d7085ce45a1d8c3fe960",
   "changes": [
     {
       "version": 1,
@@ -60,6 +60,10 @@
     {
       "version": 15,
       "description": "pr-comment-watch gains native Azure DevOps support (#6130) and an OPTIONAL github:pr:write use: on Azure DevOps the routing labels are native pull-request labels on the project provider, which github:pr:write authorizes there (docs/design/ado-parity-dsl-2-0.md section 3.1), and the stage builds its ADO provider from that credential. GitHub and Gitea keep routing through github:issues:write, which stays the one required use. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling."
+    },
+    {
+      "version": 16,
+      "description": "push-branch and open-pr gain an opt-in --config-repo flag (TUT-A8, #1220): with it, push-branch requires configrepo:write instead of repo:push and open-pr requires configrepo:write instead of provider:pr:write, so a config-repo-targeted stage declares only the config-repository credential. Add config-checkout (requires configrepo:write). Without the flag every requirement is unchanged (the existing uses become required-unless-flag), so no shipped config's admission changes; configrepo:write is a new stage-declarable capability no shipped config declares."
     }
   ]
 }

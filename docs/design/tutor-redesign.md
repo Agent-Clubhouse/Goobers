@@ -1,6 +1,6 @@
 # Design: Tutor v2 — version-aware, instance-scoped process self-improvement
 
-> Status: **implemented — TUT-A8 landed as the config-repo target slice** (TUT-P1..P3 #1192–#1194 and TUT-A1..A7 #1213–#1219 closed; #1220 configrepo:write: capability, minting from `workflowSource` App auth, `target: config-repo` on push-branch/open-pr, `config-checkout` — see §4.8 status; pod-side stamping of the config repo identity and the shipped tutor.yaml migration remain; header refreshed 2026-10-02) · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
+> Status: **implemented — TUT-A8 landed as the config-repo target slice** (TUT-P1..P3 #1192–#1194 and TUT-A1..A7 #1213–#1219 closed; #1220 configrepo:write: capability, minting from `workflowSource` App auth, `--config-repo` on push-branch/open-pr, `config-checkout` — see §4.8 status; pod-side stamping of the config repo identity and the shipped tutor.yaml migration remain; header refreshed 2026-10-02) · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
 > Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
 > Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #460 (WCD-6 `configrepo:read` — the tutor needs a write-sibling, §4.8), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
@@ -316,7 +316,7 @@ adversarial-isolation pen-test #461 and the throwaway-test-repo creds.)
 same GitHub App `workflowSource` already authenticates with — a second installation token down-scoped to the
 config repository and to `contents:write` + `pull_requests:write` — or, for a token-authed `workflowSource`,
 sourced from an explicit `credentials:` entry (the read token is never reused). `push-branch` and `open-pr`
-take `target: config-repo`; `goobers config-checkout` provisions the config-repo workspace. See
+take `--config-repo`; `goobers config-checkout` provisions the config-repo workspace. See
 `docs/guides/tutor-write-boundary.md#config-repo-target-configrepowrite`. Not yet done: the engine does not
 stamp the config repo identity into stage pods (pods pass `configRepo`/`configRepoBase` inputs), and the
 checkout lives in a nested directory of the stage workspace, so a stage pod's workspace delta does not carry it

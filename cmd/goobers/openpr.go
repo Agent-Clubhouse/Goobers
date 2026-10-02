@@ -138,12 +138,12 @@ func openPullRequestWithADOLink(
 	return result, linkADOPullRequestToWorkItem(ctx, linker, repo, root, issueID, result.ID, haveIssue, stderr)
 }
 
-const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
+const openPRHelp = "Usage: goobers open-pr [--config-repo] [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
 	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
 	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
-	"Config-repo target (TUT-A8): input target: config-repo opens the PR in the\n" +
+	"Config-repo target (TUT-A8): flag --config-repo opens the PR in the\n" +
 	"instance CONFIG repository (the workflowSource repository) with the\n" +
 	"stage's declared configrepo:write credential instead of the gaggle's\n" +
 	"repository with provider:pr:write. base defaults to workflowSource's ref,\n" +
@@ -241,7 +241,7 @@ func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issue
 }
 
 // openPRTarget is where open-pr opens its PR: the gaggle's routed repository
-// by default, or (input target: config-repo, TUT-A8) the instance config
+// by default, or (flag --config-repo, TUT-A8) the instance config
 // repository, authenticated by configrepo:write instead of provider:pr:write.
 // inRepoDir runs a git inspection (write boundaries, Tutor classification) in
 // the repository the PR is for: the process cwd by default, the config-repo
@@ -253,8 +253,18 @@ type openPRTarget struct {
 	inRepoDir   func(func() error) error
 }
 
-func resolveOpenPRTarget(root string) (openPRTarget, error) {
-	configTarget, isConfig, err := pushBranchConfigTarget(root)
+// localTutorChangesIn is localTutorChanges evaluated inside the repository the
+// PR is for (see openPRTarget.inRepoDir).
+func localTutorChangesIn(inRepoDir func(func() error) error, base string) (changes []tutorFileChange, err error) {
+	err = inRepoDir(func() (changeErr error) {
+		changes, changeErr = localTutorChanges(base)
+		return changeErr
+	})
+	return changes, err
+}
+
+func resolveOpenPRTarget(configRepo bool, root string) (openPRTarget, error) {
+	configTarget, isConfig, err := configRepoTargetFor(configRepo, root)
 	if err != nil {
 		return openPRTarget{}, err
 	}
@@ -283,6 +293,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "open-pr")
+	configRepo := fs.Bool(configRepoFlag, false, "open the PR in the instance config repository with configrepo:write")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -291,7 +302,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	target, err := resolveOpenPRTarget(root)
+	target, err := resolveOpenPRTarget(*configRepo, root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -408,11 +419,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	var tutorHoldout *tutorHoldoutRecord
 	recordTutorLiveVerification := false
 	if isTutorWorkflow(workflow) {
-		var changes []tutorFileChange
-		err := inRepoDir(func() (changeErr error) {
-			changes, changeErr = localTutorChanges(base)
-			return changeErr
-		})
+		changes, err := localTutorChangesIn(inRepoDir, base)
 		if err != nil {
 			pf(stderr, "error: classify Tutor change: %v\n", err)
 			return 1

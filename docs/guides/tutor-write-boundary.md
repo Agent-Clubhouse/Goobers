@@ -174,7 +174,7 @@ platform file, and asserts the stage fails closed and opens **no** PR.
 A tutor workflow runs in one gaggle but its improvement PRs belong in the
 instance **config repository** (the `workflowSource` repository), not in the
 gaggle's product repository. `push-branch` and `open-pr` therefore accept an
-opt-in `target: config-repo` input (TUT-A8, #1220; design:
+opt-in `--config-repo` flag (TUT-A8, #1220; design:
 `docs/design/tutor-redesign.md` §4.8).
 
 ```yaml
@@ -184,20 +184,21 @@ opt-in `target: config-repo` input (TUT-A8, #1220; design:
   capabilities: [configrepo:write]
 # ... a stage edits ./config-repo/gaggles/<gaggle>/... and commits there ...
 - name: push-branch
-  run: {command: ["goobers", "push-branch"]}
-  inputs: {target: config-repo}
+  run: {command: ["goobers", "push-branch", "--config-repo"]}
   capabilities: [configrepo:write]
 - name: open-pr
-  run: {command: ["goobers", "open-pr"]}
+  run: {command: ["goobers", "open-pr", "--config-repo"]}
   inputs:
-    target: config-repo
     confineToActionRoots: "true"
     actionRoots: "gaggles/<gaggle>/workflows,skills"   # relative to the CONFIG repo root
   capabilities: [configrepo:write]
 ```
 
-Inputs (all optional except `target`): `target` (`config-repo`; any other
-non-empty value is an error), `configRepoDir` (checkout directory relative to
+The flag (not an input) selects the target so admission can swap the stage's
+required capability: with `--config-repo`, `push-branch` requires
+`configrepo:write` instead of `repo:push`, and `open-pr` requires it instead of
+`provider:pr:write`. Declare only the one the stage uses. Inputs (all
+optional): `configRepoDir` (checkout directory relative to
 the stage workspace, default `config-repo`), `head` (`config-checkout` only:
 branch name, default the run's stable branch, so `open-pr`'s default head
 matches), `base` (`open-pr`: default `workflowSource.ref`), and `configRepo` /

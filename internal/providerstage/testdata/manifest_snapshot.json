@@ -101,6 +101,15 @@
     ]
   },
   {
+    "command": "config-checkout",
+    "capabilities": [
+      {
+        "capability": "configrepo:write",
+        "consequence": "the config-repository write credential is not injected, so the config repository cannot be cloned for a config-repo-targeted stage"
+      }
+    ]
+  },
+  {
     "command": "elect-lander",
     "resultFile": "election.json",
     "capabilities": [
@@ -275,7 +284,17 @@
     "capabilities": [
       {
         "capability": "provider:pr:write",
-        "consequence": "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"
+        "consequence": "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime",
+        "unlessFlags": [
+          "config-repo"
+        ]
+      },
+      {
+        "capability": "configrepo:write",
+        "consequence": "the config-repository write credential is not available, so pull-request creation in the instance config repository fails at runtime",
+        "anyFlags": [
+          "config-repo"
+        ]
       },
       {
         "capability": "ado:work-items:write",
@@ -369,7 +388,17 @@
     "capabilities": [
       {
         "capability": "repo:push",
-        "consequence": "the capability-scoped credential is not injected, so branch publication fails at runtime"
+        "consequence": "the capability-scoped credential is not injected, so branch publication fails at runtime",
+        "unlessFlags": [
+          "config-repo"
+        ]
+      },
+      {
+        "capability": "configrepo:write",
+        "consequence": "the config-repository write credential is not injected, so publishing the config-repo branch fails at runtime",
+        "anyFlags": [
+          "config-repo"
+        ]
       }
     ]
   },
