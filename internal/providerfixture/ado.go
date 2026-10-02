@@ -18,6 +18,16 @@ import (
 const (
 	normalizedADOOrganization = "fixture-org"
 	normalizedADOProject      = "fixture-project"
+
+	// ADOFixtureTag is the tag the seeded fixture work item carries
+	// (test/adolive provision creates it). The open-work-items listing is
+	// filtered to it: ListWorkItems returns the oldest open items first, up
+	// to a limit, so in a live project with more than that many older open
+	// items an unfiltered listing never reaches the seeded item, and the
+	// recorded listing would churn with every unrelated item anyway.
+	ADOFixtureTag = "goobers-fixture"
+	// adoFixtureListLimit bounds the filtered listing.
+	adoFixtureListLimit = 100
 )
 
 // ADORefreshConfig selects the live Azure DevOps fixture source.
@@ -71,12 +81,7 @@ func RefreshADO(ctx context.Context, cfg ADORefreshConfig) (Fixture, error) {
 	repository := providers.RepositoryRef{Project: cfg.Project}
 
 	recorder.begin("list-open-work-items")
-	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repository,
-		State:       "open",
-		OldestFirst: true,
-		Limit:       100,
-	})
+	items, err := provider.ListWorkItems(ctx, adoFixtureListRequest(repository))
 	if err != nil {
 		return Fixture{}, fmt.Errorf("list open ADO work items: %w", err)
 	}
@@ -88,7 +93,9 @@ func RefreshADO(ctx context.Context, cfg ADORefreshConfig) (Fixture, error) {
 		}
 	}
 	if !found {
-		return Fixture{}, fmt.Errorf("list open ADO work items did not return seeded work item %s", cfg.WorkItem)
+		return Fixture{}, fmt.Errorf(
+			"list open ADO work items tagged %s did not return seeded work item %s (%d listed): the item must be open and tagged %s; re-run `go run ./test/adolive provision`",
+			ADOFixtureTag, cfg.WorkItem, len(items), ADOFixtureTag)
 	}
 
 	recorder.begin("get-work-item")
@@ -110,12 +117,7 @@ func checkADOContract(ctx context.Context, fixture Fixture) error {
 		},
 	)
 	repository := providers.RepositoryRef{Project: fixture.Repository.Name}
-	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repository,
-		State:       "open",
-		OldestFirst: true,
-		Limit:       100,
-	})
+	items, err := provider.ListWorkItems(ctx, adoFixtureListRequest(repository))
 	if err != nil {
 		return fmt.Errorf("%w: ListWorkItems: %w", ErrContractAssertion, err)
 	}
@@ -152,6 +154,18 @@ func checkADOContract(ctx context.Context, fixture Fixture) error {
 		return fmt.Errorf("%w: %w", ErrContractAssertion, err)
 	}
 	return nil
+}
+
+// adoFixtureListRequest is the open-work-items listing both the refresh and
+// the contract replay issue: open items tagged ADOFixtureTag, oldest first.
+func adoFixtureListRequest(repository providers.RepositoryRef) providers.ListWorkItemsRequest {
+	return providers.ListWorkItemsRequest{
+		Repository:  repository,
+		State:       "open",
+		Labels:      []string{ADOFixtureTag},
+		OldestFirst: true,
+		Limit:       adoFixtureListLimit,
+	}
 }
 
 func parseADOOrganizationURL(raw string) (string, string, error) {
