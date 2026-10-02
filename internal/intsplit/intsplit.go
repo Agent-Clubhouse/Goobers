@@ -1,3 +1,4 @@
+// Package intsplit provides deterministic proportional splitting of int64 values.
 package intsplit
 
 import (
