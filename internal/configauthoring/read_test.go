@@ -132,6 +132,39 @@ func TestLocalReaderRejectsUnsafeDocuments(t *testing.T) {
 	}
 }
 
+func TestLocalReaderRejectsSensitiveDirectories(t *testing.T) {
+	root := testSource(t)
+	sensitivePaths := []string{
+		"credentials/service.yaml",
+		"secrets/readme.md",
+	}
+	for _, logicalPath := range sensitivePaths {
+		writeTestFile(t, root, logicalPath, "sensitive\n")
+	}
+	reader, err := NewLocalReader(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := reader.Documents(context.Background(), localSourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, logicalPath := range sensitivePaths {
+		t.Run(logicalPath, func(t *testing.T) {
+			for _, document := range page.Items {
+				if document.Path == logicalPath {
+					t.Fatalf("Documents() exposed sensitive path %q", logicalPath)
+				}
+			}
+			_, err := reader.Document(context.Background(), localSourceID, logicalPath)
+			if !errors.Is(err, ErrDocumentNotFound) {
+				t.Fatalf("Document() error = %v, want ErrDocumentNotFound", err)
+			}
+		})
+	}
+}
+
 func TestLocalReaderAdvertisesReadOnlySource(t *testing.T) {
 	reader, err := NewLocalReader(testSource(t), false)
 	if err != nil {

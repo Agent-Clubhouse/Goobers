@@ -277,7 +277,7 @@ func appendDocuments(documents *[]sourceDocument, root, logicalPrefix, stagingPr
 			return nil
 		}
 		if entry.IsDir() {
-			if hiddenSegment(logicalPath) {
+			if hiddenSegment(logicalPath) || sensitiveSegment(logicalPath) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -314,7 +314,8 @@ func safeLogicalPath(logicalPath string) bool {
 		return false
 	}
 	for _, segment := range strings.Split(logicalPath, "/") {
-		if segment == "" || segment == "." || segment == ".." || strings.HasPrefix(segment, ".") {
+		if segment == "" || segment == "." || segment == ".." ||
+			strings.HasPrefix(segment, ".") || sensitiveSegment(segment) {
 			return false
 		}
 	}
@@ -322,13 +323,17 @@ func safeLogicalPath(logicalPath string) bool {
 	if extension != ".yaml" && extension != ".yml" && extension != ".md" {
 		return false
 	}
-	stem := strings.ToLower(strings.TrimSuffix(path.Base(logicalPath), extension))
+	return true
+}
+
+func sensitiveSegment(logicalPath string) bool {
+	name := strings.ToLower(path.Base(logicalPath))
 	for _, marker := range []string{"credential", "password", "secret", "token"} {
-		if strings.Contains(stem, marker) {
-			return false
+		if strings.Contains(name, marker) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func hiddenSegment(logicalPath string) bool {
