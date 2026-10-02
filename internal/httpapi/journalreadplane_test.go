@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,12 +25,14 @@ type fakeRunJournalService struct {
 	work          journalclient.UnpushedWorkResponse
 	candidates    journalclient.EscalationCandidatesResponse
 	ownership     journalclient.BranchOwnershipResponse
+	authority     journalclient.MergeAuthorityResponse
 	err           error
 	phaseReqs     []journalclient.RunPhaseRequest
 	touchReqs     []journalclient.ConflictTouchRequest
 	workReqs      []journalclient.UnpushedWorkRequest
 	candidateReqs []journalclient.EscalationCandidatesRequest
 	ownershipReqs []journalclient.BranchOwnershipRequest
+	authorityReqs []journalclient.MergeAuthorityRequest
 }
 
 func (f *fakeRunJournalService) RunPhase(_ context.Context, req journalclient.RunPhaseRequest) (journalclient.RunPhaseResponse, error) {
@@ -57,8 +60,13 @@ func (f *fakeRunJournalService) BranchOwnership(_ context.Context, req journalcl
 	return f.ownership, f.err
 }
 
+func (f *fakeRunJournalService) MergeAuthority(_ context.Context, req journalclient.MergeAuthorityRequest) (journalclient.MergeAuthorityResponse, error) {
+	f.authorityReqs = append(f.authorityReqs, req)
+	return f.authority, f.err
+}
+
 func (f *fakeRunJournalService) calls() int {
-	return len(f.phaseReqs) + len(f.touchReqs) + len(f.workReqs) + len(f.candidateReqs) + len(f.ownershipReqs)
+	return len(f.phaseReqs) + len(f.touchReqs) + len(f.workReqs) + len(f.candidateReqs) + len(f.ownershipReqs) + len(f.authorityReqs)
 }
 
 func podHandler(t *testing.T, runID string, reader readservice.Reader, service RunJournalService) http.Handler {
@@ -269,6 +277,90 @@ func TestCrossRunRoutesContainThePodToItsOwnRun(t *testing.T) {
 	}
 	if service.calls() != before {
 		t.Fatal("a refused cross-run request reached the service")
+	}
+}
+
+func TestJournalJSONHandlerRouteFamiliesPreserveResponses(t *testing.T) {
+	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		operation string
+		success   string
+	}{
+		{
+			name:      "run phase",
+			path:      apicontract.JournalRunPhasePath,
+			body:      `{"runId":"run-1","targetRunId":"run-9","gaggle":"web"}`,
+			operation: "read run phase",
+			success:   `{"runId":"run-9","phase":"failed"}` + "\n",
+		},
+		{
+			name:      "conflict touches",
+			path:      apicontract.JournalConflictTouchesPath,
+			body:      `{"runId":"run-1","gaggle":"web","since":"` + since + `"}`,
+			operation: "read conflict touches",
+			success:   `{"touches":[]}` + "\n",
+		},
+		{
+			name:      "unpushed work",
+			path:      apicontract.JournalUnpushedWorkPath,
+			body:      `{"runId":"run-1","gaggle":"web","since":"` + since + `"}`,
+			operation: "read prior unpushed work",
+			success:   "{}\n",
+		},
+		{
+			name:      "escalation candidates",
+			path:      apicontract.JournalEscalationCandidatesPath,
+			body:      `{"runId":"run-1","gaggle":"web"}`,
+			operation: "read decomposition escalation candidates",
+			success:   `{"candidates":[]}` + "\n",
+		},
+		{
+			name:      "branch ownership",
+			path:      apicontract.JournalBranchOwnershipPath,
+			body:      `{"runId":"run-1","targetRunId":"run-9","workflow":"implementation","branch":"goobers/implementation/run-9","gaggle":"web"}`,
+			operation: "read branch ownership",
+			success:   "{}\n",
+		},
+		{
+			name:      "merge authority",
+			path:      apicontract.JournalMergeAuthorityPath,
+			body:      `{"runId":"run-1","gaggle":"web","stage":"merge-review","capability":"github:pr:merge"}`,
+			operation: "check current merge authority",
+			success:   `{"allowed":true}` + "\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name+"/success", func(t *testing.T) {
+			service := &fakeRunJournalService{
+				phase:     journalclient.RunPhaseResponse{RunID: "run-9", Phase: "failed"},
+				authority: journalclient.MergeAuthorityResponse{Allowed: true},
+			}
+			response := httptest.NewRecorder()
+			podHandler(t, "run-1", nil, service).ServeHTTP(response, jsonRequest(http.MethodPost, test.path, test.body))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			if got := response.Body.String(); got != test.success {
+				t.Fatalf("body = %q, want %q", got, test.success)
+			}
+		})
+
+		t.Run(test.name+"/service error", func(t *testing.T) {
+			service := &fakeRunJournalService{err: errors.New("sensitive service detail")}
+			response := httptest.NewRecorder()
+			podHandler(t, "run-1", nil, service).ServeHTTP(response, jsonRequest(http.MethodPost, test.path, test.body))
+			if response.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body)
+			}
+			want := `{"error":{"code":"write_failed","message":"` + test.operation + ` failed"}}` + "\n"
+			if got := response.Body.String(); got != want {
+				t.Fatalf("body = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
