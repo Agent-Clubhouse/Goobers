@@ -73,6 +73,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/apireadstore",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cache and filesystem signaling contracts run on Linux unit shards; Windows tests are not selected by the current gate budget."
+    },
+    {
       "package": "internal/app",
       "coverage": "none",
       "category": "not-selected",
@@ -185,6 +191,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/configsignal",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Cache and filesystem signaling contracts run on Linux unit shards; Windows tests are not selected by the current gate budget."
     },
     {
       "package": "internal/configsource",
