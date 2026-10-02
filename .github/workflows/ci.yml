@@ -173,7 +173,7 @@ jobs:
       - name: Run preflight
         run: go run ./test/ci group preflight
 
-  # Explicit base revision preserves justification checks after a re-pin is committed.
+  # Compare each PR head with its merge-base; concurrent main growth is unrelated.
   cmdgoobers-growth:
     name: cmd/goobers growth ratchet
     needs: [preflight]
@@ -193,8 +193,9 @@ jobs:
 
       - name: Enforce cmd/goobers growth ratchet
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD' }}
-        run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF"
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD' }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}
+        run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF" -head-ref "$HEAD_REF"
 
   # Unreachable-production-code report. Ran once, on this one runner — not
   # because the analysis is platform-independent (#4434: a symbol reachable
