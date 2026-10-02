@@ -30,6 +30,20 @@ var terminalExitCases = []struct {
 	{name: "escalated", phase: journal.PhaseEscalated, exit: 3},
 }
 
+type queuedResponseWriter struct {
+	syncBuffer
+	queued chan struct{}
+	once   sync.Once
+}
+
+func (w *queuedResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.syncBuffer.Write(p)
+	if bytes.Contains(p, []byte("state=queued")) {
+		w.once.Do(func() { close(w.queued) })
+	}
+	return n, err
+}
+
 func initTerminalPhaseDemo(t *testing.T, phase journal.RunPhase, signal bool) string {
 	t.Helper()
 	root := initDemo(t)
@@ -242,10 +256,11 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 		})
 	}
 
-	var stdout, stderr bytes.Buffer
+	stdout := &queuedResponseWriter{queued: make(chan struct{})}
+	var stderr bytes.Buffer
 	codeDone := make(chan int, 1)
 	go func() {
-		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, &stdout, &stderr)
+		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, stdout, &stderr)
 	}()
 
 	requestID := waitForDelegatedRequestID(t, ctx, l.SchedulerDir())
@@ -261,10 +276,22 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	select {
+	case <-stdout.queued:
+	case <-ctx.Done():
+		cancel()
+		<-codeDone
+		t.Fatal(ctx.Err())
+	}
 	hookMu.Lock()
 	hookRequestID = requestID
 	hookEnabled = true
 	hookMu.Unlock()
+	if err := os.Remove(filepath.Join(l.SchedulerDir(), pendingTriggersDir, requestID+ackSuffix)); err != nil && !os.IsNotExist(err) {
+		cancel()
+		<-codeDone
+		t.Fatal(err)
+	}
 
 	var code int
 	select {
