@@ -146,39 +146,34 @@ type SpanEventSummary struct {
 // Runs returns every run in the rollup, ordered by start time then run id for
 // a stable, comparable result set (rebuild-is-reproducible acceptance, #22).
 func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT r.run_id, r.workflow, r.workflow_version, r.workflow_digest, rgd.goober_digest,
 		       r.gaggle, r.trigger_kind, r.trigger_ref, r.status, r.started_at, r.finished_at, r.duration_ms, r.instance_id
 		FROM runs r
 		LEFT JOIN run_goober_digests rgd ON rgd.run_id = r.run_id
-		ORDER BY r.started_at, r.run_id`)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query runs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunSummary
-	for rows.Next() {
-		var r RunSummary
-		var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt, instanceID sql.NullString
-		var durationMs sql.NullInt64
-		if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &digest, &gooberDigest, &r.Gaggle,
-			&triggerKind, &triggerRef, &status, &startedAt, &finishedAt, &durationMs, &instanceID); err != nil {
-			return nil, fmt.Errorf("rollup: scan run: %w", err)
-		}
-		r.WorkflowDigest, r.GooberDigest = digest.String, gooberDigest.String
-		r.InstanceID = instanceID.String
-		r.TriggerKind, r.TriggerRef, r.Status = triggerKind.String, triggerRef.String, status.String
-		if r.StartedAt, err = parseTime(startedAt); err != nil {
-			return nil, err
-		}
-		if r.FinishedAt, err = parseTime(finishedAt); err != nil {
-			return nil, err
-		}
-		r.DurationMs = durationMs.Int64
-		out = append(out, r)
-	}
-	return out, rows.Err()
+		ORDER BY r.started_at, r.run_id`,
+		nil, "rollup: query runs", "",
+		func(rows *sql.Rows) (RunSummary, error) {
+			var r RunSummary
+			var digest, gooberDigest, triggerKind, triggerRef, status, startedAt, finishedAt, instanceID sql.NullString
+			var durationMs sql.NullInt64
+			if err := rows.Scan(&r.RunID, &r.Workflow, &r.WorkflowVersion, &digest, &gooberDigest, &r.Gaggle,
+				&triggerKind, &triggerRef, &status, &startedAt, &finishedAt, &durationMs, &instanceID); err != nil {
+				return RunSummary{}, fmt.Errorf("rollup: scan run: %w", err)
+			}
+			r.WorkflowDigest, r.GooberDigest = digest.String, gooberDigest.String
+			r.InstanceID = instanceID.String
+			r.TriggerKind, r.TriggerRef, r.Status = triggerKind.String, triggerRef.String, status.String
+			var err error
+			if r.StartedAt, err = parseTime(startedAt); err != nil {
+				return RunSummary{}, err
+			}
+			if r.FinishedAt, err = parseTime(finishedAt); err != nil {
+				return RunSummary{}, err
+			}
+			r.DurationMs = durationMs.Int64
+			return r, nil
+		})
 }
 
 // ContinuationRuns returns direct continuations grouped by source run.
@@ -327,25 +322,19 @@ func runRefPageQuery(filter RunListFilter, cursorStartedAt time.Time, cursorRunI
 
 // runRefRows executes a run-reference statement and scans its rows.
 func (db *DB) runRefRows(ctx context.Context, query string, args []any) ([]RunRef, error) {
-	rows, err := db.readDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query run refs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunRef
-	for rows.Next() {
-		var ref RunRef
-		var startedAt sql.NullString
-		if err := rows.Scan(&ref.RunID, &startedAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan run ref: %w", err)
-		}
-		if ref.StartedAt, err = parseTime(startedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, ref)
-	}
-	return out, rows.Err()
+	return queryRows(ctx, db.readDB(), query, args, "rollup: query run refs", "",
+		func(rows *sql.Rows) (RunRef, error) {
+			var ref RunRef
+			var startedAt sql.NullString
+			if err := rows.Scan(&ref.RunID, &startedAt); err != nil {
+				return RunRef{}, fmt.Errorf("rollup: scan run ref: %w", err)
+			}
+			var err error
+			if ref.StartedAt, err = parseTime(startedAt); err != nil {
+				return RunRef{}, err
+			}
+			return ref, nil
+		})
 }
 
 // LatestWorkflowRunRefs returns the newest indexed run for each workflow in
@@ -376,31 +365,25 @@ func (db *DB) LatestWorkflowRunRefs(ctx context.Context, gaggle, workflow string
 		WHERE row_rank = 1
 		ORDER BY started_at DESC, run_id ASC`
 
-	rows, err := db.readDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query latest workflow run refs: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []WorkflowRunRef
-	for rows.Next() {
-		var ref WorkflowRunRef
-		var startedAt sql.NullString
-		if err := rows.Scan(&ref.RunID, &ref.Gaggle, &ref.Workflow, &startedAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan latest workflow run ref: %w", err)
-		}
-		if ref.StartedAt, err = parseTime(startedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, ref)
-	}
-	return out, rows.Err()
+	return queryRows(ctx, db.readDB(), query, args, "rollup: query latest workflow run refs", "",
+		func(rows *sql.Rows) (WorkflowRunRef, error) {
+			var ref WorkflowRunRef
+			var startedAt sql.NullString
+			if err := rows.Scan(&ref.RunID, &ref.Gaggle, &ref.Workflow, &startedAt); err != nil {
+				return WorkflowRunRef{}, fmt.Errorf("rollup: scan latest workflow run ref: %w", err)
+			}
+			var err error
+			if ref.StartedAt, err = parseTime(startedAt); err != nil {
+				return WorkflowRunRef{}, err
+			}
+			return ref, nil
+		})
 }
 
 // StageAttempts returns every stage attempt for runID, ordered by stage then
 // durable traversal number. Attempt numbers can restart at one after a repass.
 func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT sa.stage, sa.branch, sa.traversal, sa.attempt, COALESCE(ai.model, ''), COALESCE(ai.harness_version, ''),
 		       sa.attempt_class, sa.status, sa.started_at, sa.finished_at, sa.duration_ms,
 		       sa.error_code, sa.error_class, su.input_tokens, su.output_tokens,
@@ -413,77 +396,66 @@ func (db *DB) StageAttempts(ctx context.Context, runID string) ([]StageAttempt, 
 		LEFT JOIN agent_invocations ai
 			ON ai.run_id = sa.run_id AND ai.stage = sa.stage AND ai.traversal = sa.traversal
 			AND ai.kind = 'task'
-		WHERE sa.run_id = ? ORDER BY sa.stage, sa.traversal`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query stage_attempts: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []StageAttempt
-	for rows.Next() {
-		var s StageAttempt
-		var class, status, startedAt, finishedAt, errCode, errClass sql.NullString
-		var branch, durationMs, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, nanoAIU sql.NullInt64
-		var premiumRequests, costUSD sql.NullFloat64
-		var billingModel, costBasis sql.NullString
-		if err := rows.Scan(
-			&s.Stage, &branch, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
-			&class, &status, &startedAt, &finishedAt, &durationMs,
-			&errCode, &errClass, &inputTokens, &outputTokens,
-			&cacheReadTokens, &cacheWriteTokens, &reasoningTokens,
-			&premiumRequests, &nanoAIU, &costUSD, &billingModel, &costBasis,
-		); err != nil {
-			return nil, fmt.Errorf("rollup: scan stage_attempt: %w", err)
-		}
-		s.Branch, s.BranchKnown = int(branch.Int64), branch.Valid
-		s.AttemptClass, s.Status, s.ErrorCode, s.ErrorClass = class.String, status.String, errCode.String, errClass.String
-		if s.StartedAt, err = parseTime(startedAt); err != nil {
-			return nil, err
-		}
-		if s.FinishedAt, err = parseTime(finishedAt); err != nil {
-			return nil, err
-		}
-		s.DurationMs = durationMs.Int64
-		s.InputTokens = optionalInt64(inputTokens)
-		s.OutputTokens = optionalInt64(outputTokens)
-		s.CacheReadTokens = optionalInt64(cacheReadTokens)
-		s.CacheWriteTokens = optionalInt64(cacheWriteTokens)
-		s.ReasoningTokens = optionalInt64(reasoningTokens)
-		s.CopilotPremiumRequests = optionalFloat64(premiumRequests)
-		s.NanoAIU = optionalInt64(nanoAIU)
-		s.CostUSD = optionalFloat64(costUSD)
-		s.BillingModel = billingModel.String
-		s.CostBasis = costBasis.String
-		out = append(out, s)
-	}
-	return out, rows.Err()
+		WHERE sa.run_id = ? ORDER BY sa.stage, sa.traversal`,
+		[]any{runID}, "rollup: query stage_attempts", "",
+		func(rows *sql.Rows) (StageAttempt, error) {
+			var s StageAttempt
+			var class, status, startedAt, finishedAt, errCode, errClass sql.NullString
+			var branch, durationMs, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, nanoAIU sql.NullInt64
+			var premiumRequests, costUSD sql.NullFloat64
+			var billingModel, costBasis sql.NullString
+			if err := rows.Scan(
+				&s.Stage, &branch, &s.Traversal, &s.Attempt, &s.Model, &s.HarnessVersion,
+				&class, &status, &startedAt, &finishedAt, &durationMs,
+				&errCode, &errClass, &inputTokens, &outputTokens,
+				&cacheReadTokens, &cacheWriteTokens, &reasoningTokens,
+				&premiumRequests, &nanoAIU, &costUSD, &billingModel, &costBasis,
+			); err != nil {
+				return StageAttempt{}, fmt.Errorf("rollup: scan stage_attempt: %w", err)
+			}
+			s.Branch, s.BranchKnown = int(branch.Int64), branch.Valid
+			s.AttemptClass, s.Status, s.ErrorCode, s.ErrorClass = class.String, status.String, errCode.String, errClass.String
+			var err error
+			if s.StartedAt, err = parseTime(startedAt); err != nil {
+				return StageAttempt{}, err
+			}
+			if s.FinishedAt, err = parseTime(finishedAt); err != nil {
+				return StageAttempt{}, err
+			}
+			s.DurationMs = durationMs.Int64
+			s.InputTokens = optionalInt64(inputTokens)
+			s.OutputTokens = optionalInt64(outputTokens)
+			s.CacheReadTokens = optionalInt64(cacheReadTokens)
+			s.CacheWriteTokens = optionalInt64(cacheWriteTokens)
+			s.ReasoningTokens = optionalInt64(reasoningTokens)
+			s.CopilotPremiumRequests = optionalFloat64(premiumRequests)
+			s.NanoAIU = optionalInt64(nanoAIU)
+			s.CostUSD = optionalFloat64(costUSD)
+			s.BillingModel = billingModel.String
+			s.CostBasis = costBasis.String
+			return s, nil
+		})
 }
 
 // AgentInvocations returns every indexed agentic span for runID.
 func (db *DB) AgentInvocations(ctx context.Context, runID string) ([]AgentInvocation, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT span_id, kind, stage, traversal, attempt, model, harness_version
-		FROM agent_invocations WHERE run_id = ? ORDER BY span_id`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query agent_invocations: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []AgentInvocation
-	for rows.Next() {
-		var invocation AgentInvocation
-		var traversal, attempt sql.NullInt64
-		if err := rows.Scan(
-			&invocation.SpanID, &invocation.Kind, &invocation.Stage,
-			&traversal, &attempt, &invocation.Model, &invocation.HarnessVersion,
-		); err != nil {
-			return nil, fmt.Errorf("rollup: scan agent_invocation: %w", err)
-		}
-		invocation.Traversal = optionalInt64(traversal)
-		invocation.Attempt = optionalInt64(attempt)
-		out = append(out, invocation)
-	}
-	return out, rows.Err()
+		FROM agent_invocations WHERE run_id = ? ORDER BY span_id`,
+		[]any{runID}, "rollup: query agent_invocations", "",
+		func(rows *sql.Rows) (AgentInvocation, error) {
+			var invocation AgentInvocation
+			var traversal, attempt sql.NullInt64
+			if err := rows.Scan(
+				&invocation.SpanID, &invocation.Kind, &invocation.Stage,
+				&traversal, &attempt, &invocation.Model, &invocation.HarnessVersion,
+			); err != nil {
+				return AgentInvocation{}, fmt.Errorf("rollup: scan agent_invocation: %w", err)
+			}
+			invocation.Traversal = optionalInt64(traversal)
+			invocation.Attempt = optionalInt64(attempt)
+			return invocation, nil
+		})
 }
 
 func optionalInt64(value sql.NullInt64) *int64 {
@@ -502,30 +474,25 @@ func optionalFloat64(value sql.NullFloat64) *float64 {
 
 // GateVerdicts returns every gate evaluation for runID, in seq order.
 func (db *DB) GateVerdicts(ctx context.Context, runID string) ([]GateVerdict, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT seq, branch, gate, verdict, target, occurred_at, runner_json FROM gate_verdicts
-		WHERE run_id = ? ORDER BY seq`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query gate_verdicts: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []GateVerdict
-	for rows.Next() {
-		var g GateVerdict
-		var verdict, target, occurredAt, runnerJSON sql.NullString
-		var branch sql.NullInt64
-		if err := rows.Scan(&g.Seq, &branch, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
-			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
-		}
-		g.Branch, g.BranchKnown = int(branch.Int64), branch.Valid
-		g.Verdict, g.Target, g.RunnerJSON = verdict.String, target.String, runnerJSON.String
-		if g.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
+		WHERE run_id = ? ORDER BY seq`,
+		[]any{runID}, "rollup: query gate_verdicts", "",
+		func(rows *sql.Rows) (GateVerdict, error) {
+			var g GateVerdict
+			var verdict, target, occurredAt, runnerJSON sql.NullString
+			var branch sql.NullInt64
+			if err := rows.Scan(&g.Seq, &branch, &g.Gate, &verdict, &target, &occurredAt, &runnerJSON); err != nil {
+				return GateVerdict{}, fmt.Errorf("rollup: scan gate_verdict: %w", err)
+			}
+			g.Branch, g.BranchKnown = int(branch.Int64), branch.Valid
+			g.Verdict, g.Target, g.RunnerJSON = verdict.String, target.String, runnerJSON.String
+			var err error
+			if g.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return GateVerdict{}, err
+			}
+			return g, nil
+		})
 }
 
 // HarnessTranscript is a queryable transcript pointer and its optional content
@@ -544,31 +511,26 @@ type HarnessTranscript struct {
 // HarnessTranscripts returns every within-stage transcript pointer for runID,
 // in seq order.
 func (db *DB) HarnessTranscripts(ctx context.Context, runID string) ([]HarnessTranscript, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT h.seq, h.stage, h.name, COALESCE(s.schema, ''), h.ref_digest, h.ref_size, h.occurred_at
 		FROM harness_transcripts h
 		LEFT JOIN harness_transcript_schemas s ON s.run_id = h.run_id AND s.seq = h.seq
-		WHERE h.run_id = ? ORDER BY h.seq`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query harness_transcripts: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []HarnessTranscript
-	for rows.Next() {
-		var h HarnessTranscript
-		var digest, occurredAt sql.NullString
-		var size sql.NullInt64
-		if err := rows.Scan(&h.Seq, &h.Stage, &h.Name, &h.Schema, &digest, &size, &occurredAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan harness_transcript: %w", err)
-		}
-		h.RefDigest, h.RefSize = digest.String, size.Int64
-		if h.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, err
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
+		WHERE h.run_id = ? ORDER BY h.seq`,
+		[]any{runID}, "rollup: query harness_transcripts", "",
+		func(rows *sql.Rows) (HarnessTranscript, error) {
+			var h HarnessTranscript
+			var digest, occurredAt sql.NullString
+			var size sql.NullInt64
+			if err := rows.Scan(&h.Seq, &h.Stage, &h.Name, &h.Schema, &digest, &size, &occurredAt); err != nil {
+				return HarnessTranscript{}, fmt.Errorf("rollup: scan harness_transcript: %w", err)
+			}
+			h.RefDigest, h.RefSize = digest.String, size.Int64
+			var err error
+			if h.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return HarnessTranscript{}, err
+			}
+			return h, nil
+		})
 }
 
 // SchedulerEvent is a queryable row from the scheduler_events table — a
@@ -603,153 +565,127 @@ func (db *DB) SchedulerEvents(ctx context.Context, workflow string) ([]Scheduler
 	}
 	query += ` ORDER BY s.seq`
 
-	rows, err := db.readDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query scheduler_events: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []SchedulerEvent
-	for rows.Next() {
-		var e SchedulerEvent
-		var wf, runID, reason, status, errorCode, errorClass, errorMessage, occurredAt sql.NullString
-		if err := rows.Scan(&e.Seq, &e.Type, &wf, &runID, &reason, &status, &errorCode, &errorClass, &errorMessage, &occurredAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan scheduler_event: %w", err)
-		}
-		e.Workflow, e.RunID, e.Reason, e.Status = wf.String, runID.String, reason.String, status.String
-		e.ErrorCode, e.ErrorClass, e.ErrorMessage = errorCode.String, errorClass.String, errorMessage.String
-		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	return queryRows(ctx, db.readDB(), query, args, "rollup: query scheduler_events", "",
+		func(rows *sql.Rows) (SchedulerEvent, error) {
+			var e SchedulerEvent
+			var wf, runID, reason, status, errorCode, errorClass, errorMessage, occurredAt sql.NullString
+			if err := rows.Scan(&e.Seq, &e.Type, &wf, &runID, &reason, &status, &errorCode, &errorClass, &errorMessage, &occurredAt); err != nil {
+				return SchedulerEvent{}, fmt.Errorf("rollup: scan scheduler_event: %w", err)
+			}
+			e.Workflow, e.RunID, e.Reason, e.Status = wf.String, runID.String, reason.String, status.String
+			e.ErrorCode, e.ErrorClass, e.ErrorMessage = errorCode.String, errorClass.String, errorMessage.String
+			var err error
+			if e.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return SchedulerEvent{}, err
+			}
+			return e, nil
+		})
 }
 
 // ProviderMutations returns every external-ref-touched event for runID, in
 // seq order — the traceable-mutation surface #12's MutationRecorder feeds.
 func (db *DB) ProviderMutations(ctx context.Context, runID string) ([]ProviderMutation, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT seq, provider, kind, external_id, url, operation, occurred_at FROM provider_mutations
-		WHERE run_id = ? ORDER BY seq`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query provider_mutations: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []ProviderMutation
-	for rows.Next() {
-		var m ProviderMutation
-		var url, operation, occurredAt sql.NullString
-		if err := rows.Scan(&m.Seq, &m.Provider, &m.Kind, &m.ExternalID, &url, &operation, &occurredAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan provider_mutation: %w", err)
-		}
-		m.URL, m.Operation = url.String, operation.String
-		if m.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+		WHERE run_id = ? ORDER BY seq`,
+		[]any{runID}, "rollup: query provider_mutations", "",
+		func(rows *sql.Rows) (ProviderMutation, error) {
+			var m ProviderMutation
+			var url, operation, occurredAt sql.NullString
+			if err := rows.Scan(&m.Seq, &m.Provider, &m.Kind, &m.ExternalID, &url, &operation, &occurredAt); err != nil {
+				return ProviderMutation{}, fmt.Errorf("rollup: scan provider_mutation: %w", err)
+			}
+			m.URL, m.Operation = url.String, operation.String
+			var err error
+			if m.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return ProviderMutation{}, err
+			}
+			return m, nil
+		})
 }
 
 // RunErrors returns every error event for runID, in seq order.
 func (db *DB) RunErrors(ctx context.Context, runID string) ([]RunError, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT re.seq, re.stage, re.attempt, re.code, re.error_class, re.message, rec.causes_json, re.occurred_at
 		FROM run_errors re
 		LEFT JOIN run_error_causes rec ON rec.run_id = re.run_id AND rec.seq = re.seq
-		WHERE re.run_id = ? ORDER BY re.seq`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query run_errors: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []RunError
-	for rows.Next() {
-		var e RunError
-		var stage, class, message, causesJSON, occurredAt sql.NullString
-		var attempt sql.NullInt64
-		if err := rows.Scan(&e.Seq, &stage, &attempt, &e.Code, &class, &message, &causesJSON, &occurredAt); err != nil {
-			return nil, fmt.Errorf("rollup: scan run_error: %w", err)
-		}
-		e.Stage, e.ErrorClass, e.Message = stage.String, class.String, message.String
-		if causesJSON.Valid {
-			if err := json.Unmarshal([]byte(causesJSON.String), &e.Causes); err != nil {
-				return nil, fmt.Errorf("rollup: decode run_error causes seq %d: %w", e.Seq, err)
+		WHERE re.run_id = ? ORDER BY re.seq`,
+		[]any{runID}, "rollup: query run_errors", "",
+		func(rows *sql.Rows) (RunError, error) {
+			var e RunError
+			var stage, class, message, causesJSON, occurredAt sql.NullString
+			var attempt sql.NullInt64
+			if err := rows.Scan(&e.Seq, &stage, &attempt, &e.Code, &class, &message, &causesJSON, &occurredAt); err != nil {
+				return RunError{}, fmt.Errorf("rollup: scan run_error: %w", err)
 			}
-		}
-		e.Attempt = int(attempt.Int64)
-		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+			e.Stage, e.ErrorClass, e.Message = stage.String, class.String, message.String
+			if causesJSON.Valid {
+				if err := json.Unmarshal([]byte(causesJSON.String), &e.Causes); err != nil {
+					return RunError{}, fmt.Errorf("rollup: decode run_error causes seq %d: %w", e.Seq, err)
+				}
+			}
+			e.Attempt = int(attempt.Int64)
+			var err error
+			if e.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return RunError{}, err
+			}
+			return e, nil
+		})
 }
 
 // Spans returns every span for runID, ordered by start time then span id.
 func (db *DB) Spans(ctx context.Context, runID string) ([]SpanSummary, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT s.span_id, s.parent_span_id, s.name, s.kind, s.status, s.status_message, s.start_time, s.end_time, s.duration_ms, b.business_status
 		FROM spans s LEFT JOIN span_business_status b ON b.run_id = s.run_id AND b.span_id = s.span_id
-		WHERE s.run_id = ? ORDER BY s.start_time, s.span_id`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query spans: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []SpanSummary
-	for rows.Next() {
-		var s SpanSummary
-		var parent, kind, statusMsg, start, end, businessStatus sql.NullString
-		var durationMs sql.NullInt64
-		if err := rows.Scan(&s.SpanID, &parent, &s.Name, &kind, &s.Status, &statusMsg, &start, &end, &durationMs, &businessStatus); err != nil {
-			return nil, fmt.Errorf("rollup: scan span: %w", err)
-		}
-		s.ParentSpanID, s.Kind, s.StatusMessage, s.BusinessStatus = parent.String, kind.String, statusMsg.String, businessStatus.String
-		if s.StartTime, err = parseTime(start); err != nil {
-			return nil, err
-		}
-		if s.EndTime, err = parseTime(end); err != nil {
-			return nil, err
-		}
-		s.DurationMs = durationMs.Int64
-		out = append(out, s)
-	}
-	return out, rows.Err()
+		WHERE s.run_id = ? ORDER BY s.start_time, s.span_id`,
+		[]any{runID}, "rollup: query spans", "",
+		func(rows *sql.Rows) (SpanSummary, error) {
+			var s SpanSummary
+			var parent, kind, statusMsg, start, end, businessStatus sql.NullString
+			var durationMs sql.NullInt64
+			if err := rows.Scan(&s.SpanID, &parent, &s.Name, &kind, &s.Status, &statusMsg, &start, &end, &durationMs, &businessStatus); err != nil {
+				return SpanSummary{}, fmt.Errorf("rollup: scan span: %w", err)
+			}
+			s.ParentSpanID, s.Kind, s.StatusMessage, s.BusinessStatus = parent.String, kind.String, statusMsg.String, businessStatus.String
+			var err error
+			if s.StartTime, err = parseTime(start); err != nil {
+				return SpanSummary{}, err
+			}
+			if s.EndTime, err = parseTime(end); err != nil {
+				return SpanSummary{}, err
+			}
+			s.DurationMs = durationMs.Int64
+			return s, nil
+		})
 }
 
 // SpanEvents returns the within-stage harness events attached to spanID, in
 // occurrence order — the granularity #22's acceptance criteria requires to
 // survive rollup (queries return both stage-level and within-stage rows).
 func (db *DB) SpanEvents(ctx context.Context, runID, spanID string) ([]SpanEventSummary, error) {
-	rows, err := db.readDB().QueryContext(ctx, `
+	return queryRows(ctx, db.readDB(), `
 		SELECT seq, name, occurred_at, attributes_json FROM span_events
-		WHERE run_id = ? AND span_id = ? ORDER BY seq`, runID, spanID)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: query span_events: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []SpanEventSummary
-	for rows.Next() {
-		var e SpanEventSummary
-		var occurredAt, attrsJSON sql.NullString
-		if err := rows.Scan(&e.Seq, &e.Name, &occurredAt, &attrsJSON); err != nil {
-			return nil, fmt.Errorf("rollup: scan span_event: %w", err)
-		}
-		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
-			return nil, err
-		}
-		if attrsJSON.Valid {
-			if err := json.Unmarshal([]byte(attrsJSON.String), &e.Attributes); err != nil {
-				return nil, fmt.Errorf("rollup: decode span_event attributes: %w", err)
+		WHERE run_id = ? AND span_id = ? ORDER BY seq`,
+		[]any{runID, spanID}, "rollup: query span_events", "",
+		func(rows *sql.Rows) (SpanEventSummary, error) {
+			var e SpanEventSummary
+			var occurredAt, attrsJSON sql.NullString
+			if err := rows.Scan(&e.Seq, &e.Name, &occurredAt, &attrsJSON); err != nil {
+				return SpanEventSummary{}, fmt.Errorf("rollup: scan span_event: %w", err)
 			}
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+			var err error
+			if e.OccurredAt, err = parseTime(occurredAt); err != nil {
+				return SpanEventSummary{}, err
+			}
+			if attrsJSON.Valid {
+				if err := json.Unmarshal([]byte(attrsJSON.String), &e.Attributes); err != nil {
+					return SpanEventSummary{}, fmt.Errorf("rollup: decode span_event attributes: %w", err)
+				}
+			}
+			return e, nil
+		})
 }
 
 func parseTime(ns sql.NullString) (time.Time, error) {
