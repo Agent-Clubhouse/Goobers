@@ -524,12 +524,11 @@ type githubCheckRunsResponse struct {
 }
 
 type githubCheckRun struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Conclusion string    `json:"conclusion"`
-	HTMLURL    string    `json:"html_url"`
-	StartedAt  time.Time `json:"started_at"`
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
 	App        struct {
 		ID int64 `json:"id"`
 	} `json:"app"`
@@ -543,14 +542,13 @@ type githubActionsRunsResponse struct {
 }
 
 type githubActionsRun struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	WorkflowID int64     `json:"workflow_id"`
-	Status     string    `json:"status"`
-	Conclusion string    `json:"conclusion"`
-	HTMLURL    string    `json:"html_url"`
-	HeadSHA    string    `json:"head_sha"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	WorkflowID int64  `json:"workflow_id"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+	HeadSHA    string `json:"head_sha"`
 }
 
 type githubCheckAnnotation struct {
