@@ -303,6 +303,7 @@ export interface ConfigDocument extends ConfigAuthoringContractVersion {
   revision: string;
   document: ConfigDocumentDescriptor;
   content: string;
+  diagnostics: ConfigDiagnostic[];
 }
 
 export type ConfigDocumentChange =

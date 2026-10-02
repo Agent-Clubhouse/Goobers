@@ -50,6 +50,17 @@ type restMutationRecorder interface {
 	recordExternalRef(context.Context, ExternalRef)
 }
 
+type restPullRequestOpener interface {
+	restMutationRecorder
+	FindPullRequestByBranch(context.Context, RepositoryRef, string, string) (PullRequestResult, bool, error)
+}
+
+type restOpenPullRequestHooks struct {
+	title             func(PullRequestRequest) string
+	createBody        func(PullRequestRequest, string, string) interface{}
+	isCreateRaceError func(error) bool
+}
+
 // restWorkItemMutator adds the common issue workflow used by shared updates.
 // The HTTP details remain provider-owned. restPager reads the comment history
 // an update's operation marker is looked up in (#2657).
@@ -485,6 +496,66 @@ type restClosedPull struct {
 	HTMLURL string `json:"html_url"`
 }
 
+type restOpenedPull struct {
+	Number  int    `json:"number"`
+	HTMLURL string `json:"html_url"`
+}
+
+func openRESTPullRequest(ctx context.Context, c restPullRequestOpener, kind ProviderKind, baseURL string, req PullRequestRequest, hooks restOpenPullRequestHooks) (PullRequestResult, error) {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return PullRequestResult{}, err
+	}
+	title := hooks.title(req)
+	prBody := withRunIDFooter(req.Body, req.RunID)
+	if existing, ok, err := c.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); err != nil {
+		return PullRequestResult{}, err
+	} else if ok {
+		return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls")
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	var out restOpenedPull
+	if err := c.do(ctx, http.MethodPost, endpoint, hooks.createBody(req, title, prBody), &out); err != nil {
+		if hooks.isCreateRaceError != nil && hooks.isCreateRaceError(err) {
+			if existing, ok, findErr := c.FindPullRequestByBranch(ctx, req.Repository, req.Head, req.Base); findErr == nil && ok {
+				return updateRESTPullRequest(ctx, c, kind, baseURL, req, existing.Number, title, prBody)
+			}
+		}
+		return PullRequestResult{}, err
+	}
+	recordRESTPullRequestMutation(ctx, c, kind, req, out, "open", title, prBody)
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+}
+
+func updateRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req PullRequestRequest, number int, title, prBody string) (PullRequestResult, error) {
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", strconv.Itoa(number))
+	if err != nil {
+		return PullRequestResult{}, err
+	}
+	var out restOpenedPull
+	if err := c.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"title": title, "body": prBody}, &out); err != nil {
+		return PullRequestResult{}, err
+	}
+	recordRESTPullRequestMutation(ctx, c, kind, req, out, "update", title, prBody)
+	return PullRequestResult{ID: strconv.Itoa(out.Number), Number: out.Number, URL: out.HTMLURL}, nil
+}
+
+func recordRESTPullRequestMutation(ctx context.Context, c restMutationRecorder, kind ProviderKind, req PullRequestRequest, out restOpenedPull, operation, title, body string) {
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider:  kind,
+		Ref:       issueRef(req.Repository, strconv.Itoa(out.Number)),
+		URL:       out.HTMLURL,
+		Operation: operation,
+		RunID:     req.RunID,
+		Fields: map[string]FieldDigest{
+			"title": {After: digestString(title)},
+			"body":  {After: digestString(body)},
+		},
+	})
+}
+
 func closeRESTPullRequest(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req ClosePullRequestRequest) (ClosePullRequestResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return ClosePullRequestResult{}, err
@@ -553,6 +624,31 @@ func restPullRequestFiles(ctx context.Context, c restPager, baseURL string, repo
 type restReviewResponse struct {
 	ID      int64  `json:"id"`
 	HTMLURL string `json:"html_url"`
+}
+
+func requestRESTReview(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, req ReviewRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.PullID == "" {
+		return errPullIDRequired
+	}
+	endpoint, err := joinURL(baseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
+	if err != nil {
+		return err
+	}
+	if err := c.do(ctx, http.MethodPost, endpoint, map[string][]string{"reviewers": req.Reviewers}, nil); err != nil {
+		return err
+	}
+	c.recordExternalRef(ctx, ExternalRef{
+		Provider:  kind,
+		Ref:       issueRef(req.Repository, req.PullID),
+		Operation: "request-review",
+		Fields: map[string]FieldDigest{
+			"reviewers": {After: digestString(strings.Join(req.Reviewers, ","))},
+		},
+	})
+	return nil
 }
 
 func submitRESTPullRequestReview(ctx context.Context, c restMutationRecorder, kind ProviderKind, baseURL string, attribution Attribution, req PullRequestReviewRequest) (PullRequestReviewResult, error) {

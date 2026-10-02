@@ -32,6 +32,13 @@ func (c *CopilotAdapter) prepareRequiredMCPRunner(req RunRequest, promptIndex in
 	return controlled, controlled.close
 }
 
+func (c *CopilotAdapter) prepareCopilotProcessRunner(req RunRequest, promptIndex int, config, model string, options map[string]string, confinement *copilotConfinement) (ProcessRunner, func()) {
+	if promptIndex >= 0 {
+		return c.prepareRequiredMCPRunner(req, promptIndex, config, model, options, confinement)
+	}
+	return withUnobservableMCPSource(c.runner(), req, "prompt-stdin"), func() {}
+}
+
 type mcpUnobservableRunner struct {
 	base    ProcessRunner
 	request RunRequest

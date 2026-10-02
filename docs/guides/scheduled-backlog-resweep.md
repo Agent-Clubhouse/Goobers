@@ -30,8 +30,25 @@ existing claim-policy authorization remains mandatory.
 ## Selection and evidence
 
 Forward candidates reserve batch capacity first, but the re-sweep never claims
-them. Only remaining slots are available, bounded again by `resweepMaxItems`.
-Blocked dependency rechecks precede ready-item rechecks. Partition filters and
+them. Only remaining slots are available to the two re-sweep lanes, and each
+lane has its own budget:
+
+- `resweepDependencyMaxItems` (default 25, at most 250) bounds how many
+  `blocked-on-sibling` items have their native blockers rechecked per run. A
+  recheck is one cheap provider call, so this budget is sized well above the
+  ready-drift lane's. Items whose native blockers have all closed are selected
+  as `dependency-recheck` work; an item left unselected only because the batch
+  was full is not recorded as swept, so it comes first on the next run.
+- `resweepMaxItems` bounds ready-drift reviews, and its presence enables the
+  re-sweep. Dependency rechecks no longer draw this budget down, and ready-drift
+  reviews never limit how many blocked items are rechecked.
+
+Both lanes still share the run's total `maxItems` batch capacity, and blocked
+dependency rechecks are selected before ready-item rechecks. In a run where
+more blocked items have become actionable than the batch has free slots, those
+items fill the batch and ready-drift review waits for a later run. While that
+queue drains, the actionable items stay first in the rotation, so still-blocked
+items behind them are rechecked a little later. Partition filters and
 priority ordering still apply; shared scheduler-state cursors and bounded
 selection history rotate work within priority tiers.
 

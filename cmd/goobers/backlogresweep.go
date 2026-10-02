@@ -17,8 +17,15 @@ import (
 )
 
 type backlogResweepPolicy struct {
-	maxItems   int
-	readyLabel string
+	// maxItems is the ready-drift lane's per-run budget (resweepMaxItems).
+	maxItems int
+	// dependencyMaxItems is the dependency-recheck lane's independent per-run
+	// budget (resweepDependencyMaxItems, #4884): how many blocked-on-sibling
+	// items have their native blockers rechecked. A recheck is one cheap
+	// provider call, so it is sized well above the judgment-heavy ready-drift
+	// lane, and neither lane's selections count against the other's budget.
+	dependencyMaxItems int
+	readyLabel         string
 }
 
 type backlogResweepState struct {
@@ -63,7 +70,15 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 	if readyLabel == "" {
 		return backlogResweepPolicy{}, false, errors.New("resweepReadyLabel must not be empty")
 	}
-	return backlogResweepPolicy{maxItems: resweepMax, readyLabel: readyLabel}, true, nil
+	dependencyMax, err := readResweepDependencyMaxItems()
+	if err != nil {
+		return backlogResweepPolicy{}, false, err
+	}
+	return backlogResweepPolicy{
+		maxItems:           resweepMax,
+		dependencyMaxItems: dependencyMax,
+		readyLabel:         readyLabel,
+	}, true, nil
 }
 
 // backlogResweepStateKey is the scheduler-state key holding the re-sweep

@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: python-implementation
+  annotations:
+    goobers.dev/purpose: "Example Python implementation workflow: an agent implements the change, local CI builds and tests it, and a reviewer gates the result."
 spec:
   gaggle: python-service
   displayName: Implementation (Python reference - implement -> review -> local-ci)

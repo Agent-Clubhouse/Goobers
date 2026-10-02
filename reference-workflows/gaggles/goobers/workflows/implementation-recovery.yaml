@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: implementation-recovery
+  annotations:
+    goobers.dev/purpose: "Resumes parked pre-PR work from retained issue state and carries it through review and CI to a pull request, without treating it as fresh work."
 spec:
   gaggle: goobers
   displayName: Implementation recovery (retained issue state -> reviewed PR)

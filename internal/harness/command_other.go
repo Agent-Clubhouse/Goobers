@@ -11,3 +11,7 @@ func resolveHarnessCommand(command []string) []string {
 func resolveStdioHarnessCommand(command []string) []string {
 	return append([]string(nil), command...)
 }
+
+func shouldUseCopilotPromptStdin(command []string, prompt string) bool {
+	return false
+}

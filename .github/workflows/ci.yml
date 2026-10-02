@@ -1726,6 +1726,9 @@ jobs:
       - name: Windows harness and toolkit
         run: go test ./internal/harness ./internal/agentkit
 
+      - name: Windows durable state services
+        run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
+
       - name: Windows containment and journals
         run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/secretpattern
 

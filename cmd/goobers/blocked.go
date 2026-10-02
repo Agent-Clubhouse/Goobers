@@ -270,17 +270,9 @@ func runBlockedClear(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("blocked clear", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "blocked clear")
-	if err := fs.Parse(args); err != nil {
+	itemID, root, ok := parseRequiredArgOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() < 1 || fs.NArg() > 2 {
-		fs.Usage()
-		return 2
-	}
-	itemID := fs.Arg(0)
-	root := "."
-	if fs.NArg() == 2 {
-		root = fs.Arg(1)
 	}
 
 	cleared := false

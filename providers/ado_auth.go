@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -317,36 +316,21 @@ func (c ADOCredential) ScrubForms() []string {
 // authenticated request. bearer must come from the credential kind (e.g.
 // ADOCredential.Kind), not from re-parsing header, so a caller can never
 // drift from what actually minted the header.
-func adoGitAuthEnv(header, remoteURL string, bearer bool) []string {
+func adoGitAuthEnv(header, remoteURL string, bearer bool, registrar SecretRegistrar, scrubForms ...string) []string {
 	scopedURL := strings.TrimRight(remoteURL, "/") + "/"
-	base := make([]string, 0, len(os.Environ())+8)
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		upper := strings.ToUpper(name)
-		if upper == "GIT_CONFIG_COUNT" || upper == "GIT_TERMINAL_PROMPT" ||
-			strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
-			continue
-		}
-		base = append(base, entry)
+	env := scopedGitExtraHeaderEnv(remoteURL, header, registrar, scrubForms...)
+	if !bearer {
+		return env
 	}
-	count := 2
-	if bearer {
-		count = 3
-	}
-	env := append(base,
-		"GIT_CONFIG_COUNT="+strconv.Itoa(count),
-		"GIT_CONFIG_KEY_0=credential.helper",
-		"GIT_CONFIG_VALUE_0=",
-		"GIT_CONFIG_KEY_1=http."+scopedURL+".extraheader",
-		"GIT_CONFIG_VALUE_1=AUTHORIZATION: "+header,
+	env[len(env)-6] = "GIT_CONFIG_COUNT=3"
+	withPassthrough := make([]string, 0, len(env)+2)
+	withPassthrough = append(withPassthrough, env[:len(env)-1]...)
+	withPassthrough = append(withPassthrough,
+		"GIT_CONFIG_KEY_2=http."+scopedURL+".extraheader",
+		"GIT_CONFIG_VALUE_2="+adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue,
+		env[len(env)-1],
 	)
-	if bearer {
-		env = append(env,
-			"GIT_CONFIG_KEY_2=http."+scopedURL+".extraheader",
-			"GIT_CONFIG_VALUE_2="+adoForceMsaPassThroughHeader+": "+adoForceMsaPassThroughValue,
-		)
-	}
-	return append(env, "GIT_TERMINAL_PROMPT=0")
+	return withPassthrough
 }
 
 // ADOGitAuthEnvironment resolves one credential into a child-process-only Git
@@ -366,12 +350,7 @@ func ADOGitAuthEnvironment(ctx context.Context, source ADOCredentialSource, regi
 	if err != nil {
 		return nil, err
 	}
-	if registrar != nil {
-		for _, form := range credential.ScrubForms() {
-			registrar.Register([]byte(form))
-		}
-	}
-	return adoGitAuthEnv(header, remoteURL, credential.Kind == adoCredentialBearer), nil
+	return adoGitAuthEnv(header, remoteURL, credential.Kind == adoCredentialBearer, registrar, credential.ScrubForms()...), nil
 }
 
 type adoBearerToken struct {

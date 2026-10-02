@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/nowork"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -53,7 +54,7 @@ func TestNoWorkVerdictIsRecordedOnTheIssue(t *testing.T) {
 	if err := settleNoWorkStreak(context.Background(), fake, l, "run-a", "implement", "https://runs.example/run-a"); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	verdicts := commentCalls(fake.calls, noWorkVerdictMarker)
+	verdicts := commentCalls(fake.calls, nowork.VerdictMarker)
 	if len(verdicts) != 1 {
 		t.Fatalf("verdict comments = %d (calls %+v), want 1", len(verdicts), fake.calls)
 	}
@@ -88,7 +89,7 @@ func TestContradictingNoWorkVerdictIsFlagged(t *testing.T) {
 	if err := settleNoWorkStreak(context.Background(), fake, l, "run-b", "implement", ""); err != nil {
 		t.Fatalf("settle b: %v", err)
 	}
-	verdicts := commentCalls(fake.calls, noWorkVerdictMarker)
+	verdicts := commentCalls(fake.calls, nowork.VerdictMarker)
 	if len(verdicts) != 2 {
 		t.Fatalf("verdict comments = %d, want 2", len(verdicts))
 	}
@@ -118,7 +119,7 @@ func TestProductiveRunAfterNoWorkVerdictIsFlagged(t *testing.T) {
 			t.Fatalf("settle productive %d: %v", i, err)
 		}
 	}
-	flags := commentCalls(fake.calls, noWorkContradictionMarker)
+	flags := commentCalls(fake.calls, nowork.ContradictionMarker)
 	if len(flags) != 1 {
 		t.Fatalf("contradiction comments = %d, want exactly 1", len(flags))
 	}
@@ -181,7 +182,7 @@ func TestClaimedItemCarriesPriorNoWorkVerdict(t *testing.T) {
 	enriched := withPriorNoWorkVerdict(context.Background(), l, noWorkStreakRepo, "5629", item, io.Discard)
 	var decoded struct {
 		providers.WorkItem
-		Prior *priorNoWorkVerdict `json:"priorNoWorkVerdict"`
+		Prior *nowork.PriorVerdict `json:"priorNoWorkVerdict"`
 	}
 	if err := json.Unmarshal(enriched, &decoded); err != nil {
 		t.Fatalf("decode %s: %v", enriched, err)
@@ -189,9 +190,9 @@ func TestClaimedItemCarriesPriorNoWorkVerdict(t *testing.T) {
 	if decoded.ID != "5629" || decoded.Title != "flake" {
 		t.Fatalf("item fields lost: %+v", decoded.WorkItem)
 	}
-	want := priorNoWorkVerdict{Count: 1, Stage: "implement", Verdict: "already-fixed", Reason: "fixed by an earlier commit", Evidence: "02642a86a", RunID: "run-a"}
+	want := nowork.PriorVerdict{Count: 1, Stage: "implement", Verdict: "already-fixed", Reason: "fixed by an earlier commit", Evidence: "02642a86a", RunID: "run-a"}
 	if decoded.Prior == nil {
-		t.Fatalf("claimed item = %s, want %s", enriched, priorNoWorkVerdictField)
+		t.Fatalf("claimed item = %s, want %s", enriched, nowork.PriorVerdictField)
 	}
 	got := *decoded.Prior
 	got.RecordedAt = want.RecordedAt

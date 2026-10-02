@@ -345,6 +345,13 @@ func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID strin
 					continue
 				}
 			}
+			if resp, ok := readTriggerResponseFile(respPath); ok {
+				_ = os.Remove(ackPath)
+				return resp, nil
+			}
+			if resp, ok := readTriggerResponseFile(ackPath); ok {
+				return resp, nil
+			}
 			// Reaching here now means the daemon never answered at all, not
 			// merely that it was slow: the wait outlives the request's own
 			// deadline, so a daemon that swept at any point would have written
@@ -353,6 +360,13 @@ func pollTriggerResponseEvent(ctx context.Context, schedulerDir, requestID strin
 			// (#2974).
 			if triggerResponseTimeoutHook != nil {
 				triggerResponseTimeoutHook(requestID)
+				if resp, ok := readTriggerResponseFile(respPath); ok {
+					_ = os.Remove(ackPath)
+					return resp, nil
+				}
+				if resp, ok := readTriggerResponseFile(ackPath); ok {
+					return resp, nil
+				}
 			}
 			return triggerResponse{}, fmt.Errorf("delegate: timed out after %s waiting for the `goobers up` daemon to answer the trigger request "+
 				"(request left at %s). %s", timeout,

@@ -281,6 +281,7 @@ type giteaIssueMock struct {
 	dependencies  []map[string]interface{}
 	timeline      []map[string]interface{}
 	patchBody     map[string]interface{}
+	labelAdds     int
 }
 
 func newGiteaIssueMock() *giteaIssueMock {
@@ -355,6 +356,7 @@ func (m *giteaIssueMock) handler(t *testing.T) http.Handler {
 			Labels []int64 `json:"labels"`
 		}
 		decodeJSON(t, r, &body)
+		m.labelAdds++
 		seen := map[int64]bool{}
 		for _, id := range m.labelIDs {
 			seen[id] = true
@@ -574,6 +576,30 @@ func TestGiteaClaimWorkItemSingleWinnerUnderConcurrency(t *testing.T) {
 	}
 	if !winner.Item.HasLabel(LabelClaimed) {
 		t.Fatalf("claimed label not applied to winner: %#v", winner.Item.Labels)
+	}
+	if m.labelAdds != 1 {
+		t.Fatalf("claim label additions = %d, want winner only", m.labelAdds)
+	}
+}
+
+func TestGiteaClaimWorkItemRequiresIDAndRunID(t *testing.T) {
+	m := newGiteaIssueMock()
+	p, repo := newGiteaIssueProvider(t, m)
+	tests := []struct {
+		name string
+		req  ClaimWorkItemRequest
+		want error
+	}{
+		{name: "missing id", req: ClaimWorkItemRequest{Repository: repo, RunID: "run-A"}, want: errIssueIDRequired},
+		{name: "missing run id", req: ClaimWorkItemRequest{Repository: repo, ID: "7"}, want: fmt.Errorf("run id is required to claim an item")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.ClaimWorkItem(context.Background(), tc.req)
+			if err == nil || err.Error() != tc.want.Error() {
+				t.Fatalf("ClaimWorkItem() error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

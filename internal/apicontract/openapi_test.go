@@ -254,6 +254,26 @@ func TestOpenAPIDocumentMarksEveryIdempotentMutation(t *testing.T) {
 	}
 }
 
+func TestOpenAPIDocumentDescribesConfigDocumentPath(t *testing.T) {
+	document, err := OpenAPIDocument(true, V1ConfigAuthoringRoutes()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Paths map[string]map[string]operation `json:"paths"`
+	}
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	operation := decoded.Paths[ConfigSourceDocumentPath]["get"]
+	for _, parameter := range operation.Parameters {
+		if parameter.Name == "path" && parameter.In == "query" && parameter.Required && parameter.Schema.Type == "string" {
+			return
+		}
+	}
+	t.Fatalf("config document parameters = %+v, want required string path query parameter", operation.Parameters)
+}
+
 type operation struct {
 	OperationID RouteID                `json:"operationId"`
 	Security    []map[string][]string  `json:"security"`
@@ -265,6 +285,9 @@ type openAPIParameterTest struct {
 	Name     string `json:"name"`
 	In       string `json:"in"`
 	Required bool   `json:"required"`
+	Schema   struct {
+		Type string `json:"type"`
+	} `json:"schema"`
 }
 
 func lowerMethod(method string) string {

@@ -1,9 +1,9 @@
-package main
+// Package tracefollow streams recorded run transcripts from a read service.
+package tracefollow
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,27 +12,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readservice"
 )
-
-type traceTranscriptOptions struct {
-	show, follow, terminal, jsonOutput bool
-	afterSeq                           uint64
-}
-
-func maybeTraceTranscripts(ctx context.Context, reads readservice.OfflineRuns, runID, stage string, options traceTranscriptOptions, newFollowContext func() (context.Context, func()), stdout, stderr io.Writer) (bool, int) {
-	if !options.follow || !options.show {
-		return maybePrintTraceTranscripts(ctx, reads, runID, stage, options.show, stdout, stderr)
-	}
-	followCtx, stop := newFollowContext()
-	defer stop()
-	if err := followTraceTranscripts(followCtx, reads, runID, stage, options.afterSeq, options.terminal, options.jsonOutput, stdout); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return true, traceInterruptedExitCode
-		}
-		pf(stderr, "error: follow transcripts: %v\n", err)
-		return true, 2
-	}
-	return true, 0
-}
 
 // A final transcript is a canonical replacement, not another raw delta. Its
 // capture identity lets consumers replace previously displayed checkpoints.
@@ -50,8 +29,10 @@ type traceTranscriptRecord struct {
 	ReplacesCapture string `json:"replacesCapture,omitempty"`
 }
 
-func followTraceTranscripts(ctx context.Context, reads readservice.OfflineRuns, runID, stage string, afterSeq uint64, terminal, jsonOutput bool, stdout io.Writer) error {
-	ticker := time.NewTicker(traceFollowPollInterval)
+// FollowTranscripts streams transcript checkpoints and canonical finals until the
+// run is terminal or ctx is canceled. pollInterval controls ledger refreshes.
+func FollowTranscripts(ctx context.Context, reads readservice.OfflineRuns, runID, stage string, afterSeq uint64, terminal, jsonOutput bool, pollInterval time.Duration, stdout io.Writer) error {
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
 		ledger, err := reads.RunEvents(ctx, runID)
@@ -80,7 +61,7 @@ func followTraceTranscripts(ctx context.Context, reads readservice.OfflineRuns, 
 			}
 			afterSeq = event.Seq
 		}
-		if terminal || traceEventsTerminal(ledger.Events) {
+		if terminal || EventsTerminal(ledger.Events) {
 			return nil
 		}
 		select {
@@ -106,7 +87,7 @@ func verifiedFollowCaptures(ctx context.Context, reads readservice.OfflineRuns, 
 }
 
 func traceTranscriptEvent(event readservice.RunEvent, runID, stage string) bool {
-	if !event.KnownSchema || event.Type != journal.EventSpanRecorded || (stage != "" && stageArtifactName(runID, event.Stage) != stage) {
+	if !event.KnownSchema || event.Type != journal.EventSpanRecorded || (stage != "" && journal.StageArtifactName(runID, event.Stage) != stage) {
 		return false
 	}
 	return event.Name == "transcript" || strings.HasSuffix(event.Name, ".transcript") ||

@@ -276,7 +276,7 @@ func (p *ADOProvider) CloneRepository(ctx context.Context, req CloneRequest) (Cl
 		if authErr != nil {
 			return CloneResult{}, fmt.Errorf("resolve ADO clone credential: %w", authErr)
 		}
-		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL, bearer), "git", args...)
+		out, err = runner.RunWithEnv(ctx, adoGitAuthEnv(header, cloneURL, bearer, nil), "git", args...)
 	}
 	if err != nil {
 		return CloneResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
@@ -308,7 +308,7 @@ func (p *ADOProvider) RepositoryReachable(ctx context.Context, repo RepositoryRe
 	if err != nil {
 		return fmt.Errorf("resolve ADO repository credential: %w", err)
 	}
-	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo), bearer), "git", args...); err != nil {
+	if _, err := runner.RunWithEnv(ctx, adoGitAuthEnv(header, p.repositoryURL(repo), bearer, nil), "git", args...); err != nil {
 		return fmt.Errorf("git ls-remote: %w", err)
 	}
 	return nil

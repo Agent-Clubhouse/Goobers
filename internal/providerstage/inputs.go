@@ -112,6 +112,7 @@ var inputSchemas = map[string][]Input{
 			RetiredSince: "2026-09-08",
 			Replacement:  "configure schedule and readiness on a separate workflow using backlog-query --claim --resweep",
 		},
+		{Name: "resweepDependencyMaxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "resweepMaxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "resweepReadyLabel", Type: InputString, State: InputCurrent},
 		{Name: "selectionPriority", Type: InputStringList, State: InputCurrent},

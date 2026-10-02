@@ -157,12 +157,6 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
-      "package": "internal/branchretention",
-      "coverage": "none",
-      "category": "not-selected",
-      "reason": "Pure terminal-age and protection policy; exercised on Linux unit shards. No Windows-specific seam identified."
-    },
-    {
       "package": "internal/builtincmd",
       "coverage": "none",
       "category": "not-selected",
@@ -194,6 +188,12 @@
     },
     {
       "package": "internal/clustercheck",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/configauthoring",
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
@@ -529,6 +529,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/nowork",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No-work verdict domain tests extracted from cmd/goobers; the Windows CLI test selection did not run these tests. Runs on the Linux unit shards."
+    },
+    {
       "package": "internal/oidcauth",
       "coverage": "none",
       "category": "not-selected",
@@ -821,6 +827,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/tracefollow",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Transcript-follow tests were not selected by the Windows CLI gate before extraction; no Windows-specific seam identified."
     },
     {
       "package": "internal/triggerqueue",

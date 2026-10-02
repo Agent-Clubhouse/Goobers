@@ -3,6 +3,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: claude-backlog-curation
+  annotations:
+    goobers.dev/purpose: "Keeps the issue backlog healthy by reconciling claims, checking for duplicates and curating items so that implementation always has well-scoped, ready work."
 spec:
   gaggle: acme-web-claude
   displayName: Backlog curation

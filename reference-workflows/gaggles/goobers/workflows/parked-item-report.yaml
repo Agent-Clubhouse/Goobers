@@ -4,6 +4,8 @@ kind: Workflow
 dslVersion: "2.0"
 metadata:
   name: parked-item-report
+  annotations:
+    goobers.dev/purpose: "Lists open approved items that are parked for remediation so a human can choose which to pick up, without changing any state."
 spec:
   gaggle: goobers
   displayName: Parked items for human review
