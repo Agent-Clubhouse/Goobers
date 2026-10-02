@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -235,74 +234,10 @@ const temporalHumanGateUnsupported = "engine: human gates require occurrence-bou
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	return run(ctx, in, nil)
+	return run(ctx, in)
 }
 
-// ClaimScheduled converts a Schedule action into an exactly-once run start.
-// Temporal forbids WorkflowIDReusePolicy on Schedule actions, so the action
-// workflow claims the fire with a child ID whose reuse policy rejects duplicates.
-func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
-	claimID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-		WorkflowID:            scheduledRunWorkflowID(claimID),
-		TaskQueue:             workflow.GetInfo(ctx).TaskQueueName,
-		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 1,
-		},
-	})
-	in.RunID = claimID
-	var result RunResult
-	err := workflow.ExecuteChildWorkflow(childCtx, RunScheduled, in).Get(childCtx, &result)
-	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
-		return RunResult{}, nil
-	}
-	return result, err
-}
-
-// scheduledRunWorkflowIDSuffix distinguishes a scheduled run's child workflow
-// id from its Schedule action claim id. The claim liveness probe
-// (liveness.go) inverts this mapping, so both sides share the constant.
-const scheduledRunWorkflowIDSuffix = "-run"
-
-func scheduledRunWorkflowID(claimID string) string {
-	return claimID + scheduledRunWorkflowIDSuffix
-}
-
-// RunScheduled binds a timestamped schedule claim to the run and records the
-// nominal fire in the scheduler-journal projection.
-func RunScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
-	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	claimID := in.RunID
-	if claimID == "" {
-		claimID = workflowID
-	}
-	fireTime, err := scheduledFireTime(in.TriggerRef, claimID)
-	if err != nil {
-		return RunResult{}, err
-	}
-	// Temporal's claim ID carries an RFC3339 timestamp (and therefore colons).
-	// Hash it into the same portable trace/run ID shape every other starter uses.
-	in.RunID = RunID(claimID)
-	in.TriggerKind = string(journal.TriggerSchedule)
-	return run(ctx, in, &fireTime)
-}
-
-func scheduledFireTime(scheduleID, workflowID string) (time.Time, error) {
-	// Temporal Schedules append "-"+nominal.UTC().Format(time.RFC3339) to the
-	// configured action ID and reject reuse of the resulting workflow ID.
-	prefix := scheduleID + "-"
-	if scheduleID == "" || !strings.HasPrefix(workflowID, prefix) {
-		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q does not encode schedule %q", workflowID, scheduleID)
-	}
-	fireTime, err := time.Parse(time.RFC3339, strings.TrimPrefix(workflowID, prefix))
-	if err != nil {
-		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q has invalid fire time: %w", workflowID, err)
-	}
-	return fireTime, nil
-}
-
-func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, error) {
+func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
@@ -331,9 +266,6 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runStarted(ctx)
-	if scheduledAt != nil {
-		rec.triggerFiredAt(*scheduledAt, in)
-	}
 	rec.recordRunBranchUpfront(ctx, in)
 
 	var res RunResult
