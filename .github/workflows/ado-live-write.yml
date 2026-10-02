@@ -20,6 +20,12 @@ name: ADO Live Write
 # docs/guides/provider-fixture-drift.md), set the variables, and delete the
 # marker line above once the first run is green.
 #
+# The CI failure evidence scenario (#5652) additionally needs
+# vars.ADO_LIVE_CI_FAILURE_PIPELINE, the build definition
+# `go run ./test/adolive provision -ci-pipeline -apply` creates (it needs
+# Azure Pipelines hosted parallelism). Until it is set, that one test skips and
+# the job records a notice; the rest of the leg runs.
+#
 # Pull requests run the leg only when labelled `ado-live-write` and only for
 # changes under providers/ado*. This is a plain pull_request trigger: fork
 # pull requests receive no secrets, so the check reports "not provisioned"
@@ -56,6 +62,7 @@ jobs:
           ADO_ORG_URL: ${{ vars.ADO_ORG_URL }}
           ADO_PROJECT: ${{ vars.ADO_PROJECT }}
           ADO_WRITE_REPOSITORY: ${{ vars.ADO_WRITE_REPOSITORY }}
+          ADO_LIVE_CI_FAILURE_PIPELINE: ${{ vars.ADO_LIVE_CI_FAILURE_PIPELINE }}
           ADO_PAT: ${{ secrets.ADO_PAT }}
         run: |
           missing=""
@@ -76,6 +83,9 @@ jobs:
           fi
           echo "provisioned=true" >> "$GITHUB_OUTPUT"
           echo "target=$org/$ADO_PROJECT/$ADO_WRITE_REPOSITORY" >> "$GITHUB_OUTPUT"
+          if [ -z "$ADO_LIVE_CI_FAILURE_PIPELINE" ]; then
+            echo "::notice title=ADO CI failure evidence scenario skipped (not provisioned)::Set ADO_LIVE_CI_FAILURE_PIPELINE from \`go run ./test/adolive provision -ci-pipeline -apply\` to cover native build evidence live (#5652)."
+          fi
 
       - name: Checkout
         if: steps.check.outputs.provisioned == 'true'
@@ -99,6 +109,9 @@ jobs:
           # Optional: the work-item type to create when the project's process
           # has no type named like the provider default.
           GOOBERS_ADO_LIVE_WORK_ITEM_TYPE: ${{ vars.ADO_WRITE_WORK_ITEM_TYPE }}
+          # Optional: the failing build definition for the CI failure
+          # evidence scenario; unset skips that one test.
+          GOOBERS_ADO_LIVE_CI_FAILURE_PIPELINE: ${{ vars.ADO_LIVE_CI_FAILURE_PIPELINE }}
           # One id per workflow run: "Re-run jobs" keeps it, so a re-run
           # converges on the objects the first attempt created.
           GOOBERS_ADO_LIVE_RUN_ID: gh-${{ github.run_id }}
