@@ -221,6 +221,7 @@ Use only the target release's registry. The current set is:
 |---|---|
 | `repo:read` | Read-only target-repository checkout. |
 | `repo:push` | Push the run branch to the target repository. |
+| `configrepo:write` | Push a branch and open a PR in the instance config repository (`workflowSource`) only, via `push-branch --config-repo` / `open-pr --config-repo` / `config-checkout`. |
 | `github:issues:read` | Query GitHub issues without mutation authority. |
 | `github:issues:write` | Query, create, label, close, or comment on GitHub issues. |
 | `github:milestones:write` | Assign existing GitHub milestones to selected issues. |

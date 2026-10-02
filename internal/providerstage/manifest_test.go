@@ -42,6 +42,23 @@ func TestRequiredCapabilities(t *testing.T) {
 			want:    []capability.Capability{capability.ProviderPRWrite},
 		},
 		{
+			name:    "config-repo pull request open swaps the product credential for configrepo:write",
+			command: "open-pr",
+			args:    []string{"--config-repo"},
+			want:    []capability.Capability{capability.ConfigRepoWrite},
+		},
+		{
+			name:    "config-repo branch push",
+			command: "push-branch",
+			args:    []string{"--config-repo"},
+			want:    []capability.Capability{capability.ConfigRepoWrite},
+		},
+		{
+			name:    "product branch push",
+			command: "push-branch",
+			want:    []capability.Capability{capability.RepoPush},
+		},
+		{
 			name:    "read-only backlog query",
 			command: "backlog-query",
 			args:    []string{"--read-only"},
