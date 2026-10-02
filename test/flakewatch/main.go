@@ -28,19 +28,20 @@ const (
 )
 
 var (
-	testNamePattern = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
-	packagePattern  = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
-	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
-	ledgerPackage   = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
-	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
-	ledgerSignature = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
-	goTestRun       = regexp.MustCompile(`^=== (?:RUN|CONT)\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
-	goTestPause     = regexp.MustCompile(`^=== PAUSE\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
-	goTestFailure   = regexp.MustCompile(`^--- FAIL: (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)(?: \(|$)`)
-	goPackageFail   = regexp.MustCompile(`^FAIL\s+(github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?)\s`)
-	goPackageDone   = regexp.MustCompile(`^(?:ok|\?)\s+github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?\s`)
-	goTestTimeout   = regexp.MustCompile(`^panic: test timed out(?: after .*)?$`)
-	actionTimestamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.+-]+Z\s+`)
+	testNamePattern  = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
+	packagePattern   = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
+	fingerprintMark  = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
+	ledgerSuperseded = regexp.MustCompile(`(?m)^<!-- goobers-flake-superseded-by:(\d+) -->$`)
+	ledgerPackage    = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
+	ledgerTest       = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
+	ledgerSignature  = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
+	goTestRun        = regexp.MustCompile(`^=== (?:RUN|CONT)\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
+	goTestPause      = regexp.MustCompile(`^=== PAUSE\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
+	goTestFailure    = regexp.MustCompile(`^--- FAIL: (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)(?: \(|$)`)
+	goPackageFail    = regexp.MustCompile(`^FAIL\s+(github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?)\s`)
+	goPackageDone    = regexp.MustCompile(`^(?:ok|\?)\s+github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?\s`)
+	goTestTimeout    = regexp.MustCompile(`^panic: test timed out(?: after .*)?$`)
+	actionTimestamp  = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.+-]+Z\s+`)
 )
 
 type options struct {
@@ -153,8 +154,12 @@ type failure struct {
 	LastSeenRun          string    `json:"last_seen_run"`
 	LastSeenAt           time.Time `json:"last_seen_at"`
 	Occurrences          int       `json:"occurrences"`
-	SourcePath           string    `json:"-"`
-	Occurrence           string    `json:"-"`
+	// SHA is the commit the scanned run built. The flake ledger groups a
+	// build break by it (#4230); this report spans many commits, so the
+	// report's own run SHA would not name the triggering one.
+	SHA        string `json:"sha,omitempty"`
+	SourcePath string `json:"-"`
+	Occurrence string `json:"-"`
 }
 
 type failuresReport struct {
@@ -347,6 +352,9 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 		}
 		result.LogOmissions = append(result.LogOmissions, scanned.LogOmissions...)
 		for _, candidate := range scanned.Failures {
+			if candidate.SHA == "" {
+				candidate.SHA = failureSource.SHA
+			}
 			key := candidate.Occurrence
 			if key == "" {
 				key = candidate.Fingerprint + "\x00" + failureSource.URL
@@ -403,6 +411,13 @@ func (c *githubClient) ledger(ctx context.Context) ([]ledgerEntry, error) {
 			continue
 		}
 		entry := ledgerEntry{Issue: issue.Number, Fingerprint: fingerprint[1]}
+		// A per-package issue the ledger closed as a duplicate of a grouped
+		// build break (#4230) hands its known failure to the grouped issue.
+		if match := ledgerSuperseded.FindStringSubmatch(issue.Body); len(match) == 2 {
+			if grouped, err := strconv.Atoi(match[1]); err == nil {
+				entry.Issue = grouped
+			}
+		}
 		if match := ledgerPackage.FindStringSubmatch(issue.Body); len(match) == 2 {
 			entry.Package = match[1]
 		}
