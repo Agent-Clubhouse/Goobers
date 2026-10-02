@@ -80,7 +80,16 @@ const backlogScanPageSize = 100
 const backlogEligibilityQuotaFloor = 0.10
 
 type backlogScanCursor struct {
-	Cursor string `json:"cursor,omitempty"`
+	Cursor   string                        `json:"cursor,omitempty"`
+	Deferred string                        `json:"deferred,omitempty"`
+	Child    *backlogChildInspectionCursor `json:"child,omitempty"`
+}
+
+type backlogChildInspectionCursor struct {
+	ParentID    string `json:"parentId,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	NextIndex   int    `json:"nextIndex,omitempty"`
+	Phase       string `json:"phase,omitempty"`
 }
 
 const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
@@ -96,7 +105,7 @@ const blockedEligibilitySkipAnnotation = "backlog.blocked-item-skipped"
 // single, unambiguous signal to filter or alert on.
 const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
 
-const inReviewStatusLabel = "goobers/status:in-review"
+const inReviewStatusLabel = providers.LabelStatusInReview
 
 const (
 	backlogFailureDeprioritizeThreshold = 3
@@ -144,7 +153,8 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"trustLabel is required with --claim (SEC-047 fails closed, not open) —\n" +
 	"a plain list (no --claim) does not require it. --read-only also bypasses\n" +
 	"claim locks, blocked-record reconciliation, scan cursors, and read caches,\n" +
-	"and uses only the github:issues:read capability. When inputs.resultFile\n" +
+	"and uses only the github:issues:read capability routed to the configured\n" +
+	"backlog provider (GitHub, Azure DevOps, or Gitea). When inputs.resultFile\n" +
 	"is declared, it also writes a read-only candidate report with scan coverage;\n" +
 	"candidates are for inspection, not claims or permission to re-ready work.\n\n" +
 	"The --resweep modifier requires --claim and selects only re-sweep work;\n" +
@@ -246,16 +256,15 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return runBacklogQueryRelease(env)
 	}
 
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	stageEnv, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
-	env.repo = repo
+	env.repo = stageEnv.repoRef()
+	env.backlogRepo = stageEnv.backlogRepoRef()
 	if code := env.openProvider(mode == backlogQueryModeReadOnly); code != 0 {
 		return code
 	}
-	env.backlogRepo = backlogRepoRefForStage(root, repo)
 	return runBacklogQueryMode(mode, env, beforeClaimTransaction)
 }
 
@@ -304,6 +313,16 @@ type backlogQueryEnv struct {
 	debug           bool
 }
 
+// issueRepo is the repository the stage's issue provider was opened for and
+// the ref its GitHub-only extras, re-sweep listing and claim namespace use.
+// It is the routed repository on a same-provider gaggle, exactly as before,
+// and the backlog repository when the backlog lives on another provider
+// (topology (b), docs/design/ado-parity-dsl-2-0.md §7.2), so claims are keyed
+// by the backlog provider.
+func (env backlogQueryEnv) issueRepo() providers.RepositoryRef {
+	return backlogProviderRepo(env.repo, env.backlogRepo)
+}
+
 func (env backlogQueryEnv) debugf(format string, args ...interface{}) {
 	if env.debug {
 		pf(env.stderr, "debug: "+format+"\n", args...)
@@ -317,12 +336,15 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	// metadata, the open-PR eligibility backstop, contested-file dispatch) need
 	// the concrete provider and stay gated on ghIssueProvider being non-nil — for
 	// ADO they are simply skipped, exactly like a GitHub stage that never opted
-	// into github:pr:write.
+	// into github:pr:write. In topology (b) ghIssueProvider IS a GitHub provider
+	// (the backlog's), so the pull-request extras are additionally gated on the
+	// code being on GitHub (backlogPRExtrasAvailable).
 	opts := []stageProviderOption{withStageProviderMutations("issue")}
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
 	}
-	provider, err := newProviderForStage(env.root, env.repo, readOnly, opts...)
+	stageEnv := stageCommandEnv{root: env.root, repo: env.issueRepo()}
+	provider, err := providerForEnvAs[providers.Provider](stageEnv, readOnly, opts...)
 	if err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
@@ -334,7 +356,21 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	}
 	env.issueProvider = issueProvider
 	env.ghIssueProvider, _ = provider.(*providers.GitHubProvider)
+	if ado, isADO := provider.(*providers.ADOProvider); isADO {
+		applyGaggleDoneStates(env.root, ado)
+	}
 	return 0
+}
+
+// backlogPRExtrasAvailable reports whether backlog-query's GitHub
+// pull-request extras (the open-PR eligibility backstop, the closed-unmerged
+// requeue and contested-file ordering) can run: the issue provider is the
+// concrete GitHub provider and it is also the code provider. In topology (b)
+// (docs/design/ado-parity-dsl-2-0.md §7.2) the GitHub provider is the
+// backlog's while the pull requests live on Azure DevOps, so the extras are
+// skipped rather than listing the backlog repository's pull requests.
+func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
+	return env.ghIssueProvider != nil && !backlogOnOtherProvider(env.repo, env.backlogRepo)
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
@@ -348,7 +384,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// blocked checks, and claim — must address the backlog project rather than
 	// the routed code repo. On GitHub the two coincide and backlogRepo == repo.
 	trustLabel := providerInput("trustLabel", "")
-	requireLabels := splitLabelList(providerInput("requireLabels", ""))
+	requireLabels := backlogQueryRequireLabels(env)
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
 	labelExpression := providerInput("labelPredicate", "")
 	labelFilter, excludeLabels, err := compileBacklogLabelSelection(labelExpression, requireLabels, excludeLabels, providerInput("parkLabels", ""), providerInput("filterParkLabels", "true"))
@@ -469,8 +505,8 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	)
 	// The open-PR eligibility backstop and closed-unmerged requeue read pull
 	// requests through the GitHub PR API, so they need both a github:pr:write
-	// token and the concrete GitHub provider. An ADO stage (ghIssueProvider nil)
-	// gets exactly the pre-backstop label-only behavior — no hard failure.
+	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
+	// included, gets exactly the pre-backstop label-only behavior.
 	//
 	// Built through the shared stage-provider seam so this second provider
 	// carries the same declared identity the issue provider above does
@@ -481,7 +517,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// here means the issue provider already resolved to GitHub with a
 	// registered factory and an explicit token, so there is nothing left for
 	// the seam to refuse.
-	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && ghIssueProvider != nil {
+	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
 		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
 			withStageProviderCapability(capability.GitHubPRWrite),
 			withStageProviderToken(prToken),
@@ -494,7 +530,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
 		}
 		if claim {
-			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo); err != nil {
+			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo, openIssues); err != nil {
 				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
 			}
 		}
@@ -563,7 +599,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		// failure-streak input (the critic's terminalFailureStreak row: over
 		// the plane this is claims/list with history, so the deprioritization
 		// keeps its input off the daemon).
-		listing, err := ledger.ListNamespace(claimContext(), providerGaggle(), string(env.repo.Provider))
+		listing, err := ledger.ListNamespace(claimContext(), providerGaggle(), string(env.issueRepo().Provider))
 		if err != nil {
 			pf(stderr, "error: read claim ledger: %v\n", err)
 			return 1
@@ -879,10 +915,15 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return 1
 		}
 		reason := "no eligible item to claim"
+		if len(session.refusals) > 0 {
+			// Every candidate sat out a claim-disagreement backoff; saying
+			// "no eligible item" would hide that real items exist (#5468).
+			reason = claimRefusalReason(session.refusals)
+		}
 		if len(observedSkips) > 0 {
 			// This cycle's only candidate(s) were all blocked — distinct from a
 			// genuinely empty backlog (#1907). See blockedOnlyCompletionAnnotation.
-			reason = fmt.Sprintf("no eligible item to claim (%d blocked candidate(s) skipped this cycle)", len(observedSkips))
+			reason = fmt.Sprintf("%s (%d blocked candidate(s) skipped this cycle)", reason, len(observedSkips))
 			if jerr := annotations.Append(journal.Event{
 				Type:     journal.EventRunnerAnnotation,
 				Workflow: workflow,
@@ -918,7 +959,11 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		return writeNoWorkResult(stdout, stderr, "every eligible item is already claimed by another run")
+		reason := "every eligible item is already claimed by another run"
+		if len(session.refusals) > 0 {
+			reason = claimRefusalReason(session.refusals)
+		}
+		return writeNoWorkResult(stdout, stderr, reason)
 	}
 
 	if code := writeClaimedBacklogResult(ctx, env, claimed, readOnlyResweep, claimedBacklogResultOptions{
@@ -954,7 +999,7 @@ func writeClaimedBacklogResult(
 	var err error
 	if opts.curationRun {
 		curationItems, err = enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.repo, claimed, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), claimed, opts.observedAt, opts.stalenessPolicy,
 		)
 		if err != nil {
 			return failProviderStage(env.stderr, "compute claimed-item staleness", err, "claimed-items.json")
@@ -963,7 +1008,7 @@ func writeClaimedBacklogResult(
 			curationItems[index].CurationMode = opts.curationModeByID[curationItems[index].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.repo, readOnly, opts.observedAt, opts.stalenessPolicy,
+			ctx, backlogStalenessProvider(env), env.issueRepo(), readOnly, opts.observedAt, opts.stalenessPolicy,
 		)
 		if enrichErr != nil {
 			return failProviderStage(env.stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
@@ -1008,6 +1053,22 @@ func marshalClaimedBacklogItems(
 	default:
 		return json.Marshal(claimed)
 	}
+}
+
+// backlogStalenessProvider is the provider claimed-item staleness is read
+// through: the concrete GitHub issue provider exactly as before, otherwise the
+// backlog's own issue provider when it exposes comments (Azure DevOps,
+// Goobers#6104). It returns an untyped nil — never a nil *GitHubProvider in
+// an interface — when neither applies, so enrichment marks the evidence
+// unavailable instead of dereferencing nil.
+func backlogStalenessProvider(env backlogQueryEnv) stalenessCommentProvider {
+	if env.ghIssueProvider != nil {
+		return env.ghIssueProvider
+	}
+	if provider, ok := env.issueProvider.(stalenessCommentProvider); ok && provider != nil {
+		return provider
+	}
+	return nil
 }
 
 func writeClaimedBacklogSummary(stdout io.Writer, claimed, readOnly []providers.WorkItem) {
@@ -1086,6 +1147,65 @@ type backlogClaimSession struct {
 	maxItems            int
 	nextClaimIndex      int
 	claimSetPrepared    bool
+	driftBackoffChecked bool
+	// refusals records every eligible item this session did not claim and
+	// who held it, so a no-work result names the holder and the source of
+	// that ownership instead of a generic "already claimed" (#5468).
+	refusals []claimRefusal
+}
+
+// Sources a claimRefusal can name. They are distinct because each sends an
+// operator somewhere different: the local ledger (scheduler/claims.json), the
+// provider's claim breadcrumb epoch, or this instance's disagreement backoff.
+const (
+	claimRefusalLedger        = "local ledger"
+	claimRefusalProviderEpoch = "provider epoch"
+	claimRefusalBackoff       = "claim-disagreement backoff"
+)
+
+// claimRefusalReasonLimit bounds how many refusals a no-work reason spells
+// out; a curation listing can be long and the reason is a journaled scalar.
+const claimRefusalReasonLimit = 5
+
+type claimRefusal struct {
+	itemID     string
+	holder     string
+	source     string
+	retryAfter time.Time
+}
+
+func (r claimRefusal) describe() string {
+	holder := "an unknown run"
+	if r.holder != "" {
+		holder = "run " + r.holder
+	}
+	if r.source == claimRefusalBackoff {
+		return fmt.Sprintf("item %s deferred by %s after %s held its provider claim, retry after %s",
+			r.itemID, r.source, holder, r.retryAfter.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("item %s held by %s (%s)", r.itemID, holder, r.source)
+}
+
+// claimRefusalReason renders the no-work reason for a cycle whose eligible
+// items were all refused. It keeps the historical "already claimed by another
+// run" wording only when that is literally true of every refusal.
+func claimRefusalReason(refusals []claimRefusal) string {
+	prefix := "every eligible item is already claimed by another run"
+	for _, refusal := range refusals {
+		if refusal.source == claimRefusalBackoff {
+			prefix = "every eligible item is claimed by another run or deferred by claim-disagreement backoff"
+			break
+		}
+	}
+	parts := make([]string, 0, min(len(refusals), claimRefusalReasonLimit)+1)
+	for index, refusal := range refusals {
+		if index == claimRefusalReasonLimit {
+			parts = append(parts, fmt.Sprintf("and %d more", len(refusals)-index))
+			break
+		}
+		parts = append(parts, refusal.describe())
+	}
+	return prefix + ": " + strings.Join(parts, "; ")
 }
 
 func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *labelpredicate.Predicate) (int, int) {
@@ -1097,30 +1217,10 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 			return malformedReadyItems, 1
 		}
 		if labelFilter.ReferencesLabel(providers.LabelReady) {
-			for index := firstNewClaim; index < len(session.claimed); {
-				if !session.claimed[index].HasLabel(providers.LabelReady) {
-					index++
-					continue
-				}
-				transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
-					ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
-				)
-				if err != nil {
-					return malformedReadyItems, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
-				}
-				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
-					malformed := session.claimed[index]
-					if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
-						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
-						return malformedReadyItems, 1
-					}
-					session.forgetNewClaim(malformed.ID)
-					pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, err)
-					session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
-					malformedReadyItems++
-					continue
-				}
-				index++
+			skipped, code := session.annotateNewReadyClaims(ctx, firstNewClaim)
+			malformedReadyItems += skipped
+			if code != 0 {
+				return malformedReadyItems, code
 			}
 		}
 		if err := session.confirmProviderClaims(ctx, firstNewClaim); err != nil {
@@ -1129,6 +1229,55 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 		}
 	}
 	return malformedReadyItems, 0
+}
+
+// annotateNewReadyClaims stamps the ready time on each claim acquired from
+// firstNewClaim on that carries the ready label. An item whose ready history
+// is malformed, or incomplete (providers.ErrLabelHistoryIncomplete, such as an
+// ADO item past the revision cap), is released and skipped so one
+// pathological item cannot fail the claim stage every time it is re-selected.
+// Any other provider read error still fails the stage. It returns the number
+// of items skipped and a non-zero exit code when the stage must stop.
+func (session *backlogClaimSession) annotateNewReadyClaims(ctx context.Context, firstNewClaim int) (int, int) {
+	skipped := 0
+	for index := firstNewClaim; index < len(session.claimed); {
+		if !session.claimed[index].HasLabel(providers.LabelReady) {
+			index++
+			continue
+		}
+		transitions, err := session.env.issueProvider.ListWorkItemLabelTransitionsForItem(
+			ctx, session.env.backlogRepo, session.claimed[index].ID, providers.LabelReady,
+		)
+		if err != nil && !errors.Is(err, providers.ErrLabelHistoryIncomplete) {
+			return skipped, failProviderStage(session.env.stderr, "read ready-label transitions", err, "claimed-item.json")
+		}
+		if err == nil {
+			err = annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions)
+		}
+		if err == nil {
+			index++
+			continue
+		}
+		if code := session.skipMalformedClaim(ctx, index, err); code != 0 {
+			return skipped, code
+		}
+		skipped++
+	}
+	return skipped, 0
+}
+
+// skipMalformedClaim releases the claim at index, drops it from the claim
+// set, and warns why it was skipped.
+func (session *backlogClaimSession) skipMalformedClaim(ctx context.Context, index int, cause error) int {
+	malformed := session.claimed[index]
+	if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
+		pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
+		return 1
+	}
+	session.forgetNewClaim(malformed.ID)
+	pf(session.env.stderr, "warning: skipping malformed eligible item %s: measure ready age: %v\n", malformed.ID, cause)
+	session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
+	return 0
 }
 
 // acquire is the claim transaction: the blocked-record reconcile and the
@@ -1166,10 +1315,16 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 	if err := session.rememberPreexistingClaims(ctx, ledger); err != nil {
 		return err
 	}
+	if !session.driftBackoffChecked {
+		if err := session.filterRecentClaimDisagreements(ctx, ledger); err != nil {
+			return err
+		}
+		session.driftBackoffChecked = true
+	}
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
-		ok, err := session.claimItem(ctx, ledger, item)
+		ok, holder, err := session.claimItem(ctx, ledger, item)
 		if err != nil {
 			return err
 		}
@@ -1180,6 +1335,7 @@ func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger cl
 			}
 		} else {
 			session.env.debugf("claim lost %s: ledger claim held by another run", item.ID)
+			session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: holder, source: claimRefusalLedger})
 		}
 	}
 	return nil
@@ -1230,7 +1386,7 @@ func (session *backlogClaimSession) rememberPreexistingClaims(ctx context.Contex
 			}
 			continue
 		}
-		if entry.Gaggle == session.gaggle && entry.Provider == string(session.env.repo.Provider) {
+		if entry.Gaggle == session.gaggle && entry.Provider == string(session.env.issueRepo().Provider) {
 			session.preexistingClaimIDs[entry.ExternalID] = struct{}{}
 		}
 	}
@@ -1246,30 +1402,30 @@ func (session *backlogClaimSession) claimKey(item providers.WorkItem) claimsclie
 	}
 	return claimsclient.Key{
 		Gaggle:     session.gaggle,
-		Provider:   string(session.env.repo.Provider),
+		Provider:   string(session.env.issueRepo().Provider),
 		ExternalID: item.ID,
 	}
 }
 
-func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, error) {
-	ok, _, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
+func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, string, error) {
+	ok, holder, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
 	if err != nil {
-		return false, fmt.Errorf("claim %s in ledger: %w", item.ID, err)
+		return false, "", fmt.Errorf("claim %s in ledger: %w", item.ID, err)
 	}
 	if !ok {
-		return false, nil
+		return false, holder, nil
 	}
 	// #4417: record this item's own typed repository identity against the
 	// claim — terminal circuit-breaker/notification bookkeeping later reads
 	// this back instead of reconstructing ownership from the gaggle's
 	// static project or cfg.Repos[0].
-	if recordErr := recordItemRepository(session.annotations, session.runID, item.ID, itemKindIssue, session.env.repo); recordErr != nil {
+	if recordErr := recordItemRepository(session.annotations, session.runID, item.ID, itemKindIssue, session.env.issueRepo()); recordErr != nil {
 		if releaseErr := ledger.ReleaseScoped(ctx, session.claimKey(item), session.runID); releaseErr != nil {
 			session.env.debugf("release claim %s after repository-identity record failure: %v", item.ID, releaseErr)
 		}
-		return false, fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
+		return false, "", fmt.Errorf("record repository identity for %s: %w", item.ID, recordErr)
 	}
-	return true, nil
+	return true, "", nil
 }
 
 func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, start int) error {
@@ -1277,11 +1433,20 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		item := session.claimed[index]
 		result, err := session.confirmProviderClaim(ctx, item)
 		if err != nil {
+			session.recordCurrentClaimObservation(ctx, item, result, err)
 			return fmt.Errorf("%s: %w", item.ID, err)
 		}
 		if result.Claimed {
+			if result.Item.ID != "" {
+				session.claimed[index] = mergeProviderConfirmedClaim(session.claimed[index], result.Item)
+			}
+			session.recordCurrentClaimObservation(ctx, item, result, nil)
 			index++
 			continue
+		}
+		if result.ClaimedBy == "" {
+			session.recordCurrentClaimObservation(ctx, item, result, fmt.Errorf("provider returned no claim owner"))
+			return fmt.Errorf("provider claim for item %s returned no owner", item.ID)
 		}
 
 		retired, retireErr := session.retireSurrenderedProviderClaim(ctx, item, result.ClaimedBy)
@@ -1291,15 +1456,35 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			retiredHolder := result.ClaimedBy
 			result, err = session.confirmProviderClaim(ctx, item)
 			if err != nil {
+				session.recordCurrentClaimObservation(ctx, item, result, err)
 				return fmt.Errorf("%s: %w", item.ID, err)
 			}
 			if result.Claimed {
+				if result.Item.ID != "" {
+					session.claimed[index] = mergeProviderConfirmedClaim(session.claimed[index], result.Item)
+				}
+				session.recordCurrentClaimObservation(ctx, item, result, nil)
 				pf(session.env.stderr, "notice: retired the surrendered provider claim on item %s left by run %s and claimed it\n", item.ID, retiredHolder)
 				index++
 				continue
 			}
 		}
 
+		drift, err := session.repeatedProviderContention(ctx, item, result.ClaimedBy)
+		if err != nil {
+			return fmt.Errorf("read provider claim history for item %s: %w", item.ID, err)
+		}
+		if drift != nil {
+			// Persistent disagreement with one provider owner is recorded as
+			// ownership drift (telemetry + the backoff the next cycle honours)
+			// and skips only this item. Failing the stage here rolled back the
+			// whole batch — up to maxItems claims — over one orphaned epoch.
+			session.recordCurrentClaimObservation(ctx, item, result, nil)
+			session.journalOwnershipDrift(drift)
+		} else {
+			session.recordCurrentContention(ctx, item, result.ClaimedBy)
+		}
+		session.refusals = append(session.refusals, claimRefusal{itemID: item.ID, holder: result.ClaimedBy, source: claimRefusalProviderEpoch})
 		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
@@ -1307,6 +1492,140 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		session.claimed = append(session.claimed[:index], session.claimed[index+1:]...)
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
+	return nil
+}
+
+func mergeProviderConfirmedClaim(current, confirmed providers.WorkItem) providers.WorkItem {
+	if current.ReadyAt != nil && confirmed.ReadyAt == nil {
+		confirmed.ReadyAt = current.ReadyAt
+	}
+	if current.Integrity != "" {
+		confirmed.Integrity = current.Integrity
+	}
+	return confirmed
+}
+
+func (session *backlogClaimSession) recordCurrentClaimObservation(ctx context.Context, item providers.WorkItem, result providers.ClaimResult, claimErr error) {
+	entries, err := session.ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		pf(session.env.stderr, "warning: could not read claim lease for item %s observation: %v\n", item.ID, err)
+		return
+	}
+	key := session.claimKey(item)
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key {
+			recordProviderClaimObservation(ctx, session.ledger, entry, session.env.backlogRepo, result, claimErr, session.env.stderr)
+			return
+		}
+	}
+}
+
+func (session *backlogClaimSession) recordCurrentContention(ctx context.Context, item providers.WorkItem, providerRunID string) {
+	entries, err := session.ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		pf(session.env.stderr, "warning: could not read claim lease for item %s contention: %v\n", item.ID, err)
+		return
+	}
+	key := session.claimKey(item)
+	for _, entry := range entries {
+		if claimsclient.KeyForEntry(entry) == key {
+			recordProviderClaimContention(ctx, session.ledger, entry, providerRunID, session.env.stderr)
+			return
+		}
+	}
+}
+
+// journalOwnershipDrift surfaces a repeated provider contention that is now
+// skipped per item rather than failing the stage, so it stays visible in the
+// run journal and on stderr. A journal failure only warns: the skip is the
+// safe outcome either way.
+func (session *backlogClaimSession) journalOwnershipDrift(drift *providerClaimOwnershipError) {
+	pf(session.env.stderr, "warning: %v; skipping item %s this cycle\n", drift, drift.itemID)
+	if err := session.annotations.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Workflow: session.workflow, RunID: session.runID,
+		Reason: drift.Error(),
+		Runner: map[string]any{
+			"annotation": "provider-claim-ownership-drift",
+			"errorCode":  drift.Code(),
+			"provider":   drift.provider, "itemId": drift.itemID,
+			"claimRunId": drift.claimRunID, "providerRunId": drift.providerRunID,
+		},
+	}); err != nil {
+		pf(session.env.stderr, "warning: journal provider claim ownership drift for item %s: %v\n", drift.itemID, err)
+	}
+}
+
+func (session *backlogClaimSession) repeatedProviderContention(ctx context.Context, item providers.WorkItem, providerRunID string) (*providerClaimOwnershipError, error) {
+	if session.gaggle == "" || providerRunID == "" {
+		return nil, nil
+	}
+	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.issueRepo().Provider))
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-session.leaseDuration)
+	for _, entry := range listing.HistoryForItem(item.ID) {
+		if entry.Verification.State == "contended" &&
+			entry.Verification.ProviderRunID == providerRunID &&
+			entry.Verification.ObservedAt.Before(cutoff) {
+			return &providerClaimOwnershipError{
+				provider: string(session.env.issueRepo().Provider), itemID: item.ID,
+				claimRunID: session.runID, providerRunID: providerRunID,
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (session *backlogClaimSession) filterRecentClaimDisagreements(ctx context.Context, ledger claimsclient.Ledger) error {
+	if session.gaggle == "" || len(session.eligible) == 0 {
+		return nil
+	}
+	listing, err := ledger.ListNamespace(ctx, session.gaggle, string(session.env.issueRepo().Provider))
+	if err != nil {
+		return fmt.Errorf("read claim namespace for provider disagreement backoff: %w", err)
+	}
+	now := time.Now()
+	eligible := session.eligible[:0]
+	for _, item := range session.eligible {
+		var observation localscheduler.ClaimVerification
+		var claimRunID string
+		for _, entry := range listing.HistoryForItem(item.ID) {
+			if entry.Verification.State != "contended" && entry.Verification.State != "ownership-mismatch" {
+				continue
+			}
+			if entry.Verification.ProviderRunID == "" || entry.Verification.ObservedAt.IsZero() ||
+				!now.Before(entry.Verification.ObservedAt.Add(session.leaseDuration)) {
+				continue
+			}
+			observation = entry.Verification
+			claimRunID = entry.RunID
+			break
+		}
+		if observation.State == "" {
+			eligible = append(eligible, item)
+			continue
+		}
+		retryAt := observation.ObservedAt.Add(session.leaseDuration)
+		session.refusals = append(session.refusals, claimRefusal{
+			itemID: item.ID, holder: observation.ProviderRunID, source: claimRefusalBackoff, retryAfter: retryAt,
+		})
+		pf(session.env.stderr, "warning: delaying provider claim for item %s; owner %s disagreed with the ledger, retry after %s\n",
+			item.ID, observation.ProviderRunID, retryAt.UTC().Format(time.RFC3339))
+		if err := session.annotations.Append(journal.Event{
+			Type: journal.EventRunnerAnnotation, Workflow: session.workflow, RunID: session.runID,
+			Reason: "provider claim disagreement backoff",
+			Runner: map[string]any{
+				"annotation": "provider-claim-disagreement-backoff",
+				"provider":   string(session.env.issueRepo().Provider), "itemId": item.ID,
+				"claimRunId": claimRunID, "providerRunId": observation.ProviderRunID,
+				"retryAfter": retryAt.UTC().Format(time.RFC3339Nano),
+			},
+		}); err != nil {
+			return fmt.Errorf("journal provider claim backoff for item %s: %w", item.ID, err)
+		}
+	}
+	session.eligible = eligible
 	return nil
 }
 
@@ -1337,7 +1656,7 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if holder == "" || holder == session.runID {
 		return false, nil
 	}
-	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.issueRepo().Provider))
 	if err != nil {
 		return false, fmt.Errorf("read claim namespace: %w", err)
 	}
@@ -1508,7 +1827,7 @@ func appendBlockedResweepCandidates(
 	items, blockedWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
-		env.repo,
+		env.issueRepo(),
 		compactLabels(opts.trustLabel, blockedOnSiblingLabel),
 		opts.requireLabels,
 		"",
@@ -1559,7 +1878,7 @@ func appendBlockedResweepCandidates(
 	}
 	budget := opts.maxItems - len(result.eligible)
 	for _, item := range items {
-		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.repo, item.ID)
+		blockers, err := env.ghIssueProvider.ListWorkItemBlockers(ctx, env.issueRepo(), item.ID)
 		if err != nil {
 			return nil, failProviderStage(env.stderr, "recheck blocked-item dependencies", fmt.Errorf("dependency recheck item %s: %w", item.ID, err), "claimed-items.json")
 		}
@@ -1623,7 +1942,7 @@ func appendReadyResweepCandidates(
 	items, readyWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
-		env.repo,
+		env.issueRepo(),
 		compactLabels(opts.trustLabel, opts.policy.readyLabel),
 		opts.requireLabels,
 		"",
@@ -1765,13 +2084,16 @@ func runReconcileBacklogQuery(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 ) int {
-	reconciled, code := performBacklogQueryReconciliation(
+	if backlogReconcileNotApplicable(env) {
+		return writeBacklogReconciliationNotApplicable(env.issueRepo().Provider, env.stdout, env.stderr)
+	}
+	result, code := performBacklogQueryReconciliation(
 		ctx, env, trustLabel, stalenessPolicy, observedAt, "backlog-reconciliation.json",
 	)
 	if code != 0 {
 		return code
 	}
-	return writeBacklogReconciliationResult(reconciled, env.stdout, env.stderr)
+	return writeBacklogReconciliationResult(result, env.stdout, env.stderr)
 }
 
 func reconcileBacklogQueryMetadata(
@@ -1782,6 +2104,10 @@ func reconcileBacklogQueryMetadata(
 	observedAt time.Time,
 	resultFile string,
 ) int {
+	if backlogReconcileNotApplicable(env) {
+		env.debugf("metadata reconciliation not applicable on %s; skipped", env.issueRepo().Provider)
+		return 0
+	}
 	_, code := performBacklogQueryReconciliation(ctx, env, trustLabel, stalenessPolicy, observedAt, resultFile)
 	return code
 }
@@ -1793,22 +2119,22 @@ func performBacklogQueryReconciliation(
 	stalenessPolicy backlogStalenessPolicy,
 	observedAt time.Time,
 	resultFile string,
-) (int, int) {
+) (backlogReconciliationResult, int) {
 	if env.ghIssueProvider == nil {
 		err := fmt.Errorf("backlog curation/reconcile is not supported on Azure DevOps yet (BL-033); run it against a GitHub backlog")
-		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
+		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
-	reconciled, err := reconcileBacklogMetadata(
+	result, err := reconcileBacklogMetadataDetailed(
 		ctx,
 		env.layout,
 		env.ghIssueProvider,
-		env.repo,
+		env.issueRepo(),
 		trustLabel,
 		stalenessPolicy,
-		func() time.Time { return observedAt },
+		func() time.Time { return time.Now().UTC() },
 	)
 	if err != nil {
-		return 0, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
+		return backlogReconciliationResult{}, failProviderStage(env.stderr, "reconcile backlog metadata", err, resultFile)
 	}
 	// #3086: the pass above corrects a claim label with no lease behind it. The
 	// opposite drift — a live lease with no label — is invisible to it, because
@@ -1818,11 +2144,50 @@ func performBacklogQueryReconciliation(
 	// warnings for the same reason: it is scheduled housekeeping, so failing
 	// the stage would discard completed work to report a check that can simply
 	// run again on the next tick.
-	restored, err := restoreInvisibleClaims(ctx, env.layout, env.ghIssueProvider, env.repo, observedAt, env.stderr)
+	claimBudget := result.Scan.Budget - result.Scan.Spent
+	if claimBudget <= 0 {
+		result.Scan.WorkRemaining = true
+		result.Scan.Complete = false
+		if result.Scan.NextPhase == "" {
+			result.Scan.NextPhase = backlogReconcilePhaseClaims
+			result.Scan.NextCursor = result.nextCursor.Claim
+		}
+		if result.Scan.WorkRemaining {
+			pf(env.stderr, "notice: backlog reconciliation scanned %d item(s) and stopped at the configured budget; work remains at phase %s cursor %q\n",
+				result.Scan.Examined+result.Scan.ClaimExamined, result.Scan.NextPhase, result.Scan.NextCursor)
+		}
+		return result, 0
+	}
+	claims, err := restoreInvisibleClaimsWindow(ctx, env.layout, env.ghIssueProvider, env.issueRepo(), observedAt, time.Now, env.stderr, claimBudget, result.nextCursor.Claim)
 	if err != nil {
 		pf(env.stderr, "warning: could not reconcile claim visibility: %v\n", err)
+		result.Scan.WorkRemaining = true
+		result.Scan.Complete = false
+		if result.Scan.NextPhase == "" {
+			result.Scan.NextPhase = backlogReconcilePhaseClaims
+			result.Scan.NextCursor = result.nextCursor.Claim
+		}
+	} else {
+		result.Reconciled += claims.Restored
+		result.Scan.ClaimExamined = claims.Examined
+		result.Scan.Spent += claims.Spent
+		if !claims.Complete {
+			result.Scan.WorkRemaining = true
+			result.Scan.Complete = false
+			if result.Scan.NextPhase == "" {
+				result.Scan.NextPhase = backlogReconcilePhaseClaims
+				result.Scan.NextCursor = claims.NextCursor
+			}
+		}
+		if err := advanceBacklogReconcileClaimCursor(ctx, env.layout, result.cursorKey, claims.NextCursor); err != nil {
+			return backlogReconciliationResult{}, failProviderStage(env.stderr, "advance backlog reconciliation cursor", err, resultFile)
+		}
 	}
-	return reconciled + restored, 0
+	if result.Scan.WorkRemaining {
+		pf(env.stderr, "notice: backlog reconciliation scanned %d item(s) and stopped at the configured budget; work remains at phase %s cursor %q\n",
+			result.Scan.Examined+result.Scan.ClaimExamined, result.Scan.NextPhase, result.Scan.NextCursor)
+	}
+	return result, 0
 }
 
 type backlogScanOptions struct {
@@ -2078,8 +2443,32 @@ func labelExclusionReason(item providers.WorkItem, opts backlogScanOptions) stri
 	return "label predicate not matched"
 }
 
-func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) int {
-	data, err := json.Marshal(map[string]int{"reconciled": reconciled})
+// backlogReconcileNotApplicable reports whether this stage's backlog lives on
+// Azure DevOps, where the metadata reconciliation pass has no implementation
+// (Goobers#6104). The pass is scheduled housekeeping over GitHub label drift —
+// orphaned claim labels, tracking-parent labels, staleness markers and
+// invisible-claim restoration, every step typed to *providers.GitHubProvider —
+// and nothing downstream depends on it having run: claim liveness is decided
+// by the ledger, whose stale-lease sweep the daemon also runs on its own
+// ticker. So on ADO it is not-applicable, like update-behind-pr (ADO-N15),
+// rather than a failure that stops every later backlog-curation stage.
+// A Gitea backlog is deliberately not covered: it keeps the refusal below.
+func backlogReconcileNotApplicable(env backlogQueryEnv) bool {
+	return env.ghIssueProvider == nil && env.issueRepo().Provider == providers.ProviderADO
+}
+
+// writeBacklogReconciliationNotApplicable writes reconcile-backlog's result
+// for a provider it does not apply to. It is a success, not noWork: noWork
+// would short-circuit the run and skip every later backlog-curation stage,
+// which is the failure this replaces. reconciled stays 0 so the curation
+// telemetry rollup records no corrections for the cycle.
+func writeBacklogReconciliationNotApplicable(provider providers.ProviderKind, stdout, stderr io.Writer) int {
+	reason := fmt.Sprintf("backlog metadata reconciliation is not applicable on %s: skipped", provider)
+	data, err := json.Marshal(map[string]any{
+		"reconciled":    0,
+		"notApplicable": "true",
+		"reason":        reason,
+	})
 	if err != nil {
 		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
 		return 1
@@ -2089,7 +2478,27 @@ func writeBacklogReconciliationResult(reconciled int, stdout, stderr io.Writer) 
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "reconciled %d backlog item(s)\n", reconciled)
+	pf(stdout, "%s\n", reason)
+	return 0
+}
+
+func writeBacklogReconciliationResult(result backlogReconciliationResult, stdout, stderr io.Writer) int {
+	data, err := json.Marshal(result)
+	if err != nil {
+		pf(stderr, "error: marshal backlog reconciliation: %v\n", err)
+		return 1
+	}
+	resultFile := providerInput("resultFile", "backlog-reconciliation.json")
+	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
+		pf(stderr, "error: write %s: %v\n", resultFile, err)
+		return 1
+	}
+	if result.Scan.WorkRemaining {
+		pf(stdout, "reconciled %d backlog item(s); reconciliation scan incomplete after %d item(s), work remains\n",
+			result.Reconciled, result.Scan.Examined+result.Scan.ClaimExamined)
+		return 0
+	}
+	pf(stdout, "reconciled %d backlog item(s)\n", result.Reconciled)
 	return 0
 }
 
@@ -2310,7 +2719,10 @@ func nativeDependencyExclusionReason(
 // each PR's body (PullRequestSummary.Body), so no second round-trip per PR
 // is needed either.
 func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) (map[string]bool, error) {
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace()})
+	// Only the PR bodies are needed here. Without SkipCheckState the list
+	// resolves combined status + check-runs for every open PR: two API calls
+	// per PR on every backlog query.
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{Repository: repo, HeadPrefix: providerBranchNamespace(), SkipCheckState: true})
 	if err != nil {
 		return nil, err
 	}
@@ -2336,6 +2748,7 @@ func reconcileClosedUnmergedInReview(
 	issueProvider *providers.GitHubProvider,
 	prProvider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
+	openPRIssues map[string]bool,
 ) error {
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: repo,
@@ -2356,6 +2769,12 @@ func reconcileClosedUnmergedInReview(
 	for _, item := range items {
 		if !item.HasLabel(inReviewStatusLabel) ||
 			(item.State != "" && !strings.EqualFold(item.State, "open")) {
+			continue
+		}
+		// An issue an open PR still references cannot be closed-unmerged, and
+		// it is protected anyway. Skipping it avoids a comments read plus a PR
+		// read per in-review issue on every backlog query.
+		if openPRIssues[item.ID] {
 			continue
 		}
 
@@ -2397,6 +2816,12 @@ func reconcileClosedUnmergedInReview(
 	return nil
 }
 
+// linkedImplementationPullIDs returns the pull requests named by author's
+// issue-close-out "Implementation complete: <url> is open for merge-review."
+// comments on repo. issue-close-out posts that comment through
+// UpdateWorkItemStatus, which stores it with the provider attribution footer
+// whenever the stage runs with run attribution (every daemon run), so the
+// footer is removed before the prefix and suffix are matched.
 func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, comments []providers.Comment) []string {
 	seen := make(map[string]bool)
 	var out []string
@@ -2404,7 +2829,7 @@ func linkedImplementationPullIDs(repo providers.RepositoryRef, author string, co
 		if !strings.EqualFold(comment.Author, author) {
 			continue
 		}
-		body := strings.TrimSpace(comment.Body)
+		body := providers.StripAttribution(comment.Body)
 		if !strings.HasPrefix(body, implementationInReviewCommentPrefix) ||
 			!strings.HasSuffix(body, implementationInReviewCommentSuffix) {
 			continue
@@ -2846,7 +3271,11 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if rerr != nil {
 			return rerr
 		}
-		stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+		// Work-item claim markers live in the backlog project on ADO, not the
+		// routed code repo, and on the backlog provider when the backlog lives
+		// on another provider (see backlogRepoRefForStage).
+		backlogRepo := backlogRepoRefForStage(root, repo)
+		stageProvider, err := newProviderForStage(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderMutations("issue"))
 		if err != nil {
 			return err
 		}
@@ -2854,9 +3283,6 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if !ok {
 			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
 		}
-		// Work-item claim markers live in the backlog project on ADO, not the
-		// routed code repo (see backlogRepoRefForStage).
-		backlogRepo := backlogRepoRefForStage(root, repo)
 		ctx, cancel := providerCommandContext()
 		defer cancel()
 

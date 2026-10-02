@@ -3,7 +3,9 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -264,5 +266,189 @@ func TestResumeFreshContinuationStartsAtRequestedTarget(t *testing.T) {
 	}
 	if started != 1 {
 		t.Fatalf("stage.started count = %d, want 1", started)
+	}
+}
+
+func TestResumeContinuationKeepsLocalRetryBudgetsAcrossCrash(t *testing.T) {
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "continuation-retries", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "acme-web", Start: "finish",
+			Tasks: []apiv1.Task{{
+				Name: "finish", Type: apiv1.TaskDeterministic,
+				Run:   &apiv1.DeterministicRun{Command: []string{"true"}},
+				Retry: &apiv1.RetryPolicy{MaxAttempts: 3},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name         string
+		resumeErrors []error
+		wantCalls    int
+		wantAttempts []int
+		wantClasses  []journal.AttemptClass
+	}{
+		{
+			name:         "policy attempts remain charged",
+			resumeErrors: []error{errors.New("policy failure"), errors.New("policy failure")},
+			wantCalls:    2,
+			wantAttempts: []int{1, 2, 3, 4, 5},
+			wantClasses: []journal.AttemptClass{
+				"", journal.AttemptPolicy, journal.AttemptInfra,
+				journal.AttemptInfra, journal.AttemptPolicy,
+			},
+		},
+		{
+			name: "infrastructure failures remain charged",
+			resumeErrors: []error{
+				invoke.InfrastructureFailure(errors.New("infrastructure failure")),
+			},
+			wantCalls:    1,
+			wantAttempts: []int{1, 2, 3, 4},
+			wantClasses: []journal.AttemptClass{
+				"", journal.AttemptPolicy,
+				journal.AttemptInfra, journal.AttemptInfra,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runsDir, fixtureRepo, wtMgr := newTestRunnerEnv(t)
+			definition, err := json.Marshal(machine.Def)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := journal.Create(runsDir, journal.RunIdentity{
+				RunID: "source-run", Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
+				WorkflowDigest: machine.Digest(), Gaggle: "acme-web",
+				Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			}, map[string][]byte{
+				journal.PinnedWorkflowDefinitionInputName: definition,
+			}, journal.WithInputIntegrity(map[string]apiv1.Integrity{
+				journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+			}))
+			if err != nil {
+				t.Fatalf("journal.Create: %v", err)
+			}
+			for attempt := 1; attempt <= 4; attempt++ {
+				var class journal.AttemptClass
+				switch {
+				case attempt == 2:
+					class = journal.AttemptPolicy
+				case attempt > 2:
+					class = journal.AttemptInfra
+				}
+				if err := source.Append(journal.Event{
+					Type: journal.EventStageStarted, Stage: "finish", Attempt: attempt, AttemptClass: class,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := source.Append(journal.Event{
+					Type: journal.EventError, Stage: "finish", Attempt: attempt,
+					Error:  &journal.ErrorDetail{Code: "executor_error", Message: "historical failure"},
+					Runner: map[string]any{retryFailureClassKey: string(class)},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := source.Append(journal.Event{
+				Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := source.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			sourceReader, err := journal.OpenRead(filepath.Join(runsDir, "source-run"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceEvents, err := sourceReader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			continuation, err := journal.CreateContinuation(runsDir, journal.ContinuationRequest{
+				RunID: "continued-run", SourceRunID: "source-run",
+				ExpectedTerminalSeq: sourceEvents[len(sourceEvents)-1].Seq,
+				Operator:            "operator@example.test",
+				Target:              "finish",
+			})
+			if err != nil {
+				t.Fatalf("CreateContinuation: %v", err)
+			}
+			for _, event := range []journal.Event{
+				{Type: journal.EventStageStarted, Stage: "finish", Attempt: 1},
+				{
+					Type: journal.EventError, Stage: "finish", Attempt: 1,
+					Error:  &journal.ErrorDetail{Code: "executor_error", Message: "policy failure"},
+					Runner: map[string]any{retryFailureClassKey: string(journal.AttemptPolicy)},
+				},
+				{Type: journal.EventStageStarted, Stage: "finish", Attempt: 2, AttemptClass: journal.AttemptPolicy},
+				{
+					Type: journal.EventError, Stage: "finish", Attempt: 2,
+					Error:  &journal.ErrorDetail{Code: "executor_error", Message: "infrastructure failure"},
+					Runner: map[string]any{retryFailureClassKey: string(journal.AttemptInfra)},
+				},
+				{Type: journal.EventStageStarted, Stage: "finish", Attempt: 3, AttemptClass: journal.AttemptInfra},
+			} {
+				if err := continuation.Append(event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			continuation.SetMachineState("finish")
+			if err := recordContextManifest(continuation, apiv1.InvocationEnvelope{}, "finish", 3, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := continuation.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			deterministic := &sequencedDeterministic{failures: tc.resumeErrors}
+			r, err := New(Config{
+				NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+					return deterministic, nil
+				},
+				Automated:    gate.NewAutomatedEvaluator(),
+				Worktrees:    wtMgr,
+				RunsDir:      runsDir,
+				RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Resume(context.Background(), ResumeInput{
+				RunID: "continued-run", Machine: machine,
+				RepoRef: apiv1.RepoRef{
+					Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+				},
+			})
+			if err == nil {
+				t.Fatalf("Resume result = %+v, want exhausted continuation-local retry budget", result)
+			}
+			if result.Phase != journal.PhaseFailed {
+				t.Fatalf("phase = %q, want failed", result.Phase)
+			}
+			if deterministic.calls != tc.wantCalls {
+				t.Fatalf("post-crash dispatches = %d, want %d", deterministic.calls, tc.wantCalls)
+			}
+
+			var attempts []int
+			var classes []journal.AttemptClass
+			for _, event := range readRunEvents(t, runsDir, "continued-run") {
+				if event.Type == journal.EventStageStarted && event.Stage == "finish" {
+					attempts = append(attempts, event.Attempt)
+					classes = append(classes, event.AttemptClass)
+				}
+			}
+			if !reflect.DeepEqual(attempts, tc.wantAttempts) || !reflect.DeepEqual(classes, tc.wantClasses) {
+				t.Fatalf("started attempts/classes = %v/%v, want %v/%v",
+					attempts, classes, tc.wantAttempts, tc.wantClasses)
+			}
+		})
 	}
 }

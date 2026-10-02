@@ -286,6 +286,13 @@ func (c *Conditions) admitProviderWorkflow(identity WorkflowIdentity, provider a
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// The hourly and daily budgets are wall-clock windows. Strip the
+	// monotonic reading so the recorded start and every cutoff compare by
+	// wall time: Go's monotonic clock stops while a macOS host sleeps, so a
+	// start from hours of wall time ago otherwise still counts toward
+	// maxRunsPerHour after a wake (#6169).
+	now = now.Round(0)
+
 	// Provider-quota circuit breaker (#712), checked first: while the provider
 	// this run targets is known-exhausted, dispatching is pure waste regardless
 	// of what the parallelism/budget checks below would otherwise allow. No
@@ -472,6 +479,23 @@ func (c *Conditions) ActiveWorkflow(identity WorkflowIdentity) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.active[identity]
+}
+
+// WorkerAvailability reports instance-level capacity that is not currently
+// reserved. The boolean is false when capacity is unconfigured/unbounded, so
+// callers can distinguish unobservable capacity from a configured pool with
+// zero workers available.
+func (c *Conditions) WorkerAvailability() (available int, observable bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.instanceMaxParallel <= 0 {
+		return 0, false
+	}
+	available = c.instanceMaxParallel - c.totalActive
+	if available < 0 {
+		available = 0
+	}
+	return available, true
 }
 
 // pruneStarts drops start times older than window before now. starts is

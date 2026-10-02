@@ -94,7 +94,15 @@ type journalExternalRef struct {
 
 // journalErrorDetail mirrors internal/journal.ErrorDetail.
 type journalErrorDetail struct {
-	Code    string `json:"code"`
+	Code    string              `json:"code"`
+	Message string              `json:"message,omitempty"`
+	Causes  []journalErrorCause `json:"causes,omitempty"`
+}
+
+// journalErrorCause mirrors internal/journal.ErrorCause.
+type journalErrorCause struct {
+	Code    string `json:"code,omitempty"`
+	Class   string `json:"class,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 

@@ -19,7 +19,7 @@ Use `goobers help all` for advanced operator commands or
 generate a shell completion script
 .TP
 \fBgoobers connect\fR
-connect an instance to your own GitHub repository
+connect an instance to your own GitHub or Azure DevOps repository
 .TP
 \fBgoobers cost\fR
 show bounded cost attribution by pull request or issue
@@ -161,10 +161,13 @@ merge template changes into the user's config source
 seed a private worker instance from a rendered configuration mirror
 .TP
 \fBgoobers diagnostics\fR
-collect a portable, redacted support bundle
+collect redacted support evidence or classify one run
 .TP
 \fBgoobers diagnostics bundle\fR
 write a portable, redacted support bundle
+.TP
+\fBgoobers diagnostics triage\fR
+classify one run before filing a Goobers defect
 .TP
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
@@ -209,16 +212,25 @@ list the workflow-DSL features this build supports
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 .TP
 \fBgoobers fleet\fR
-associate this instance with a Fleet service
+associate this instance with a Fleet service (experimental; superseded)
 .TP
 \fBgoobers fleet join\fR
-discover and enroll this instance with a Fleet service
+discover and enroll this instance with a Fleet service (experimental; superseded)
 .TP
 \fBgoobers fleet leave\fR
-remove this instance's Fleet association and protected secrets
+remove this instance's Fleet association and protected secrets (experimental; superseded)
 .TP
 \fBgoobers fleet status\fR
-show durable Fleet registration and connection state
+show durable Fleet registration and connection state (experimental; superseded)
+.TP
+\fBgoobers gaggle\fR
+export or import sanitized portable gaggle bundles
+.TP
+\fBgoobers gaggle export\fR
+export a sanitized portable gaggle bundle
+.TP
+\fBgoobers gaggle import\fR
+atomically create a gaggle from a validated bundle
 .TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
@@ -353,16 +365,22 @@ check the configured local speech engine without emitting sound
 speak the fixed local readiness phrase
 .TP
 \fBgoobers telemetry\fR
-query, export, prune, or compact run telemetry
+configure, test, query, export, mark fixes, prune, or compact telemetry
 .TP
 \fBgoobers telemetry compact\fR
 drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+.TP
+\fBgoobers telemetry configure\fR
+configure customer-owned Application Insights export from a secret reference
 .TP
 \fBgoobers telemetry errors\fR
 recent errors across runs, by class, with run/stage refs
 .TP
 \fBgoobers telemetry export\fR
 re-emit a span-start-time window from journaled OTLP/JSON
+.TP
+\fBgoobers telemetry mark-fix\fR
+mark a Backprop finding for post-fix verification
 .TP
 \fBgoobers telemetry merges\fR
 confirmed PR landings and daily counts by originating instance
@@ -375,6 +393,9 @@ report or delete old orphan and unfinished run directories
 .TP
 \fBgoobers telemetry stats\fR
 success rate and duration aggregates per workflow and stage
+.TP
+\fBgoobers telemetry test\fR
+send one secret-safe Application Insights connectivity probe
 .TP
 \fBgoobers versions\fR
 print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
@@ -574,6 +595,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-diagnostics\fR(1),
 \fBgoobers-diagnostics-bundle\fR(1),
+\fBgoobers-diagnostics-triage\fR(1),
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
@@ -598,6 +620,9 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-fleet-join\fR(1),
 \fBgoobers-fleet-leave\fR(1),
 \fBgoobers-fleet-status\fR(1),
+\fBgoobers-gaggle\fR(1),
+\fBgoobers-gaggle-export\fR(1),
+\fBgoobers-gaggle-import\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
@@ -685,12 +710,15 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-status\fR(1),
 \fBgoobers-telemetry\fR(1),
 \fBgoobers-telemetry-compact\fR(1),
+\fBgoobers-telemetry-configure\fR(1),
 \fBgoobers-telemetry-errors\fR(1),
 \fBgoobers-telemetry-export\fR(1),
+\fBgoobers-telemetry-mark-fix\fR(1),
 \fBgoobers-telemetry-merges\fR(1),
 \fBgoobers-telemetry-prune\fR(1),
 \fBgoobers-telemetry-prune-orphans\fR(1),
 \fBgoobers-telemetry-stats\fR(1),
+\fBgoobers-telemetry-test\fR(1),
 \fBgoobers-telemetry-query\fR(1),
 \fBgoobers-trace\fR(1),
 \fBgoobers-up\fR(1),

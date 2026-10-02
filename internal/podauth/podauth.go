@@ -248,6 +248,18 @@ func (r *Registry) pruneLocked(now time.Time) {
 type Authenticator struct {
 	verifier Verifier
 	fallback httpapi.Authenticator
+	// grants verifies stage credential-refresh grants (Goobers#6120). Nil
+	// refuses every grant-prefixed bearer rather than passing it to fallback.
+	grants *SignedKey
+}
+
+// WithCredentialGrants makes the authenticator admit stage credential-refresh
+// grants signed by key, as a principal the authorizer confines to the refresh
+// route (httpapi.CredentialGrantPrincipalIssuer). Without it a grant-prefixed
+// bearer fails closed.
+func (a *Authenticator) WithCredentialGrants(key *SignedKey) *Authenticator {
+	a.grants = key
+	return a
 }
 
 // Verifier resolves a presented pod token to the run it authenticates and the
@@ -283,6 +295,9 @@ func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authe
 // either reserved prefix fail closed instead of reaching human authentication.
 func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal, error) {
 	token := bearerToken(request)
+	if IsCredentialGrant(token) {
+		return a.authenticateGrant(token)
+	}
 	if strings.HasPrefix(token, workerTokenPrefix) {
 		verifier, ok := a.verifier.(interface{ verifyWorkerConfigDigest(string) (string, error) })
 		if !ok {
@@ -305,6 +320,23 @@ func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal,
 		Subject: "run:" + runID,
 		Issuer:  httpapi.PodPrincipalIssuer,
 		Scopes:  scopes,
+	}, nil
+}
+
+// authenticateGrant verifies a credential-refresh grant. It never falls
+// through to the human authenticator: a grant-prefixed bearer is either a
+// valid grant or refused.
+func (a *Authenticator) authenticateGrant(token string) (*httpapi.Principal, error) {
+	if a.grants == nil {
+		return nil, ErrInvalidCredentialGrant
+	}
+	grant, err := a.grants.VerifyCredentialGrant(token)
+	if err != nil {
+		return nil, err
+	}
+	return &httpapi.Principal{
+		Subject: "run:" + grant.RunID,
+		Issuer:  httpapi.CredentialGrantPrincipalIssuer,
 	}, nil
 }
 

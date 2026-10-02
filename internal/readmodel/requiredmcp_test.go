@@ -87,7 +87,7 @@ func TestRequiredMCPProjectionScopeBoundsAndUnsupportedEvidence(t *testing.T) {
 		t.Fatal("unbounded condition history")
 	}
 	unsupported := readinessEvent(1000, "ready")
-	unsupported.Runner["schemaVersion"] = 2
+	unsupported.Runner["schemaVersion"] = 3
 	if state.After(unsupported) != state {
 		t.Fatal("unknown schema changed condition")
 	}
@@ -95,6 +95,25 @@ func TestRequiredMCPProjectionScopeBoundsAndUnsupportedEvidence(t *testing.T) {
 	unsupported.Runner["authorization"] = "unobservable"
 	if state.After(unsupported) != state {
 		t.Fatal("unverified authorization claimed ready")
+	}
+}
+
+// #5397: schema version 2 adds diagnostics; both versions project the same
+// condition, and an unknown future version is still ignored.
+func TestRequiredMCPReadsSchemaVersionsOneAndTwo(t *testing.T) {
+	v1 := readinessEvent(1, "required_tool_unavailable")
+	v2 := readinessEvent(1, "required_tool_unavailable")
+	v2.Runner["schemaVersion"] = 2
+	v2.Runner["observedStatus"], v2.Runner["polls"], v2.Runner["elapsedMs"], v2.Runner["failedReasonPresent"] = "pending", 4, int64(1200), false
+	var none *RequiredMCPState
+	first, second := none.After(v1), none.After(v2)
+	if first == nil || second == nil || !reflect.DeepEqual(first, second) || !second.Conditions[0].Active {
+		t.Fatalf("v1=%+v v2=%+v", first, second)
+	}
+	future := readinessEvent(1, "required_tool_unavailable")
+	future.Runner["schemaVersion"] = 3
+	if got := none.After(future); got != nil {
+		t.Fatalf("unknown schema version projected: %+v", got)
 	}
 }
 
@@ -127,6 +146,22 @@ func TestRequiredMCPCrossRunUnknownDoesNotEraseOrRelatchDenial(t *testing.T) {
 		combined := MergeRequiredMCPCondition(order[0], order[1])
 		if combined.Active || !combined.AuthorizationObservedAt.Equal(projectBase.Add(3*time.Second)) {
 			t.Fatalf("old run relatched recovered denial: %+v", combined)
+		}
+	}
+}
+
+// TestRequiredMCPObservationAcceptsReadinessAdapters confirms every adapter
+// that emits required-mcp-readiness is projected, including codex (#5397),
+// and that an unknown adapter's annotation is ignored.
+func TestRequiredMCPObservationAcceptsReadinessAdapters(t *testing.T) {
+	for adapter, want := range map[string]bool{"copilot-cli": true, "claude-code": true, "codex": true, "fake": false} {
+		event := readinessEvent(1, "transport_failure")
+		event.Runner["adapter"] = adapter
+		var state *RequiredMCPState
+		state = state.After(event)
+		got := state != nil && len(state.Conditions) == 1 && state.Conditions[0].Active
+		if got != want {
+			t.Errorf("adapter %q projected=%v, want %v (state %+v)", adapter, got, want, state)
 		}
 	}
 }

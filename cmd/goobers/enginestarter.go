@@ -219,7 +219,7 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 		s.echo(req, journal.Event{
 			Type:   journal.EventError,
 			Reason: "engine dispatch failed to start",
-			Error:  &journal.ErrorDetail{Code: "engine_start_failed", Message: err.Error()},
+			Error:  journal.ErrorDetailFor("engine_start_failed", err),
 		})
 		// Close the reservation out. It was written before Temporal was
 		// called precisely so a crash in the window leaves a record; a start
@@ -293,10 +293,7 @@ func (s *engineStarter) abandonReservation(ctx context.Context, live *livejourna
 		s.echo(req, journal.Event{
 			Type:   journal.EventError,
 			Reason: "engine run reservation left open after a failed start",
-			Error: &journal.ErrorDetail{
-				Code:    "engine_reservation_abandon_failed",
-				Message: err.Error(),
-			},
+			Error:  journal.ErrorDetailFor("engine_reservation_abandon_failed", err),
 		})
 	}
 }

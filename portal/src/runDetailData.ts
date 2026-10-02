@@ -2,6 +2,7 @@ import { MalformedResponseError } from "./api/errors";
 import type {
   BranchStatus,
   DaemonClient,
+  ErrorCause,
   GraphTerminal,
   RunDetail,
   RunEvent,
@@ -140,6 +141,8 @@ export function orderRunEvents(events: RunEvent[]): RunEvent[] {
 export interface RunFailure {
   /** Human-readable failure reason, always non-empty. */
   message: string;
+  /** Structured wrapped-error layers, when the journal preserved them. */
+  causes?: ErrorCause[];
   /** Coded error, when the failing event recorded one (e.g. "harness.crash"). */
   code?: string;
   /** Stage that failed, when the failure was attributable to one. */
@@ -181,6 +184,7 @@ export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | und
   const attempt = errored?.attempt ?? failingStage?.attempt;
   const code = errored?.error?.code?.trim() || undefined;
   const errorText = errored?.error?.message?.trim() || errored?.error?.code?.trim();
+  const causes = structuredCauses(errored?.error?.causes);
   const projected = run.terminalCause?.terminalReason?.trim() || run.terminalReason?.trim();
   const ended = run.phase === "aborted" ? "was aborted" : "failed";
   const message =
@@ -193,11 +197,19 @@ export function runFailure(run: RunDetail, events: RunEvent[]): RunFailure | und
 
   return {
     message,
+    ...(causes ? { causes } : {}),
     code,
     stage,
     attempt,
     causalEventSeq: causal?.seq ?? run.terminalCause?.causalEventSeq,
   };
+}
+
+function structuredCauses(causes: ErrorCause[] | undefined): ErrorCause[] | undefined {
+  const structured = causes?.filter((cause) =>
+    Boolean(cause.message?.trim() || cause.code?.trim() || cause.class?.trim()),
+  );
+  return structured && structured.length > 0 ? structured : undefined;
 }
 
 export function eventNodeId(event: RunEvent, runId?: string): string | undefined {
@@ -365,7 +377,7 @@ function semanticVisitResult(event: RunEvent, stage: string): string {
   if (event.type === "gate.evaluated") {
     const verdict = event.verdict?.trim() || "Decision recorded";
     return event.target
-      ? `${humanize(verdict)} → ${humanize(event.target.replace(/^@/, ""))}`
+      ? `${humanize(verdict)} · Next: ${humanize(event.target.replace(/^@/, ""))}`
       : humanize(verdict);
   }
   if (event.reason?.trim()) {
@@ -1254,9 +1266,20 @@ function stateFromStatus(
   }
 }
 
-function humanize(value: string): string {
-  const words = value.replace(/[._-]+/g, " ").trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Event";
+export function humanize(value: string): string {
+  const words = value.replace(/[._-]+/g, " ").trim().split(/\s+/);
+  if (!words[0]) {
+    return "Event";
+  }
+  return words
+    .map((word, index) =>
+      word.toLowerCase() === "pr"
+        ? "PR"
+        : index === 0
+          ? word.charAt(0).toUpperCase() + word.slice(1)
+          : word,
+    )
+    .join(" ");
 }
 
 // nodeOwner resolves the goober that owns a stage/gate node in the run's

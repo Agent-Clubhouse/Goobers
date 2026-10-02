@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -92,7 +93,70 @@ func ciReadyForMerge(poll providers.PullRequestPollResult) bool {
 	return poll.MergeableState == providers.MergeableStateUnstable
 }
 
-func runMergePR(args []string, stdout, stderr io.Writer) int {
+// finishMergePRFailure runs ensureMergeRefusalOutputs after a failed
+// (exit 1) merge-pr; usage errors (exit 2) and successes are left untouched.
+func finishMergePRFailure(code *int, stderr io.Writer, captured *bytes.Buffer) {
+	if *code == 1 {
+		ensureMergeRefusalOutputs(stderr, captured.String())
+	}
+}
+
+// ensureMergeRefusalOutputs backs merge-review's routing contract on every
+// failed merge-pr (#5527): merge-gate sends a failed stage to its fail branch,
+// and record-merge-refusal's inputsFrom needs selectedNumber, selectedHeadSha
+// and reason from this stage. A failure path that wrote no result (a missing
+// credential, an unresolvable repo) or only the typed error envelope
+// (failProviderStage) used to omit them, so the run crashed resolving inputs
+// instead of recording the refusal. The stage still fails with its typed
+// errorCode; only absent routing outputs are filled, never an existing one.
+func ensureMergeRefusalOutputs(stderr io.Writer, captured string) {
+	resultFile := providerInput("resultFile", "merge-result.json")
+	payload := map[string]interface{}{}
+	if data, err := os.ReadFile(resultFile); err == nil {
+		if json.Unmarshal(data, &payload) != nil || payload == nil {
+			payload = map[string]interface{}{}
+		}
+	}
+	if code, _ := payload[executor.OutputErrorCode].(string); code == "" {
+		message := providerStageErrorMessage("merge-pr", captured)
+		code, retryable, extra := classifyProviderError(errors.New(message))
+		payload[executor.OutputErrorCode] = code
+		payload[executor.OutputErrorMessage] = message
+		payload[executor.OutputErrorRetryable] = retryable
+		for k, v := range extra {
+			payload[k] = v
+		}
+	}
+	for key, value := range map[string]interface{}{
+		"selectedNumber":  providerInput("pullNumber", ""),
+		"selectedHeadSha": providerInput("headSha", ""),
+		"merged":          false,
+		"optedOut":        false,
+	} {
+		if _, ok := payload[key]; !ok {
+			payload[key] = value
+		}
+	}
+	// A landing-receipt failure already carries its acknowledged landOutcome
+	// (merge-gate routes on that), so an empty reason there is left as is.
+	reason, _ := payload["reason"].(string)
+	if _, landed := payload["landOutcome"]; reason == "" && !landed {
+		payload["reason"] = fmt.Sprintf("merge-pr failed (%v): %v",
+			payload[executor.OutputErrorCode], payload[executor.OutputErrorMessage])
+	}
+	if err := writeProviderStageResult(resultFile, payload); err != nil {
+		pf(stderr, "warning: write merge-pr refusal outputs %s: %v\n", resultFile, err)
+	}
+}
+
+func runMergePR(args []string, stdout, stderr io.Writer) (code int) {
+	// #5527: every failure below must still emit merge-review's refusal
+	// routing outputs; the deferred finisher fills them from the result file
+	// and the captured stderr once the exit code is known.
+	var captured bytes.Buffer
+	defer finishMergePRFailure(&code, stderr, &captured)
+	stderr = io.MultiWriter(stderr, &captured)
+
 	fs := newCLIFlagSet("merge-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "merge-pr")
@@ -109,10 +173,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps merge/completion authority rides on its dedicated capability;
-	// provider construction still goes through the shared stage factory. The
-	// GitHub-only helpers below (tutor classification, branch cleanup) stay
-	// unreachable while every conjunct check between here and the land is shared.
+	// github:pr:merge is the landing authority on every provider; on Azure
+	// DevOps a declared ado:pr:complete is used instead (landingAuthority).
+	// PR-write grants never satisfy it (SEC-053). Provider construction still
+	// goes through the shared stage factory. The GitHub-only helpers below
+	// (tutor classification, branch cleanup) stay unreachable on ADO while
+	// every conjunct check between here and the land is shared.
 	isADO := repo.Provider == providers.ProviderADO
 	isGitHub := repo.Provider == providers.ProviderGitHub
 
@@ -120,21 +186,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
 	// every poll/compare/detect/enqueue/merge call flows through, so every
 	// registered provider runs one shared code path.
-	providerCapability := capability.GitHubPRMerge
-	if isADO {
-		// Merge/completion authority on ADO rides on the dedicated
-		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
-		// github:pr:merge — so the decider≠executor capability isolation
-		// (docs/design/v0/pr-lifecycle-loop.md §7) is preserved on ADO too.
-		// Resolve that grant fail-closed FIRST (mirroring the github:pr:merge
-		// check on the GitHub branch), then construct the completion-authorized
-		// provider: a stage carrying only ado:pr:write must never silently
-		// acquire completion authority (merge-wiring-plan §3).
-		if _, err := providerToken(capability.ADOPRComplete); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		providerCapability = capability.ADOPRComplete
+	providerCapability, err := landingAuthority(repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	stageProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(providerCapability),
@@ -145,6 +200,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+
 	dispatcher := providers.NewDispatcher(stageProvider)
 	var prProvider mergeProvider
 	if !isADO {
@@ -250,6 +306,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var commitErr error
 	var policyErr error
 	var optedOutReason string
+	var adoCleanup *mergeBranchCleanup
 	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
@@ -361,7 +418,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 				// still matches this poll's live head/base (#2746). verdictAuthor is
 				// not required on ADO — the recovery resolves the trusted author
 				// itself.
-				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict)
+				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict, repo, backlogRepoRefForStage(root, repo))
 				if commitErr != nil {
 					return nil
 				}
@@ -400,6 +457,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		landResult, mergeErr = lander.Land(ctx, dispatcher, mergepolicy.Request{
 			Repository: repo, PullID: pullNumber, ExpectedHeadSHA: expectedHeadSHA,
 			CommitTitle: commitTitle, CommitMessage: mergeCommitMessage, MergeMethod: mergeMethod,
+			DeleteSourceBranch: adoCompletionDeletesSourceBranch(ctx, stageProvider, repo, poll.HeadBranch, isADO, &adoCleanup),
 		})
 		return nil
 	})
@@ -444,22 +502,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var cleanup *mergeBranchCleanup
-	// Branch cleanup is unavailable on ADO: its PollPullRequest does not populate
-	// HeadRepository, so it could only fail "did not report a head repository".
-	// Gate OFF
-	// (no-op); ADO source-branch deletion rides on the enqueue/merge
-	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
-	// §1a/§8). GitHub and Gitea use the shared provider-neutral cleanup path.
-	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
-		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
-		cleanup = &outcome
-		if outcome.Error != "" {
-			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
-		} else {
-			pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
-		}
-	}
+	cleanup := reportMergedBranchCleanup(ctx, root, isADO, adoCleanup, landResult, poll, prProvider, pullNumber, stdout, stderr)
 	if err := writeMergeResult(resultFile, pullNumber, expectedHeadSHA, landResult, nil, cleanup); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -613,7 +656,7 @@ func recoverADOPassVerdict(
 // unrecoverable verdict falls back to the PR's own title + "Closes #N" closing
 // refs, so the merge still lands. Errors only on the same empty-title condition
 // the GitHub assembly rejects.
-func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoRecoveredVerdict) (string, string, error) {
+func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoRecoveredVerdict, repo, backlog providers.RepositoryRef) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
@@ -633,9 +676,9 @@ func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoR
 			attribution = "Reviewed-by: " + author
 		}
 	}
-	for _, issue := range closingIssueNumbers(poll.Body) {
-		parts = append(parts, "Closes #"+issue)
-	}
+	// A backlog on another provider (topology (b)) is referenced by URL, never
+	// by a bare "#<id>" that ADO would resolve to one of its own work items.
+	parts = append(parts, mergeCommitClosingRefs(poll.Body, repo, backlog)...)
 	if attribution != "" {
 		parts = append(parts, attribution)
 	}
@@ -648,6 +691,98 @@ func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoR
 func adoVerdictPinMatches(verdict apiv1.Verdict, poll providers.PullRequestPollResult) bool {
 	return verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA &&
 		verdict.BaseSHA != "" && verdict.BaseSHA == poll.BaseSHA
+}
+
+// adoDeleteSourceBranchGranted reports whether the pull request landing on
+// ADO (isADO) should ask for source-branch cleanup on the same completion
+// PATCH (ADO-N25). ADO has no separate post-merge DeleteBranch call — its
+// PollPullRequest never populates HeadRepository, so cleanupMergedBranch
+// stays unreachable for it — so cleanup must ride the landing call itself,
+// gated on the same grant GitHub's cleanup requires (github:branch:delete).
+// It uses the presence-check idiom landingAuthority already uses: a
+// resolvable providerToken means the stage declared the capability, without
+// spending its credential.
+func adoDeleteSourceBranchGranted(isADO bool) bool {
+	if !isADO {
+		return false
+	}
+	_, err := providerToken(capability.GitHubBranchDelete)
+	return err == nil
+}
+
+// stackedPullRequestLister is the read adoCompletionDeletesSourceBranch needs.
+type stackedPullRequestLister interface {
+	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+}
+
+// adoCompletionDeletesSourceBranch decides the ADO landing call's
+// deleteSourceBranch flag. It is set only when the stage holds the delete
+// grant (adoDeleteSourceBranchGranted) and no other open pull request targets
+// headBranch: deleting the base of a stacked pull request breaks it, so the
+// stacked exception cleanupMergedBranch applies on GitHub and Gitea
+// (PRL-072) applies here too. When the flag is withheld for a stacked branch,
+// or because the check could not run, *skipped records it for the result
+// file. The check reflects the pull requests open when the landing is armed.
+func adoCompletionDeletesSourceBranch(ctx context.Context, lister stackedPullRequestLister, repo providers.RepositoryRef, headBranch string, isADO bool, skipped **mergeBranchCleanup) bool {
+	if !adoDeleteSourceBranchGranted(isADO) {
+		return false
+	}
+	withheld := func(status, reason string) bool {
+		*skipped = &mergeBranchCleanup{Status: status, HeadBranch: headBranch, Error: reason}
+		return false
+	}
+	if strings.TrimSpace(headBranch) == "" {
+		return withheld("failed", "pull request did not report a head branch; source branch kept")
+	}
+	stacked, err := lister.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository:     repo,
+		Base:           headBranch,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		return withheld("failed", fmt.Sprintf("check stacked pull requests for %q: %v; source branch kept", headBranch, err))
+	}
+	if len(stacked) > 0 {
+		return withheld("skipped-stacked", "")
+	}
+	return true
+}
+
+// reportMergedBranchCleanup performs and reports post-landing branch cleanup.
+// ADO deletes the source branch through completionOptions.deleteSourceBranch
+// and its PollPullRequest does not populate HeadRepository, so the shared
+// provider-neutral cleanup path stays limited to GitHub and Gitea; on ADO only
+// a deletion adoCompletionDeletesSourceBranch withheld (adoCleanup) is
+// reported.
+func reportMergedBranchCleanup(
+	ctx context.Context,
+	root string,
+	isADO bool,
+	adoCleanup *mergeBranchCleanup,
+	landResult mergepolicy.Result,
+	poll providers.PullRequestPollResult,
+	prProvider mergeProvider,
+	pullNumber string,
+	stdout, stderr io.Writer,
+) *mergeBranchCleanup {
+	if isADO {
+		if adoCleanup != nil && adoCleanup.Error != "" {
+			pf(stderr, "warning: pr #%s landing keeps its source branch: %s\n", pullNumber, adoCleanup.Error)
+		} else if adoCleanup != nil {
+			pf(stdout, "branch cleanup %s (%s)\n", adoCleanup.Status, adoCleanup.HeadBranch)
+		}
+		return adoCleanup
+	}
+	if landResult.Outcome != mergepolicy.OutcomeMerged {
+		return nil
+	}
+	outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
+	if outcome.Error != "" {
+		pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
+	} else {
+		pf(stdout, "branch cleanup %s (%s)\n", outcome.Status, outcome.HeadBranch)
+	}
+	return &outcome
 }
 
 type mergeBranchCleanup struct {
@@ -798,6 +933,10 @@ func reportLandingError(stdout, stderr io.Writer, path, number, head string, lan
 		reason = mergeConflictReason
 	case providers.IsRequiredStatusCheckPendingError(mergeErr):
 		reason = requiredStatusPendingReason
+	default:
+		if detail, refused := providers.MergeRefusalReason(mergeErr); refused {
+			reason = "merge-refused: " + detail
+		}
 	}
 	if reason == "" {
 		return failProviderStage(stderr, "merge pull request", mergeErr, "merge-result.json")

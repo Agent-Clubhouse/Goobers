@@ -314,6 +314,20 @@ type Task struct {
 	// accepts but does not enforce this field; validation emits VER003 when set.
 	// +optional
 	ExpectedOutputs []string `json:"expectedOutputs,omitempty" yaml:"expectedOutputs,omitempty"`
+	// ArtifactSlots declares named artifact positions this producer may publish
+	// in DSL 3.1 and later. The names are producer-local stable handles; runtime
+	// resolution still uses the existing positional/context-pointer artifact
+	// transport. ExpectedOutputs remains advisory and unchanged.
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	ArtifactSlots []ArtifactSlot `json:"artifactSlots,omitempty" yaml:"artifactSlots,omitempty"`
+	// ArtifactInputs binds this consumer's local input names to exact
+	// producer.slot artifact references in DSL 3.1 and later. The map key is
+	// local to this task; the value names an upstream task's artifact slot.
+	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Za-z0-9_-]{1,128}$'))",message="artifactInputs keys must contain only letters, digits, '_' or '-'"
+	// +optional
+	ArtifactInputs map[string]ArtifactInputRef `json:"artifactInputs,omitempty" yaml:"artifactInputs,omitempty"`
 	// ContinueOnError makes a ResultFailure best-effort: the failed status is
 	// journaled and remains visible to a following gate, but the runner advances
 	// to Next instead of failing the run. Outputs from the failed task are
@@ -396,6 +410,51 @@ type Task struct {
 	// every non-producer repo stage and fails closed on an undeclared advance.
 	// +optional
 	CommitsRepo bool `json:"commitsRepo,omitempty" yaml:"commitsRepo,omitempty"`
+}
+
+// ArtifactSlot declares one named artifact a producer task may publish.
+type ArtifactSlot struct {
+	// Name is the producer-local stable slot handle.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]{1,128}$`
+	// +kubebuilder:validation:Required
+	Name string `json:"name" yaml:"name"`
+	// MediaType optionally describes the artifact bytes, using the same
+	// metadata convention as ArtifactPointer.MediaType.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	MediaType string `json:"mediaType,omitempty" yaml:"mediaType,omitempty"`
+	// SchemaPath optionally points to a closed JSON schema file, relative to the
+	// repository/config bundle, that describes this artifact's payload shape.
+	// Runtime artifact resolution and schema enforcement are out of scope for
+	// DSL 3.1; this is a declared contract handle.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	SchemaPath string `json:"schemaPath,omitempty" yaml:"schemaPath,omitempty"`
+	// MaxSize is the declared artifact byte ceiling, when known, matching
+	// ArtifactPointer.Size's byte-count convention.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxSize int64 `json:"maxSize,omitempty" yaml:"maxSize,omitempty"`
+}
+
+// ArtifactInputRef binds a consumer-local input name to one producer slot.
+type ArtifactInputRef struct {
+	// From names the source as "<producer-task>.<artifact-slot>".
+	// +kubebuilder:validation:Pattern=`^[^.]+\.[A-Za-z0-9_-]{1,128}$`
+	// +kubebuilder:validation:Required
+	From string `json:"from" yaml:"from"`
+	// MediaType optionally declares the media type this consumer expects from
+	// the referenced producer slot. When both sides declare a media type, the
+	// workflow compiler requires an exact match.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	MediaType string `json:"mediaType,omitempty" yaml:"mediaType,omitempty"`
+	// SchemaPath optionally declares the schema this consumer expects from the
+	// referenced producer slot. When both sides declare a schema, the workflow
+	// compiler requires an exact match.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	SchemaPath string `json:"schemaPath,omitempty" yaml:"schemaPath,omitempty"`
 }
 
 // BanditArm declares one variant and the gate strength required to evaluate it.
@@ -766,6 +825,11 @@ type AutomatedGate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	PollIntervalSeconds int32 `json:"pollIntervalSeconds,omitempty" yaml:"pollIntervalSeconds,omitempty"`
+	// MaxTimeoutPolls bounds consecutive timeout outcomes for polling checks
+	// such as ci-status before the gate routes through its escalation branch.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxTimeoutPolls int32 `json:"maxTimeoutPolls,omitempty" yaml:"maxTimeoutPolls,omitempty"`
 }
 
 // AgenticGate invokes a scoped reviewer goober.

@@ -42,10 +42,11 @@ type DiagnosticRecord struct {
 
 // DiagnosticExportStats explicitly reports best-effort transport losses.
 type DiagnosticExportStats struct {
-	Accepted  uint64 `json:"accepted"`
-	Delivered uint64 `json:"delivered"`
-	Dropped   uint64 `json:"dropped"`
-	Failures  uint64 `json:"failures"` // Failed or partially rejected export RPCs.
+	Accepted    uint64           `json:"accepted"`
+	Delivered   uint64           `json:"delivered"`
+	Dropped     uint64           `json:"dropped"`
+	Failures    uint64           `json:"failures"` // Failed or partially rejected export RPCs.
+	AzureReplay AzureReplayStats `json:"azureReplay"`
 }
 
 // DiagnosticExporter owns an independent, bounded OTLP Logs transport. A slow
@@ -59,6 +60,7 @@ type DiagnosticExporter struct {
 	cancel      context.CancelFunc
 	conn        *grpc.ClientConn
 	client      collectorlogpb.LogsServiceClient
+	azure       *azureMonitorLogExporter
 	ctx         context.Context
 	resource    *resourcepb.Resource
 	scrubber    journal.Scrubber
@@ -71,37 +73,63 @@ type DiagnosticExporter struct {
 // NewDiagnosticExporter reads no ambient OTLP variables. An empty endpoint
 // creates no client, goroutine, DNS lookup, or connection.
 func NewDiagnosticExporter(cfg Config) (*DiagnosticExporter, error) {
-	if cfg.OTLPEndpoint == "" {
+	if cfg.OTLPEndpoint == "" && cfg.AzureMonitorConnectionString == "" {
 		return nil, nil
 	}
-	endpoint := cfg.OTLPEndpoint
-	if strings.Contains(endpoint, "://") {
-		u, err := url.Parse(endpoint)
-		if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return nil, errors.New("invalid diagnostic collector endpoint")
+	var conn *grpc.ClientConn
+	var client collectorlogpb.LogsServiceClient
+	if cfg.OTLPEndpoint != "" {
+		endpoint := cfg.OTLPEndpoint
+		if strings.Contains(endpoint, "://") {
+			u, err := url.Parse(endpoint)
+			if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+				return nil, errors.New("invalid diagnostic collector endpoint")
+			}
+			endpoint = u.Host
 		}
-		endpoint = u.Host
-	}
-	var transport credentials.TransportCredentials
-	if cfg.OTLPInsecure {
-		transport = insecure.NewCredentials()
-	} else {
-		tlsConfig, err := buildOTLPTLSConfig(cfg)
+		var transport credentials.TransportCredentials
+		if cfg.OTLPInsecure {
+			transport = insecure.NewCredentials()
+		} else {
+			tlsConfig, err := buildOTLPTLSConfig(cfg)
+			if err != nil {
+				return nil, fmt.Errorf("diagnostic collector TLS: %w", err)
+			}
+			transport = credentials.NewTLS(tlsConfig)
+		}
+		var err error
+		conn, err = grpc.NewClient(endpoint, grpc.WithTransportCredentials(transport))
 		if err != nil {
-			return nil, fmt.Errorf("diagnostic collector TLS: %w", err)
+			return nil, fmt.Errorf("create diagnostic collector: %w", err)
 		}
-		transport = credentials.NewTLS(tlsConfig)
+		client = collectorlogpb.NewLogsServiceClient(conn)
 	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(transport))
-	if err != nil {
-		return nil, fmt.Errorf("create diagnostic collector: %w", err)
+	var azure *azureMonitorLogExporter
+	if cfg.AzureMonitorConnectionString != "" {
+		var err error
+		azure, err = newAzureMonitorLogExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("diagnostics"))
+		if err != nil {
+			if conn != nil {
+				_ = conn.Close()
+			}
+			return nil, err
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &DiagnosticExporter{queue: make(chan diagnosticBatch, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: collectorlogpb.NewLogsServiceClient(conn), scrubber: cfg.Scrubber}
+	d := &DiagnosticExporter{queue: make(chan diagnosticBatch, DiagnosticQueueLimit), done: make(chan struct{}), cancel: cancel, conn: conn, client: client, azure: azure, scrubber: cfg.Scrubber}
+	if azure != nil {
+		azure.setReplayLossSource(func() replayLossCounters {
+			return replayLossCounters{Dropped: d.dropped.Load(), ExportFailures: d.failures.Load()}
+		})
+	}
 	d.ctx = metadata.NewOutgoingContext(ctx, metadata.New(cfg.OTLPHeaders))
-	d.resource = &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+	resourceAttributes := []*commonpb.KeyValue{
 		d.field("service.name", "goobers"), d.field("service.version", cfg.ServiceVersion), d.field("goobers.build.commit", cfg.BuildCommit), d.field("goobers.telemetry.stream", "diagnostics"),
-	}}
+	}
+	for _, attr := range cfg.ResourceAttributes {
+		resourceAttributes = append(resourceAttributes, d.field(string(attr.Key), attr.Value.AsInterface()))
+	}
+	d.resource = &resourcepb.Resource{Attributes: resourceAttributes}
 	go d.run()
 	return d, nil
 }
@@ -174,7 +202,9 @@ func validDiagnosticField(key string, value any) bool {
 
 func (d *DiagnosticExporter) run() {
 	defer close(d.done)
-	defer func() { _ = d.conn.Close() }()
+	if d.conn != nil {
+		defer func() { _ = d.conn.Close() }()
+	}
 	for batch := range d.queue {
 		d.mu.Lock()
 		d.queuedBytes -= batch.bytes
@@ -188,7 +218,11 @@ func (d *DiagnosticExporter) Stats() DiagnosticExportStats {
 	if d == nil {
 		return DiagnosticExportStats{}
 	}
-	return DiagnosticExportStats{Accepted: d.accepted.Load(), Delivered: d.delivered.Load(), Dropped: d.dropped.Load(), Failures: d.failures.Load()}
+	replay := AzureReplayStats{}
+	if d.azure != nil {
+		replay = d.azure.ReplayStats()
+	}
+	return DiagnosticExportStats{Accepted: d.accepted.Load(), Delivered: d.delivered.Load(), Dropped: d.dropped.Load(), Failures: d.failures.Load(), AzureReplay: replay}
 }
 
 // Shutdown drains within the caller's deadline, then cancels the outstanding
@@ -206,12 +240,18 @@ func (d *DiagnosticExporter) Shutdown(ctx context.Context) error {
 	select {
 	case <-d.done:
 		d.cancel()
+		if d.azure != nil {
+			return d.azure.Shutdown(ctx)
+		}
 		return nil
 	case <-ctx.Done():
 		d.cancel()
 		// gRPC observes cancellation; the bounded queue is then accounted as
 		// dropped without further RPCs. Final statistics are stable on return.
 		<-d.done
+		if d.azure != nil {
+			_ = d.azure.Shutdown(ctx)
+		}
 		return ctx.Err()
 	}
 }

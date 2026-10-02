@@ -136,7 +136,7 @@ func prepareCodexMCP(ctx context.Context, req RunRequest, configDir, selfBin str
 }
 
 func appendCodexStdioOverrides(overrides []string, name, command string, args, envNames, tools []string) []string {
-	prefix := `mcp_servers.` + tomlQuote(name)
+	prefix := `mcp_servers.` + codexOverrideServerName(name)
 	overrides = append(overrides, prefix+`.command=`+tomlQuote(command), prefix+`.enabled=true`, prefix+`.required=true`)
 	if len(args) > 0 {
 		overrides = append(overrides, prefix+`.args=`+tomlStringArray(args))
@@ -148,6 +148,17 @@ func appendCodexStdioOverrides(overrides []string, name, command string, args, e
 		overrides = append(overrides, prefix+`.enabled_tools=`+tomlStringArray(tools))
 	}
 	return overrides
+}
+
+func codexOverrideServerName(name string) string {
+	// Codex accepts the auto-wired server's hyphenated name as a bare override
+	// segment. Quoting it here leaves the quote characters in the resolved MCP
+	// server name on current Codex builds, which then reject the server before
+	// session startup.
+	if name == goobersIOServerName {
+		return name
+	}
+	return tomlQuote(name)
 }
 
 func appendCodexHTTPOverrides(overrides []string, name, url string, headers map[string]string, tools []string) []string {

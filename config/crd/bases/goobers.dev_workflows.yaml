@@ -164,6 +164,13 @@ spec:
                             Check names a built-in coded check such as "status-equals",
                             "output-numeric-lte", or "output-matches".
                           type: string
+                        maxTimeoutPolls:
+                          description: |-
+                            MaxTimeoutPolls bounds consecutive timeout outcomes for polling checks
+                            such as ci-status before the gate routes through its escalation branch.
+                          format: int32
+                          minimum: 1
+                          type: integer
                         params:
                           additionalProperties:
                             type: string
@@ -584,6 +591,82 @@ spec:
                     Task is a state in the workflow's state machine — the smallest unit of work the
                     engine tracks. It is exactly one of deterministic or agentic (TSK-002).
                   properties:
+                    artifactInputs:
+                      additionalProperties:
+                        description: ArtifactInputRef binds a consumer-local input
+                          name to one producer slot.
+                        properties:
+                          from:
+                            description: From names the source as "<producer-task>.<artifact-slot>".
+                            pattern: ^[^.]+\.[A-Za-z0-9_-]{1,128}$
+                            type: string
+                          mediaType:
+                            description: |-
+                              MediaType optionally declares the media type this consumer expects from
+                              the referenced producer slot. When both sides declare a media type, the
+                              workflow compiler requires an exact match.
+                            minLength: 1
+                            type: string
+                          schemaPath:
+                            description: |-
+                              SchemaPath optionally declares the schema this consumer expects from the
+                              referenced producer slot. When both sides declare a schema, the workflow
+                              compiler requires an exact match.
+                            minLength: 1
+                            type: string
+                        required:
+                        - from
+                        type: object
+                      description: |-
+                        ArtifactInputs binds this consumer's local input names to exact
+                        producer.slot artifact references in DSL 3.1 and later. The map key is
+                        local to this task; the value names an upstream task's artifact slot.
+                      maxProperties: 64
+                      type: object
+                      x-kubernetes-validations:
+                      - message: artifactInputs keys must contain only letters, digits,
+                          '_' or '-'
+                        rule: self.all(k, k.matches('^[A-Za-z0-9_-]{1,128}$'))
+                    artifactSlots:
+                      description: |-
+                        ArtifactSlots declares named artifact positions this producer may publish
+                        in DSL 3.1 and later. The names are producer-local stable handles; runtime
+                        resolution still uses the existing positional/context-pointer artifact
+                        transport. ExpectedOutputs remains advisory and unchanged.
+                      items:
+                        description: ArtifactSlot declares one named artifact a producer
+                          task may publish.
+                        properties:
+                          maxSize:
+                            description: |-
+                              MaxSize is the declared artifact byte ceiling, when known, matching
+                              ArtifactPointer.Size's byte-count convention.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          mediaType:
+                            description: |-
+                              MediaType optionally describes the artifact bytes, using the same
+                              metadata convention as ArtifactPointer.MediaType.
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the producer-local stable slot handle.
+                            pattern: ^[A-Za-z0-9_-]{1,128}$
+                            type: string
+                          schemaPath:
+                            description: |-
+                              SchemaPath optionally points to a closed JSON schema file, relative to the
+                              repository/config bundle, that describes this artifact's payload shape.
+                              Runtime artifact resolution and schema enforcement are out of scope for
+                              DSL 3.1; this is a declared contract handle.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      maxItems: 64
+                      type: array
                     capabilities:
                       description: |-
                         Capabilities are the capability grants this stage uses (e.g.

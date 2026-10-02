@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"sync"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
@@ -272,11 +273,16 @@ func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr error) {
+	snapshot, err := b.EligibleSnapshot(ctx)
+	return snapshot.Count, err
+}
+
+func (b *backlogCounter) EligibleSnapshot(ctx context.Context) (snapshot localscheduler.BacklogSnapshot, pollErr error) {
 	observation := backlogPollObservation{}
-	defer func() { b.retainBacklogObservation(observation, count, pollErr) }()
+	defer func() { b.retainBacklogObservation(observation, snapshot.Count, pollErr) }()
 	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
+		return localscheduler.BacklogSnapshot{}, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
 	defer cleanup()
 
@@ -288,6 +294,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		// The predicate below compares labels exactly; ADO folds a read tag
+		// equal to one of these ignoring case onto this spelling.
+		CompareLabels: b.labelPredicate.Labels(),
 		Assignee: func() string {
 			if b.respectAssignee && b.assignedTo != "" {
 				return b.assignedTo
@@ -297,7 +306,7 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
 	})
 	if err != nil {
-		return 0, err
+		return localscheduler.BacklogSnapshot{}, err
 	}
 	b.mu.Lock()
 	if pageInfo.HasNext {
@@ -313,19 +322,30 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (count int, pollErr 
 		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
 		if err != nil {
-			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
+			return localscheduler.BacklogSnapshot{}, fmt.Errorf("evaluate backlog label predicate: %w", err)
 		}
 		if matched {
 			matched, err = b.fieldPredicate.Matches(item.Fields)
 			if err != nil {
-				return 0, fmt.Errorf("evaluate backlog field predicate: %w", err)
+				return localscheduler.BacklogSnapshot{}, fmt.Errorf("evaluate backlog field predicate: %w", err)
 			}
 			if matched {
-				count++
+				snapshot.Count++
+				if readyAt := backlogItemReadyAt(item); !readyAt.IsZero() &&
+					(snapshot.OldestReadyAt.IsZero() || readyAt.Before(snapshot.OldestReadyAt)) {
+					snapshot.OldestReadyAt = readyAt
+				}
 			}
 		}
 	}
-	return count, nil
+	return snapshot, nil
+}
+
+func backlogItemReadyAt(item providers.WorkItem) time.Time {
+	if item.ReadyAt != nil && !item.ReadyAt.IsZero() {
+		return item.ReadyAt.UTC()
+	}
+	return time.Time{}
 }
 
 func newCounterGitHubProvider(
@@ -428,12 +448,12 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 	if !found {
 		return nil, nil
 	}
-	labels := make([]string, 0, len(selector))
+	labels := append([]string(nil), gaggle.Spec.Backlog.Labels...)
 	for k := range selector {
 		labels = append(labels, k)
 	}
-	sort.Strings(labels)
-	predicate, err := labelpredicate.Compile(expression, labels, nil)
+	labels = uniqueSortedLabels(labels)
+	predicate, err := labelpredicate.Compile(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, expression), labels, nil)
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q backlog label predicate: %w", wf.Name, err)
 	}
@@ -506,13 +526,14 @@ func buildRefillDemandCounter(
 	if configured, ok := task.Inputs["requireLabels"]; ok {
 		requireLabels = splitLabelList(configured)
 	}
+	requireLabels = append(requireLabels, gaggle.Spec.Backlog.Labels...)
 	if trust := task.Inputs["trustLabel"]; trust != "" {
 		requireLabels = append(requireLabels, trust)
 	}
 	excludeLabels := append(splitLabelList(task.Inputs["excludeLabels"]), providers.LabelClaimed)
 	requireLabels = uniqueSortedLabels(requireLabels)
 	excludeLabels = uniqueSortedLabels(excludeLabels)
-	predicate, _, err := compileBacklogLabelSelection(task.Inputs["labelPredicate"], requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
+	predicate, _, err := compileBacklogLabelSelection(backlogdefaults.LabelPredicateConjunction(gaggle.Spec.Backlog.LabelPredicate, task.Inputs["labelPredicate"]), requireLabels, excludeLabels, task.Inputs["parkLabels"], task.Inputs["filterParkLabels"])
 	if err != nil {
 		return nil, fmt.Errorf("workflow %q refill label predicate: %w", wf.Name, err)
 	}
@@ -566,9 +587,20 @@ func buildScheduleDemandCounter(
 	if !hasSchedule || !ok {
 		return nil
 	}
+	repo := backlogCounterRepoRef(cfg, repoRef)
+	if repo.Provider == providers.ProviderADO {
+		// Azure DevOps has no webhook ingestion, so the schedule is its only
+		// autonomous pr-remediation trigger, and update-behind-pr is
+		// not-applicable there (ADO-N15), so behind-ness is not its
+		// eligibility. The demand count is GitHub-only; a counter that can
+		// only error would size every tick to zero. Without one each due
+		// tick fires unsized, bounded by readiness, and gather-pr-context
+		// ends a run with no eligible pull request as ordinary no-work.
+		return nil
+	}
 	return &remediationDemandCounter{
 		ref:          repoRef.Owner + "/" + repoRef.Name,
-		repo:         backlogCounterRepoRef(cfg, repoRef),
+		repo:         repo,
 		base:         base,
 		headPrefix:   headPrefix,
 		gaggle:       wf.Spec.Gaggle,

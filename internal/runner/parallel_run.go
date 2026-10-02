@@ -466,6 +466,27 @@ func (r *Runner) runConcurrentParallel(
 	}, nil
 }
 
+func newParallelGateEvaluator(r *Runner, in StartInput, branchJournal gate.Journal, history []journal.Event, visitedStages map[string]bool) *gate.Evaluator {
+	return &gate.Evaluator{
+		Automated:   r.cfg.Automated,
+		Journal:     branchJournal,
+		MaxRepasses: int(in.RunControls.MaxRepasses),
+		Attempts:    gateRepassSeed(history),
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
+		RepassAttempts:               targetRepassSeed(history),
+		InfrastructureAttempts:       gateInfrastructureSeed(history),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
+		PollAttempts:                 pollingTargetSeed(history),
+		IsReentry: func(target string) bool {
+			return visitedStages[target]
+		},
+		LastDiffDigest: gateDiffSeed(history),
+	}
+}
+
 func (r *Runner) runParallelBranch(
 	ctx context.Context,
 	jr *journal.Run,
@@ -500,7 +521,7 @@ func (r *Runner) runParallelBranch(
 	}
 	ex := newExecutors(r.cfg, branchJournal, reg)
 	visitedStages := stageVisitSeed(history)
-	gateEval := r.parallelBranchGateEvaluator(branchJournal, in, history, visitedStages)
+	gateEval := newParallelGateEvaluator(r, in, branchJournal, history, visitedStages)
 	state := branch.machine
 	if state == "" {
 		state = branch.start

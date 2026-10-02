@@ -60,6 +60,9 @@ const RemediationBriefV1 = "remediation-brief-v1.schema.json"
 // AgentToolkitManifest inventories the portable repository-side agent toolkit.
 const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
 
+// GaggleBundle is the sanitized portable gaggle export/import contract.
+const GaggleBundle = "gaggle-bundle.schema.json"
+
 // StageArtifactManifest is the workspace-relative artifact staging contract.
 const StageArtifactManifest = "stage-artifact-manifest.schema.json"
 
@@ -77,6 +80,9 @@ const InvestigationEvidence = "investigation-evidence.schema.json"
 
 // Diagnostics is the validate/lint machine-readable findings envelope.
 const Diagnostics = "diagnostics.schema.json"
+
+// SupportTriage is the support-case triage result emitted by diagnostics triage.
+const SupportTriage = "support-triage-v1.schema.json"
 
 // Features is the workflow-DSL feature discovery envelope.
 const Features = "features.schema.json"

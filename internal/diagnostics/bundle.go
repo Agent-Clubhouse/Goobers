@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // Archive file names inside a bundle. They are fixed so a reader — a person or
@@ -202,6 +204,7 @@ func summaryRun(b *strings.Builder, run RunInfo) {
 	if run.DecisiveError != nil {
 		writeLine(b, "- **Decisive error** in `%s` (`%s`): %s",
 			orUnknown(run.DecisiveError.Stage), orUnknown(run.DecisiveError.Code), run.DecisiveError.Message)
+		writeErrorCauses(b, run.DecisiveError.Causes, "  ")
 	}
 	if len(run.Decisions) > 0 {
 		writeLine(b, "- Selector decisions:")
@@ -221,9 +224,29 @@ func summaryRun(b *strings.Builder, run RunInfo) {
 				detail = fmt.Sprintf("%s — %s: %s", stage.Status, stage.Error.Code, stage.Error.Message)
 			}
 			writeLine(b, "  - `%s` attempt %d: %s (%d artifact(s))", stage.Stage, stage.Attempt, detail, len(stage.Artifacts))
+			if stage.Error != nil {
+				writeErrorCauses(b, stage.Error.Causes, "    ")
+			}
 		}
 	}
 	writeLine(b, "")
+}
+
+func writeErrorCauses(b *strings.Builder, causes []journal.ErrorCause, prefix string) {
+	if len(causes) == 0 {
+		return
+	}
+	writeLine(b, "%s- Causes:", prefix)
+	for _, cause := range causes {
+		label := cause.Message
+		if cause.Code != "" {
+			label = fmt.Sprintf("%s (%s)", label, cause.Code)
+		}
+		if cause.Class != "" {
+			label = fmt.Sprintf("%s [%s]", label, cause.Class)
+		}
+		writeLine(b, "%s  - %s", prefix, label)
+	}
 }
 
 func summaryNotes(b *strings.Builder, bundle Bundle) {

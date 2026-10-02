@@ -26,9 +26,14 @@ func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := newBacklogHealthProvider(root, repo, true)
+			provider, err := providerForEnvAs[providers.Provider](
+				stageCommandEnv{root: root, repo: repo},
+				true,
+				withStageProviderCache(),
+				withStageProviderMutations("issue"),
+			)
 			if err != nil {
-				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
+				t.Fatalf("providerForEnvAs(%s): %v", kind, err)
 			}
 			assertDispatchedProviderKind(t, provider, kind)
 		})
@@ -70,7 +75,7 @@ func TestBacklogHealthCommandRunsWithADO(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		if routed != repo {
 			t.Fatalf("routed repo = %#v, want %#v", routed, repo)
 		}

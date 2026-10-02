@@ -14,11 +14,11 @@ across repasses, providers.BranchName). Writes prNumber/pull-request-url
 to the declared result file for a downstream stage's Task.InputsFrom.
 
 Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's
-stable branch), base (default GOOBERS_BASE_BRANCH, else "main"),
-resultFile, timeout. PR metadata is configured through these workflow
-inputs — there are no --title/--body flags — and a stage may bind them
-from an upstream stage's declared output with inputsFrom rather than a
-static value:
+stable branch), base (default GOOBERS_BASE_BRANCH, else "main"), itemID,
+itemTitle, resultFile, timeout. PR metadata is configured through these
+workflow inputs — there are no --title/--body flags — and a stage may
+bind them from an upstream stage's declared output with inputsFrom
+rather than a static value:
 
     - name: open-pr
       run:
@@ -35,13 +35,25 @@ claimed item's title, recovered from the run journal (so it survives a
 resume or repass); otherwise the generic "Automated implementation". An
 empty value is not an override — every empty input falls back.
 
+itemID explicitly identifies a selected backlog item when the workflow
+read it without claiming. If a claimed item also exists, the IDs must
+match. On ADO, native work-item linking separately uses the
+ado:work-items:write capability, which the ADO repository credential backs
+when the stage declares it. Without it the pull request still opens, with
+a text reference and a note that the item is not linked natively; a
+delivered credential that ADO rejects fails the stage. GitHub never
+resolves that capability.
+
 Body precedence: an explicitly set non-empty body is used as given and
 bypasses structured rendering; otherwise a structured body is rendered
 from the run journal's recorded review and local-CI evidence; otherwise a
 generic one-line body. A claimed item still augments an unstructured body
 — explicit or generic — with a "Fixes #<id>" back-reference, so explicit
 body text does not cost the issue linkage. The structured body carries
-its own linkage and is never appended to.
+its own linkage and is never appended to. When the backlog lives on
+another provider than the pull request (a GitHub backlog for Azure
+DevOps code), both name the item by its full URL instead of "#<id>",
+which that provider would read as one of its own items.
 
 A workflow that claims no item, or whose journal holds no recognized
 review/local-CI evidence, therefore gets generic metadata unless it sets

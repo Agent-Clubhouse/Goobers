@@ -134,6 +134,12 @@ type RunInput struct {
 	// these fields existed — is a no-op, byte for byte as before.
 	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
 	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
+	// BacklogQueryBacklogLabels and BacklogQueryLabelPredicate pin the
+	// gaggle's spec.backlog label scope for backlog-query stages. They are
+	// conjoined with task-local selectors so a persisted run never re-reads
+	// gaggle configuration mid-flight.
+	BacklogQueryBacklogLabels  string `json:"backlogQueryBacklogLabels,omitempty"`
+	BacklogQueryLabelPredicate string `json:"backlogQueryLabelPredicate,omitempty"`
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// are meant to execute, pinned at start exactly as the local scheduler
 	// stamps it onto a runner-driven StartRequest
@@ -163,6 +169,15 @@ type RunInput struct {
 	// before the protocol existed, and every lane with no human gate — is a
 	// complete no-op: no hold, no extra journal event, byte-identical history.
 	HITL *HITLPolicy `json:"hitl,omitempty"`
+	// RoleRoutedBacklogProvider names the gaggle's backlog provider when its
+	// backlog is routed by role to a provider other than RepoRef's: a GitHub
+	// or Gitea backlog for Azure DevOps code (topology (b),
+	// docs/design/ado-parity-dsl-2-0.md §7.2). A stage pod has no instance
+	// config to resolve that routing from, so dispatchRemoteTask refuses to
+	// place any stage of such a run in a pod. Empty — every same-provider
+	// gaggle, and every input persisted before this field existed — changes
+	// nothing.
+	RoleRoutedBacklogProvider apiv1.Provider `json:"roleRoutedBacklogProvider,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -417,12 +432,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// a history recorded before the infrastructure counters existed replays
 	// with their zero values, which is what "no infrastructure repass has been
 	// charged" means.
-	repassBudget := gate.RepassBudget{
-		Attempts:                     map[string]int{},
-		InfrastructureAttempts:       map[string]int{},
-		RepassAttempts:               map[string]int{},
-		InfrastructureRepassAttempts: map[string]int{},
-	}
+	repassBudget := newRepassBudget()
 	// gateDispatches numbers each placed gate's pod attempts across the whole
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
@@ -923,10 +933,10 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// The gaggle's claim partition (#3873, MIRC-2), applied where the local
 	// runner applies it: on the projected inputs, BEFORE the inputsFrom
 	// overlay below, so a stage that binds requireLabels/assignedTo from an
-	// upstream output still wins — the same precedence dispatchTask has
-	// (internal/runner/run.go:4413-4414). Pure function of pinned RunInput
-	// data, so it is replay-deterministic; a no-op for a gaggle that
-	// configures neither.
+	// upstream output still wins. Gaggle backlog scope is stricter: it is
+	// re-applied after inputsFrom so upstream bindings can only narrow it.
+	// Pure function of pinned RunInput data, so it is replay-deterministic; a
+	// no-op for a gaggle that configures neither.
 	inputs = backlogdefaults.Apply(t, inputs, in.BacklogQueryAssignedTo, in.BacklogQueryRequireLabels)
 	limits, err := wf.TaskLimits(machine, t)
 	if err != nil {
@@ -984,6 +994,10 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, upstreamResult, completed, qualifiedInputs)
 		}
 		env.Inputs[inputKey] = v
+	}
+	env.Inputs, err = backlogdefaults.ApplyBacklogScopeToInvocation(t, env.Inputs, in.BacklogQueryBacklogLabels, in.BacklogQueryLabelPredicate)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, fmt.Errorf("stage %q backlog scope: %w", t.Name, err)
 	}
 	// Mode-3 routing (#3588): a stage whose PINNED placement resolved to a
 	// non-self runner dispatches through ActDispatchStage on its pinned

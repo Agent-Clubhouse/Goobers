@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -19,18 +19,6 @@ const prCommentWatchResultName = "comment-watch-result.json"
 // must treat as "already routed / parked / opted out": a PR carrying it is
 // landing, so remediation would race the merge.
 const mergeReadyLabel = "goobers:merge-ready"
-
-// prCommentWatchProvider is the narrow surface pr-comment-watch needs: list the
-// open PRs (labels ride the summary), read a PR's issue-comment thread, learn
-// the token's own login (the exclude-author — the token IS the bot), and add
-// the routing label. All four exist on both the GitHub and Gitea providers;
-// ADO has no AuthenticatedLogin, so it takes the default-error arm.
-type prCommentWatchProvider interface {
-	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
-	ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error)
-	AuthenticatedLogin(context.Context) (string, error)
-	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
-}
 
 // prCommentWatchDefaultExcludeLabels are the lifecycle labels that HARD-exclude a
 // PR from the scan: a fresh human comment must neither re-route it nor clear the
@@ -53,12 +41,11 @@ func prCommentWatchDefaultExcludeLabels() string {
 // human comment SHOULD clear. The whole point of these parks is to wait for a
 // human's judgement; once the human comments, they have weighed in, so the
 // watcher strips the park label and routes the PR back through remediation
-// (needs-remediation) in the same mutation — closing the loop that would
-// otherwise leave the PR deaf to follow-up comments. Deliberately only the two
-// human-decision parks: merge-escalated (remediation gave up and asked for a
-// human) and needs-human (a reviewer explicitly parked it). Ordering parks and
-// operator opt-outs stay in the hard-exclude set above and are never un-parked
-// by a comment.
+// (needs-remediation) — closing the loop that would otherwise leave the PR
+// deaf to follow-up comments. Deliberately only the two human-decision parks:
+// merge-escalated (remediation gave up and asked for a human) and needs-human
+// (a reviewer explicitly parked it). Ordering parks and operator opt-outs stay
+// in the hard-exclude set above and are never un-parked by a comment.
 func prCommentWatchDefaultUnparkLabels() string {
 	return strings.Join([]string{
 		remediationEscalatedLabel,
@@ -80,22 +67,32 @@ func carriedLabels(prLabels []string, set map[string]bool) []string {
 
 const prCommentWatchHelp = "Usage: goobers pr-comment-watch [path]\n\n" +
 	"Scan open goober-authored PRs (head under the gaggle branch namespace)\n" +
-	"and label any whose newest human comment is newer than the bot's own\n" +
+	"and label any whose newest human comment is newer than Goobers' own\n" +
 	"newest comment with goobers:needs-remediation, so pr-remediation updates\n" +
 	"that PR in place. A PR parked for a human (needs-human / merge-escalated)\n" +
 	"is un-parked when a fresh human comment lands: the park label is cleared\n" +
-	"and needs-remediation added in one mutation, since the human the PR was\n" +
-	"parked for has now weighed in. The bot identity is the token's own login\n" +
-	"(AuthenticatedLogin) — a dedicated bot account is required for signal;\n" +
-	"with a shared human identity the stage never fires. Comments landing\n" +
-	"mid-remediation after the brief snapshot can be masked by the bot's\n" +
-	"response comment until the human comments again (accepted v1 limit).\n\n" +
+	"and needs-remediation added, since the human the PR was parked for has\n" +
+	"now weighed in. Works on GitHub, Gitea and Azure DevOps. On Azure DevOps\n" +
+	"general comments and review-thread replies both count; deleted comments\n" +
+	"and system threads (votes, pushes, policy status) never do.\n\n" +
+	"A comment is Goobers' own when it carries a Goobers marker (the\n" +
+	"attribution footer or a review-thread response marker) on a line of its\n" +
+	"own. With identityMode=dedicated, an unmarked comment by the credential's\n" +
+	"own identity (its login; its identity id on Azure DevOps) is Goobers' own\n" +
+	"too. With identityMode=shared, for Goobers running as a person's own\n" +
+	"identity, such a comment is that person's and counts as human. Comments\n" +
+	"landing mid-remediation after the brief snapshot can be masked by\n" +
+	"Goobers' response until the human comments again (accepted v1 limit).\n\n" +
 	"Inputs: maxPullRequests (default 20), headPrefixes (default the branch\n" +
 	"namespace), base (default the gaggle base branch), excludeLabels (labels\n" +
 	"that hard-exclude a PR from the scan), unparkLabels (park labels a fresh\n" +
 	"human comment clears while routing, default needs-human,merge-escalated),\n" +
-	"excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),\n" +
-	"resultFile (default " + prCommentWatchResultName + ").\n" +
+	"excludeAuthors (extra automation identities to ignore: logins, or\n" +
+	"identity ids on Azure DevOps), identityMode (dedicated or shared; default\n" +
+	"shared on Azure DevOps, dedicated elsewhere), resultFile (default\n" +
+	prCommentWatchResultName + ").\n" +
+	"Credentials: github:issues:write on GitHub and Gitea; github:pr:write on\n" +
+	"Azure DevOps, where the routing labels are pull-request labels.\n" +
 	"Exit codes: 0 = scanned (labeled zero or more), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -103,6 +100,7 @@ type prCommentWatchLabeled struct {
 	Number           int    `json:"number"`
 	URL              string `json:"url"`
 	CommentAuthor    string `json:"commentAuthor"`
+	CommentAuthorID  string `json:"commentAuthorId,omitempty"`
 	CommentURL       string `json:"commentUrl,omitempty"`
 	CommentCreatedAt string `json:"commentCreatedAt,omitempty"`
 	// Unparked is true when routing this PR also cleared a human-decision park
@@ -112,14 +110,52 @@ type prCommentWatchLabeled struct {
 }
 
 type prCommentWatchResult struct {
-	Scanned   int                     `json:"scanned"`
-	Labeled   int                     `json:"labeled"`
-	Unparked  int                     `json:"unparked"`
-	Errors    int                     `json:"errors"`
-	Truncated bool                    `json:"truncated"`
-	BotLogin  string                  `json:"botLogin"`
-	PRs       []prCommentWatchLabeled `json:"prs,omitempty"`
-	Integrity string                  `json:"integrity"` // apiintegrity.Unapproved
+	Scanned   int    `json:"scanned"`
+	Labeled   int    `json:"labeled"`
+	Unparked  int    `json:"unparked"`
+	Errors    int    `json:"errors"`
+	Truncated bool   `json:"truncated"`
+	BotLogin  string `json:"botLogin"`
+	// BotID is the credential identity's stable id where the provider has one
+	// distinct from its display login (Azure DevOps).
+	BotID        string                  `json:"botId,omitempty"`
+	IdentityMode string                  `json:"identityMode"`
+	PRs          []prCommentWatchLabeled `json:"prs,omitempty"`
+	Integrity    string                  `json:"integrity"` // apiintegrity.Unapproved
+}
+
+// prCommentWatchSettings are the stage inputs, parsed and defaulted.
+type prCommentWatchSettings struct {
+	maxPRs         int
+	base           string
+	prefixes       []string
+	exclude        map[string]bool
+	unpark         map[string]bool
+	excludeAuthors map[string]bool
+	identityMode   string
+	resultFile     string
+}
+
+func readPRCommentWatchSettings(provider providers.ProviderKind) (prCommentWatchSettings, error) {
+	rawMax := providerInput("maxPullRequests", "20")
+	maxPRs, err := strconv.Atoi(rawMax)
+	if err != nil || maxPRs < 1 {
+		return prCommentWatchSettings{}, fmt.Errorf("invalid maxPullRequests %q (want a positive integer)", rawMax)
+	}
+	mode := strings.ToLower(strings.TrimSpace(providerInput("identityMode", defaultPRCommentWatchIdentityMode(provider))))
+	if mode != prCommentWatchIdentityDedicated && mode != prCommentWatchIdentityShared {
+		return prCommentWatchSettings{}, fmt.Errorf("invalid identityMode %q (want %s or %s)", mode, prCommentWatchIdentityDedicated, prCommentWatchIdentityShared)
+	}
+	return prCommentWatchSettings{
+		maxPRs:         maxPRs,
+		base:           providerInput("base", providerBaseBranch()),
+		prefixes:       splitLabelList(providerInput("headPrefixes", providerBranchNamespace())),
+		exclude:        toLowerSet(splitLabelList(providerInput("excludeLabels", prCommentWatchDefaultExcludeLabels()))),
+		unpark:         toLowerSet(splitLabelList(providerInput("unparkLabels", prCommentWatchDefaultUnparkLabels()))),
+		excludeAuthors: toLowerSet(splitLabelList(providerInput("excludeAuthors", ""))),
+		identityMode:   mode,
+		resultFile:     providerInput("resultFile", prCommentWatchResultName),
+	}, nil
 }
 
 func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
@@ -139,138 +175,45 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-
-	// Explicit per-kind dispatch (github | gitea | default-error): the single
-	// mutation is an ordinary issues-API label add, so both forges take the
-	// GitHubIssuesWrite credential seam. ADO has no AuthenticatedLogin, so it
-	// cannot distinguish the bot's own comments and takes the error arm.
-	//
-	// Both forge arms build through the shared stage-provider seam rather than
-	// calling a backend constructor directly. This stage resolves the bot login
-	// below and compares every comment author against it, so a provider built
-	// off-seam is one with no declared identity — #3885/#3890's shape exactly,
-	// and in a pod #3914's: under GitHub App auth AuthenticatedLogin fell back
-	// to GET /user, which an installation token cannot call.
-	var provider prCommentWatchProvider
-	switch repo.Provider {
-	case providers.ProviderGitea, providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		built, berr := newProviderForStageSurface[prCommentWatchProvider](root, repo, false,
-			withStageProviderCapability(capability.GitHubIssuesWrite),
-			withStageProviderToken(token),
-			withStageProviderMutations("pr"),
-		)
-		if berr != nil {
-			pf(stderr, "error: %v\n", berr)
-			return 1
-		}
-		provider = built
-	default:
-		pf(stderr, "error: pr-comment-watch does not support repository provider %q\n", repo.Provider)
+	forge, err := newPRCommentWatchForge(root, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-
-	rawMax := providerInput("maxPullRequests", "20")
-	maxPRs, err := strconv.Atoi(rawMax)
-	if err != nil || maxPRs < 1 {
-		pf(stderr, "error: invalid maxPullRequests %q (want a positive integer)\n", rawMax)
+	settings, err := readPRCommentWatchSettings(repo.Provider)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	prefixes := splitLabelList(providerInput("headPrefixes", providerBranchNamespace()))
-	exclude := toLowerSet(splitLabelList(providerInput("excludeLabels", prCommentWatchDefaultExcludeLabels())))
-	unpark := toLowerSet(splitLabelList(providerInput("unparkLabels", prCommentWatchDefaultUnparkLabels())))
-	excludeAuthors := toLowerSet(splitLabelList(providerInput("excludeAuthors", "")))
-	resultFile := providerInput("resultFile", prCommentWatchResultName)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
-	// The token IS the bot, so its own login is the watermark author. Resolve it
-	// once, before the PR loop: without it every human-vs-bot comparison is
-	// meaningless, so a failure here is stage-fatal.
-	botLogin, err := provider.AuthenticatedLogin(ctx)
+	// Resolve the credential's own identity once, before the PR loop: a
+	// dedicated-identity comparison is meaningless without it, and on Azure
+	// DevOps an identity that cannot be read makes the scan incomplete, so a
+	// failure here is stage-fatal.
+	self, err := forge.identity(ctx)
 	if err != nil {
-		return failProviderStage(stderr, "resolve bot login", err, prCommentWatchResultName)
+		return failProviderStage(stderr, "resolve bot identity", err, prCommentWatchResultName)
 	}
-
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository:     repo,
-		Base:           providerInput("base", providerBaseBranch()),
-		SkipCheckState: true, // we never gate on CI; skipping it saves 2 API calls/PR
-	})
+	prs, err := forge.listPullRequests(ctx, settings.base)
 	if err != nil {
 		return failProviderStage(stderr, "list open pull requests", err, prCommentWatchResultName)
 	}
 
-	result := prCommentWatchResult{BotLogin: botLogin, Integrity: "unapproved"}
-	var lastErr error
-	for _, pr := range prs {
-		if pr.Draft || !hasAnyHeadPrefix(pr.Head, prefixes) || hasAnyLowerLabel(pr.Labels, exclude) {
-			continue
-		}
-		if result.Scanned >= maxPRs {
-			result.Truncated = true
-			break
-		}
-		result.Scanned++
-
-		comments, cerr := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
-		if cerr != nil {
-			// Warn and continue rather than conservatively labeling: a transient
-			// failure must not spam-route the PR. The schedule retries next tick.
-			pf(stderr, "warning: list comments for PR #%d: %v\n", pr.Number, cerr)
-			result.Errors++
-			lastErr = cerr
-			continue
-		}
-		triggering, fresh := latestUnaddressedHumanComment(comments, botLogin, excludeAuthors)
-		if !fresh {
-			continue
-		}
-
-		// Route to remediation, and if the PR was parked for a human who has now
-		// commented, clear that park in the same mutation so the lane can pick it
-		// up (un-park). AddLabels leaves every other label untouched and re-adding
-		// an existing label is a no-op; RemoveLabels only names park labels the PR
-		// actually carries, so an un-parked PR is atomically re-routed. A normal
-		// (non-parked) PR strips nothing and behaves exactly as before.
-		cleared := carriedLabels(pr.Labels, unpark)
-		if _, uerr := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repo,
-			ID:           strconv.Itoa(pr.Number), // PR number as issue id (applyverdict.go precedent)
-			AddLabels:    []string{needsRemediationLabel},
-			RemoveLabels: cleared,
-		}); uerr != nil {
-			pf(stderr, "warning: label PR #%d %s: %v\n", pr.Number, needsRemediationLabel, uerr)
-			result.Errors++
-			lastErr = uerr
-			continue
-		}
-		entry := prCommentWatchLabeled{Number: pr.Number, URL: pr.URL, CommentAuthor: triggering.Author, CommentURL: triggering.URL}
-		if triggering.CreatedAt != nil {
-			entry.CommentCreatedAt = triggering.CreatedAt.UTC().Format(time.RFC3339)
-		}
-		entry.Unparked = len(cleared) > 0
-		entry.ClearedLabels = cleared
-		result.PRs = append(result.PRs, entry)
-		result.Labeled++
-		if entry.Unparked {
-			result.Unparked++
-			pf(stdout, "un-parked PR #%d (cleared %s, added %s): unaddressed comment by %s\n", pr.Number, strings.Join(cleared, ","), needsRemediationLabel, triggering.Author)
-		} else {
-			pf(stdout, "labeled PR #%d %s: unaddressed comment by %s\n", pr.Number, needsRemediationLabel, triggering.Author)
-		}
+	result := prCommentWatchResult{BotLogin: self.login, IdentityMode: settings.identityMode, Integrity: "unapproved"}
+	if self.byID {
+		result.BotID = self.key
 	}
+	classifier := newPRCommentClassifier(self, settings)
+	lastErr := scanPRComments(ctx, forge, prs, settings, classifier, &result, stdout, stderr)
 	// Every scanned PR erroring is a systemic failure (bad token, forge down),
 	// not per-PR noise — surface it as a stage failure so the retry policy sees it.
 	if result.Scanned > 0 && result.Errors == result.Scanned {
 		return failProviderStage(stderr, "watch pull-request comments", lastErr, prCommentWatchResultName)
 	}
-	if err := writeProviderStagePayload(resultFile, result); err != nil {
+	if err := writeProviderStagePayload(settings.resultFile, result); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -278,14 +221,74 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// latestUnaddressedHumanComment mirrors calculateBacklogStaleness's author
-// filter (backlogstaleness.go:118-131): the bot's own login and Bot-typed
-// authors never count as human. Trigger iff the newest human comment is newer
-// than the newest own-login comment (a missing own-login comment compares as
-// zero time). GitHub populates AuthorType; Gitea does not, so excludeAuthors
-// catches Gitea-side CI bots. Both providers return comments oldest-first, so
-// list position breaks timestamp ties and orders comments with no timestamp.
-func latestUnaddressedHumanComment(comments []providers.Comment, botLogin string, excludeAuthors map[string]bool) (providers.Comment, bool) {
+// scanPRComments visits the eligible PRs, up to settings.maxPRs, and routes
+// each whose newest human comment is unaddressed. It records outcomes on
+// result and returns the last per-PR error.
+func scanPRComments(ctx context.Context, forge prCommentWatchForge, prs []providers.PullRequestSummary, settings prCommentWatchSettings, classifier prCommentClassifier, result *prCommentWatchResult, stdout, stderr io.Writer) error {
+	var lastErr error
+	for _, pr := range prs {
+		if pr.Draft || !hasAnyHeadPrefix(pr.Head, settings.prefixes) || hasAnyLowerLabel(pr.Labels, settings.exclude) {
+			continue
+		}
+		if result.Scanned >= settings.maxPRs {
+			result.Truncated = true
+			break
+		}
+		result.Scanned++
+		if err := watchPRComments(ctx, forge, pr, settings, classifier, result, stdout); err != nil {
+			// Warn and continue rather than conservatively labeling: a transient
+			// failure must not spam-route the PR. The schedule retries next tick.
+			pf(stderr, "warning: PR #%d: %v\n", pr.Number, err)
+			result.Errors++
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// watchPRComments reads one PR's comments and, when its newest human comment
+// is newer than Goobers' newest, routes it to remediation. If the PR was
+// parked for a human who has now commented, the route also clears that park so
+// the lane can pick it up (un-park). Only park labels the PR actually carries
+// are cleared, so a normal (non-parked) PR strips nothing.
+func watchPRComments(ctx context.Context, forge prCommentWatchForge, pr providers.PullRequestSummary, settings prCommentWatchSettings, classifier prCommentClassifier, result *prCommentWatchResult, stdout io.Writer) error {
+	comments, err := forge.listComments(ctx, pr)
+	if err != nil {
+		return fmt.Errorf("list comments: %w", err)
+	}
+	triggering, fresh := latestUnaddressedHumanComment(comments, classifier)
+	if !fresh {
+		return nil
+	}
+	cleared := carriedLabels(pr.Labels, settings.unpark)
+	if err := forge.route(ctx, pr, cleared); err != nil {
+		return fmt.Errorf("label %s: %w", needsRemediationLabel, err)
+	}
+	entry := prCommentWatchLabeled{
+		Number: pr.Number, URL: pr.URL, CommentAuthor: triggering.Author, CommentAuthorID: triggering.AuthorID,
+		CommentURL: triggering.URL, Unparked: len(cleared) > 0, ClearedLabels: cleared,
+	}
+	if triggering.CreatedAt != nil {
+		entry.CommentCreatedAt = triggering.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	result.PRs = append(result.PRs, entry)
+	result.Labeled++
+	if entry.Unparked {
+		result.Unparked++
+		pf(stdout, "un-parked PR #%d (cleared %s, added %s): unaddressed comment by %s\n", pr.Number, strings.Join(cleared, ","), needsRemediationLabel, triggering.Author)
+		return nil
+	}
+	pf(stdout, "labeled PR #%d %s: unaddressed comment by %s\n", pr.Number, needsRemediationLabel, triggering.Author)
+	return nil
+}
+
+// latestUnaddressedHumanComment reports the newest human comment when it is
+// newer than Goobers' newest comment (a missing Goobers comment compares as
+// zero time). classifier decides each comment's origin; automation comments
+// take part in neither watermark. Providers return comments oldest-first
+// (Azure DevOps by publish time, thread id, then comment id), so list position
+// breaks timestamp ties and orders comments with no timestamp.
+func latestUnaddressedHumanComment(comments []providers.Comment, classifier prCommentClassifier) (providers.Comment, bool) {
 	var human providers.Comment
 	humanAt, ownAt := time.Time{}, time.Time{}
 	humanIdx, ownIdx := -1, -1
@@ -294,14 +297,12 @@ func latestUnaddressedHumanComment(comments []providers.Comment, botLogin string
 		if c.CreatedAt != nil {
 			at = *c.CreatedAt
 		}
-		switch {
-		case strings.EqualFold(c.Author, botLogin):
+		switch classifier.origin(c) {
+		case prCommentFromGoobers:
 			if at.After(ownAt) || (at.Equal(ownAt) && i > ownIdx) {
 				ownAt, ownIdx = at, i
 			}
-		case strings.EqualFold(c.AuthorType, "bot") || excludeAuthors[strings.ToLower(c.Author)]:
-			// third-party automation — never a trigger
-		default:
+		case prCommentFromHuman:
 			if at.After(humanAt) || (at.Equal(humanAt) && i > humanIdx) {
 				human, humanAt, humanIdx = c, at, i
 			}

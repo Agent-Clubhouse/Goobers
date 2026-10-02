@@ -105,7 +105,7 @@ func newDaemonEngineClient(cfg *instance.Config) (*daemonEngineClient, error) {
 		return nil, nil
 	}
 	engineConfig := cfg.EffectiveEngineConfig()
-	c, err := dialDaemonEngine(engineConfig.HostPort, engineConfig.Namespace)
+	c, err := dialDaemonEngine(engineConfig.HostPort, engineConfig.Namespace, engineConfig.TLS)
 	if err != nil {
 		return nil, fmt.Errorf("dial temporal at %s: %w", engineConfig.HostPort, err)
 	}
@@ -524,10 +524,7 @@ func reattachEngineRun(ctx context.Context, guards *engineRunGuards, id journal.
 	case !attachment.Settled:
 		ev.Type = journal.EventError
 		ev.Reason = "engine workflow status unknown"
-		ev.Error = &journal.ErrorDetail{
-			Code:    "engine_run_reattach_failed",
-			Message: fmt.Sprintf("engine-driven run %s could not be re-attached: %v", id.RunID, attachment.Err),
-		}
+		ev.Error = journal.ErrorDetailFor("engine_run_reattach_failed", fmt.Errorf("engine-driven run %s could not be re-attached: %w", id.RunID, attachment.Err))
 	case !attachment.Found:
 		ev.Type = journal.EventError
 		ev.Reason = "engine has no workflow under this run id"

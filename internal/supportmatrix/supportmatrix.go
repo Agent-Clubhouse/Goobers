@@ -8,6 +8,7 @@
 package supportmatrix
 
 import (
+	"fmt"
 	"runtime"
 	"slices"
 	"sort"
@@ -53,6 +54,9 @@ const (
 	// later, separate lock ceremony staged under ValidateSupportPolicy's
 	// append-only rules.
 	V3DSLVersion = "3.0"
+	// V31DSLVersion carries DSL 3.0 semantics forward and adds the producer
+	// artifact-slot and consumer artifact-input contract surface.
+	V31DSLVersion = "3.1"
 
 	// NextPlannedRelease is the next planned stable release line this repo
 	// intends to cut (#4709). TestDSLMatrixAgainstNextPlannedRelease asserts
@@ -66,7 +70,7 @@ const (
 	// unshippable in this declared version fails on that PR, not at tag
 	// time. Reviewed and bumped like any other change; documented in
 	// docs/guides/releases.md.
-	NextPlannedRelease = "v0.4.4"
+	NextPlannedRelease = "v0.5.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
@@ -188,6 +192,12 @@ var dslVersions = mustSupportMatrix(SupportMatrix{
 			{Level: LevelPreview, SinceVersion: "v0.4.0"},
 		},
 	},
+	V31DSLVersion: {
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.5.0"},
+		},
+	},
 })
 
 // Lookup returns the support declaration for a DSL version.
@@ -254,6 +264,35 @@ func GetDSL() SupportMatrix {
 		out[version] = cloneVersionSupport(support)
 	}
 	return out
+}
+
+// GetDSLForRelease returns the subset of the compiled DSL matrix whose first
+// lifecycle transition has taken effect by release. It preserves each included
+// row's full append-only history, so release validation still catches rows that
+// declare a level the release line has not reached, while future DSL versions
+// planned for later releases are not packaged into older release artifacts.
+func GetDSLForRelease(release string) (SupportMatrix, error) {
+	target, err := parseSupportReleaseVersion(release, false)
+	if err != nil {
+		return nil, fmt.Errorf("invalid release %q: %w", release, err)
+	}
+	out := make(SupportMatrix, len(dslVersions))
+	for _, version := range GetDSL().Versions() {
+		if _, since, err := levelAtRelease(version, target); err != nil {
+			return nil, fmt.Errorf("DSL version %q: %w", version.Version, err)
+		} else if since == "" {
+			continue
+		}
+		out[version.Version] = VersionSupport{
+			Level:            version.Level,
+			EffectiveIn:      version.EffectiveIn,
+			Retraction:       cloneRetraction(version.Retraction),
+			UnsupportedAfter: version.UnsupportedAfter,
+			Replacement:      version.Replacement,
+			History:          slices.Clone(version.History),
+		}
+	}
+	return out, nil
 }
 
 func cloneVersionSupport(support VersionSupport) VersionSupport {

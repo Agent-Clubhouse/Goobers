@@ -15,6 +15,8 @@ export const apiRoutes = {
   "gaggleGoobers": { method: "GET", path: "/api/v1/gaggles/{gaggle}/goobers", actionClass: "read-only-navigation" },
   "gaggleWorkflows": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows", actionClass: "read-only-navigation" },
   "gaggleConnections": { method: "GET", path: "/api/v1/gaggles/{gaggle}/connections", actionClass: "read-only-navigation" },
+  "gaggleBundleExport": { method: "GET", path: "/api/v1/gaggles/{gaggle}/bundle", actionClass: "read-only-navigation" },
+  "gaggleBundleImport": { method: "POST", path: "/api/v1/gaggles/import", actionClass: "maintenance" },
   "workflowDetail": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}", actionClass: "read-only-navigation" },
   "workflowQueueEligibility": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}/queue-eligibility", actionClass: "read-only-navigation" },
   "runs": { method: "GET", path: "/api/v1/runs", actionClass: "read-only-navigation" },
@@ -52,6 +54,7 @@ export const apiRoutes = {
   "cancelRun": { method: "POST", path: "/api/v1/runs/{run}/cancel", actionClass: "maintenance" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
   "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
+  "credentialRefresh": { method: "POST", path: "/api/v1/credentials/refresh", actionClass: "workflow-execution" },
   "stageSurrender": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "workflow-execution" },
   "blobGet": { method: "GET", path: "/api/v1/blobs/{digest}", actionClass: "read-only-navigation" },
   "blobPut": { method: "PUT", path: "/api/v1/blobs/{digest}", actionClass: "workflow-execution" },
@@ -63,6 +66,7 @@ export const apiRoutes = {
   "journalEscalationCandidates": { method: "POST", path: "/api/v1/journal/escalation-candidates", actionClass: "workflow-execution" },
   "journalMergeAuthority": { method: "POST", path: "/api/v1/journal/merge-authority", actionClass: "workflow-execution" },
   "journalBranchOwnership": { method: "POST", path: "/api/v1/journal/branch-ownership", actionClass: "workflow-execution" },
+  "operatorMessageSubmit": { method: "POST", path: "/api/v1/runs/{run}/operator-messages", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

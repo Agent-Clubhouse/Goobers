@@ -143,7 +143,7 @@ func runRoutingCase(t *testing.T, tc routingCase) {
 	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
 	var client *telemetry.Client
 	if cfg.TelemetryEnabled() {
-		client, err = buildTelemetryClient(context.Background(), instance.NewLayout(t.TempDir()), scrubber, registry, resolved, nil)
+		client, err = buildTelemetryClient(context.Background(), instance.NewLayout(t.TempDir()), scrubber, registry, instance.TelemetryConfig{OTLP: &resolved}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +153,7 @@ func runRoutingCase(t *testing.T, tc routingCase) {
 			_ = client.Shutdown(ctx)
 		})
 	}
-	diagnostic, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
+	diagnostic, err := buildDiagnosticExporterWithStores(context.Background(), t.TempDir(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func runRoutingCase(t *testing.T, tc routingCase) {
 		}
 		span.End()
 	}
-	if diagnostic != nil && !diagnostic.Emit(serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{"schemaVersion": 1, "instanceId": "routing-diagnostic-instance"}})) {
+	if diagnostic != nil && !diagnostic.Emit(serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{"schemaVersion": 1, "instanceId": "routing-diagnostic-instance"}}, false)) {
 		t.Fatal("diagnostic observation rejected")
 	}
 	journalDone, diagnosticDone := make(chan error, 1), make(chan error, 1)

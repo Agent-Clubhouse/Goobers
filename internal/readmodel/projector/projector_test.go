@@ -14,11 +14,92 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readmodel/repair"
 )
+
+func TestProjectorRefreshesRootsAfterDiscoveryFailure(t *testing.T) {
+	ctx := context.Background()
+	layout := instance.NewLayout(t.TempDir())
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+	discoveryErr := errors.New("run roots temporarily unreadable")
+	var resolveErr error
+	p := New(store, watermarks, Options{
+		Interval: time.Hour,
+		ResolveRunsDirs: func(ctx context.Context) ([]string, error) {
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			return layout.RunDirsContext(ctx)
+		},
+	})
+	stop := p.Start(ctx)
+	defer stop()
+	if _, err := p.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := layout.EnsureGaggleRuntime("beta"); err != nil {
+		t.Fatal(err)
+	}
+	runID := fmt.Sprintf("%032x", 5845)
+	run, err := journal.Create(layout.ForGaggle("beta").RunsDir(), journal.RunIdentity{
+		RunID: runID, Gaggle: "beta", Workflow: "work", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = run.Close() }()
+	if err := watermarks.Observed(ctx, runID, run.Seq()); err != nil {
+		t.Fatal(err)
+	}
+	resolveErr = discoveryErr
+	if _, err := p.Drain(ctx); !errors.Is(err, discoveryErr) {
+		t.Fatalf("discovery failure = %v, want %v", err, discoveryErr)
+	}
+	if pending, err := watermarks.Count(ctx); err != nil || pending != 1 {
+		t.Fatalf("pending intake after failed discovery = %d, err=%v; want 1", pending, err)
+	}
+	resolveErr = nil
+	if _, err := p.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row, found, err := store.GetRun(ctx, runID)
+	if err != nil || !found || row.Gaggle != "beta" || row.Phase != journal.PhaseRunning {
+		t.Fatalf("hot-added active run: row=%+v found=%v err=%v", row, found, err)
+	}
+	if pending, err := watermarks.Count(ctx); err != nil || pending != 0 {
+		t.Fatalf("pending intake after projection = %d, err=%v; want 0", pending, err)
+	}
+
+	if err := run.Append(journal.Event{
+		Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Restart must also refresh the roots when repairing a known active row
+	// whose final append was not reported through intake.
+	if _, err := p.Restart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	row, found, err = store.GetRun(ctx, runID)
+	if err != nil || !found || !row.Terminal || row.Phase != journal.PhaseCompleted || row.LastSeq != run.Seq() {
+		t.Fatalf("hot-added terminal run: row=%+v found=%v err=%v", row, found, err)
+	}
+}
 
 // fakeStore records commit order, which is the property most of these tests are
 // about. A real store would too, but through a change table that makes the

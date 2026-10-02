@@ -1,0 +1,19 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "workflow_configuration",
+  "confidence": "high",
+  "nextAction": "Fix the instance or workflow configuration before filing a Goobers defect.",
+  "evidence": [
+    {
+      "kind": "config_validation",
+      "detail": "ERROR DVL001 workflow missing required stage"
+    }
+  ],
+  "case": {
+    "fingerprint": "error dvl001 workflow missing required stage"
+  },
+  "cluster": {
+    "fingerprint": "error dvl001 workflow missing required stage",
+    "occurrenceCount": 0
+  }
+}

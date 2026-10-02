@@ -1,0 +1,28 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS DIAGNOSTICS TRIAGE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers diagnostics triage \- classify one run before filing a Goobers defect
+.SH SYNOPSIS
+\fBgoobers diagnostics triage\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers diagnostics triage --run <id> [--json] [path]
+
+Classify one failed run from the redacted diagnostics evidence Goobers can
+collect from an instance directory. The output is a provider-neutral support
+case verdict for intake surfaces; it does not file, comment on, or mutate any
+issue. Ambiguous, contradictory, or incomplete evidence fails closed to
+`insufficient_evidence` rather than becoming a Goobers defect candidate.
+
+--json writes the versioned support-triage contract. Without --json, a short
+human-readable verdict is printed.
+
+Exit codes: 0 = triage written, 1 = collection failed, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers diagnostics triage --run 8f2c --json ./my-instance
+goobers diagnostics triage --run 8f2c ./my-instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -10,6 +10,7 @@ payload/.goobers/agent-toolkit/api/schemas/config-source-action.schema.json
 payload/.goobers/agent-toolkit/api/schemas/diagnostics.schema.json
 payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
 payload/.goobers/agent-toolkit/api/schemas/features.schema.json
+payload/.goobers/agent-toolkit/api/schemas/gaggle-bundle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
 payload/.goobers/agent-toolkit/api/schemas/hosted-progress.schema.json
@@ -37,6 +38,7 @@ payload/.goobers/agent-toolkit/api/schemas/schema-output.schema.json
 payload/.goobers/agent-toolkit/api/schemas/security-alerts-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-manifest.schema.json
 payload/.goobers/agent-toolkit/api/schemas/stage-artifact-set.schema.json
+payload/.goobers/agent-toolkit/api/schemas/support-triage-v1.schema.json
 payload/.goobers/agent-toolkit/api/schemas/verdict.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workflow.schema.json
 payload/.goobers/agent-toolkit/api/schemas/workspace-revision.schema.json
@@ -69,6 +71,7 @@ payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/gaggle.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/coder/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/coder/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/goober.yaml
+payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/instructions-ado.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/curator/instructions.md
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/docs/goober.yaml
 payload/.goobers/agent-toolkit/config-examples/gaggles/acme-web/goobers/docs/instructions.md
@@ -115,6 +118,7 @@ payload/.goobers/agent-toolkit/docs/adr/0002-provider-neutral-capability-namespa
 payload/.goobers/agent-toolkit/docs/cli/README.md
 payload/.goobers/agent-toolkit/docs/design/cobrand.md
 payload/.goobers/agent-toolkit/docs/design/notification-output.md
+payload/.goobers/agent-toolkit/docs/design/plan-driven-dynamic-fan-out.md
 payload/.goobers/agent-toolkit/docs/design/static-fan-out-fan-in.md
 payload/.goobers/agent-toolkit/docs/feature-matrix.md
 payload/.goobers/agent-toolkit/docs/guides/codex-harness.md

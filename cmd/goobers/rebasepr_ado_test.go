@@ -33,7 +33,6 @@ func TestThreadCommentRebaseTransportReportsEvidenceUnavailable(t *testing.T) {
 // mutate the unrelated work item sharing the PR's numeric id.
 func TestRebasePRADOCleanForcePushesAndClearsLabel(t *testing.T) {
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
-	azureCLISource := useAzureCLIRemediationAuth(t, root)
 
 	const prBranch = "goobers/impl/ado-clean"
 	origin := initNonConflictingPRBranch(t, prBranch)
@@ -50,7 +49,7 @@ func TestRebasePRADOCleanForcePushesAndClearsLabel(t *testing.T) {
 
 	t.Setenv("GOOBERS_RUN_ID", "run-363-ado")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-	t.Setenv("GOOBERS_CRED_REPO_PUSH", "")
+	setDeliveredADOStageCredentials(t)
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "55")
 	t.Setenv("GOOBERS_INPUT_HEAD", prBranch)
 	t.Setenv("GOOBERS_INPUT_BASE", "main")
@@ -63,9 +62,6 @@ func TestRebasePRADOCleanForcePushesAndClearsLabel(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "clean rebase") {
 		t.Fatalf("stdout = %q, want a mention of a clean rebase", stdout)
-	}
-	if azureCLISource.callCount() < 3 {
-		t.Fatalf("Azure CLI credential resolutions = %d, want checkout, rebase fetch, and force-push", azureCLISource.callCount())
 	}
 
 	// The rebase actually applied: main's commit (unrelated.txt) is now present

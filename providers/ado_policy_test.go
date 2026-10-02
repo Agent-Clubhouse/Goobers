@@ -126,20 +126,80 @@ func TestADOPollPullRequestClassifiesPolicyEvaluations(t *testing.T) {
 			t.Fatalf("CheckState = %q, want failing", result.CheckState)
 		}
 	})
-	t.Run("rejected comment and work-item policies say why", func(t *testing.T) {
+	// "Require a merge strategy" is settled by the completion's mergeStrategy,
+	// not by code: before completion ADO reports it unmet, and treating that as
+	// failing CI escalated every implementation run on a repository with the
+	// policy (found in the v0.5.0 ADO soak).
+	t.Run("merge-strategy policy never gates CI", func(t *testing.T) {
+		for _, status := range []string{"rejected", "queued"} {
+			result := pollADOPolicies(t, []map[string]interface{}{
+				buildPolicy("approved", 7),
+				typedPolicy("fa4e907d-c16b-4a4c-9dfa-4916e5d171ab", "Require a merge strategy", status),
+			})
+			if result.CheckState != CheckStatePassing {
+				t.Fatalf("status %s: CheckState = %q, want passing — the build passed and a merge strategy is not CI", status, result.CheckState)
+			}
+			for _, c := range result.Checks {
+				if c.State == CheckStateFailing {
+					t.Fatalf("status %s: check %+v is failing; a merge-strategy policy must never fail CI", status, c)
+				}
+			}
+		}
+		pending := pollADOPolicies(t, []map[string]interface{}{
+			buildPolicy("queued", 7),
+			typedPolicy("fa4e907d-c16b-4a4c-9dfa-4916e5d171ab", "Require a merge strategy", "rejected"),
+		})
+		if pending.CheckState != CheckStatePending {
+			t.Fatalf("queued build + unmet merge strategy: CheckState = %q, want pending (the build is still running), not failing", pending.CheckState)
+		}
+	})
+	// PO ruling 2026-09-27: a rejected comment-resolution or
+	// work-item-linking policy is not failing CI. Its threads route to
+	// gather-review-threads and its link to open-pr's workItemRefs.
+	t.Run("rejected comment and work-item policies say why without failing CI", func(t *testing.T) {
 		result := pollADOPolicies(t, []map[string]interface{}{
 			buildPolicy("approved", 7),
 			typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected"),
 			typedPolicy(adoPolicyTypeWorkItemLinking, "Work item linking", "rejected"),
 		})
+		if result.CheckState != CheckStatePassing {
+			t.Fatalf("CheckState = %q, want passing — the build passed and the other policies are not CI", result.CheckState)
+		}
+		for name, summary := range map[string]string{
+			"Comment requirements": "unresolved comment threads",
+			"Work item linking":    "no linked work item",
+		} {
+			check := checkNamed(t, result.Checks, name)
+			if check.Summary != summary || check.State != CheckStatePending || check.Conclusion != "rejected" {
+				t.Fatalf("%s check = %+v, want pending, conclusion rejected, summary %q", name, check, summary)
+			}
+		}
+	})
+	t.Run("only rejected comment and work-item policies is not CI failing", func(t *testing.T) {
+		result := pollADOPolicies(t, []map[string]interface{}{
+			typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected"),
+			typedPolicy(adoPolicyTypeWorkItemLinking, "Work item linking", "broken"),
+		})
+		if result.CheckState != CheckStatePassing {
+			t.Fatalf("CheckState = %q, want passing — there is no CI to fail", result.CheckState)
+		}
+	})
+	t.Run("rejected comment policy does not mask a failing build", func(t *testing.T) {
+		result := pollADOPolicies(t, []map[string]interface{}{
+			buildPolicy("rejected", 7),
+			typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected"),
+		})
 		if result.CheckState != CheckStateFailing {
-			t.Fatalf("CheckState = %q, want failing", result.CheckState)
+			t.Fatalf("CheckState = %q, want failing from the build", result.CheckState)
 		}
-		if got := checkNamed(t, result.Checks, "Comment requirements").Summary; got != "unresolved comment threads" {
-			t.Fatalf("comment policy summary = %q", got)
-		}
-		if got := checkNamed(t, result.Checks, "Work item linking").Summary; got != "no linked work item" {
-			t.Fatalf("work-item policy summary = %q", got)
+	})
+	t.Run("rejected comment policy does not settle a running build", func(t *testing.T) {
+		result := pollADOPolicies(t, []map[string]interface{}{
+			buildPolicy("running", 7),
+			typedPolicy(adoPolicyTypeCommentRequirements, "Comment requirements", "rejected"),
+		})
+		if result.CheckState != CheckStatePending {
+			t.Fatalf("CheckState = %q, want pending on the build", result.CheckState)
 		}
 	})
 }

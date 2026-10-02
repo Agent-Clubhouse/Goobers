@@ -168,7 +168,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun:
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit:
 		return true
 	default:
 		return false
@@ -195,12 +195,16 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
 		schema = schemaRef("CancelRunRequest")
+	case RouteOperatorMessageSubmit:
+		schema = schemaRef("OperatorMessageSubmitRequest")
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage:
 		schema = schemaRef("InterventionRequest")
 	case RouteResolveEscalation:
 		schema = schemaRef("EscalationResolutionRequest")
 	case RouteWorkflowEnabled:
 		schema = schemaRef("WorkflowEnabledRequest")
+	case RouteGaggleBundleImport:
+		schema = schemaRef("GaggleBundleImportRequest")
 	}
 	return map[string]any{
 		"required": true,
@@ -258,10 +262,16 @@ func openAPIResponses(route Route) map[string]any {
 		successSchema = schemaRef("TriggerStatusResponse")
 	case RouteCancelRun:
 		successSchema = schemaRef("CancelRunResult")
+	case RouteOperatorMessageSubmit:
+		successSchema = schemaRef("OperatorMessageSubmitResponse")
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteResolveEscalation:
 		successSchema = schemaRef("InterventionResult")
 	case RouteWorkflowEnabled:
 		successSchema = schemaRef("WorkflowEnabledResult")
+	case RouteGaggleBundleExport:
+		successSchema = schemaRef("GaggleBundle")
+	case RouteGaggleBundleImport:
+		successSchema = schemaRef("GaggleBundleImportResult")
 	}
 	successResponse := jsonResponse("Successful response", successSchema)
 	if route.ID == RouteDiscovery || route.ID == RouteCapabilities {
@@ -545,6 +555,30 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 				"error": map[string]any{"type": "string"},
 			},
 		},
+		"OperatorMessageSubmitRequest": map[string]any{
+			"type": "object", "required": []string{"gaggle", "targetAddress", "purpose", "content", "deliveryMode"}, "additionalProperties": false,
+			"properties": map[string]any{
+				"gaggle":        map[string]any{"type": "string", "minLength": 1},
+				"targetAddress": map[string]any{"type": "string", "minLength": 1},
+				"expiresAt":     map[string]any{"type": "string", "format": "date-time"},
+				"purpose":       map[string]any{"type": "string", "minLength": 1},
+				"content": map[string]any{
+					"type": "object", "additionalProperties": false,
+					"properties": map[string]any{
+						"text":     map[string]any{"type": "string"},
+						"artifact": map[string]any{"type": "object", "additionalProperties": true},
+					},
+				},
+				"deliveryMode": map[string]any{"type": "string", "minLength": 1},
+			},
+		},
+		"OperatorMessageSubmitResponse": map[string]any{
+			"type": "object", "required": []string{"accepted", "record"},
+			"properties": map[string]any{
+				"accepted": map[string]any{"type": "boolean"},
+				"record":   map[string]any{"type": "object", "additionalProperties": true},
+			},
+		},
 		"InterventionRequest": map[string]any{
 			"type": "object", "required": actorRequired, "additionalProperties": false,
 			"properties": map[string]any{
@@ -582,6 +616,45 @@ func openAPIOperationSchemas(authenticated bool) map[string]any {
 				"gaggle":   map[string]any{"type": "string"},
 				"workflow": map[string]any{"type": "string"},
 				"enabled":  map[string]any{"type": "boolean"},
+			},
+		},
+		"GaggleBundleSource": map[string]any{
+			"type": "object", "required": []string{"name", "apiVersion", "digest"}, "additionalProperties": false,
+			"properties": map[string]any{
+				"name":       map[string]any{"type": "string", "minLength": 1},
+				"apiVersion": map[string]any{"type": "string", "minLength": 1},
+				"digest":     map[string]any{"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+			},
+		},
+		"GaggleBundle": map[string]any{
+			"type":                 "object",
+			"required":             []string{"apiVersion", "kind", "schemaVersion", "source", "exportedAt", "provenance", "definition", "digest"},
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"apiVersion":    map[string]any{"type": "string", "const": "goobers.dev/v1alpha1"},
+				"kind":          map[string]any{"type": "string", "const": "GaggleBundle"},
+				"schemaVersion": map[string]any{"type": "integer", "const": 1},
+				"source":        schemaRef("GaggleBundleSource"),
+				"exportedAt":    map[string]any{"type": "string", "format": "date-time"},
+				"provenance":    map[string]any{"type": "object", "additionalProperties": true},
+				"definition":    map[string]any{"type": "object", "additionalProperties": true},
+				"digest":        map[string]any{"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+			},
+		},
+		"GaggleBundleImportRequest": map[string]any{
+			"type": "object", "required": []string{"name", "bundle"}, "additionalProperties": false,
+			"properties": map[string]any{
+				"name":   map[string]any{"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+				"bundle": schemaRef("GaggleBundle"),
+			},
+		},
+		"GaggleBundleImportResult": map[string]any{
+			"type": "object", "required": []string{"name", "source", "importedAt", "restartRequired"}, "additionalProperties": false,
+			"properties": map[string]any{
+				"name":            map[string]any{"type": "string"},
+				"source":          schemaRef("GaggleBundleSource"),
+				"importedAt":      map[string]any{"type": "string", "format": "date-time"},
+				"restartRequired": map[string]any{"type": "boolean"},
 			},
 		},
 		"ErrorEnvelope": map[string]any{

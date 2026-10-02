@@ -53,7 +53,20 @@ func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project api
 	case providers.ProviderGitHub:
 		return newTerminalBranchDeleter(source), nil
 	default:
-		return nil, fmt.Errorf("terminal branch cleanup does not support repository provider %q", repo.Provider)
+		return nil, terminalBranchDeleteSupported(repo.Provider)
+	}
+}
+
+// terminalBranchDeleteSupported reports whether terminal branch cleanup has a
+// deleter for the repository provider. The delete checks it before it
+// materializes any credential, so an unsupported provider fails without
+// minting a token it could never use.
+func terminalBranchDeleteSupported(kind providers.ProviderKind) error {
+	switch kind {
+	case providers.ProviderGitea, providers.ProviderGitHub:
+		return nil
+	default:
+		return fmt.Errorf("terminal branch cleanup does not support repository provider %q", kind)
 	}
 }
 
@@ -190,6 +203,9 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	}
 	repo := terminalRepositoryRefForProject(cfg, project)
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+		if err := terminalBranchDeleteSupported(repo.Provider); err != nil {
+			return providers.DeleteBranchResult{}, err
+		}
 		set, err := injector.Materialize(ctx, []string{string(capability.GitHubBranchDelete)})
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
@@ -318,7 +334,7 @@ func appendBranchCleanup(annotate terminalAnnotator, branch *journal.ExternalRef
 		Runner:      runnerFields,
 	}
 	if cleanupErr != nil {
-		ev.Error = &journal.ErrorDetail{Code: "branch_delete_failed", Message: cleanupErr.Error()}
+		ev.Error = journal.ErrorDetailFor("branch_delete_failed", cleanupErr)
 	}
 	if err := annotate.Append(ev); err != nil {
 		return fmt.Errorf("journal terminal branch cleanup: %w", err)

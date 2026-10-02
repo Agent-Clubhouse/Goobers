@@ -28,8 +28,8 @@ func finalizeTerminalRunForRecovery(l instance.Layout, log *journal.InstanceLog,
 // claims.json and the provider cannot disagree for a full backlog-curation
 // interval after a run that terminates without reaching issue-close-out — the
 // `no-work` outcome being the case that makes that a certainty rather than an
-// edge case. A nil release (repo-less instance, non-GitHub provider) is exactly
-// finalizeTerminalRun.
+// edge case. A nil release (repo-less instance or unsupported provider) is
+// exactly finalizeTerminalRun.
 func finalizeTerminalRunWithClaimMarkers(
 	l instance.Layout,
 	log *journal.InstanceLog,

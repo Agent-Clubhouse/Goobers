@@ -102,7 +102,6 @@ func TestHTTPEmitterSendsNoAuthorizationWithoutTokenOrMinter(t *testing.T) {
 // #4260: HTTPEmitter.Emit must survive the same transient network blips the
 // surrender PUT does.
 func TestHTTPEmitterRetriesTransientFailureThenSucceeds(t *testing.T) {
-	shrinkRetryDelays(t)
 	var attempts atomic.Int32
 	const failures = 3
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -114,7 +113,7 @@ func TestHTTPEmitterRetriesTransientFailureThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: time.Second}
+	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	if _, err := e.Emit(context.Background(), EmitRequest{RunID: "run-1"}); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -124,7 +123,6 @@ func TestHTTPEmitterRetriesTransientFailureThenSucceeds(t *testing.T) {
 }
 
 func TestHTTPEmitterDoesNotRetry4xx(t *testing.T) {
-	shrinkRetryDelays(t)
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -132,7 +130,7 @@ func TestHTTPEmitterDoesNotRetry4xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: time.Second}
+	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	if _, err := e.Emit(context.Background(), EmitRequest{RunID: "run-1"}); err == nil {
 		t.Fatal("expected an error on a 401 response")
 	}
@@ -142,13 +140,12 @@ func TestHTTPEmitterDoesNotRetry4xx(t *testing.T) {
 }
 
 func TestHTTPEmitterHonoursRetryDeadline(t *testing.T) {
-	shrinkRetryDelays(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 
-	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: 30 * time.Millisecond}
+	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: 30 * time.Millisecond, RetryPolicy: fastRetryPolicy()}
 	start := time.Now()
 	_, err := e.Emit(context.Background(), EmitRequest{RunID: "run-1"})
 	elapsed := time.Since(start)
@@ -166,7 +163,6 @@ func TestHTTPEmitterHonoursRetryDeadline(t *testing.T) {
 // the REAL Writer (livejournal_test.go's testWriter), not a stand-in, so it
 // exercises the actual per-op idempotency-key dedup the retry relies on.
 func TestHTTPEmitterRetryAfterLostAckDoesNotDoubleApply(t *testing.T) {
-	shrinkRetryDelays(t)
 	w, runsDir := testWriter(t)
 	var puts atomic.Int32
 	first := true
@@ -203,7 +199,7 @@ func TestHTTPEmitterRetryAfterLostAckDoesNotDoubleApply(t *testing.T) {
 
 	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	batch := openBatch("run-lost-ack", started)
-	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: time.Second}
+	e := &HTTPEmitter{BaseURL: srv.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	if _, err := e.Emit(context.Background(), batch); err != nil {
 		t.Fatalf("emit: %v", err)
 	}

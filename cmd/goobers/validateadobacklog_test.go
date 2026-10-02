@@ -71,6 +71,7 @@ func TestADOBacklogProjectUsesIndependentBoardsProject(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { targetADOBacklogReachable = previous })
+	stubADOAccessReads(t, fullADORepositoryAccess(), fullADOBacklogStates())
 	var out strings.Builder
 	if !checkADOBacklogProjects(".", "config", cfg, set, nil, &out, &diagnosticCollector{}) || calls != 1 {
 		t.Fatalf("independent Boards project refused: %s calls=%d", out.String(), calls)

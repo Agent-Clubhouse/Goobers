@@ -111,7 +111,12 @@ func runSecurityAlertsQuery(args []string, stdout, stderr io.Writer) int {
 		// the runner reads the previous tick's success as this tick's.
 		return failProviderStage(stderr, "resolve target repository", err, securityAlertsResultFile)
 	}
+	// Alerts are read through the routed provider, so a backlog on another
+	// provider (topology (b)) keeps the routed repository.
 	req.Repository = backlogRepoRefForStage(root, repo)
+	if backlogOnOtherProvider(repo, req.Repository) {
+		req.Repository = repo
+	}
 	// Validate the whole request against the shared contract before a
 	// credential is resolved, so a mistyped filter is a usage error rather
 	// than a provider round-trip that fails halfway.

@@ -15,7 +15,7 @@ func TestGuidedADORepositoryPreparation(t *testing.T) {
 	for _, mode := range []string{"read-only", "no-create", "create", "incomplete"} {
 		t.Run(mode, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "ado")
-			code, _, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--ci-command=[\"dotnet\",\"test\"]", "--required-capabilities=dotnet@8", root)
+			code, _, stderr := runArgs(t, "init", "--template=standard", "--provider=ado", "--repo-auth-kind=pat", "--ci-command=[\"dotnet\",\"test\"]", "--required-capabilities=dotnet@8", root)
 			if code != 0 {
 				t.Fatalf("init: %d %s", code, stderr)
 			}

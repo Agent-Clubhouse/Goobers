@@ -61,13 +61,75 @@ func openHistoricalTestDB(t *testing.T, path string, version int) *DB {
 // every upgraded store silently stops applying the inserted DDL forever while
 // fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "a46ba3f1f293c562955eb245c9d96cd037fd7ebdbf52b78176a66629cac904b8"
+	const wantDigest = "8b206e38b570e14d3714f03eaa966918ed7dfe6acdb344cea0d0f10a98a7cdf3"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
 			"migration to the end of the list, update wantDigest to the value\n"+
 			"above. If it did anything else to an existing entry, that is the\n"+
 			"bug #2049 exists to catch.", got, wantDigest)
+	}
+}
+
+func TestClassifyGateEvaluationTreatsPollingBudgetExhaustionAsPolling(t *testing.T) {
+	classification, reason, evidence, err := classifyGateEvaluation("run-poll", journalEvent{
+		Seq:       7,
+		Type:      eventGateEvaluated,
+		Time:      time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC),
+		Gate:      "ci-gate",
+		Verdict:   "timeout",
+		Target:    "@escalate",
+		Escalated: true,
+		Runner: map[string]any{
+			"reason":      "POLLING_BUDGET_EXHAUSTED",
+			"escalated":   true,
+			"pollAttempt": 31,
+			"pollTarget":  "ci-poll",
+		},
+	})
+	if err != nil {
+		t.Fatalf("classifyGateEvaluation: %v", err)
+	}
+	if classification != "polling" || reason != "POLLING_BUDGET_EXHAUSTED" {
+		t.Fatalf("classification = %q/%q, want polling/POLLING_BUDGET_EXHAUSTED", classification, reason)
+	}
+	if !strings.Contains(evidence, `"pollTarget":"ci-poll"`) {
+		t.Fatalf("evidence = %s, want runner polling metadata preserved", evidence)
+	}
+}
+
+func TestPollingBudgetMigrationReclassifiesMaterializedGateRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	old := openHistoricalTestDB(t, path, 29)
+	if _, err := old.sql.Exec(`
+			INSERT INTO gate_verdicts (run_id, seq, gate, verdict, target, occurred_at, runner_json)
+			VALUES ('run-poll', 7, 'ci-gate', 'timeout', '@escalate', '2026-10-01T08:00:00Z',
+				'{"escalated":true,"reason":"POLLING_BUDGET_EXHAUSTED","pollAttempt":31,"pollTarget":"ci-poll"}')`); err != nil {
+		t.Fatalf("insert gate verdict: %v", err)
+	}
+	if _, err := old.sql.Exec(`
+			INSERT INTO gate_classifications (run_id, seq, gate, classification, reason, evidence_json, occurred_at)
+			VALUES ('run-poll', 7, 'ci-gate', 'repass-escalation', 'POLLING_BUDGET_EXHAUSTED', '{}', '2026-10-01T08:00:00Z')`); err != nil {
+		t.Fatalf("insert stale gate classification: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close historical database: %v", err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open upgraded store: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	var classification, reason string
+	if err := upgraded.sql.QueryRow(`
+			SELECT classification, reason
+			FROM gate_classifications
+			WHERE run_id = 'run-poll' AND seq = 7`).Scan(&classification, &reason); err != nil {
+		t.Fatalf("query upgraded classification: %v", err)
+	}
+	if classification != "polling" || reason != "POLLING_BUDGET_EXHAUSTED" {
+		t.Fatalf("upgraded classification = %q/%q, want polling/POLLING_BUDGET_EXHAUSTED", classification, reason)
 	}
 }
 

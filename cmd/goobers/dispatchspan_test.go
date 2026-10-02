@@ -114,11 +114,12 @@ func acceptingJournalPlane(t *testing.T) string {
 // the REAL plane cannot express the case: a refusal, and a hang. It records
 // every PUT body and its Authorization header.
 type blobPlaneRecorder struct {
-	mu     sync.Mutex
-	puts   map[string][]byte
-	auth   map[string]string
-	status int
-	block  <-chan struct{}
+	mu       sync.Mutex
+	puts     map[string][]byte
+	auth     map[string]string
+	status   int
+	block    <-chan struct{}
+	attempts int
 }
 
 func newBlobPlaneRecorder(status int) *blobPlaneRecorder {
@@ -130,6 +131,9 @@ func (b *blobPlaneRecorder) handler(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	b.mu.Lock()
+	b.attempts++
+	b.mu.Unlock()
 	if b.block != nil {
 		// A plane that HANGS rather than refusing: hold the request until the
 		// client's own deadline gives up (or the test tears down).
@@ -156,6 +160,12 @@ func (b *blobPlaneRecorder) authorization(digest string) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.auth[digest]
+}
+
+func (b *blobPlaneRecorder) attemptCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.attempts
 }
 
 // spanRecorderFixture builds a pod recorder with a real DefaultScrubber (the
@@ -264,6 +274,7 @@ func TestPodSpanRecorderSurvivesABlobPlaneFailure(t *testing.T) {
 
 	stampPodSpanEnv(t, acceptingJournalPlane(t), server.URL, "pod-token-fixture", "run-span-3")
 	rec, stderr := spanRecorderFixture(t, "")
+	rec.timing = fastArtifactTiming()
 	transcript := []byte(`{"event":"prompt"}`)
 
 	ref, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript", "", transcript)
@@ -276,8 +287,11 @@ func TestPodSpanRecorderSurvivesABlobPlaneFailure(t *testing.T) {
 	if got := plane.authorization(ref.Digest); got != "Bearer pod-token-fixture" {
 		t.Fatalf("span PUT Authorization = %q, want the pod's stage-scoped bearer", got)
 	}
-	if !strings.Contains(stderr.String(), "blob plane") {
-		t.Fatalf("a failed span PUT was silent; stderr = %q", stderr.String())
+	if got := plane.attemptCount(); got < 2 {
+		t.Fatalf("blob plane saw %d attempt(s), want retries before terminal failure", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "blob plane") || !strings.Contains(got, "retry deadline exceeded") {
+		t.Fatalf("a terminal span PUT failure was not surfaced; stderr = %q", got)
 	}
 }
 
@@ -294,12 +308,10 @@ func TestPodSpanRecorderGivesUpOnAHangingBlobPlane(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(release) })
 
-	previous := blobWriteThroughBudget
-	blobWriteThroughBudget = 100 * time.Millisecond
-	t.Cleanup(func() { blobWriteThroughBudget = previous })
-
 	stampPodSpanEnv(t, acceptingJournalPlane(t), server.URL, "pod-token-fixture", "run-span-4")
 	rec, stderr := spanRecorderFixture(t, "")
+	rec.timing = fastArtifactTiming()
+	rec.timing.blobWriteThroughBudget = 100 * time.Millisecond
 
 	start := time.Now()
 	if _, err := rec.RecordSpanWithSchema("implement", "copilot-cli.transcript", "", []byte(`{"event":"prompt"}`)); err != nil {

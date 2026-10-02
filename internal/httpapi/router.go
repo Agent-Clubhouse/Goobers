@@ -72,6 +72,15 @@ type Authorizer interface {
 	Authorize(*http.Request) error
 }
 
+func operatorMessagePlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	run, ok := strings.CutSuffix(rest, "/operator-messages")
+	return ok && run != "" && !strings.Contains(run, "/")
+}
+
 // Principal is the identity established by an Authenticator.
 type Principal struct {
 	Subject string
@@ -145,6 +154,11 @@ const PodPrincipalIssuer = "goobers/pod"
 // config-observability credential. It carries neither instance roles nor a run
 // identity.
 const WorkerPrincipalIssuer = "goobers/worker"
+
+// CredentialGrantPrincipalIssuer identifies a stage credential-refresh grant
+// (Goobers#6120). Such a principal holds no roles and no pod scopes: the
+// authorizer admits it to the credential refresh route and nothing else.
+const CredentialGrantPrincipalIssuer = "goobers/credential-grant"
 
 // IsPodPrincipal reports whether principal was authenticated as a stage pod.
 func IsPodPrincipal(principal Principal) bool {
@@ -401,11 +415,20 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
+		if principal.Issuer == CredentialGrantPrincipalIssuer {
+			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
+				return nil
+			}
+			return errors.New("a credential-refresh grant may only call the credential refresh route")
+		}
 		if principal.Issuer == WorkerPrincipalIssuer {
 			if request.Method == http.MethodGet && request.URL.Path == apicontract.ConfigDigestPath {
 				return nil
 			}
 			return errors.New("worker principal may only read config digest or report config divergence")
+		}
+		if request.Method == http.MethodPost && operatorMessagePlanePath(request.URL.Path) {
+			return nil
 		}
 		if IsPodPrincipal(principal) {
 			scope, admitted := podRouteScope(request)
@@ -444,6 +467,9 @@ func podRouteScope(request *http.Request) (scope string, admitted bool) {
 		return scope, true
 	}
 	if journalPlanePath(path) && method == http.MethodPost {
+		return ScopeJournal, true
+	}
+	if operatorMessagePlanePath(path) && method == http.MethodPost {
 		return ScopeJournal, true
 	}
 	if surrenderPlanePath(path) && method == http.MethodPost {
@@ -563,12 +589,14 @@ type handlerConfig struct {
 	interventionContext     context.Context
 	runRevealer             func(context.Context, string) error
 	workflowMutations       WorkflowMutationService
+	gaggleBundles           GaggleBundleService
 	claims                  ClaimService
 	triggers                TriggerService
 	escalations             EscalationService
 	cancels                 CancelService
 	journal                 JournalService
 	runJournal              RunJournalService
+	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
 	recovery                RecoveryService
@@ -776,6 +804,18 @@ func WithWorkflowMutations(service WorkflowMutationService) HandlerOption {
 			return errors.New("http API workflow mutation service is required")
 		}
 		config.workflowMutations = service
+		return nil
+	}
+}
+
+// WithGaggleBundles enables the sanitized gaggle export and atomic import
+// routes behind the router's existing authentication and authorization gates.
+func WithGaggleBundles(service GaggleBundleService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("http API gaggle bundle service is required")
+		}
+		config.gaggleBundles = service
 		return nil
 	}
 }
@@ -1114,6 +1154,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
 	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)
+	registerGaggleBundleRoutes(router, config.gaggleBundles, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)

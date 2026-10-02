@@ -20,6 +20,8 @@ import (
 )
 
 const runsHelp = "Usage: goobers runs <command> [flags] [path]\n\n" +
+	"A flag in place of <command> (for example `goobers runs --api=<url>`)\n" +
+	"runs the run table, as `runs list` does.\n\n" +
 	"Commands:\n" +
 	"  list    alias for the goobers status run table (same flags)\n" +
 	"  du      report per-run journal and artifact bytes, largest first\n"
@@ -35,6 +37,12 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	default:
+		// The original read verb predates the list/du split. Keep `runs list` as
+		// the discoverable form while accepting the issue's direct
+		// `goobers runs --api ...` spelling as the run-table alias.
+		if strings.HasPrefix(args[0], "-") {
+			return runRunsList(args, stdout, stderr)
+		}
 		pf(stderr, "goobers runs: unknown subcommand %q\n\n", args[0])
 		usage(stderr)
 		return 2
@@ -177,6 +185,7 @@ func measureRunDiskUsage(runDir, runID string) (runDiskUsage, error) {
 // runSummary is the flat, journal-derived row the run-listing commands print.
 type runSummary struct {
 	EngineFallback *readmodel.EngineFallback
+	Lineage        *readservice.RunLineage
 	RunID          string
 	DirName        string
 	Workflow       string

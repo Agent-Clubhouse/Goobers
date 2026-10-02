@@ -396,7 +396,7 @@ func TestScheduledWorkflowCredentialEnvironmentsUsesRuntimeSourcePrecedence(t *t
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
 		Name:     "widget",
-	})
+	}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestScheduledWorkflowCredentialEnvironmentsUsesGitHubAppPrivateKeys(t *test
 		Provider: apiv1.ProviderGitHub,
 		Owner:    "acme",
 		Name:     "widget",
-	})
+	}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -881,7 +881,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = instanceLog.Close() })
-	tel, err := buildTelemetryClient(ctx, l, nil, journal.NewRegistryScrubber(), instance.OTLPConfig{}, nil)
+	tel, err := buildTelemetryClient(ctx, l, nil, journal.NewRegistryScrubber(), instance.TelemetryConfig{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -156,8 +156,9 @@ const (
 	DefaultPollTimeout     = boundedwait.DefaultPollTimeout
 )
 
-// DefaultMaxConsecutivePollErrors bounds how many transient poll errors
-// (providers.IsTransientError) CIPollExecutor absorbs back-to-back before
+// DefaultMaxConsecutivePollErrors bounds how many retryable poll errors
+// (provider transients, plus ci-poll-scoped 401s from expired short-lived
+// credentials) CIPollExecutor absorbs back-to-back before
 // giving up — without this bound, a poller that fails transiently forever
 // (e.g. a PR whose CI checks were permanently misconfigured to 503) would
 // poll until the overall Timeout regardless, silently burning the full 30
@@ -172,12 +173,32 @@ type PRPoller interface {
 	PollPullRequest(ctx context.Context, req providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
 }
 
+type ciPollCredentialRefresher interface {
+	RefreshCIPollCredential(context.Context) (bool, error)
+}
+
 type ciPollProviderError struct {
 	cause error
 }
 
 func (e *ciPollProviderError) Error() string { return e.cause.Error() }
 func (e *ciPollProviderError) Unwrap() error { return e.cause }
+
+type ciPollInfrastructureError struct {
+	cause error
+}
+
+func (e *ciPollInfrastructureError) Error() string { return e.cause.Error() }
+func (e *ciPollInfrastructureError) Unwrap() error { return e.cause }
+
+// IsCIPollInfrastructureError reports whether ci-poll exhausted a bounded
+// recovery path for an infrastructure-shaped provider condition. These errors
+// should fail this stage attempt as infrastructure without being converted into
+// a terminal task failure result.
+func IsCIPollInfrastructureError(err error) bool {
+	var infraErr *ciPollInfrastructureError
+	return errors.As(err, &infraErr)
+}
 
 // CIPollConfig configures one ci-poll stage invocation.
 type CIPollConfig struct {
@@ -322,7 +343,7 @@ type CIPollExecutor struct {
 	Interval    time.Duration
 	MaxInterval time.Duration
 	Timeout     time.Duration
-	// MaxConsecutivePollErrors bounds back-to-back transient poll errors
+	// MaxConsecutivePollErrors bounds back-to-back retryable poll errors
 	// before Run gives up early rather than waiting out the full Timeout.
 	// Defaults to DefaultMaxConsecutivePollErrors when <= 0.
 	MaxConsecutivePollErrors int
@@ -407,6 +428,8 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 	}
 
 	consecutiveErrors := 0
+	consecutiveUnauthorized := 0
+	refresher, canRefreshCredential := e.Poller.(ciPollCredentialRefresher)
 	retriesUsed := 0
 	for attempt := 0; ; attempt++ {
 		result, err := e.Poller.PollPullRequest(ctx, req)
@@ -415,13 +438,32 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			if ciPollDeadlineExceeded(parentCtx, ctx) {
 				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
-			if !providers.IsTransientError(err) {
+			if providers.IsUnauthorizedError(err) {
+				if !canRefreshCredential {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
+				}
+				consecutiveErrors = 0
+				consecutiveUnauthorized++
+				if consecutiveUnauthorized > maxConsecutiveErrors {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollInfrastructureError{cause: err})
+				}
+				refreshed, refreshErr := refresher.RefreshCIPollCredential(ctx)
+				if refreshErr != nil {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: refresh ci-poll credential after unauthorized response: %w", &ciPollInfrastructureError{cause: refreshErr})
+				}
+				if !refreshed {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
+				}
+			} else if providers.IsTransientError(err) {
+				consecutiveUnauthorized = 0
+				consecutiveErrors++
+				if consecutiveErrors > maxConsecutiveErrors {
+					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
+				}
+			} else {
 				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %w", &ciPollProviderError{cause: err})
 			}
-			consecutiveErrors++
-			if consecutiveErrors > maxConsecutiveErrors {
-				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: poll pull request: %d consecutive transient errors, giving up: %w", consecutiveErrors, err)
-			}
+
 			if now().After(deadline) {
 				return ciPollTimeoutOutcome(timeout, cfg.PullID), nil
 			}
@@ -434,6 +476,7 @@ func (e *CIPollExecutor) Run(ctx context.Context, cfg CIPollConfig) (apiv1.Resul
 			continue
 		}
 		consecutiveErrors = 0
+		consecutiveUnauthorized = 0
 		// The pull request's own lifecycle is asked FIRST, because a closed PR
 		// can go on reporting pending checks forever (#2786).
 		if outcome, stop := ciPollLifecycleOutcome(result, cfg.PullID); stop {
@@ -496,7 +539,7 @@ func (e *CIPollExecutor) ciPollFailureOutcome(ctx context.Context, cfg CIPollCon
 		return outcome, nil
 	}
 
-	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckAnnotations(ctx, cfg, result), retryErr)
+	data, err := marshalCIChecksArtifact(result.Checks, e.failingCheckEvidence(ctx, cfg, result), retryErr)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: encode %s: %w", CIChecksArtifactName, err)
 	}
@@ -561,29 +604,43 @@ func (e *CIPollExecutor) attemptFailedChecksRetry(ctx context.Context, cfg CIPol
 	return true, nil
 }
 
-// failingCheckAnnotations resolves annotations for the failing checks, keyed by
-// check name. Called once, on the terminal failing outcome — never on the
-// polling path, so a run that never fails costs no extra provider calls.
+// failingCheckEvidence resolves the evidence for the failing checks. Called
+// once, on the terminal failing outcome — never on the polling path, so a run
+// that never fails costs no extra provider calls. A provider that reports CI
+// per commit (CIFailureLister) is asked for the head SHA and matched by check
+// name; one that reports CI per pull request (Azure DevOps policy
+// evaluations, providers.PullRequestCIFailureReader) is asked for the pull
+// request and matched per check (ciEvidenceForPullRequest).
 //
-// Best-effort by design: annotations enrich the evidence, they are not the
-// outcome. A provider that cannot supply them, or an error fetching them, must
+// Best-effort by design: evidence enriches the artifact, it is not the
+// outcome. A provider that cannot supply it, or an error fetching it, must
 // not turn a determined CI verdict into a stage failure.
-func (e *CIPollExecutor) failingCheckAnnotations(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) map[string][]providers.CheckAnnotation {
-	lister, ok := e.Poller.(CIFailureLister)
-	if !ok || result.HeadSHA == "" {
-		return nil
-	}
-	failures, err := lister.CIFailures(ctx, providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo}, result.HeadSHA)
-	if err != nil {
-		return nil
-	}
-	annotations := make(map[string][]providers.CheckAnnotation, len(failures))
-	for _, failure := range failures {
-		if len(failure.Annotations) > 0 {
-			annotations[failure.Name] = failure.Annotations
+func (e *CIPollExecutor) failingCheckEvidence(ctx context.Context, cfg CIPollConfig, result providers.PullRequestPollResult) ciCheckEvidence {
+	repo := providers.RepositoryRef{Owner: cfg.Owner, Name: cfg.Repo}
+	if lister, ok := e.Poller.(CIFailureLister); ok {
+		if result.HeadSHA == "" {
+			return nil
 		}
+		failures, err := lister.CIFailures(ctx, repo, result.HeadSHA)
+		if err != nil {
+			return nil
+		}
+		annotations := make(map[string][]providers.CheckAnnotation, len(failures))
+		for _, failure := range failures {
+			if len(failure.Annotations) > 0 {
+				annotations[failure.Name] = failure.Annotations
+			}
+		}
+		return ciEvidenceByName(annotations)
 	}
-	return annotations
+	if reader, ok := e.Poller.(providers.PullRequestCIFailureReader); ok && cfg.PullID != "" {
+		evidence, err := reader.PullRequestCIFailures(ctx, repo, cfg.PullID)
+		if err != nil {
+			return nil
+		}
+		return ciEvidenceForPullRequest(result.Checks, evidence.Failures)
+	}
+	return nil
 }
 
 // boundCheckAnnotations caps how much of one check's annotation set reaches the
@@ -692,7 +749,12 @@ func boundFailedCheckNames(names []string) string {
 	return string(first) + marker
 }
 
-func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[string][]providers.CheckAnnotation, retryErr error) ([]byte, error) {
+// marshalCIChecksArtifact curates checks into ci-checks.json, with each
+// check's evidence resolved by evidenceFor (nil for none).
+func marshalCIChecksArtifact(checks []providers.CheckDetail, evidenceFor ciCheckEvidence, retryErr error) ([]byte, error) {
+	if evidenceFor == nil {
+		evidenceFor = ciEvidenceByName(nil)
+	}
 	artifact := CIChecksArtifact{
 		Checks: make([]CICheck, 0, min(len(checks), maxCIChecks)),
 	}
@@ -705,9 +767,13 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 			nonPassing++
 		}
 	}
-	appendCheck := func(check providers.CheckDetail) {
+	appendCheck := func(i int, check providers.CheckDetail) {
 		if len(artifact.Checks) == maxCIChecks {
 			return
+		}
+		checkAnnotations, evidenceSummary := evidenceFor(i, check)
+		if strings.TrimSpace(check.Summary) == "" {
+			check.Summary = evidenceSummary
 		}
 		check.Name = strings.ToValidUTF8(check.Name, "\uFFFD")
 		check.URL = strings.ToValidUTF8(check.URL, "\uFFFD")
@@ -721,19 +787,19 @@ func marshalCIChecksArtifact(checks []providers.CheckDetail, annotations map[str
 			HostReproduction: classifyHostReproduction(check.Name, runtime.GOOS),
 		}
 		var annotationsDropped, messagesTruncated int
-		entry.Annotations, annotationsDropped, messagesTruncated = boundCheckAnnotations(annotations[check.Name])
+		entry.Annotations, annotationsDropped, messagesTruncated = boundCheckAnnotations(checkAnnotations)
 		artifact.Metadata.AnnotationsDropped += annotationsDropped
 		artifact.Metadata.AnnotationMessagesTruncated += messagesTruncated
 		artifact.Checks = append(artifact.Checks, entry)
 	}
-	for _, check := range checks {
+	for i, check := range checks {
 		if check.State == providers.CheckStateFailing {
-			appendCheck(check)
+			appendCheck(i, check)
 		}
 	}
-	for _, check := range checks {
+	for i, check := range checks {
 		if check.State != providers.CheckStatePassing && check.State != providers.CheckStateFailing {
-			appendCheck(check)
+			appendCheck(i, check)
 		}
 	}
 	artifact.Metadata.ChecksDropped = nonPassing - len(artifact.Checks)

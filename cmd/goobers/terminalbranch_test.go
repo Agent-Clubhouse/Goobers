@@ -561,3 +561,26 @@ func TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo(t *testing.T) {
 		}
 	}
 }
+
+// A provider terminal cleanup has no deleter for fails BEFORE any credential
+// is materialized: the repository's token reference is deliberately unset, so
+// reaching Materialize would surface a credential error instead of this one.
+func TestBuildTerminalBranchDeleteRefusesAnUnsupportedProviderBeforeMinting(t *testing.T) {
+	t.Setenv("TERMINAL_UNSUPPORTED_PROVIDER_TOKEN", "")
+	cfg := &instance.Config{Repos: []instance.RepoRef{{
+		Provider: string(providers.ProviderADO),
+		Owner:    "example-org",
+		Project:  "example-project",
+		Name:     "example-repo",
+		Token:    instance.TokenRef{Env: "TERMINAL_UNSUPPORTED_PROVIDER_TOKEN"},
+	}}}
+	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, apiv1.RepoRef{}, journal.NewRegistryScrubber(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = deleteBranch(context.Background(), providers.DeleteBranchRequest{Repository: repo, Name: "goobers/implementation/run"})
+	want := `terminal branch cleanup does not support repository provider "` + string(providers.ProviderADO) + `"`
+	if err == nil || err.Error() != want {
+		t.Fatalf("deleteBranch error = %v, want %q before any credential is materialized", err, want)
+	}
+}

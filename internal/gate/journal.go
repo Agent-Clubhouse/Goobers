@@ -50,7 +50,7 @@ func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) er
 	return j.Append(journal.Event{
 		Type:  journal.EventError,
 		Gate:  gateName,
-		Error: &journal.ErrorDetail{Code: "evaluator_transient", Message: err.Error()},
+		Error: journal.ErrorDetailFor("evaluator_transient", err),
 		Runner: map[string]any{
 			"evaluatorAttempt":  attempt,
 			"retryFailureClass": "infra",
@@ -65,7 +65,7 @@ func recordVerdictValidationRetry(j Journal, gateName string, attempt int, err e
 	return j.Append(journal.Event{
 		Type:  journal.EventError,
 		Gate:  gateName,
-		Error: &journal.ErrorDetail{Code: "verdict_invalid", Message: err.Error()},
+		Error: journal.ErrorDetailFor("verdict_invalid", err),
 		Runner: map[string]any{
 			"evaluatorAttempt":  attempt,
 			"retryFailureClass": "policy",
@@ -118,6 +118,10 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	if r.RepassTarget != "" {
 		runner["repassTarget"] = r.RepassTarget
+	}
+	if r.PollTarget != "" {
+		runner["pollAttempt"] = r.PollAttempt
+		runner["pollTarget"] = r.PollTarget
 	}
 	if r.Interrupted {
 		runner["interrupted"] = true

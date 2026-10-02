@@ -122,13 +122,17 @@ unwrap:
 }
 
 // elementSchema unwraps arrays so a []Task compares against the task item
-// schema rather than the array wrapper.
+// schema rather than the array wrapper, and maps compare against their value
+// schema under additionalProperties.
 func elementSchema(schema *apiextensionsv1.JSONSchemaProps) *apiextensionsv1.JSONSchemaProps {
 	if schema == nil {
 		return nil
 	}
 	if schema.Type == "array" && schema.Items != nil && schema.Items.Schema != nil {
 		return schema.Items.Schema
+	}
+	if schema.Type == "object" && schema.AdditionalProperties != nil && schema.AdditionalProperties.Schema != nil {
+		return schema.AdditionalProperties.Schema
 	}
 	return schema
 }

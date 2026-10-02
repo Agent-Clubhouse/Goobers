@@ -328,6 +328,15 @@ func (s *Store) migrateOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE projection_state
+		SET ready = 0
+		WHERE id = 1 AND ready <> 0
+			AND EXISTS (
+				SELECT 1 FROM run WHERE projection_version < ?
+			)`, currentProjectionVersion); err != nil {
+		return fmt.Errorf("readmodel: invalidate stale projections: %w", err)
+	}
 	return tx.Commit()
 }
 

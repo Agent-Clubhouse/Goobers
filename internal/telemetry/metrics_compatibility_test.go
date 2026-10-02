@@ -31,6 +31,7 @@ import (
 )
 
 const metricCompatibilityFixturePath = "testdata/metric_compatibility_fixtures.json"
+const metricCompatibilityOS = "linux"
 
 func TestOTLPMetricTemporalityAndTerminalCompatibility(t *testing.T) {
 	scenario := buildAllMetricsCompatibilityScenario(t)
@@ -53,6 +54,7 @@ func TestOTLPMetricTemporalityAndTerminalCompatibility(t *testing.T) {
 		MetricEscalations:              {kind: "sum", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, monotonic: true},
 		MetricRedactionsTotal:          {kind: "sum", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, monotonic: true},
 		MetricJournalAppendsDropped:    {kind: "sum", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, monotonic: true},
+		MetricJournalExportsDropped:    {kind: "sum", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, monotonic: true},
 		MetricWorkActive:               {kind: "sum", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, monotonic: false},
 		MetricStageMetricValue:         {kind: "histogram", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE},
 		MetricRecoverySnapshotFormat:   {kind: "sum", temporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, monotonic: true},
@@ -63,7 +65,7 @@ func TestOTLPMetricTemporalityAndTerminalCompatibility(t *testing.T) {
 	} {
 		assertMetricKindAndTemporality(t, req, name, want.kind, want.temporality, want.monotonic)
 	}
-	for _, name := range []string{EventWorktreeDiskUsage, EventWorkcopyDiskUsage, MetricStorageFreeBytes} {
+	for _, name := range []string{EventWorktreeDiskUsage, EventWorkcopyDiskUsage, MetricStorageFreeBytes, MetricQueueDepth, MetricQueueOldestAge, MetricWorkersAvailable} {
 		assertGaugeMetric(t, req, name)
 	}
 
@@ -88,6 +90,12 @@ func TestOTLPMetricTemporalityAndTerminalCompatibility(t *testing.T) {
 	})
 	if failedStage.AsInt != 1 {
 		t.Fatalf("%s failed-task = %d, want 1", MetricStageOutcomes, failedStage.AsInt)
+	}
+	journalExportDrops := findNumberPoint(t, metricByName(t, req, MetricJournalExportsDropped), map[string]string{
+		MetricAttrJournalDropCause: dropQueueFull.String(),
+	})
+	if journalExportDrops.AsInt != 2 {
+		t.Fatalf("%s queue_full = %d, want 2", MetricJournalExportsDropped, journalExportDrops.AsInt)
 	}
 	cancelledStage := findNumberPoint(t, metricByName(t, req, MetricStageOutcomes), map[string]string{
 		AttrStage:   "cancelled-task",
@@ -326,6 +334,7 @@ func buildAllMetricsCompatibilityScenario(t *testing.T) metricCompatibilityScena
 		t.Fatal(err)
 	}
 	failSpanAt(failedTask, base.Add(6*time.Second), errors.New("fixture failed"), "")
+	failedTask.End()
 
 	_, cancelledTask, err := client.StartTask(runCtx, TaskAttributes{
 		StartedAt:  base.Add(7 * time.Second),
@@ -369,11 +378,17 @@ func buildAllMetricsCompatibilityScenario(t *testing.T) metricCompatibilityScena
 	runSpan.End()
 
 	client.InstanceJournalAppendDropped()
+	client.journalExportDropped(dropQueueFull, 2)
 	client.SnapshotCaptured("delta", 4096)
 	client.SnapshotCaptured("full", 1<<20)
 	client.SnapshotFallback("no_base_ref")
 	client.SnapshotRestoreFailed("base_missing")
 	client.StorageHealthSampled("warning", 1024, true)
+	client.RecordSchedulerQueueSaturation(context.Background(), []QueueSaturationSample{
+		{QueueKind: "schedule", OperatingSystem: metricCompatibilityOS, Depth: 0, ObservedAt: base},
+		{QueueKind: "backlog", OperatingSystem: metricCompatibilityOS, Depth: 4, OldestEnqueuedAt: base.Add(-90 * time.Second), ObservedAt: base},
+		{QueueKind: "refill", OperatingSystem: metricCompatibilityOS, Depth: 1, OldestEnqueuedAt: base.Add(-30 * time.Second), ObservedAt: base},
+	}, &WorkerAvailabilitySample{OperatingSystem: metricCompatibilityOS, Available: 2})
 	client.RecordWorkcopyUsage(context.Background(), worktree.UsageMeasurement{
 		Gaggle:           "acme-web",
 		Operation:        worktree.UsageOperationCreate,

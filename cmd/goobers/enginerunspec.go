@@ -135,8 +135,10 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// its own, exactly as dispatchTask does. A dispatch that leaves them
 		// empty hands the stage no partition, and on a shared backlog that
 		// claims the sibling instance's goobers:local items.
-		BacklogQueryAssignedTo:    selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
-		BacklogQueryRequireLabels: requireLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryAssignedTo:     selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
+		BacklogQueryRequireLabels:  requireLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryBacklogLabels:  backlogLabelsByGaggle(req.set)[req.gaggle],
+		BacklogQueryLabelPredicate: backlogLabelPredicatesByGaggle(req.set)[req.gaggle],
 		// #3876: kit provenance, so an engine run's run.yaml names the same
 		// digest gooberDigestStarter stamps on a runner-driven one.
 		GooberDigest: req.gooberDigest,
@@ -145,7 +147,30 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// pinned at start. Nil on every instance that did not opt in, which
 		// is the rollback posture and the pre-protocol behaviour exactly.
 		HITL: engineHITLPolicy(req.cfg),
+		// Topology (b): a stage pod cannot resolve role routing, so the
+		// engine refuses to place this run's stages in a pod.
+		RoleRoutedBacklogProvider: roleRoutedBacklogProvider(req.set, req.gaggle),
 	}, nil
+}
+
+// roleRoutedBacklogProvider is the named gaggle's backlog provider when its
+// backlog is routed by role to another provider than its code
+// (crossProviderBacklog, topology (b)), and empty for every other gaggle.
+func roleRoutedBacklogProvider(set *instance.ConfigSet, gaggle string) apiv1.Provider {
+	if set == nil {
+		return ""
+	}
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Name != gaggle {
+			continue
+		}
+		if crossProviderBacklog(g.Spec.Project.Provider, g.Spec.Backlog.Provider) {
+			return g.Spec.Backlog.Provider
+		}
+		return ""
+	}
+	return ""
 }
 
 // engineHITLPolicy translates the instance's engine.hitl block into the

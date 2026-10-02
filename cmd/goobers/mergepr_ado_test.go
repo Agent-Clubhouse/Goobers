@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -28,6 +31,10 @@ type adoMergePRServer struct {
 	// threadComments is the PR's thread comments the pre-lock verdict recovery
 	// reads (#2746) — empty until setVerdictThread seeds one.
 	threadComments atomic.Value // []map[string]any
+	// stackedOnHead, when set, is an open pull request whose target is PR
+	// 359's source branch (a stacked PR), served by the list endpoint.
+	stackedOnHead atomic.Bool
+	listCalls     int64
 }
 
 // adoMergePRAuthor is the display name the fake connectionData endpoint reports,
@@ -96,6 +103,19 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
 		}
 	})
+	mux.HandleFunc("/myorg/myproject/_apis/git/repositories/myrepo/pullrequests", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&state.listCalls, 1)
+		prs := []map[string]any{}
+		stackedBase := "refs/heads/goobers/tb-ado-implementation/wire-merge"
+		if state.stackedOnHead.Load() && r.URL.Query().Get("searchCriteria.targetRefName") == stackedBase {
+			prs = append(prs, map[string]any{
+				"pullRequestId": 360, "status": "active",
+				"sourceRefName": "refs/heads/goobers/tb-ado-implementation/stacked",
+				"targetRefName": stackedBase,
+			})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": prs})
+	})
 	mux.HandleFunc("/myorg/myproject/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&state.evalCalls, 1)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -142,8 +162,21 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 // serverURL. Returns (instanceRoot, workDir) — workDir is cwd, where the result
 // file lands.
 func adoMergePREnv(t *testing.T, serverURL string, withoutGrant bool, inputs map[string]string) (string, string) {
+	return adoMergePREnvWithAuth(t, serverURL, withoutGrant, "pat", inputs)
+}
+
+func adoMergePREnvWithAuth(t *testing.T, serverURL string, withoutGrant bool, authKind string, inputs map[string]string) (string, string) {
 	t.Helper()
 	instanceRoot := initDemo(t)
+	instanceConfig := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos:\n" +
+		"  - provider: ado\n    owner: myorg\n    project: myproject\n    name: myrepo\n" +
+		"    auth:\n      kind: " + authKind + "\n"
+	if authKind == "pat" {
+		instanceConfig += "    token:\n      env: TEST_ADO_PAT\n"
+	}
+	if err := os.WriteFile(filepath.Join(instanceRoot, "instance.yaml"), []byte(instanceConfig), 0o600); err != nil {
+		t.Fatalf("write ADO instance config: %v", err)
+	}
 
 	t.Setenv(executor.RepoProviderEnvVar, string(providers.ProviderADO))
 	t.Setenv(executor.RepoOwnerEnvVar, "myorg")
@@ -161,7 +194,7 @@ func adoMergePREnv(t *testing.T, serverURL string, withoutGrant bool, inputs map
 	}
 
 	prev := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(
 			routed.Owner,
 			routed.Project,
@@ -230,30 +263,266 @@ func TestMergePRDispatchesToADOAndLandsWithoutVerdictComment(t *testing.T) {
 	}
 }
 
-// TestMergePRADORequiresCompletionCapability proves the merge/completion
-// authority on ADO is gated on the dedicated ado:pr:complete capability: with
-// the grant absent, merge-pr fails closed BEFORE constructing any provider —
-// the fake ADO server is never touched — so a stage carrying only ado:pr:write
-// can never complete a pull request.
-func TestMergePRADORequiresCompletionCapability(t *testing.T) {
+// TestMergePRADOSetsDeleteSourceBranchWithGrant proves ADO-N25: the
+// completion PATCH's completionOptions.deleteSourceBranch is set only when
+// the stage holds github:branch:delete — the same grant GitHub's
+// post-merge cleanup requires — and left unset (omitted) otherwise, so a
+// stage that never asked for branch cleanup does not get it as a side
+// effect of landing on ADO.
+func TestMergePRADOSetsDeleteSourceBranchWithGrant(t *testing.T) {
+	t.Run("with grant", func(t *testing.T) {
+		server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+		root, _ := adoMergePREnv(t, server.URL, false, map[string]string{
+			"pullNumber": "359",
+			"verdict":    "pass",
+			"headSha":    "headsha1",
+			"baseSha":    "basesha1",
+		})
+		t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "branch-delete-token")
+
+		code, stdout, stderr := runArgs(t, "merge-pr", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		body, _ := state.patchBody.Load().(map[string]interface{})
+		opts, _ := body["completionOptions"].(map[string]interface{})
+		if opts == nil {
+			t.Fatalf("PATCH body = %+v, want completionOptions", body)
+		}
+		if opts["deleteSourceBranch"] != true {
+			t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true with the github:branch:delete grant", opts)
+		}
+	})
+
+	t.Run("without grant", func(t *testing.T) {
+		server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+		root, _ := adoMergePREnv(t, server.URL, false, map[string]string{
+			"pullNumber": "359",
+			"verdict":    "pass",
+			"headSha":    "headsha1",
+			"baseSha":    "basesha1",
+		})
+
+		code, stdout, stderr := runArgs(t, "merge-pr", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		body, _ := state.patchBody.Load().(map[string]interface{})
+		opts, _ := body["completionOptions"].(map[string]interface{})
+		if opts == nil {
+			t.Fatalf("PATCH body = %+v, want completionOptions", body)
+		}
+		if _, present := opts["deleteSourceBranch"]; present {
+			t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted without the github:branch:delete grant", opts)
+		}
+		if atomic.LoadInt64(&state.listCalls) != 0 {
+			t.Fatal("stacked pull requests were listed without the github:branch:delete grant")
+		}
+	})
+
+	// PRL-072's stacked exception: with the grant, a source branch another
+	// open pull request targets is kept, exactly as GitHub's cleanup skips
+	// it, and the result file says so.
+	t.Run("with grant but stacked", func(t *testing.T) {
+		server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+		state.stackedOnHead.Store(true)
+		root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+			"pullNumber": "359",
+			"verdict":    "pass",
+			"headSha":    "headsha1",
+			"baseSha":    "basesha1",
+		})
+		t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "branch-delete-token")
+
+		code, stdout, stderr := runArgs(t, "merge-pr", root)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		body, _ := state.patchBody.Load().(map[string]interface{})
+		opts, _ := body["completionOptions"].(map[string]interface{})
+		if opts == nil {
+			t.Fatalf("PATCH body = %+v, want completionOptions", body)
+		}
+		if _, present := opts["deleteSourceBranch"]; present {
+			t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted while a stacked PR targets the source branch", opts)
+		}
+		result := readMergeResult(t, dir)
+		if result["branchCleanup"] != "skipped-stacked" || result["headBranch"] != "goobers/tb-ado-implementation/wire-merge" {
+			t.Fatalf("result = %+v, want branchCleanup=skipped-stacked for the head branch", result)
+		}
+	})
+}
+
+// landingGrantTokens gives every grant a landing matrix case can deliver a
+// distinct value, so the credential a provider was built from names the
+// capability it came from.
+var landingGrantTokens = map[capability.Capability]string{
+	capability.GitHubPRMerge: "github-merge-token",
+	capability.ADOPRComplete: "ado-complete-token",
+	capability.GitHubPRWrite: "github-pr-write-token",
+	capability.ADOPRWrite:    "ado-pr-write-token",
+}
+
+// landingGrantCase is one row of the ADO landing matrix
+// (docs/design/ado-parity-dsl-2-0.md §3.3): the grants a stage holds and the
+// delivered value the land must authenticate with, or "" when it must fail
+// closed before any provider call.
+type landingGrantCase struct {
+	name   string
+	grants []capability.Capability
+	want   string
+}
+
+var adoLandingGrantCases = []landingGrantCase{
+	{name: "mp-gh", grants: []capability.Capability{capability.GitHubPRMerge}, want: "github-merge-token"},
+	{name: "mp-ado", grants: []capability.Capability{capability.ADOPRComplete}, want: "ado-complete-token"},
+	{name: "mp-both", grants: []capability.Capability{capability.GitHubPRMerge, capability.ADOPRComplete}, want: "ado-complete-token"},
+	{name: "mp-neither"},
+	{name: "mp-pr-write-only", grants: []capability.Capability{capability.GitHubPRWrite, capability.ADOPRWrite}},
+}
+
+// deliverLandingGrants sets the GOOBERS_CRED_ value for each grant.
+func deliverLandingGrants(t *testing.T, grants []capability.Capability) {
+	t.Helper()
+	for _, grant := range grants {
+		t.Setenv(executor.CredentialEnvVar(string(grant)), landingGrantTokens[grant])
+	}
+}
+
+// assertLandingCredential checks the ADO providers a landing command built:
+// exactly one, from the wanted value, or none when the case must fail closed.
+func assertLandingCredential(t *testing.T, tc landingGrantCase, code int, stderr string, credentials []providers.ADOCredential) {
+	t.Helper()
+	if tc.want == "" {
+		if code != 1 {
+			t.Fatalf("code = %d, want 1 (fail closed); stderr = %q", code, stderr)
+		}
+		if !strings.Contains(stderr, "GOOBERS_CRED_GITHUB_PR_MERGE") || !strings.Contains(stderr, "ado:pr:complete") {
+			t.Fatalf("stderr = %q, want the missing github:pr:merge credential named and ado:pr:complete offered", stderr)
+		}
+		if len(credentials) != 0 {
+			t.Fatalf("ADO stage credentials = %+v, want none: a stage without landing authority builds no provider", credentials)
+		}
+		return
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	want := providers.ADOCredential{Kind: providers.ADOCredentialKindPAT, Secret: tc.want}
+	if len(credentials) != 1 || credentials[0] != want {
+		t.Fatalf("ADO stage credentials = %+v, want exactly %+v", credentials, want)
+	}
+}
+
+// TestMergePRADOLandingAuthorityMatrix pins the DSL 2.0 landing rule on Azure
+// DevOps (docs/design/ado-parity-dsl-2-0.md §3.3): github:pr:merge alone lands,
+// ado:pr:complete alone lands, a stage holding both completes with
+// ado:pr:complete, and a stage holding neither — including one holding only
+// PR-write grants (SEC-053) — fails closed before touching the server.
+func TestMergePRADOLandingAuthorityMatrix(t *testing.T) {
+	for _, tc := range adoLandingGrantCases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+			root, dir := adoMergePREnv(t, server.URL, true, map[string]string{
+				"pullNumber": "359",
+				"verdict":    "pass",
+				"headSha":    "headsha1",
+				"baseSha":    "basesha1",
+			})
+			deliverLandingGrants(t, tc.grants)
+			credentials := recordADOStageCredentials(t)
+
+			code, _, stderr := runArgs(t, "merge-pr", root)
+			assertLandingCredential(t, tc, code, stderr, *credentials)
+			if tc.want == "" {
+				if n := atomic.LoadInt64(&state.getCalls) + atomic.LoadInt64(&state.patchCalls); n != 0 {
+					t.Fatalf("ADO server received %d PR requests, want 0 (must fail before any provider call)", n)
+				}
+				return
+			}
+			if merged, _ := readMergeResult(t, dir)["merged"].(bool); !merged {
+				t.Fatalf("result = %+v, want merged=true", readMergeResult(t, dir))
+			}
+			if atomic.LoadInt64(&state.patchCalls) != 1 {
+				t.Fatalf("completion PATCH called %d times, want 1", state.patchCalls)
+			}
+		})
+	}
+}
+
+// TestMergePRAzureCLICompletesWithDeliveredCredential covers a repository
+// configured for Microsoft Entra (azure-cli) auth: merge-pr completes with the
+// bearer value delivered for ado:pr:complete, not the repository's configured
+// auth (ADO-N18).
+func TestMergePRAzureCLICompletesWithDeliveredCredential(t *testing.T) {
 	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
-	root, _ := adoMergePREnv(t, server.URL, true, map[string]string{
+	root, dir := adoMergePREnvWithAuth(t, server.URL, false, "azure-cli", map[string]string{
 		"pullNumber": "359",
 		"verdict":    "pass",
 		"headSha":    "headsha1",
 		"baseSha":    "basesha1",
 	})
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
+	credentials := recordADOStageCredentials(t)
+
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true", result)
+	}
+	if atomic.LoadInt64(&state.patchCalls) != 1 {
+		t.Fatalf("completion PATCH called %d times, want 1", state.patchCalls)
+	}
+	want := providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "ado-complete-token"}
+	if len(*credentials) != 1 || (*credentials)[0] != want {
+		t.Fatalf("ADO stage credentials = %+v, want exactly the delivered ado:pr:complete bearer", *credentials)
+	}
+}
+
+// TestMergePRAzureCLIWithoutLandingGrantFailsClosed is the other half: with
+// neither github:pr:merge nor ado:pr:complete delivered, merge-pr on an Entra
+// repository fails before any request instead of falling back to the
+// configured auth.
+func TestMergePRAzureCLIWithoutLandingGrantFailsClosed(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	root, _ := adoMergePREnvWithAuth(t, server.URL, true, "azure-cli", map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+	t.Setenv(executor.RepoAuthSchemeEnvVar, "bearer")
 
 	code, _, stderr := runArgs(t, "merge-pr", root)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (fail-closed); stderr = %q", code, stderr)
+	if code != 1 || !strings.Contains(stderr, "GOOBERS_CRED_GITHUB_PR_MERGE") {
+		t.Fatalf("code = %d, stderr = %q, want a missing GOOBERS_CRED_GITHUB_PR_MERGE failure", code, stderr)
 	}
-	if !strings.Contains(stderr, "ADO_PR_COMPLETE") {
-		t.Fatalf("stderr = %q, want the missing ado:pr:complete credential named", stderr)
+	if atomic.LoadInt64(&state.patchCalls) != 0 {
+		t.Fatalf("completion PATCH called %d times, want 0", state.patchCalls)
 	}
-	if n := atomic.LoadInt64(&state.getCalls) + atomic.LoadInt64(&state.patchCalls); n != 0 {
-		t.Fatalf("ADO server received %d PR requests, want 0 (must fail before any provider call)", n)
+}
+
+// recordADOStageCredentials wraps the installed newADOProviderForStage seam
+// and records the credential each ADO stage provider was built from.
+func recordADOStageCredentials(t *testing.T) *[]providers.ADOCredential {
+	t.Helper()
+	var got []providers.ADOCredential
+	prev := newADOProviderForStage
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		if credential == nil {
+			t.Error("ADO stage provider built with no credential")
+		} else if resolved, err := credential.Credential(context.Background()); err != nil {
+			t.Errorf("resolve ADO stage credential: %v", err)
+		} else {
+			got = append(got, resolved)
+		}
+		return prev(routed, credential)
 	}
+	t.Cleanup(func() { newADOProviderForStage = prev })
+	return &got
 }
 
 // TestADOMergeCommitMessageBypassesVerdictLookup pins the single-hard-blocker
@@ -272,7 +541,7 @@ func TestADOMergeCommitMessageBypassesVerdictLookup(t *testing.T) {
 		t.Fatal("structuredMergeCommitMessage: want error on empty CommentsSince, got nil")
 	}
 
-	title, message, err := adoMergeCommitMessage(poll, nil)
+	title, message, err := adoMergeCommitMessage(poll, nil, providers.RepositoryRef{}, providers.RepositoryRef{})
 	if err != nil {
 		t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 	}
@@ -284,7 +553,7 @@ func TestADOMergeCommitMessageBypassesVerdictLookup(t *testing.T) {
 	}
 
 	// An empty title is still a business error, matching the GitHub assembly.
-	if _, _, err := adoMergeCommitMessage(providers.PullRequestPollResult{Title: "   "}, nil); err == nil {
+	if _, _, err := adoMergeCommitMessage(providers.PullRequestPollResult{Title: "   "}, nil, providers.RepositoryRef{}, providers.RepositoryRef{}); err == nil {
 		t.Fatal("adoMergeCommitMessage: want error on empty title, got nil")
 	}
 }
@@ -313,7 +582,7 @@ func TestADOMergeCommitMessageRecordsRecoveredVerdict(t *testing.T) {
 		},
 	}
 
-	title, message, err := adoMergeCommitMessage(poll, recovered)
+	title, message, err := adoMergeCommitMessage(poll, recovered, providers.RepositoryRef{}, providers.RepositoryRef{})
 	if err != nil {
 		t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 	}
@@ -334,7 +603,7 @@ func TestADOMergeCommitMessageRecordsRecoveredVerdict(t *testing.T) {
 		{name: "unpinned", verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "s"}},
 	} {
 		t.Run(stale.name, func(t *testing.T) {
-			_, message, err := adoMergeCommitMessage(poll, &adoRecoveredVerdict{Author: "goobers-bot", Verdict: stale.verdict})
+			_, message, err := adoMergeCommitMessage(poll, &adoRecoveredVerdict{Author: "goobers-bot", Verdict: stale.verdict}, providers.RepositoryRef{}, providers.RepositoryRef{})
 			if err != nil {
 				t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 			}

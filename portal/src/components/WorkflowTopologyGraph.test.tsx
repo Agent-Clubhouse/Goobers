@@ -103,9 +103,27 @@ describe("workflow topology graph", () => {
     const topology = screen.getByRole("list", {
       name: "implementation accessible topology",
     });
+
     expect(within(topology).getByText(/Start stage.*query.*Deterministic task/)).toBeInTheDocument();
     expect(within(topology).getByText(/needs-changes to implement/)).toBeInTheDocument();
     expect(within(topology).getByText(/approve to Complete terminal/)).toBeInTheDocument();
+  });
+
+  it("supports a fixed top-left initial viewport without enabling fit", () => {
+    render(
+      <WorkflowTopologyGraph
+        graph={cyclicGraph}
+        initialZoom={0.9}
+        selectedStageId={cyclicGraph.start}
+      />,
+    );
+
+    const viewport = screen.getByRole("group", {
+      name: "implementation execution graph",
+    });
+    expect(viewport).toHaveAttribute("data-zoom", "0.900");
+    expect(viewport.scrollLeft).toBe(0);
+    expect(viewport.scrollTop).toBe(0);
   });
 
   it("shapes gate nodes as decision points and keeps every kind separable by class (#2693)", () => {

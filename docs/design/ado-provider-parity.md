@@ -39,10 +39,12 @@ code path byte-identical.
   `repo.Provider == providers.ProviderADO`, mirroring the per-provider dispatch template
   `issue-close-out` established. On GitHub the ADO branch is unreachable; on ADO the GitHub
   helpers are gated off.
-- **Capability isolation is preserved on ADO.** Merge/completion authority rides on a
-  dedicated capability, `ado:pr:complete` (`capability.ADOPRComplete`) — the ADO
-  counterpart to `github:pr:merge`. It is resolved fail-closed *before* the completion-
-  authorized provider is constructed, so a stage carrying only `ado:pr:write` can never
+- **Capability isolation is preserved on ADO.** Merge/completion authority is
+  `github:pr:merge`, the landing authority on every provider in DSL 2.0
+  (`ado-parity-dsl-2-0.md` §3.3). `ado:pr:complete` (`capability.ADOPRComplete`) is
+  accepted and never required: when the stage declares it, completion uses it instead.
+  The landing grant is resolved fail-closed *before* the completion-authorized provider
+  is constructed, so a stage carrying only `github:pr:write` or `ado:pr:write` can never
   silently acquire completion authority (decider ≠ executor).
 - **Mandatory methods flow through the Dispatcher; ADO-only surfaces are called
   directly.** Poll / list / compare / detect-policy / enqueue / merge all run through the
@@ -58,10 +60,14 @@ code path byte-identical.
 
 ## 3. Provider construction and auth
 
-ADO stage branches build the provider with `newADOProviderForStage(root, repo)`, which
-resolves the configured auth source — PAT, Azure CLI, workload identity, or managed
-identity — from the instance config, org-scoped. No `github:*` token is resolved on an ADO
-branch. Work-item reads/writes route through the backlog project reference
+ADO stage branches build the provider through the shared stage seam
+(`newProviderForStage` → `newADOProviderForStage`) from the credential delivered for the
+capability the stage declared, in the daemon-stated `GOOBERS_REPO_AUTH_SCHEME`
+(ADO-N18, `docs/design/ado-parity-dsl-2-0.md` §3.1): `github:pr:write` or
+`provider:pr:write` for pull-request work, `github:issues:*` for work items, `repo:push` for
+Git, `github:pr:merge` (or a declared `ado:pr:complete`) for completion. Every auth kind —
+PAT, Azure CLI, workload identity, managed identity — resolves in the daemon; no stage reads `repos[].auth`. Work-item
+reads/writes route through the backlog project reference
 (`backlogRepoRefForStage`) so a split code-repo/backlog-project instance addresses the
 right project; PR-scoped calls use the routed code repo.
 
@@ -120,7 +126,9 @@ claim or end another run's claim by posting the marker text. `ListComments` maps
 `createdBy.id` into `Comment.AuthorID` for this. If the identity cannot be read, the claim
 or release fails; it never falls back to an unfiltered scan. Breadcrumbs written under a
 previous identity stop counting when the credential's identity changes. The legacy
-owner-tag fallback (#1990) is unchanged.
+owner-tag fallback was removed in #1990: a stray `goobers:claim-run:*` tag confers no
+claim, nothing clears it, and `adoVisibleLabels` keeps hiding it until someone removes it
+by hand.
 
 Every thread `PostPullRequestThreadComment` opens is posted with `status: "closed"`, not
 ADO's default `active`. All Goobers-authored threads are informational (verdict json,
@@ -218,10 +226,12 @@ of a GitHub handoff channel:
    policy with `invalidateOnSourceUpdate: true` (reset-on-push) rejects a PR-level status
    with 403, and an iteration-scoped status satisfies it; a new push creates a new
    iteration, which resets the policy until a fresh status is posted against it (ADO-N7).
-   The latest iteration is resolved when the status is posted, not when the head was
-   reviewed: a push that lands between review and apply-verdict attaches the verdict to
-   the newer iteration. PR-level statuses had the same window; binding the status to the
-   reviewed head SHA is a follow-up.
+   A pass status is pinned to the reviewed head: apply-verdict passes the reviewed head
+   SHA, and the status is posted only when the latest iteration's `sourceRefCommit` is
+   that commit. A push that lands between review and apply-verdict makes the post fail
+   with a head-moved error instead of attaching the pass to the newer, unreviewed
+   iteration. A failing status stays unpinned, since on a newer head it only blocks.
+   `report-pr-status` takes the same pin through its optional `headSha` input.
 2. **The routing label, by decision**, mirroring the GitHub `verdictLabel` contract:
    - **fail →** add `goobers:merge-escalated`, clear `goobers:needs-remediation`. An
      escalation is *never* burned on the remediation budget; clearing needs-remediation and
@@ -246,9 +256,11 @@ through the work-item API.
 ### 6.3 `merge-pr` and `queue-watch` — landing
 
 `merge-pr` gates ADO behind an `isADO` switch. Completion authority is resolved fail-closed
-first via `ado:pr:complete`; only then is the completion-authorized provider constructed and
-wrapped in the `Dispatcher`. Landing then flows through the **same shared code path** both
-providers use:
+first — `ado:pr:complete` when the stage declared it, otherwise `github:pr:merge`
+(`ado-parity-dsl-2-0.md` §3.3) — and only then is the completion-authorized provider
+constructed from that credential and wrapped in the `Dispatcher`. `queue-watch` resolves the
+same way. Both names stay in the config-generation revocation fence. Landing then flows
+through the **same shared code path** both providers use:
 
 | Contract step | ADO behavior |
 |---|---|
@@ -296,10 +308,14 @@ sibling fan-out and unpark machinery is gated off — each is a PR-number-as-wor
 
 ## 7. pr-remediation on ADO
 
-The remediation lane reuses the thread + label transport. Each remediation stage has an ADO
-branch that constructs the ADO provider and calls the native thread / label / single-PR
+The remediation lane reuses the thread + label transport. Most remediation stages have an
+ADO branch that constructs the ADO provider and calls the native thread / label / single-PR
 primitives directly (the GitHub/Gitea `remediationProvider` interface stays those two
-providers; ADO is a separate code path routed by provider kind):
+providers; ADO is a separate code path routed by provider kind). `pr-claim` (ADO-N14,
+#5655) is the exception: its only need is a single-PR poll, so it is built through a
+provider-neutral narrow surface (`prClaimProvider`, one `GetPullRequest` method) over the
+shared stage-provider seam, and ADO satisfies that surface through the same
+`GetPullRequest` every other provider does — no hand-written ADO branch required:
 
 - **`update-behind-pr`** is **not applicable** on ADO (ADO-N15): ADO always computes a
   PR's `mergeStatus` against its current target, so there is no "branch must be up to
@@ -323,11 +339,89 @@ providers; ADO is a separate code path routed by provider kind):
   (remove `goobers:merge-escalated`); an operator clearing `goobers:merge-escalated` is an
   explicit request for another review pass.
 - **`rebase-pr`** clears `goobers:needs-remediation` on a clean rebase.
-- **`pr-claim`** verifies the run's claimed PR is still open via `GetPullRequest`, releasing
-  the claim (and returning a terminal no-work result) if it has merged or closed.
+- **`pr-claim`** verifies the run's claimed PR is still open via `GetPullRequest` (a thin
+  adapter over `PollPullRequest`), releasing the claim (and returning a terminal no-work
+  result) if it has merged or closed. On ADO the claim also never reads as open on an empty
+  source head: `GetPullRequest`'s poll-observed `HeadSHA` must be non-empty, so the guard
+  fails closed rather than proceeding against an unverified source. On ADO it polls with
+  the delivered `github:pr:write` credential in the daemon-stated scheme, like every other
+  remediation stage, and every ADO auth kind backs that credential (ADO-N18, §3).
+- **`gather-issue-context`** reads the selected pull request with `GetPullRequest`
+  (an ADO pull-request list carries no description, so the closing references are not
+  in it) and each closing reference with `GetWorkItem` in the gaggle's backlog project.
+  A pull request that is no longer active, or now targets another base, yields an empty
+  issue context, as on GitHub. Each provider is built through a narrow surface from its
+  own declared credential: `github:pr:write` for the pull request and
+  `github:issues:read` for the work items.
+- **`respond-to-findings`** keeps its run-scoped account in one pull-request thread,
+  posted `closed` so it never trips a comment-resolution policy. A retry finds its own
+  thread by the `goobers:remediation-response:<run>` marker and the identity GUID
+  (§4.1), updates it in place, and deletes any duplicate. It uses the
+  `github:issues:write` credential it declares, as on GitHub and Gitea; in topology (b)
+  that credential belongs to the GitHub backlog, so the stage stops with the
+  cross-provider refusal (`docs/guides/ado-limitations.md`).
+- **Scheduling.** ADO has no webhook ingestion, so the `schedule` trigger is the
+  lane's only autonomous start. The schedule demand count (unclaimed pull requests
+  behind their base) is GitHub-only, and behind-ness is not ADO's eligibility
+  (`update-behind-pr` is not applicable), so an ADO repository gets no demand counter:
+  each due tick fires one run, bounded by readiness, and `gather-pr-context` ends a
+  cycle with nothing to remediate as no-work.
 
 The sticky remediation-state comment (carrying the pre-remediation head SHA) is a PR thread
 updated in place via the composite comment id.
+
+### 7.1 Review threads (ADO-N20)
+
+`gather-review-threads` and `resolve-review-threads` run on ADO. ADO pull-request threads
+are first-class, so the ADO provider declares `pr.review.threads` and `pr.review.resolve` and
+implements the same `PullRequestReviewThreadProvider` / `PullRequestReviewThreadMutator`
+surfaces GitHub does (`providers/ado_review_threads.go`). Both stages build their provider
+through a narrow surface over the shared stage-provider seam (`reviewThreadStageSurface`), the
+same route `pr-claim` takes. On ADO, as on GitHub and Gitea, they consume the declared
+`github:pr:write` credential, delivered in the daemon-stated scheme (ADO-N18, §3).
+
+| Operation | ADO call and mapping |
+|---|---|
+| List | `GET …/pullRequests/{id}/threads`, following `x-ms-continuationtoken`. Skipped: threads whose root comment is `commentType: system`, deleted threads (and deleted comments), general threads with no `threadContext.filePath`, and threads the Goobers identity opened, matched by `authenticatedUser.id` (§4.1), never by display name. `Reviews` is empty: an ADO vote carries no review body. |
+| Ids | `ThreadID` is the composite `<pullID>/<threadId>`, because the resolve call receives no pull id. A comment's `ID` is ADO's thread-local comment id and `InReplyTo` its `parentCommentId`. |
+| Resolved | `active` and `pending` are unresolved; `fixed`, `wontFix`, `closed` and `byDesign` are resolved. Any other status (`unknown`, absent) reads as unresolved, so feedback is never hidden. |
+| Position | `threadContext.filePath` without ADO's leading `/` (repository-relative, as on GitHub) and `rightFileStart.line`; a left-side-only anchor maps to `leftFileStart.line` with side `LEFT`. |
+| General threads | A thread with no file anchor is a PR conversation comment, not a review thread, and is not listed. GitHub review threads are always file-anchored, the remediation brief requires a non-empty `path` on every inline comment, and `gather-pr-context`'s thread-comment read already surfaces general comments. The trade-off: `resolve-review-threads` never resolves a general thread, so an active one still blocks a comment-resolution branch policy until a person resolves it. |
+| Outdated | A file-anchored thread is outdated only when its `pullRequestThreadContext.iterationContext.secondComparingIteration` is older than the PR's latest iteration **and** its file is no longer in the PR's latest-iteration diff: its anchor cannot appear in the current diff, which is what GitHub's `isOutdated` means. ADO re-anchors threads across iterations itself, so an older iteration alone is not enough. A thread with no iteration context is live, and if either iteration read fails every thread is live: the rule fails open. |
+| Reply | `POST …/threads/{threadId}/comments` with `parentCommentId` set to the replied-to comment. ADO comment ids are only unique within a thread, so the reply request carries the thread id (`PullRequestReviewThreadReply.ThreadID`, an additive provider-model field GitHub ignores). On every provider, `resolve-review-threads` finds its own reply (before posting, so a retry never posts twice, and after, to confirm it is visible) by the `goobers:review-thread-response:<run>:<thread>` marker line, not by the whole body: the provider appends run attribution to the text it posts. |
+| Resolve | `PATCH …/threads/{threadId}` `{status: "fixed"}`; `fixed` clears a comment-resolution branch policy. ADO must echo `fixed` back, or the resolution is reported unconfirmed. |
+
+### 7.2 CI failure evidence (ADO-N22)
+
+`gather-ci-failures` runs on ADO with minimal native evidence. GitHub and Gitea report CI
+per commit and keep `CIFailures(headSHA)`; ADO has no per-commit check list, so the stage's
+ADO arm calls `ADOProvider.PullRequestCIFailures` (the `PullRequestCIFailureReader`
+surface) for the brief's pull request, built through the same narrow surface as the
+review-thread stages and without the `github:pr:write` grant. The read is GET-only.
+
+The stage runs only when the brief's `hasFailingCI` is `true`. ADO's pull-request list
+carries no CI state, so `gather-pr-context` reads the selected pull request's evidence with
+the same classification through `HasPullRequestCIFailures` (two GETs: the pull request and its policy evaluations, no build reads;
+a failed read fails the stage) before it writes the brief. `hasFailingCI` is `true` exactly
+when that evidence is non-empty, so the brief and the gathered checks never disagree: a
+rejected comment-resolution or work-item-linking policy alone leaves it `false`. When it is
+`true`, `rebase-pr`'s failing-CI cause becomes reachable on ADO. The other candidates are
+not read, so the fifo selection is unchanged.
+
+| Aspect | Behaviour |
+|---|---|
+| Source | The pull request's policy evaluations, classified by type id as in §11.1. |
+| Reported | Enabled, blocking build, status and unclassified policies whose evaluation is `rejected` or `broken`. Name: the policy type plus the build policy's `settings.displayName` or the status policy's `statusGenre/statusName`, else the configuration id (`Build #27`). |
+| Human-only policies | Neither stage receives the CI-poll gate's `humanPolicyConfigurationIds`, so a rejected blocking policy a loop declares human-only (merge strategy, proof-of-presence) still counts as failing CI here and is reported under its policy type. |
+| Not reported | Reviewer, comment-resolution and work-item-linking policies (a wait on a human or on threads, never CI), advisory (non-blocking) policies, and `approved`, `queued`, `running` or `notApplicable` evaluations. |
+| Link | The build results page from `context.buildId` (`{org}/{project}/_build/results?buildId=N`), or of the build found for the policy (below); none when no build is found. |
+| Build (#5652) | A build policy's build is `context.buildId`, else the latest build of `settings.buildDefinitionId` for `refs/pull/<id>/merge`. A status policy's build is the one its latest matching pull request status links to (`targetUrl` a `_build/results?buildId=N` page of this host and organization). Any other status, and any unclassified policy, is graded `unsupported` with the reason. A build of another repository (`repository.id`) or pull request (`triggerInfo.pr.number`) is rejected (`failed`) and nothing of it is read; a build of another head (`triggerInfo.pr.sourceSha`) is reported but graded `stale`. |
+| Logs, annotations (#5652) | From `builds/{id}/timeline`: each failed job's failed tasks (the job itself when no task failed; other failed records when no job failed), each task's error issues (warnings when it has none) as annotations with `sourcepath`/`linenumber`, then an excerpt of the task's log tail (`builds/{id}/logs/{logId}`, ranged by the `builds/{id}/logs` line count), ending at its last `##[error]` line, timestamps stripped, split into annotations of at most 1000 bytes so ci-poll's 1 KiB message bound does not cut them. Bounds (`ADOCIEvidenceBounds`): 3 failed jobs, 3 failed tasks per job, 5 issues per step, 200 log lines, 3000 excerpt bytes. |
+| Grade | Each failure's `CIFailureDetail.Evidence` (and the `evidence <state>` clause of its summary) is `complete`, `partial_bound`, `partial_provider`, `unsupported`, `failed` or `stale`. An authentication failure fails the stage rather than grading. Every read goes through `ADOProvider.send` (rate-limit and 401 handling) and is GET-only; the brief and `ci-checks.json` are scrubbed by the journal when recorded. |
+| ci-poll | The ci-poll executor reads the same evidence when a poll ends failing on ADO (`PullRequestCIFailureReader`), and pairs it with each failing polled check by build link, else by the refined name, in order. |
+| Head | Evaluations are pull-request-scoped, so the evidence carries the head ADO reports (`lastMergeSourceCommit`). When it differs from the brief's `gatherPRContext.headSha`, each finding's summary is prefixed `STALE:` with both heads rather than presented as evidence about the brief's head. With no rejected CI policy at the new head, a single `Azure DevOps policy evidence` check with conclusion `stale` says so, so empty evidence is never read as current. |
+
+Published test results (`_apis/test`) are not yet read (#5652 follow-up).
 
 ## 8. Hazards and invariants (consolidated)
 
@@ -349,9 +443,10 @@ updated in place via the composite comment id.
   authors/reviewers key on **UPN**, and assignee comparison uses
   displayName — so assignee-scoped PR filters and native-review vote paths are intentionally
   not used on the ADO merge path.
-- **Completion authority.** `ado:pr:complete` is required for `merge-pr` and `queue-watch`
-  and is resolved fail-closed before the provider is built; `ado:pr:write` must never grant
-  completion.
+- **Completion authority.** `merge-pr` and `queue-watch` complete with `github:pr:merge`,
+  or with `ado:pr:complete` when the stage declared it; `ado:pr:complete` is never
+  required. The grant is resolved fail-closed before the provider is built;
+  `github:pr:write` and `ado:pr:write` must never grant completion.
 - **Preview api-version.** The PR-labels endpoint is only published under a `-preview`
   api-version; the label calls pin it explicitly.
 
@@ -390,10 +485,11 @@ Derivation is now per provider: on ADO, `apply-verdict` derives
 See `provider-contract-conformance.md` §6.1. `TestShippedMergeReviewWorkflowValidatesOnADO`
 pins it against the real `reference-workflows` definition.
 
-A genuine gap still refuses: `gather-review-threads` derives `pr.review.threads`,
-ADO does not declare it, and no ADO path exists — so an ADO gaggle using that
-stage is refused at config load with the capability named. That is the intended
-shape of an "explicitly documented unsupported diagnosis".
+A genuine gap still refuses at config load with the capability named — for
+example a workflow that explicitly requires `pr.review.submit`, which ADO does
+not declare. That is the intended shape of an "explicitly documented unsupported
+diagnosis". (`gather-review-threads`, the example this paragraph used to give,
+now runs on ADO: see §7.1.)
 
 ### 10.2 What "verified" means here, precisely
 
@@ -415,12 +511,20 @@ set:
 | Requirement | ADO state |
 |---|---|
 | PRL-045 / PRL-064 | Queue eviction and timeout do not label the PR or seed the reconciliation ledger. |
-| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag. |
+| PRL-040 | Landing authority is `github:pr:merge` on ADO too; `ado:pr:complete` is optional and, when declared, is the credential completion uses (ADO-N2, `ado-parity-dsl-2-0.md` §3.3). |
+| PRL-072 | `merge-pr` skips the shared branch-cleanup path for ADO by construction; deletion rides the completion request's own `deleteSourceBranch` flag, set only when the landing stage holds `github:branch:delete` (ADO-N25) and no open pull request targets the source branch. A stacked branch is kept and reported as `branchCleanup: skipped-stacked`, as on GitHub. The stacked check runs when the landing is requested, so a PR stacked later on an auto-complete-armed branch is not seen. |
 | PRL-081 | ADO verdict threads are **posted**, not reconciled, so the single-sticky-comment guarantee does not hold on the thread carrier. |
-| PRL-082 | The ADO stage provider does not wire the mutation recorder, so ADO merge-path side effects are not journal-attributed. |
+| PRL-082 | Resolved — the ADO stage provider does wire the mutation recorder (`cmd/goobers/stageprovider.go`'s `newProviderForStage`); this row is retained only to record that the earlier "not ADO" annotation was stale. |
 
-`backlog.blockers` also remains undeclared for ADO — the Dispatcher fails closed
-per item rather than refusing the config, which is CONF-5's intended outcome.
+`backlog.blockers` is now declared for ADO (ADO-N32). The provider reads an
+item's predecessor links (`System.LinkTypes.Dependency-Reverse`), hydrates the
+predecessors through `workitemsbatch`, and counts one as blocking until its
+state is done. By default the Resolved, Completed and Removed state categories
+are done: a Resolved Bug means its code has landed, while a User Story's
+Resolved state sits in the InProgress category and still blocks. A gaggle can
+override this with `backlog.doneStates` (`categories`, and `byType` state names
+that take precedence for one type). A predecessor whose state cannot be read,
+or that the batch omits, still blocks, so the answer fails closed as before.
 
 ### 10.4 Lane stages added since §1 was written
 
@@ -442,8 +546,9 @@ for. These rules come from `docs/design/ado-parity-dsl-2-0.md` §5 (ADO-N9).
   If a direct completion is refused because a required policy is not met (403
   `GitPullRequestUpdateRejectedByPolicyException`), `merge-pr` fails the stage
   with `provider_policy_not_met`. It does not retry, and it does not report the
-  refusal as an authentication failure. The pull request waits for a human, or
-  for its policies to pass.
+  refusal as an authentication failure. The stage fails (the refusal is not
+  recorded as a business refusal), and the pull request stays unlanded until a
+  later pass finds its policies met.
 - **No approval.** Goobers never casts a reviewer vote other than 0 ("no
   vote"). ADO lets an identity vote on its own pull request, and on some
   configurations that vote would count toward a required-reviewer policy.
@@ -482,12 +587,13 @@ not.
 | Build, status | `queued` / `running` | CI pending |
 | Build, status | `rejected` / `broken` | CI failing. The check links the build from `context.buildId`. |
 | Minimum reviewers, required reviewers | not `approved` | A wait on a human (`CheckDetail.AwaitingHuman`). Never CI pending or failing, and never a remediation trigger. |
-| Comment requirements | `rejected` | Failing, "unresolved comment threads" |
-| Work item linking | `rejected` | Failing, "no linked work item" |
+| Comment requirements | `rejected` | Pending, "unresolved comment threads". Never CI failing: the threads route to `gather-review-threads`. |
+| Work item linking | `rejected` | Pending, "no linked work item". Never CI failing: `open-pr`'s `workItemRefs` carry the link. |
 | Any other type | as before | Gates CI unless listed in `humanPolicyConfigurationIds` |
 
-When ADO evaluated only reviewer policies for a pull request, the branch has
-no CI to wait for and `ci-poll` sees passing. With no evaluations at all it
+When ADO evaluated only reviewer, comment-resolution or work-item-linking
+policies for a pull request, the branch has no CI to wait for and `ci-poll`
+sees passing. With no evaluations at all it
 stays fail-closed pending.
 
 ### 11.2 The human wait

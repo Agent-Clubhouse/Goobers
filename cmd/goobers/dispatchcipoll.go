@@ -140,16 +140,17 @@ func runCIPollStage(ctx context.Context, stderr io.Writer) apiv1.ResultEnvelope 
 			"the credential plane returned no value for declared capability %q", required,
 		))
 	}
-	// Register the resolved token BEFORE anything can carry it: the ci-checks
+	// Register every resolved token BEFORE anything can carry it: the ci-checks
 	// evidence artifact, and every failure message below, pass through this
 	// scrubber. The local path gets the same protection from the run's
 	// registrar (the executor registers each materialized token with the
-	// journal scrubber before the stage runs).
+	// journal scrubber before the stage runs). A value re-resolved after a 401
+	// is registered by the refreshing source before it is used.
 	registry, scrubber := journal.DefaultScrubber()
 	registry.Register([]byte(token))
 	scrub := func(s string) string { return string(scrubber.Scrub([]byte(s))) }
 
-	poller, err := podCIPollPoller(token)
+	poller, err := podCIPollPoller(token, podCIPollTokenSource(creds, required, registry))
 	if err != nil {
 		return failureEnvelope(ciPollProviderUnsupportedCode, scrub(err.Error()))
 	}
@@ -233,7 +234,7 @@ func podCIPollFailure(runCtx, parent context.Context, err error, scrub func(stri
 			// Matches the local path's split exactly: internal/executor's
 			// ciPollKindExecutor wraps a transient error for infrastructure
 			// retry and returns a terminal one as a plain ResultFailure.
-			Retryable: providers.IsTransientError(err),
+			Retryable: providers.IsTransientError(err) || executor.IsCIPollInfrastructureError(err),
 		},
 	}
 	if code == providers.ErrorCodeRateLimited {
@@ -298,7 +299,7 @@ func podCIPollEnvelope(declared []string) apiv1.InvocationEnvelope {
 // (runnerwiring_executors.go) on purpose: a parity test that substitutes one
 // fake must be able to drive BOTH substrates through it, or the test proves
 // only that two different fakes behave differently.
-func podCIPollPoller(token string) (executor.PRPoller, error) {
+func podCIPollPoller(token string, source providers.TokenSource) (executor.PRPoller, error) {
 	repo, err := providerRepo(providerStageRoot(""))
 	if err != nil {
 		return nil, fmt.Errorf("resolve ci-poll repository: %w", err)
@@ -318,7 +319,7 @@ func podCIPollPoller(token string) (executor.PRPoller, error) {
 	// (#3914). The poller itself reads CI state, but the seam is what keeps
 	// every in-pod GitHub construction identical.
 	return newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), repo, true,
-		withStageProviderToken(token),
+		withStageProviderToken(token), withStageProviderTokenSource(source),
 	)
 }
 

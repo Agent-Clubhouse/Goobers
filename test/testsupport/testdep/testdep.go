@@ -27,6 +27,10 @@ var declared = map[string]Dependency{
 		Name:        "claude",
 		InstallHint: "install and sign in to Claude Code",
 	},
+	"cmd.exe": {
+		Name:        "cmd.exe",
+		InstallHint: "use the Windows command interpreter included with Windows; batch-launcher tests are Windows-only",
+	},
 	"bwrap": {
 		Name:        "bwrap",
 		InstallHint: "install bubblewrap (Debian/Ubuntu: apt-get install bubblewrap)",
@@ -55,6 +59,14 @@ var declared = map[string]Dependency{
 		Name:        "git",
 		InstallHint: "install Git (Debian/Ubuntu: apt-get install git)",
 	},
+	"go": {
+		Name:        "go",
+		InstallHint: "install the Go toolchain pinned in go.mod",
+	},
+	"grep": {
+		Name:        "grep",
+		InstallHint: "install grep (Debian/Ubuntu: apt-get install grep)",
+	},
 	"head": {
 		Name:        "head",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
@@ -65,6 +77,10 @@ var declared = map[string]Dependency{
 	},
 	"mkdir": {
 		Name:        "mkdir",
+		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
+	},
+	"mktemp": {
+		Name:        "mktemp",
 		InstallHint: "install coreutils (Debian/Ubuntu: apt-get install coreutils)",
 	},
 	"mvn": {

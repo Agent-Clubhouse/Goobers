@@ -101,6 +101,34 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "properties": { "dslVersion": { "const": "3.1" } },
+          "required": ["dslVersion"]
+        }
+      },
+      "then": {
+        "properties": {
+          "spec": {
+            "properties": {
+              "tasks": {
+                "items": {
+                  "not": {
+                    "anyOf": [
+                      { "required": ["artifactSlots"] },
+                      { "required": ["artifactInputs"] }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "branch": {
       "type": "object",
@@ -494,6 +522,38 @@
           }
         },
         "expectedOutputs": { "type": "array", "description": "Intended task postconditions. Accepted for forward compatibility but not enforced by the local runner.", "items": { "type": "string" } },
+        "artifactSlots": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "DSL 3.1 producer-local named artifact slots. Slot names are stable producer-local handles; runtime artifact transport remains positional/context-pointer based.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$", "description": "Producer-local stable slot name." },
+              "mediaType": { "type": "string", "minLength": 1, "description": "Optional media type describing the artifact content." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "Optional repository/config-relative path to a closed JSON schema for this artifact payload." },
+              "maxSize": { "type": "integer", "minimum": 0, "description": "Optional declared artifact size ceiling in bytes." }
+            }
+          }
+        },
+        "artifactInputs": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "DSL 3.1 consumer-local input bindings to exact producer.slot artifact references.",
+          "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from"],
+            "properties": {
+              "from": { "type": "string", "pattern": "^[^.]+\\.[A-Za-z0-9_-]{1,128}$", "description": "Source artifact slot as producerTask.slotName." },
+              "mediaType": { "type": "string", "minLength": 1, "description": "Optional media type the consumer expects from the referenced producer slot." },
+              "schemaPath": { "type": "string", "minLength": 1, "description": "Optional repository/config-relative schema path the consumer expects from the referenced producer slot." }
+            }
+          }
+        },
         "continueOnError": { "type": "boolean", "description": "Whether this stage's failure is tolerated. With a task as `next`, a failed stage fails the run unless this is true. With a gate as `next`, the failed status always reaches the gate and its branches are honored either way; this flag then only decides how a failure the gate routes to workflow completion is recorded — tolerated (run completes) or preserved (run marked failed). Failed-task outputs are discarded in every case." },
         "onTimeout": { "type": "string", "enum": ["fail", "salvage"], "description": "Agentic timeout behavior: fail the attempt or salvage a viable committed diff." },
         "next": { "type": "string", "description": "Next task, gate, or parallel state. Empty means successful terminal completion." }
@@ -547,7 +607,8 @@
                 "backoffSeconds": { "type": "integer", "minimum": 0, "description": "Constant delay in seconds between evaluator attempts." }
               }
             },
-            "pollIntervalSeconds": { "type": "integer", "minimum": 1, "description": "Polling cadence for remote checks such as ci-status." }
+            "pollIntervalSeconds": { "type": "integer", "minimum": 1, "description": "Polling cadence for remote checks such as ci-status." },
+            "maxTimeoutPolls": { "type": "integer", "minimum": 1, "description": "Maximum consecutive timeout polling outcomes before the gate routes through its escalation branch." }
           }
         },
         "agentic": {

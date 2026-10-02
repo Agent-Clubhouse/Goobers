@@ -97,8 +97,6 @@ func TestADOStillExcludesUnimplementedSurfaces(t *testing.T) {
 	ado := (&ADOProvider{}).Capabilities()
 	excluded := []Capability{
 		CapPRReviewSubmit,
-		CapPRReviewThreads,
-		CapPRReviewResolve,
 		CapRepoPolicyRead,
 		CapPRUpdateBranch,
 		CapCICancel,

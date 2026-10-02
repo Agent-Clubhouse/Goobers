@@ -11,5 +11,5 @@ func claimAttemptOutcome(claimed bool) string {
 	if claimed {
 		return "success"
 	}
-	return "conflict"
+	return "contention"
 }

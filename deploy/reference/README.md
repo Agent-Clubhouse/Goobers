@@ -19,6 +19,7 @@ between the doc and these files is greppable (`grep -rn 'k8s-infra-shape' deploy
 | Path | Contents | Shape doc |
 |---|---|---|
 | `goobers-system/` | kustomize base: operator, worker, daemon API + portal, RBAC, RWO instance storage, RWX artifact storage; the API Service exposes the canonical blob-plane port from `internal/netpolrender.DefaultBlobEndpoint().Port` (currently `8080`). Containers reference the bare image name `goobers`, left untransformed so the base stays consumable as a remote kustomize base (#3287) — point it at a registry via your own `images:` overlay, or see `examples/goobers-system-registry/` if you fork and edit instead | §2, §3, §4, §5 |
+| `telemetry/` | optional overlay for customer-owned Application Insights: Kubernetes Secret injection, `standard` profile initialization, persistent replay on the journal PVC, and the shared connectivity test | telemetry guide |
 | `examples/goobers-system-registry/` | example overlay stamping `goobers-system/` with a `registry.example.com/CHANGE-ME` placeholder image — copy and edit rather than apply as-is | §1 |
 | `gaggle-namespace/base/` | per-gaggle namespace template: namespace, identity-annotated ServiceAccount, deny-first NetworkPolicies, dispatcher RBAC for the worker's mode-3 pod-per-stage seam | §3, §5 |
 | `gaggle-namespace/examples/` | two example gaggle overlays (`gaggle-a`, `gaggle-b`) stamping the template | §3, §5 |
@@ -351,10 +352,9 @@ The daemon mints the Microsoft Entra token, backs the repository's grants with
 it, and gives stage pods the token through the credential plane. The federated
 identity therefore belongs on the pod that runs `goobers up` (`goobers-api`
 here) and on any worker that runs self-placed stages for that gaggle
-(`goobers-worker`). Once built-in stage commands consume the delivered
-credential (ADO-N18), stage pods need no identity. Until then, a stage pod that
-runs a built-in Azure DevOps stage command still builds its connection from
-`repos[].auth` and needs the same projection (step 2).
+(`goobers-worker`). Stage pods need no identity: built-in Azure DevOps stage
+commands authenticate only with the credential delivered for their declared
+capabilities, and never read `repos[].auth`.
 
 1. Create a user-assigned identity and add it to the Azure DevOps organization
    at **Basic** access. Give it Contribute, Contribute to pull requests and
@@ -363,9 +363,7 @@ runs a built-in Azure DevOps stage command still builds its connection from
 2. Add a federated credential for the cluster's OIDC issuer whose subject is
    `system:serviceaccount:goobers-system:goobers-api`, plus
    `system:serviceaccount:goobers-system:goobers-worker` when a worker runs
-   self-placed stages. Until ADO-N18, also add the ServiceAccount stage pods
-   run under in the gaggle's namespace (its `default` ServiceAccount today)
-   when those pods run built-in Azure DevOps stage commands.
+   self-placed stages.
 3. Annotate each ServiceAccount with `azure.workload.identity/client-id:
    <client-id>` and label its pod template `azure.workload.identity/use:
    "true"`, so the webhook projects `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and
@@ -650,6 +648,37 @@ the default 30-second Temporal drain, up to 30 seconds of stage-pod cleanup, and
 process exit. Increase the pod grace period when increasing `--drain-timeout`.
 The Linux worker also mounts a bounded, pod-private `/tmp` so config snapshots
 and git helpers can write temporary files under a read-only root filesystem.
+
+### Temporal worker versioning is opt-in
+
+By default the worker polls **unversioned**, which is what this reference's
+Temporal values expect (they enable none of the worker-versioning dynamic
+config). `engine.workerVersioning: true` in `instance.yaml` makes the worker
+register as worker deployment `goobers`, version `goobers.<build>`, and pin each
+new workflow to that build (#5950). Nothing in Goobers sets the deployment's
+current version (#5407), so an opted-in instance must, after every rollout that
+changes the build, run
+`temporal worker deployment set-current-version --deployment-name goobers --build-id <build>`.
+Until it does, the new worker's polls succeed and receive nothing, and runs
+pinned to the previous build wait for a worker of that build.
+
+The worker checks the deployment's routing 30 seconds after start and every 5
+minutes after that. It logs `goobers worker: error: worker deployment "goobers" current version is ...`
+while the current version does not route to it, in either mode. It never exits
+over it.
+
+**Upgrading an instance that already ran versioned** (anything built from main
+between #4083 and #5950, including v0.5.0 betas): the worker now starts
+unversioned unless you opt in, and the deployment's current version still names
+the old build, so the unversioned worker receives no new tasks. Choose one:
+
+- Keep versioning: set `engine.workerVersioning: true` before upgrading, then set
+  the current version to the new build as above.
+- Drop versioning: let in-flight engine runs finish first (a run pinned to the
+  old build is only ever served by that build), then point the deployment at
+  unversioned workers with
+  `temporal worker deployment set-current-version --deployment-name goobers --unversioned`
+  (older CLIs: `--version __unversioned__`).
 
 ### Scoped cloud preflight checks
 

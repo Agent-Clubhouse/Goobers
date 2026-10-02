@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workspacedelta"
 )
 
 // dispatchagentic.go is the pod half of the agentic claim check.
@@ -76,7 +77,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	//
 	// The credential is resolved first because the checkout authenticates with
 	// it, and resolving twice would mint two credentials for one stage.
-	minted, err := resolveStageCredentials(ctx)
+	minted, mintedScheme, err := resolveStageCredentialsWithScheme(ctx)
 	if err != nil {
 		return fail("credential_resolve_failed", err)
 	}
@@ -88,11 +89,12 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// provisions the working tree and is excluded from buildPodAgenticExecutor
 	// below, so the goober's resolver and its environment see only what the
 	// stage actually declared.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	// checkoutCreds is minted plus that checkout-only credential.
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, minted, mintedScheme)
 	if checkoutErr != nil {
 		return fail("credential_resolve_failed", checkoutErr)
 	}
-	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
+	if err := checkoutRepoWorkspace(ctx, workspace, stderr, checkoutCreds, checkoutScheme); err != nil {
 		return fail("workspace_provision_failed", err)
 	}
 	// The stamp the harness actually reads.
@@ -129,8 +131,7 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		// The checkout credential is registered with the diff's scrubber even
 		// though the AGENT never sees it: a commit could have captured it, and
 		// the diff is journaled.
-		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage),
-			append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...), stderr)
+		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage), checkoutCreds, stderr)
 		if derr != nil {
 			return fail("reviewer_diff_failed", derr)
 		}
@@ -208,13 +209,21 @@ func reviewSubstrateFailure(code string) bool {
 // anything, a pod-local harness-construction fault (agentic_executor_
 // unavailable's own errors never wrap a plane response at all) — is
 // transport- or infra-shaped, exactly what a fresh pod's retry exists to
-// ride out, so it keeps the historical Retryable=true.
+// ride out, so it keeps the historical Retryable=true. A
+// *workspacedelta.DivergedError is deterministic too (#5948) and is not
+// retried.
 func substrateRetryable(err error) bool {
 	var refusal *dispatcher.CredentialResolveRefusal
 	if errors.As(err, &refusal) {
 		return !refusal.Deterministic()
 	}
-	return true
+	// The workspace-delta ancestry guard's refusal is deterministic in the
+	// same sense (#5948): the branch carries commits the delta lacks, and a
+	// fresh pod clones that same branch and fetches that same delta, so a
+	// retry re-derives the identical refusal. Marking it retryable spent the
+	// gate's evaluator retry bound on it and then failed the run anyway.
+	var diverged *workspacedelta.DivergedError
+	return !errors.As(err, &diverged)
 }
 
 // fetchAgenticKit reads the kit from the blob plane and verifies it against the
@@ -291,6 +300,20 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 // smallest seam that lets a test drive the whole constructor. Mirrors the
 // existing newAgenticAdapter / repoCloneURL test seams.
 var podHarnessRegistry = buildHarnessRegistry
+
+// podHarnessEnvironment is the pod's view of the instance harness policy, as
+// the daemon wrote it into the kit for the selected harness. A settle budget
+// the kit does not carry, or cannot parse, keeps the adapter default: the
+// daemon validated it at load, so only a legacy kit omits it.
+func podHarnessEnvironment(kit *agentickit.Kit, selected apiv1.Harness) harness.EnvironmentConfig {
+	settle, _ := (instance.RunnerConfig{RequiredMCPSettleTimeout: kit.RequiredMCPSettleTimeout}).RequiredMCPSettleTimeoutDuration()
+	return harness.EnvironmentConfig{
+		Unset:                    kit.HarnessEnvUnset,
+		SessionArgs:              map[string][]string{string(selected): kit.HarnessSessionArgs},
+		PreflightArgs:            map[string][]string{string(selected): kit.HarnessPreflightArgs},
+		RequiredMCPSettleTimeout: settle,
+	}
+}
 
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
@@ -372,11 +395,14 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	if len(kit.HarnessCommand) > 0 {
 		commands = map[string][]string{string(spec.Harness): kit.HarnessCommand}
 	}
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, harness.EnvironmentConfig{
-		Unset:         kit.HarnessEnvUnset,
-		SessionArgs:   map[string][]string{string(spec.Harness): kit.HarnessSessionArgs},
-		PreflightArgs: map[string][]string{string(spec.Harness): kit.HarnessPreflightArgs},
-	}, commands, "", "", false, nil, false)
+	// The pod launches goobers-io through this binary. Passing an empty self
+	// binary silently omits its MCP registration and leaves artifact-producing
+	// agents unable to publish their declared output.
+	selfBin, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve goobers binary path in pod: %w", err)
+	}
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, podHarnessEnvironment(kit, spec.Harness), commands, "", selfBin, false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
@@ -512,6 +538,7 @@ type podArtifactRecorder struct {
 	stderr   io.Writer
 	scrubber journal.Scrubber
 	dir      string
+	timing   artifactTiming
 }
 
 // RecordArtifact scrubs ONCE, derives the content address of the scrubbed
@@ -533,7 +560,7 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 	// Best effort, exactly as the deterministic path treats stream artifacts:
 	// the stage has already produced its result, and losing an artifact must
 	// not turn a completed invocation into a failure.
-	recordStageArtifacts(context.Background(), r.stderr, map[string][]byte{name: scrubbed})
+	recordStageArtifactsWithTiming(context.Background(), r.stderr, map[string][]byte{name: scrubbed}, r.timing)
 	return ref, nil
 }
 

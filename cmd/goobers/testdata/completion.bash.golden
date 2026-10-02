@@ -48,9 +48,16 @@ _goobers_completion()
                 gaggle) flags+=" --force --from" ;;
             esac
             ;;
+        gaggle)
+            case "${COMP_WORDS[2]:-}" in
+                export) flags+=" --output" ;;
+                import) flags+=" --name" ;;
+            esac
+            ;;
         diagnostics)
             case "${COMP_WORDS[2]:-}" in
                 bundle) flags+=" --run --pr --max-runs --output --json" ;;
+                triage) flags+=" --run --json" ;;
             esac
             ;;
         agent-kit)
@@ -149,12 +156,12 @@ _goobers_completion()
             ;;
         runs)
             case "${COMP_WORDS[2]:-}" in
-                list) flags+=" --json --phase --workflow --gaggle --limit" ;;
+                list) flags+=" --api --json --phase --workflow --gaggle --limit" ;;
                 du) flags+=" --json" ;;
             esac
             ;;
         status)
-            flags+=" --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --api --agents --all --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -195,7 +202,7 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=" --json --follow --summary --verdicts --transcripts --transcript"
+            flags+=" --api --json --follow --summary --verdicts --transcripts --transcript"
             ;;
         e2e)
             case "${COMP_WORDS[2]:-}" in
@@ -204,18 +211,21 @@ _goobers_completion()
             esac
             ;;
         escalations)
-            flags+=" --json"
+            flags+=" --api --json"
             case "${COMP_WORDS[2]:-}" in
                 show) flags+=" --include-verdict" ;;
-                resolve) flags+=" --resolution --gate --decision --rationale --actor --api" ;;
+                resolve) flags+=" --resolution --gate --decision --rationale --actor" ;;
             esac
             ;;
         telemetry)
             case "${COMP_WORDS[2]:-}" in
+                configure) flags+=" --connection-string-env --connection-string-file --connection-string-store --profile --disable --json" ;;
+                test) flags+=" --json --timeout" ;;
                 merges) flags+=" --compare-github --shared-identities --json --gaggle --instance-id --repository-api-url --since --until --rebuild" ;;
                 stats) flags+=" --json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild" ;;
                 errors) flags+=" --json --workflow --gaggle --class --limit --since --until --rebuild" ;;
                 export) flags+=" --since --until" ;;
+                mark-fix) flags+=" --finding --applied-at" ;;
                 prune) flags+=" --dry-run" ;;
                 prune-orphans) flags+=" --delete --min-age" ;;
                 compact) flags+=" --dry-run" ;;
@@ -308,9 +318,14 @@ _goobers_completion()
                 candidates="goober workflow gaggle"
             fi
             ;;
+        gaggle)
+            if (( COMP_CWORD == 2 )); then
+                candidates="export import"
+            fi
+            ;;
         diagnostics)
             if (( COMP_CWORD == 2 )); then
-                candidates="bundle"
+                candidates="bundle triage"
             fi
             ;;
         agent-kit)
@@ -409,7 +424,7 @@ _goobers_completion()
             ;;
         telemetry)
             if (( COMP_CWORD == 2 )); then
-                candidates="merges stats errors export prune prune-orphans compact"
+                candidates="configure test merges stats errors export mark-fix prune prune-orphans compact"
             fi
             ;;
         journal)

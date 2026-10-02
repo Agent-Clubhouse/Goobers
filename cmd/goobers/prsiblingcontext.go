@@ -600,35 +600,7 @@ siblingLoop:
 	// degrades to a fresh review. Clearing an escalation also invalidates a
 	// matching fail verdict: the operator explicitly requested another review.
 	reviewDigest := computeReviewDigest(selectedHeadSHA, selectedBaseSHA, selectedLabels)
-	var cachedVerdictJSON string
-	if reviewDigest == "" {
-		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
-	} else if !noVerdictCache {
-		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
-		if cerr != nil {
-			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
-		} else if !advisoryMode && cached != nil && cached.Decision == apiv1.VerdictFail &&
-			!hasAnyLabel(selectedLabels, []string{remediationEscalatedLabel}) {
-			reason := remediationEscalatedLabel + " was cleared by an operator"
-			if err := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); err != nil {
-				pf(stderr, "warning: could not mark PR #%d's operator-cleared verdict stale: %v\n", selectedNumber, err)
-			}
-			pf(stdout, "PR #%d: %s — invalidated the standing fail verdict and forcing a fresh review\n", selectedNumber, reason)
-		} else if cached != nil && !cachedBlockerVerdictStillApplies(*cached, siblings) {
-			// The head/base key still matches, but the cached verdict is a
-			// blocked-on-sibling verdict whose named blocker(s) have all resolved
-			// (merged/closed/demoted). Reusing it would keep the PR parked behind
-			// a block that no longer exists, so force a fresh review (#1237).
-			pf(stderr, "info: cached verdict's named blocker(s) have resolved; forcing a fresh review\n")
-		} else if cached != nil {
-			data, merr := json.Marshal(cached)
-			if merr != nil {
-				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
-			} else {
-				cachedVerdictJSON = string(data)
-			}
-		}
-	}
+	cachedVerdictJSON := resolveCachedGateVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA, selectedLabels, siblings, noVerdictCache, advisoryMode, stdout, stderr)
 
 	resultFile := providerInput("resultFile", "sibling-context.json")
 	out := map[string]interface{}{
@@ -740,7 +712,7 @@ type gatherSiblingContextAdapter struct {
 // supported selected-PR poll is injected into the provider-neutral no-sibling
 // decision core below.
 func newADOGatherSiblingContextAdapter(root string, repo providers.RepositoryRef) (gatherSiblingContextAdapter, error) {
-	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true)
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		return gatherSiblingContextAdapter{}, err
 	}
@@ -791,4 +763,47 @@ func runGatherSiblingContextWithoutSiblingEvidence(root string, repo providers.R
 	}
 	return writeSiblingContextResult(providerInput("resultFile", "sibling-context.json"), out,
 		"gathered context for 0 sibling PR(s) on Azure DevOps (empty sibling set — single-PR review)", stdout, stderr)
+}
+
+// resolveCachedGateVerdict looks up the selected PR's digest-matched published
+// verdict (#523) and returns it as the review gate's cache hit, or "" to force
+// a fresh review. Any missing key component or lookup problem degrades to a
+// fresh review. A published escalation is never replayed, and a published
+// deferral is replayed as the reviewer outcome the gate routes (#6061).
+func resolveCachedGateVerdict(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, selectedNumber int, reviewDigest, selectedHeadSHA, selectedBaseSHA string, selectedLabels []string, siblings []siblingPR, noVerdictCache, advisoryMode bool, stdout, stderr io.Writer) string {
+	var cachedVerdictJSON string
+	if reviewDigest == "" {
+		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
+	} else if !noVerdictCache {
+		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
+		if cerr != nil {
+			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
+		} else if !advisoryMode && cached != nil && cached.Decision == apiv1.VerdictFail &&
+			!hasAnyLabel(selectedLabels, []string{remediationEscalatedLabel}) {
+			reason := remediationEscalatedLabel + " was cleared by an operator"
+			if err := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); err != nil {
+				pf(stderr, "warning: could not mark PR #%d's operator-cleared verdict stale: %v\n", selectedNumber, err)
+			}
+			pf(stdout, "PR #%d: %s — invalidated the standing fail verdict and forcing a fresh review\n", selectedNumber, reason)
+		} else if cached != nil && !cachedBlockerVerdictStillApplies(*cached, siblings) {
+			// The head/base key still matches, but the cached verdict is a
+			// blocked-on-sibling verdict whose named blocker(s) have all resolved
+			// (merged/closed/demoted). Reusing it would keep the PR parked behind
+			// a block that no longer exists, so force a fresh review (#1237).
+			pf(stderr, "info: cached verdict's named blocker(s) have resolved; forcing a fresh review\n")
+		} else if cached != nil && cached.Decision == apiv1.VerdictEscalate {
+			// #6061: an escalation is apply-verdict's published disposition, not
+			// an outcome the review gate routes. Review afresh instead of replaying it.
+			pf(stderr, "info: cached verdict is a published escalation; forcing a fresh review\n")
+		} else if cached != nil {
+			gateVerdict := reviewGateVerdictFromPublished(*cached)
+			data, merr := json.Marshal(gateVerdict)
+			if merr != nil {
+				pf(stderr, "warning: marshal cached verdict: %v\n", merr)
+			} else {
+				cachedVerdictJSON = string(data)
+			}
+		}
+	}
+	return cachedVerdictJSON
 }

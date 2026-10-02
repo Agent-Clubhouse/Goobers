@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
+	"github.com/goobers/goobers/internal/lifecycle"
 )
 
 // ProviderKind identifies a concrete provider backend.
@@ -29,15 +31,22 @@ const (
 // existing vocabulary — #539's convention; also applied when a stage reports
 // blocked, #544).
 const (
-	LabelApproved   = "goobers:approved"
-	LabelClaimed    = "goobers:claimed"
-	LabelReady      = "goobers:ready"
-	LabelCritical   = "goobers:critical"
-	LabelNeedsHuman = "goobers:needs-human"
-	LabelNominated  = "goobers:nominated"
-	LabelAutoClose  = "goobers:auto-close"
-	LabelStale      = "stale"
-	LabelTracking   = "tracking"
+	LabelApproved         = lifecycle.LabelApproved
+	LabelClaimed          = lifecycle.LabelClaimed
+	LabelReady            = lifecycle.LabelReady
+	LabelCritical         = "goobers:critical"
+	LabelNeedsHuman       = lifecycle.LabelNeedsHuman
+	LabelNeedsRemediation = lifecycle.LabelNeedsRemediation
+	LabelBlockedOnSibling = lifecycle.LabelBlockedOnSibling
+	LabelNominated        = "goobers:nominated"
+	LabelAutoClose        = "goobers:auto-close"
+	LabelStale            = "stale"
+	LabelTracking         = "tracking"
+)
+
+// Work-item status labels with Goobers-defined lifecycle semantics.
+const (
+	LabelStatusInReview = lifecycle.LabelStatusInReview
 )
 
 // WorkItemStatus is the Goobers processing status mirrored to backlog items.
@@ -82,8 +91,16 @@ type WorkItem struct {
 	Type       string       `json:"type,omitempty"`
 	Title      string       `json:"title"`
 	Body       string       `json:"body,omitempty"`
-	Labels     []string     `json:"labels,omitempty"`
-	State      string       `json:"state,omitempty"`
+	// AcceptanceCriteria carries Azure Boards' dedicated acceptance criteria
+	// field separately from System.Description so agent inputs can include both.
+	AcceptanceCriteria string `json:"acceptanceCriteria,omitempty"`
+	// Description is the provider's own description before acceptance
+	// criteria were composed into Body, set only by providers that compose
+	// (ADO). It is not serialized; it lets a spec pin recorded before #6093
+	// still be matched against an unchanged item (#6190).
+	Description string   `json:"-"`
+	Labels      []string `json:"labels,omitempty"`
+	State       string   `json:"state,omitempty"`
 	// StateReason is the provider's own reason a closed item is closed (e.g.
 	// GitHub's "completed" vs. "not_planned"). Empty for a provider with no
 	// such concept or for an item that is not closed — callers that need to
@@ -120,6 +137,20 @@ type WorkItemLabel struct {
 	Description string `json:"description,omitempty"`
 }
 
+// ClaimMetadataDriftError reports that the authoritative provider claim
+// receipt/epoch was written, but the provider's label projection did not
+// converge before the bounded confirmation window ended.
+type ClaimMetadataDriftError struct {
+	Provider ProviderKind
+	ItemID   string
+	RunID    string
+	Label    string
+}
+
+func (e *ClaimMetadataDriftError) Error() string {
+	return fmt.Sprintf("claim metadata drift for %s item %s: run %s claim succeeded but label %q is not visible", e.Provider, e.ItemID, e.RunID, e.Label)
+}
+
 // EnsureWorkItemLabelsResult reports which labels were created or already present.
 type EnsureWorkItemLabelsResult struct {
 	Created []string `json:"created"`
@@ -134,6 +165,86 @@ func (w WorkItem) HasLabel(label string) bool {
 		}
 	}
 	return false
+}
+
+// BodyWithAcceptanceCriteria renders the provider's description plus any
+// separate acceptance criteria as the task text an agent should read.
+func (w WorkItem) BodyWithAcceptanceCriteria() string {
+	return ComposeWorkItemBody(w.Body, w.AcceptanceCriteria)
+}
+
+// ComposeWorkItemBody renders a provider description plus any separate
+// acceptance criteria as the task text an agent should read.
+func ComposeWorkItemBody(description, acceptanceCriteria string) string {
+	body := strings.TrimRight(description, "\n")
+	criteria := strings.TrimSpace(acceptanceCriteria)
+	if criteria == "" {
+		return description
+	}
+	if strings.TrimSpace(body) == "" {
+		return "## Acceptance Criteria\n\n" + criteria
+	}
+	if start, end, ok := acceptanceCriteriaSectionBounds(body); ok {
+		section := strings.TrimSpace(strings.Join(strings.Split(body, "\n")[start+1:end], "\n"))
+		if strings.Contains(section, criteria) {
+			return description
+		}
+		return insertIntoAcceptanceCriteriaSection(body, start, end, criteria)
+	}
+	return body + "\n\n## Acceptance Criteria\n\n" + criteria
+}
+
+func acceptanceCriteriaSectionBounds(body string) (int, int, bool) {
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		level := markdownHeadingLevel(trimmed)
+		if level == 0 {
+			continue
+		}
+		heading := strings.TrimSpace(trimmed[level:])
+		if !strings.EqualFold(heading, "Acceptance Criteria") {
+			continue
+		}
+		end := len(lines)
+		for next := index + 1; next < len(lines); next++ {
+			nextLevel := markdownHeadingLevel(strings.TrimSpace(lines[next]))
+			if nextLevel > 0 && nextLevel <= level {
+				end = next
+				break
+			}
+		}
+		return index, end, true
+	}
+	return 0, 0, false
+}
+
+func markdownHeadingLevel(line string) int {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level == len(line) || line[level] != ' ' {
+		return 0
+	}
+	return level
+}
+
+func insertIntoAcceptanceCriteriaSection(body string, start, end int, criteria string) string {
+	lines := strings.Split(body, "\n")
+	insert := make([]string, 0, 3)
+	if end == start+1 || strings.TrimSpace(lines[end-1]) != "" {
+		insert = append(insert, "")
+	}
+	insert = append(insert, criteria)
+	if end < len(lines) {
+		insert = append(insert, "")
+	}
+	out := make([]string, 0, len(lines)+len(insert))
+	out = append(out, lines[:end]...)
+	out = append(out, insert...)
+	out = append(out, lines[end:]...)
+	return strings.Join(out, "\n")
 }
 
 // AssigneeMatches reports whether this work item's current assignee
@@ -174,6 +285,12 @@ func IntegrityForLabels(labels []string, trustLabel string) apiintegrity.Grade {
 	}
 	return apiintegrity.Unapproved
 }
+
+// ErrLabelHistoryIncomplete reports that one work item's label history cannot
+// be read completely or consistently (for example, an Azure DevOps item past
+// the revision cap, or a tag change without a change date). It concerns that
+// item only: a caller walking several items can skip it and continue.
+var ErrLabelHistoryIncomplete = errors.New("work item label history is incomplete")
 
 // WorkItemLabelTransition is one provider-issued label add/remove event.
 type WorkItemLabelTransition struct {
@@ -456,9 +573,14 @@ type PullRequestInlineComment struct {
 }
 
 // PullRequestReviewThreadReply requests a reply to one native review thread.
+// CommentID names the comment being replied to. ThreadID is the thread's id as
+// ListPullRequestReviewThreads reported it; providers whose comment ids are
+// repository-unique (GitHub) ignore it, while Azure DevOps, whose comment ids
+// are only unique within a thread, addresses the reply by it.
 type PullRequestReviewThreadReply struct {
 	Repository RepositoryRef
 	PullID     string
+	ThreadID   string
 	CommentID  int64
 	Body       string
 }
@@ -503,6 +625,9 @@ type CancelPendingChecksResult struct {
 type PullRequestHeadMovedError struct {
 	Expected string
 	Actual   string
+	// Detail carries the forge's own diagnosis when it refused the mutation
+	// server-side (on ADO: the HTTP status, typeKey and message).
+	Detail string
 }
 
 func (e PullRequestHeadMovedError) Error() string {
@@ -512,7 +637,11 @@ func (e PullRequestHeadMovedError) Error() string {
 		// naming the new head.
 		actual = "a newer commit"
 	}
-	return fmt.Sprintf("pull request head moved from %s to %s", e.Expected, actual)
+	msg := fmt.Sprintf("pull request head moved from %s to %s", e.Expected, actual)
+	if e.Detail != "" {
+		msg += " (" + e.Detail + ")"
+	}
+	return msg
 }
 
 // PullRequestPolicyNotMetError reports that the forge refused to complete a
@@ -523,12 +652,18 @@ func (e PullRequestHeadMovedError) Error() string {
 type PullRequestPolicyNotMetError struct {
 	PullID  string
 	Message string
+	// Detail carries the forge's HTTP status and error type (on ADO, the
+	// typeKey) so an operator can tell which refusal this was.
+	Detail string
 }
 
 func (e PullRequestPolicyNotMetError) Error() string {
 	msg := fmt.Sprintf("pull request %s completion refused: branch policy not met", e.PullID)
 	if e.Message != "" {
 		msg += ": " + e.Message
+	}
+	if e.Detail != "" {
+		msg += " (" + e.Detail + ")"
 	}
 	return msg
 }
@@ -570,7 +705,37 @@ type CIFailureDetail struct {
 	CheckDetail
 	Annotations []CheckAnnotation  `json:"annotations"`
 	Integrity   apiintegrity.Grade `json:"integrity,omitempty"`
+	// Evidence says how complete the failure detail is, for a provider that
+	// collects it from more than one read (Azure DevOps builds, timelines and
+	// logs). Empty means the provider does not grade its evidence.
+	Evidence CIEvidenceState `json:"evidence,omitempty"`
 }
+
+// CIEvidenceState grades one failing check's evidence, so missing, truncated
+// or unsupported detail is explicit rather than an apparently clean empty
+// result.
+type CIEvidenceState string
+
+const (
+	// CIEvidenceComplete means every diagnostic the provider exposes was read
+	// within the collection bounds.
+	CIEvidenceComplete CIEvidenceState = "complete"
+	// CIEvidencePartialBound means diagnostics were dropped or truncated by a
+	// collection bound (failed jobs, tasks, issues or log bytes).
+	CIEvidencePartialBound CIEvidenceState = "partial_bound"
+	// CIEvidencePartialProvider means the provider did not return some diagnostic
+	// it names (no build found, no failed step, an unreadable log).
+	CIEvidencePartialProvider CIEvidenceState = "partial_provider"
+	// CIEvidenceUnsupported means the check is not backed by anything the provider
+	// can read failure detail from (an external status, say).
+	CIEvidenceUnsupported CIEvidenceState = "unsupported"
+	// CIEvidenceFailed means collection failed, or the build found belongs to
+	// another repository or pull request and was rejected.
+	CIEvidenceFailed CIEvidenceState = "failed"
+	// CIEvidenceStale means the evidence describes another source revision than
+	// the one being diagnosed.
+	CIEvidenceStale CIEvidenceState = "stale"
+)
 
 // PullRequestComment is a normalized issue-thread comment on a pull request.
 type PullRequestComment struct {
@@ -595,8 +760,12 @@ type PullRequestPollRequest struct {
 	// (which would loop forever on a policy only a human can satisfy). The
 	// values are provider-interpreted opaque identities: the Azure DevOps
 	// provider matches them against branch-policy *configuration* ids. Empty
-	// means every required blocking policy gates (fail-closed default); loops
-	// with human-only policies declare them here as configuration.
+	// means every required blocking build, status or unclassified policy
+	// gates (fail-closed default). Azure DevOps minimum- and required-reviewer
+	// policies never gate CI, listed or not: an unmet one is reported as a
+	// human wait. Comment-resolution and work-item-linking policies never gate
+	// CI either. Loops with other human-only policies declare them here as
+	// configuration.
 	HumanPolicyConfigurationIDs []string `json:"humanPolicyConfigurationIds,omitempty"`
 }
 
@@ -683,6 +852,14 @@ type PullRequestStatusRequest struct {
 	State       CheckState    `json:"state"`
 	Description string        `json:"description,omitempty"`
 	TargetURL   string        `json:"targetUrl,omitempty"`
+	// HeadSHA, when set, pins the status to the commit the evidence was
+	// computed against: the provider refuses with PullRequestHeadMovedError
+	// rather than attach it to a newer head. On Azure DevOps a status on the
+	// latest iteration satisfies a reset-on-push status policy for whatever
+	// that iteration contains, so an unpinned post can vouch for a commit
+	// nobody reviewed. Empty keeps the unpinned behaviour (the head current
+	// at post time).
+	HeadSHA string `json:"headSha,omitempty"`
 }
 
 // PullRequestStatusResult reports the published status's provider-assigned id.
@@ -747,6 +924,16 @@ type MergePullRequestRequest struct {
 	CommitMessage string `json:"commitMessage,omitempty"`
 	// MergeMethod, if set, selects merge, squash, or rebase semantics.
 	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
+	// DeleteSourceBranch, if set, asks the provider to delete the pull
+	// request's source branch as part of landing it. GitHub ignores this
+	// field: its branch cleanup runs as a separate, provider-neutral
+	// DeleteBranch call after a confirmed merge (cmd/goobers/mergepr.go's
+	// cleanupMergedBranch), not through this request. ADO has no such
+	// separate call — PollPullRequest never populates HeadRepository for
+	// it — so ADO honors this field by setting
+	// completionOptions.deleteSourceBranch on the same PATCH that lands
+	// the pull request (design ado-parity-dsl-2-0.md §3.3, ADO-N25).
+	DeleteSourceBranch bool `json:"deleteSourceBranch,omitempty"`
 }
 
 // MergePullRequestResult reports the outcome of a merge attempt. Merged=false
@@ -861,6 +1048,12 @@ type EnqueuePullRequestRequest struct {
 	// and GitHub's enqueue mutation has no such field (issue #882). It
 	// stays required on the direct-merge path, which is what #877 fixed.
 	MergeMethod MergeMethod `json:"mergeMethod,omitempty"`
+	// DeleteSourceBranch is the same request MergePullRequestRequest
+	// carries, for the same reason: on ADO the auto-complete PATCH is the
+	// only opportunity to ask for source-branch cleanup, so it must be set
+	// at enqueue time rather than after the completion job lands the pull
+	// request (ADO-N25). GitHub ignores it.
+	DeleteSourceBranch bool `json:"deleteSourceBranch,omitempty"`
 }
 
 // EnqueuePullRequestResult reports the outcome of an enqueue attempt.

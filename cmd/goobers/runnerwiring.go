@@ -99,6 +99,7 @@ type runnerCompositionInput struct {
 	WorktreeManager      *worktree.Manager
 	BranchNamespaces     map[string]string
 	GaggleProject        apiv1.RepoRef
+	GaggleBacklog        apiv1.BacklogRef
 	AdditionalRepos      []apiv1.RepoRef
 	HarnessInfo          harnessPreflightInfo
 	CredentialStores     credentials.StoreResolver
@@ -134,11 +135,9 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// Computed before the worktree Manager so its per-repo git-auth resolver can
 	// back each read-only reference-repo clone with that repo's contents:read
 	// token (MGV-10/#1285, consumed by MGV-11/#1286).
-	gaggleOwner := gaggleProject.Owner
-	if gaggleProject.Provider == apiv1.ProviderADO && gaggleProject.Project != "" {
-		gaggleOwner += "/" + gaggleProject.Project
-	}
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, gaggleProject.Name, additionalRepos, sharedReg)
+	// A backlog on another provider (topology (b)) binds the backlog-family
+	// capabilities to the backlog repository's credential.
+	resolver, grants, err := buildGaggleCredentials(cfg, stores, gaggleProject, input.GaggleBacklog, additionalRepos, sharedReg)
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -297,7 +296,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				InstanceRoot: instanceRoot, AppliedConfigDigest: appliedConfigDigest, ConfigDirectory: l.ConfigDir(), SelfBin: selfBin, ProjectConfigured: projectConfigured,
 				ConfiguredProject: configuredProject, GaggleProject: gaggleProject, ProviderQuota: providerQuota,
 				ArtifactRecorder: rec, SecretRegistrar: reg, Diagnostics: diagnosticsMode, DiagnosticsMaxBytes: diagnosticsMaxOutputBytes,
-				ScratchDir: deterministicScratchDir, CredentialStores: stores,
+				ScratchDir: deterministicScratchDir, CredentialStores: stores, CredentialGrants: stageGrantMinterFor(instanceRoot),
 			})
 			if err != nil {
 				return nil, err
@@ -871,6 +870,24 @@ func requireLabelsByGaggle(set *instance.ConfigSet) map[string]string {
 	for i := range set.Gaggles {
 		g := &set.Gaggles[i]
 		out[g.Name] = strings.Join(g.Spec.RequireLabels, ",")
+	}
+	return out
+}
+
+func backlogLabelsByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = strings.Join(g.Spec.Backlog.Labels, ",")
+	}
+	return out
+}
+
+func backlogLabelPredicatesByGaggle(set *instance.ConfigSet) map[string]string {
+	out := make(map[string]string, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		out[g.Name] = g.Spec.Backlog.LabelPredicate
 	}
 	return out
 }

@@ -4,6 +4,15 @@
 - Date: 2026-07-28
 - Decision owner: issue #1810
 
+> **DSL 2.0 on Azure DevOps (#2726).** This decision still governs how new
+> provider-neutral names are introduced; DSL 3.0 applies it
+> (`docs/design/provider-access-layer.md`). DSL 2.0 is frozen and takes no new
+> names, so `docs/design/ado-parity-dsl-2-0.md` §3.1 documents the rebinding
+> rule it already relied on: a `github:*` capability on a provider-dispatched
+> stage authorizes the same operation on the provider the stage routes to. That
+> introduces no name and no alias. The `ado:*` names with no DSL 2.0 consumer
+> stay valid and draw the strict-neutral advisory `CAP006`.
+
 ## Context
 
 Provider-neutral PR stages introduced a namespace conflict. The Azure DevOps PR

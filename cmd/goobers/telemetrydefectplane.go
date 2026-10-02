@@ -122,7 +122,7 @@ func (s *daemonTelemetryDefectAggregateService) DefectAggregates(
 		return telemetryclient.DefectAggregateResponse{}, err
 	}
 	artifact, err := detectCandidateFindingsWithCausalCredit(
-		db, creditStore,
+		ctx, db, creditStore,
 		// Window is not used by the derivation itself — Since is the bound
 		// that matters — and the answer carries the caller's own window.
 		time.Since(request.Since), request.Since,
@@ -194,6 +194,7 @@ func defectAggregateResponse(artifact candidateFindingsArtifact) telemetryclient
 	response := telemetryclient.DefectAggregateResponse{
 		Findings:            make([]telemetryclient.Finding, 0, len(artifact.Findings)),
 		PromotionCandidates: make([]telemetryclient.PromotionSignal, 0, len(artifact.PromotionCandidates)),
+		FaultAudit:          wireFaultAuditReport(artifact.FaultAudit),
 		NoWork:              artifact.NoWork,
 		Note:                artifact.Note,
 	}
@@ -234,6 +235,41 @@ func defectAggregateResponse(artifact candidateFindingsArtifact) telemetryclient
 		response.PromotionCandidates = append(response.PromotionCandidates, wirePromotionSignal(signal))
 	}
 	return response
+}
+
+func wireFaultAuditReport(report *creditgraph.FaultAuditReport) *telemetryclient.FaultAuditReport {
+	if report == nil {
+		return nil
+	}
+	return &telemetryclient.FaultAuditReport{
+		Schema:              report.Schema,
+		Mode:                report.Mode,
+		Since:               report.Since,
+		Until:               report.Until,
+		ObservationsScanned: report.ObservationsScanned,
+		ProductFindings:     wireFaultFindings(report.ProductFindings),
+		ExternalFindings:    wireFaultFindings(report.ExternalFindings),
+		WorkflowFindings:    wireFaultFindings(report.WorkflowFindings),
+		UnknownFindings:     wireFaultFindings(report.UnknownFindings),
+		Suppressed:          report.Suppressed,
+		Truncated:           report.Truncated,
+	}
+}
+
+func wireFaultFindings(findings []creditgraph.FaultFinding) []telemetryclient.FaultFinding {
+	result := make([]telemetryclient.FaultFinding, 0, len(findings))
+	for _, finding := range findings {
+		result = append(result, telemetryclient.FaultFinding{
+			ID: finding.ID, Signature: finding.Signature, Domain: string(finding.Domain),
+			Confidence: finding.Confidence, RunIDs: finding.RunIDs, Workflows: finding.Workflows,
+			EffectiveVersions: finding.EffectiveVersions, Environments: finding.Environments,
+			NodePaths: finding.NodePaths, Evidence: wireAttributionEvidence(finding.Evidence),
+			CounterEvidence: finding.CounterEvidence, Rationale: finding.Rationale,
+			AlternativeDomains: finding.AlternativeDomains, RecommendedOwner: finding.RecommendedOwner,
+			RecommendedAction: finding.RecommendedAction, Verification: string(finding.Verification),
+		})
+	}
+	return result
 }
 
 // redactFindingForPlane is decision 005 R4's boundary applied to one finding.

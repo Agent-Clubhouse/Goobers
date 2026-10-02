@@ -342,8 +342,25 @@ Contract rules:
   tiers 1–2 by declaration validation at compile time plus **capability-scoped
   credential non-injection** (an undeclared capability's credentials are
   simply never materialized), and by sandbox policy from V1 (`SEC-042`,
-  `SEC-044`). A task whose command, policy, persona, or verdict vocabulary can
-  prescribe an external mutation also declares that closed vocabulary in
+  `SEC-044`). Non-injection holds on every provider, Azure DevOps included:
+  every ADO auth kind resolves in the daemon, a stage receives only the
+  `GOOBERS_CRED_<capability>` values its declared capabilities deliver (plus
+  the non-secret `GOOBERS_REPO_AUTH_SCHEME` and, for a value whose source
+  states an expiry, the non-secret `GOOBERS_CREDENTIAL_EXPIRES_<capability>`;
+  a deterministic goobers-CLI stage with such a value also gets a stage
+  credential-refresh grant, `GOOBERS_CREDENTIAL_ENDPOINT` +
+  `GOOBERS_CREDENTIAL_GRANT`, that re-resolves only those capabilities, #6120),
+  and no stage reads
+  `repos[].auth` (see [the stage contract](stage-contract.md)). When a
+  gaggle keeps its backlog on another provider than its code (topology (b):
+  a GitHub or Gitea backlog for Azure DevOps code), the credential a
+  capability delivers follows its family: `github:issues:*` and
+  `github:milestones:write` resolve from the `repos[]` entry for the backlog
+  repository, every other capability from the project repository's, and a
+  backlog-family capability with no such entry delivers no credential rather
+  than the other provider's. A task whose
+  command, policy, persona, or verdict vocabulary can prescribe an external
+  mutation also declares that closed vocabulary in
   `policyActions`. Goober definitions make persona prescriptions
   machine-readable in `policyActions`; capability-gated persona behavior lives
   in `conditionalPolicyActions` and is disabled unless a task explicitly opts
@@ -380,7 +397,9 @@ Contract rules:
   agentic gate may override `maxRepasses`. The value bounds cumulative
   re-entries to a branch's target stage across all gates that route back to
   that stage; a pass at one gate does not reset that target's live budget.
-  Separate target stages can therefore have independent budgets. Stall
+  Only non-pass outcomes are charged: a `pass` branch into an already-completed
+  stage is a forward step, so each repair loop is bounded by the failure that
+  sent it back rather than by the passing validation that follows. Separate target stages can therefore have independent budgets. Stall
   detection does not have a task-level override: task/gate `timeoutSeconds`
   and retry policies already own per-attempt execution bounds, while the stall
   watchdog protects the run journal as a whole.
@@ -507,20 +526,22 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label and its claim breadcrumb are a projection of it, never an input to
   eligibility. The projection is retired at the same moment the lease is —
   a stage does it on the paths that have one (`issue-close-out`,
-  `backlog-query --release`), and on GitHub the instance's terminal cleanup
-  does it for every run that reaches a terminal phase still holding a lease.
-  On Azure DevOps and Gitea, terminal cleanup skips the release entirely and
-  returns early (`cmd/goobers/terminalclaimmarker.go:82-84`; #5648) — for
-  those providers, backlog curation's reconciliation of markers with no
-  backing lease is the *only* mechanism that repairs a leftover marker, not a
-  backstop for the rare miss. The `no-work` outcome is the case that makes
-  the terminal-cleanup path necessary on GitHub rather than defensive: it
-  short-circuits to `completed` from whatever stage reported it, so no
-  close-out stage runs. On GitHub, curation's reconciliation remains the
-  backstop for a projection that could not be written (a forge outage, a
-  credential-less instance), so the window in which the ledger and the forge
-  disagree is bounded by one provider call, not by one curation interval; on
-  ADO and Gitea that window is bounded by the curation interval instead.
+  `backlog-query --release`), and on GitHub and Azure DevOps the instance's
+  terminal cleanup does it for every run that reaches a terminal phase still
+  holding a lease. On Azure DevOps the release targets the gaggle's backlog
+  project and retires both the provider claim epoch and the visible
+  `goobers:claimed` tag before the local lease is released. On Gitea, terminal
+  cleanup skips the release entirely — for that provider, backlog curation's
+  reconciliation of markers with no backing lease is the *only* mechanism that
+  repairs a leftover marker, not a backstop for the rare miss. The `no-work`
+  outcome is the case that makes the terminal-cleanup path necessary rather
+  than defensive: it short-circuits to `completed` from whatever stage
+  reported it, so no close-out stage runs. On GitHub and Azure DevOps,
+  curation's reconciliation remains the backstop for a projection that could
+  not be written (a forge outage, a credential-less instance), so the window in
+  which the ledger and the forge disagree is bounded by one provider call, not
+  by one curation interval; on Gitea that window is bounded by the curation
+  interval instead.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
@@ -566,6 +587,12 @@ See the security alert intake guide under `docs/guides/`.
 | 1 — Solo | None (local trust) | Env vars / token file / macOS Keychain / secret-store refs, redacted from journals | Worktree + process isolation, capability-scoped credential injection |
 | 2 — Team | Optional OIDC on portal/daemon | Env/file, Keychain, or team secret store (Azure Key Vault refs already usable, not tier-3-only) | + per-goober credential scoping (shipped, #823); native sandbox shipped and wired through the harness, but `sandbox.agentic` defaults to `disabled` — opt-in, not yet the default (epic #35, closed; default flip tracked on #4517) |
 | 3 — Cloud | Entra ID (OIDC) | **Azure Key Vault** | Per-gaggle namespaces (`SEC-*`, #4897): the active mode-3 worker routes each gaggle's stage pods into its own declared namespace, validated by a startup preflight; per-gaggle workload identity/network policy remain target-state |
+
+Forge credentials resolve in the daemon at every tier and reach a stage only as
+the credential of a capability it declared: a GitHub App mints installation
+tokens, and every Azure DevOps auth kind (`pat`, `azure-cli`,
+`workload-identity`, `managed-identity`) resolves its PAT or Microsoft Entra
+token the same way, so a stage pod needs no forge identity of its own.
 
 The protocol (OIDC) and the seam (an `Authenticator` + a secret-resolver interface)
 are constant; tiers select implementations. The Tutor write-boundary (`SEC-021`) is
@@ -638,9 +665,9 @@ deployed config separately, and it can drift from the checked-in reference.
 
 Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
 prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
-are shipped, alongside the Azure DevOps provider (supported, though with known
-provider-parity gaps still open, e.g. #5554, #5648, #5649 — see
-`docs/provider-capability-matrix.md`) and an experimental Gitea provider,
+are shipped, alongside the Azure DevOps provider (supported; its remaining
+provider differences are listed in `docs/provider-capability-matrix.md` and
+`docs/guides/ado-limitations.md`) and an experimental Gitea provider,
 packaged-install machinery, the journal-backed portal, capability-scoped and
 per-goober credential injection, optional OIDC, and a narrow Tutor workflow.
 Native sandboxed stage execution has also shipped (epic #35, closed) but

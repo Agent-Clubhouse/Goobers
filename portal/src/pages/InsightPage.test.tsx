@@ -50,7 +50,10 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { name: "Insight" });
+    expect(heading).toBeInTheDocument();
+    expect(heading.closest("header")?.firstElementChild).toBe(heading);
+    expect(screen.queryByText("Telemetry", { selector: ".page-kicker" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Insight" })).toHaveAttribute(
       "aria-current",
       "page",
@@ -223,7 +226,8 @@ describe("Insight page", () => {
       .getByText("AI cost", { selector: ".usage-metric-static .usage-metric-heading strong" })
       .closest<HTMLElement>(".usage-metric-static");
     if (!unmeasuredCost) throw new Error("Expected a static AI cost metric.");
-    expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(2);
+    expect(within(unmeasuredCost).getByText("0 runs")).toBeInTheDocument();
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
     expect(within(unmeasuredCost).queryByText("$0.00")).not.toBeInTheDocument();
     expect(unmeasuredCost.tagName).toBe("DIV");
@@ -261,6 +265,30 @@ describe("Insight page", () => {
       "href",
       "#/run/01JZ455ESCALATE",
     );
+    const runTable = screen.getByRole("table", { name: "PR #4398 run breakdown" });
+    expect(within(runTable).getByRole("columnheader", { name: "Gaggle / workflow" })).toBeInTheDocument();
+    expect(within(runTable).getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+    expect(within(runTable).getByText("core")).toBeInTheDocument();
+    expect(within(runTable).getByText("implementation")).toBeInTheDocument();
+    expect(within(runTable).getByText("escalated")).toBeInTheDocument();
+    expect(
+      within(runTable).getByText(
+        (_, element) =>
+          element?.tagName === "TIME" &&
+          element.getAttribute("datetime") === "2026-07-18T02:00:00Z",
+      ),
+    ).toBeInTheDocument();
+    expect(within(runTable).getByText("3/3 measured")).toBeInTheDocument();
+    expect(within(runTable).getByText("2.5 AIC")).toBeInTheDocument();
+    expect(within(runTable).queryByRole("columnheader", { name: "Normalized" })).not.toBeInTheDocument();
+    expect(within(runTable).getByText("ai_credits")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close run list" }));
+
+    await user.click(screen.getByRole("button", { name: "View 1 run for Issue #4398" }));
+    const issueRunTable = screen.getByRole("table", { name: "Issue #4398 run breakdown" });
+    expect(within(issueRunTable).getByText("Unknown gaggle")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("Workflow unavailable")).toBeInTheDocument();
+    expect(within(issueRunTable).getByText("Status unavailable")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close run list" }));
 
     let rows = within(table).getAllByRole("row").slice(1);
@@ -370,7 +398,13 @@ describe("Insight page", () => {
     expect(
       await screen.findByRole("heading", { name: "Cost over time" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /AI cost trend by bucket/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", {
+        name: /AI cost trend by bucket.*cumulative.*P95/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Cumulative cost")).toBeInTheDocument();
+    expect(screen.getByText("P95 run cost")).toBeInTheDocument();
     expect(screen.getAllByText(/vs\. previous 7 days/)).toHaveLength(2);
 
     await waitFor(() => {
@@ -485,11 +519,11 @@ describe("Insight page", () => {
 
     expect(await screen.findByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     const coreLink = screen.getByRole("link", {
-      name: /View instance spend for gaggle core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
+      name: /View instance spend for gaggle core: total \$4\.00, 8 runs, P50 \$0\.80, P95 \$2\.50/,
     });
     expect(coreLink).toBeInTheDocument();
     const toolsLink = screen.getByRole("link", {
-      name: /View instance spend for gaggle tools: 3 samples, P50 \$0\.10, P95 \$5\.80/,
+      name: /View instance spend for gaggle tools: total \$6\.00, 3 runs, P50 \$0\.10, P95 \$5\.80/,
     });
     expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
@@ -606,15 +640,26 @@ describe("Insight page", () => {
 
   it("provides an inspectable drill-through for instance errors", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getSignatures = client.getTelemetryErrorSignatures.bind(client);
+    let releaseSignatures!: () => void;
+    const signaturesReady = new Promise<void>((resolve) => {
+      releaseSignatures = resolve;
+    });
+    vi.spyOn(client, "getTelemetryErrorSignatures").mockImplementation(async (...args) => {
+      await signaturesReady;
+      return getSignatures(...args);
+    });
     const user = userEvent.setup();
     render(<App client={client} />);
 
+    // The heading comes from stats, before the independently fetched error
+    // signatures. Hold that response to exercise the real loading boundary.
     await screen.findByRole("heading", { name: "Failure reasons" });
-    await user.click(
-      screen.getByRole("link", {
-        name: "View 1 matching error for scheduler.storage",
-      }),
-    );
+    const linkName = "View 1 matching error for scheduler.storage";
+    expect(screen.queryByRole("link", { name: linkName })).not.toBeInTheDocument();
+    const drillThrough = screen.findByRole("link", { name: linkName });
+    await act(async () => releaseSignatures());
+    await user.click(await drillThrough);
 
     expect(await screen.findByText("Scheduler journal append failed.")).toBeInTheDocument();
     expect(screen.getByText("Instance scheduler")).toBeInTheDocument();

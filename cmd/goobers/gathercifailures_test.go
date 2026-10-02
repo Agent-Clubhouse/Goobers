@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -84,6 +87,51 @@ func readGatherCIBrief(t *testing.T, path string) apiv1.RemediationBrief {
 		t.Fatalf("decode remediation brief: %v\n%s", err, data)
 	}
 	return brief
+}
+
+func TestRemediationBriefErrorExitCode(t *testing.T) {
+	tests := []struct {
+		name      string
+		kind      remediationBriefErrorKind
+		writeCode int
+		wantCode  int
+	}{
+		{name: "marshal", kind: remediationBriefErrorMarshal, writeCode: 2, wantCode: 1},
+		{name: "validate", kind: remediationBriefErrorValidate, writeCode: 2, wantCode: 1},
+		{name: "write", kind: remediationBriefErrorWrite, writeCode: 2, wantCode: 2},
+		{name: "PR write", kind: remediationBriefErrorWrite, writeCode: 1, wantCode: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &remediationBriefError{kind: tt.kind, err: errors.New("synthetic failure")}
+			if got := remediationBriefErrorExitCode(err, tt.writeCode); got != tt.wantCode {
+				t.Fatalf("exit code = %d, want %d", got, tt.wantCode)
+			}
+			if err.Error() != "synthetic failure" {
+				t.Fatalf("error text = %q, want exact underlying text", err)
+			}
+		})
+	}
+}
+
+func TestWriteGatherRemediationBriefValidatesSchemaAndMapsWriteError(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := writeGatherRemediationBrief(&stderr, t.TempDir(), remediationBriefFixture(false), 2); code != 2 {
+		t.Fatalf("write exit code = %d, want 2", code)
+	}
+	if got := stderr.String(); !strings.HasPrefix(got, "error: write ") {
+		t.Fatalf("write stderr = %q, want exact error prefix", got)
+	}
+
+	stderr.Reset()
+	invalid := remediationBriefFixture(false)
+	invalid.Schema = ""
+	if code := writeGatherRemediationBrief(&stderr, filepath.Join(t.TempDir(), "brief.json"), invalid, 2); code != 1 {
+		t.Fatalf("validation exit code = %d, want 1", code)
+	}
+	if got := stderr.String(); !strings.HasPrefix(got, "error: validate remediation brief: ") {
+		t.Fatalf("validation stderr = %q, want schema validation error", got)
+	}
 }
 
 func TestGatherCIFailuresPassingCIAddsNothingAndMakesNoAPICalls(t *testing.T) {

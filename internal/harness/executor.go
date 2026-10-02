@@ -380,11 +380,15 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 		result.Outputs["transcriptTruncated"] = true
 		result.Outputs["transcriptDroppedBytes"] = float64(out.TranscriptDroppedBytes)
 	}
-	result.Artifacts, err = e.liftArtifacts(ctx, env, result.Artifacts)
+	reported := result.Artifacts
+	result.Artifacts, err = e.liftArtifacts(ctx, env, reported)
+	if err != nil && noWorkWithoutDeclaredArtifact(result.Status, err) {
+		result.Artifacts, err = reported, nil
+	}
 	if err != nil {
 		if code, summary, ok := declaredArtifactFailure(err); ok {
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{Code: code, Message: err.Error(), Retryable: false}
+			result.Error = journal.ErrorInfoFor(code, err, retryableDeclaredArtifactFailure(code))
 			result.Summary = summary
 			return result, nil
 		}
@@ -417,6 +421,7 @@ func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	if err := json.Unmarshal(out.Payload, &verdict); err != nil {
 		return apiv1.Verdict{}, fmt.Errorf("%w: decode verdict: %w", ErrInvalidCompletion, err)
 	}
+	verdict = undeclaredDeferralAsNeedsChanges(verdict, env.ReviewerDeferralAllowed)
 	verdict.Evidence, err = e.liftArtifacts(ctx, env, verdict.Evidence)
 	if err != nil {
 		if _, summary, ok := declaredArtifactFailure(err); ok {
@@ -446,6 +451,21 @@ func declaredArtifactFailure(err error) (code, summary string, ok bool) {
 	default:
 		return "", "", false
 	}
+}
+
+func retryableDeclaredArtifactFailure(code string) bool {
+	return code == "missing_declared_artifact" || code == "invalid_declared_artifact_set"
+}
+
+// noWorkWithoutDeclaredArtifact reports whether a liftArtifacts error is only
+// the declared artifactFile being absent from a no-work completion (#5332). A
+// stage that correctly found nothing has nothing to write into its declared
+// artifact, so requiring the success-path file would turn every empty tick
+// into missing_declared_artifact. Only absence is tolerated, and only for
+// no-work: a success still fails closed without its artifact, and a path
+// escape or an invalid artifact set fails closed whatever the status.
+func noWorkWithoutDeclaredArtifact(status apiv1.ResultStatus, err error) bool {
+	return status == apiv1.ResultNoWork && errors.Is(err, ErrDeclaredArtifactMissing)
 }
 
 // run materializes capability-scoped credentials, drives the adapter, and
@@ -1090,4 +1110,23 @@ func mediaTypeFor(path string) string {
 		return "application/json"
 	}
 	return "application/octet-stream"
+}
+
+// undeclaredDeferralAsNeedsChanges maps a reviewer "defer" to "needs-changes"
+// when the gate declares no defer route (#6061). completionContract only offers
+// "defer" when ReviewerDeferralAllowed, but a model can still return it, for
+// example by mirroring merge-review's own "verdict: defer" status comments on
+// the PR. An undeclared outcome would fail the run closed (GT-002), wasting the
+// review. A deferral is "not yet, and not a pass": needs-changes carries the
+// same meaning with the reviewer's findings intact, so a merge-review ordering
+// claim still reaches elect-lander and apply-verdict's ordering deferral. A gate
+// that also lacks a needs-changes route still fails closed as before.
+func undeclaredDeferralAsNeedsChanges(v apiv1.Verdict, deferralAllowed bool) apiv1.Verdict {
+	if deferralAllowed || v.Decision != apiv1.VerdictDefer {
+		return v
+	}
+	v.Decision = apiv1.VerdictNeedsChanges
+	v.ReasonCode = ""
+	v.Elected = false
+	return v
 }

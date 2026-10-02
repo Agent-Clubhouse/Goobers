@@ -33,17 +33,66 @@ capabilities must also appear on its referenced Goober.
 | `github:pr:review` | Submit provider-native GitHub approve/request-changes reviews. |
 | `provider:ci:cancel` | Cancel pending provider CI for a pinned commit. |
 | `github:branch:delete` | Delete a remote GitHub branch ref. |
-| `github:pr:merge` | Merge a GitHub pull request. |
+| `github:pr:merge` | Merge a pull request. The landing authority on every provider: on Azure DevOps it completes the pull request unless the stage also declares `ado:pr:complete`. |
 | `contents:read` | Fetch a separately declared read-only reference repository. |
-| `ado:code:read` | Read Azure Repos code and pull requests. |
-| `ado:pr:comment` | Post Azure Repos PR threads without vote or completion authority. |
-| `ado:pr:write` | Open or update Azure Repos pull requests. |
+| `ado:code:read` | Read Azure Repos code and pull requests. Accepted but inert in DSL 2.0 (warns `CAP006`): repository reads need no capability. See [Azure DevOps](#azure-devops-and-the-dsl-20-rebinding-rule). |
+| `ado:pr:comment` | Post Azure Repos PR threads without vote or completion authority. Accepted but inert in DSL 2.0 (warns `CAP006`): declare `github:pr:write`. |
+| `ado:pr:write` | Open or update Azure Repos pull requests. Accepted but inert in DSL 2.0 (warns `CAP006`): declare `github:pr:write`. |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses. Optional on the `report-pr-status` policy action, which requires `github:pr:write`; declaring `ado:pr:status` alongside it is accepted but not required. |
-| `ado:pr:complete` | Complete an Azure Repos pull request. |
-| `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
+| `ado:pr:complete` | Complete an Azure Repos pull request. Optional: accepted on `merge-pr` and `merge-queue-poll` alongside the required `github:pr:merge`, and when declared, completion uses its credential instead. |
+| `ado:work-items:write` | Update explicitly selected Azure Boards work items. Consumed only by `open-pr`, which links an Azure DevOps pull request to its work item natively when the stage declares it (optional: without it the pull request opens with a text reference and a note); an Azure DevOps repository credential backs it. Elsewhere it is inert in DSL 2.0 (warns `CAP006`): declare `github:issues:write`. |
 | `telemetry:read` | Read local telemetry and configured external telemetry connectors. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |
+
+## Azure DevOps and the DSL 2.0 rebinding rule
+
+DSL 2.0 capability names were written GitHub-first, and DSL 2.0 is frozen, so
+it takes no new names. Instead, a `github:*` capability declared on a stage
+whose command dispatches through the provider seam authorizes **the same
+operation on the provider the stage routes to**, and selects that provider's
+credential. Gitea has always worked this way, and Azure DevOps now does too.
+This adds no vocabulary and changes nothing on GitHub.
+
+| Capability | Routes to | Azure DevOps operation |
+| --- | --- | --- |
+| `github:issues:read`, `github:issues:write`, `github:issues:approve`, `github:milestones:write` | the gaggle's backlog provider | Boards work items, tags, comments, state |
+| `github:pr:write`, `github:pr:review`, `github:branch:delete` | the gaggle's project provider | PR threads, labels, statuses, source-branch deletion |
+| `github:pr:merge` | the project provider, as the landing authority | PR completion and auto-complete |
+| `provider:pr:write`, `provider:ci:cancel`, `repo:push` | the project provider | already provider-neutral |
+
+On Azure DevOps an undeclared capability means no credential, as on GitHub:
+each stage builds its provider from the credential of the capability it
+declared, and from no other.
+
+Two `ado:*` names have a consumer, and neither is required: `ado:pr:complete`
+on `merge-pr` and `merge-queue-poll` (completion uses its credential instead of
+`github:pr:merge`'s), and `ado:work-items:write` on `open-pr` (it links the
+pull request to its work item natively). `ado:pr:status` is accepted on
+`report-pr-status` but harmless: nothing reads it, and `github:pr:write`
+authorizes the status. The remaining names have no consumer on a built-in
+stage in DSL 2.0. They stay valid, so configurations that followed older docs
+keep loading, but `goobers validate` reports `CAP006` and names what
+authorizes the operation:
+
+| Declared | What authorizes the operation |
+| --- | --- |
+| `ado:code:read` | No capability: repository reads use the repository credential. |
+| `ado:pr:comment` | `github:pr:write` |
+| `ado:pr:write` | `github:pr:write` |
+| `ado:work-items:write` | `github:issues:write` authorizes work-item updates on the backlog provider (`github:issues:read` for reads). Not reported on `open-pr`, which consumes it to link the pull request to its work item; `github:issues:write` does not replace it there. |
+
+The advice is provider-neutral: it names the capability that authorizes the
+operation on whichever provider the stage routes to. A task that runs its own
+command (a custom deterministic command or an agentic stage) receives the
+credential its declared capabilities select, so `CAP006` on such a task says
+only that no built-in stage consumes the name; keep it if the command uses it.
+
+`CAP006` is strict-neutral: `goobers validate --strict` prints it but does not
+fail on it. It covers DSL 2.0 workflows and the goobers their agentic tasks and
+gates run. DSL 3.0 is out of scope; its provider-neutral names are designed in
+`docs/design/provider-access-layer.md`. The full rule is in
+`docs/design/ado-parity-dsl-2-0.md` §3.1.
 
 ## Runner-only capability
 

@@ -364,8 +364,22 @@ func newRunLister(token, apiURL, repository string) runLister {
 		base:       base,
 		repository: strings.TrimSpace(repository),
 		token:      token,
-		client:     &http.Client{Timeout: requestTimeout},
+		client: &http.Client{
+			Timeout:   requestTimeout,
+			Transport: newRunListerTransport(),
+		},
 	}
+}
+
+func newRunListerTransport() http.RoundTripper {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		return transport.Clone()
+	}
+	return http.DefaultTransport
+}
+
+func (l githubRunLister) CloseIdleConnections() {
+	l.client.CloseIdleConnections()
 }
 
 func (l githubRunLister) ScheduledRuns(ctx context.Context, workflowFile string) (_ []workflowRun, returnErr error) {

@@ -228,11 +228,17 @@ summary:focus-visible {
   top: 0;
 }
 
+/* html and body never scroll, so the guided setup frame owns its scrolling,
+   like .portal-main does for the dashboard. */
 .getting-started-frame {
   background:
     radial-gradient(circle at 15% 5%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 30rem),
     var(--bg);
-  min-height: 100vh;
+  height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .getting-started-header {
@@ -4109,6 +4115,34 @@ code,
 .run-heading-action:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.run-lineage {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 18px 0;
+  padding: 16px 18px;
+}
+
+.run-lineage h2 {
+  font-size: var(--font-ui);
+  margin: 0 0 8px;
+}
+
+.run-lineage p {
+  color: var(--muted-strong);
+  margin: 4px 0;
+}
+
+.run-lineage button {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
 }
 
 .run-heading-actions [role="alert"] {
@@ -8057,6 +8091,89 @@ code,
 .artifact-dialog-meta code {
   font-size: var(--font-meta);
   word-break: break-all;
+}
+
+.event-detail-backdrop {
+  align-items: center;
+  background: rgb(0 0 0 / 55%);
+  display: grid;
+  inset: 0;
+  justify-items: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 50;
+}
+
+.event-detail-dialog {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 18px 54px rgb(0 0 0 / 30%);
+  display: grid;
+  gap: 16px;
+  max-height: min(680px, 90vh);
+  max-width: min(720px, 92vw);
+  overflow: auto;
+  padding: 20px;
+  width: 100%;
+}
+
+.event-detail-dialog:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.event-detail-dialog header,
+.event-detail-dialog footer {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.event-detail-dialog h2 {
+  margin: 2px 0 0;
+}
+
+.event-detail-meta {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  margin: 0;
+  padding: 14px 0;
+}
+
+.event-detail-meta dt {
+  color: var(--muted);
+  font-size: var(--font-label);
+  text-transform: uppercase;
+}
+
+.event-detail-meta dd {
+  font-size: var(--font-meta);
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.event-detail-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.event-detail-summary strong {
+  font-size: var(--font-ui);
+}
+
+.event-detail-summary p {
+  color: var(--muted-strong);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.event-detail-dialog footer {
+  justify-content: flex-end;
 }
 
 .artifact-load-state {

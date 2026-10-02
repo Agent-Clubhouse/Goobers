@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 func writeInstanceYAML(t *testing.T, body string) string {
@@ -1530,6 +1531,35 @@ func TestDaemonLivenessTimeout(t *testing.T) {
 			cfg := Config{Runner: RunnerConfig{LivenessTimeout: value}}
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "livenessTimeout") {
 				t.Fatalf("Validate() error = %v, want livenessTimeout error", err)
+			}
+		})
+	}
+}
+
+// #5397: the required-MCP settle budget is optional (zero keeps the harness
+// default), loads from instance.yaml, and fails closed when malformed.
+func TestRequiredMCPSettleTimeout(t *testing.T) {
+	if got, err := (RunnerConfig{}).RequiredMCPSettleTimeoutDuration(); err != nil || got != 0 {
+		t.Fatalf("unset RequiredMCPSettleTimeoutDuration = %s, %v; want 0", got, err)
+	}
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+runner:
+  requiredMCPSettleTimeout: 90s
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got, err := cfg.Runner.RequiredMCPSettleTimeoutDuration(); err != nil || got != 90*time.Second {
+		t.Fatalf("RequiredMCPSettleTimeoutDuration = %s, %v; want 90s", got, err)
+	}
+	for _, value := range []string{"not-a-duration", "0s", "-1m"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Config{Runner: RunnerConfig{RequiredMCPSettleTimeout: value}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runner.requiredMCPSettleTimeout") {
+				t.Fatalf("Validate() error = %v, want runner.requiredMCPSettleTimeout error", err)
 			}
 		})
 	}
@@ -4267,5 +4297,94 @@ func TestStorageHealthConfigValidate(t *testing.T) {
 				t.Fatalf("validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestLoadConfigEngineTLSReachesEffectiveConfig pins the #5289 plumbing: the
+// engine.tls block survives the env-override resolution LoadConfig applies,
+// so every dial site reading EffectiveEngineConfig sees it.
+func TestLoadConfigEngineTLSReachesEffectiveConfig(t *testing.T) {
+	t.Setenv(TemporalHostPortEnv, "temporal.internal:7233")
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  tls:
+    caFile: /etc/temporal/ca.pem
+    certFile: /etc/temporal/tls.crt
+    keyFile: /etc/temporal/tls.key
+    serverName: temporal-frontend
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := temporaldial.TLS{CAFile: "/etc/temporal/ca.pem", CertFile: "/etc/temporal/tls.crt", KeyFile: "/etc/temporal/tls.key", ServerName: "temporal-frontend"}
+	got := cfg.EffectiveEngineConfig()
+	if got.TLS == nil || *got.TLS != want {
+		t.Fatalf("EffectiveEngineConfig().TLS = %+v, want %+v", got.TLS, want)
+	}
+	if got.HostPort != "temporal.internal:7233" {
+		t.Fatalf("HostPort = %q, want the environment override", got.HostPort)
+	}
+}
+
+// TestLoadConfigEngineWorkerVersioningIsOptIn pins #5950: worker versioning is
+// off unless engine.workerVersioning says otherwise, and the opt-in survives
+// the resolution LoadConfig applies, which rebuilds the engine block.
+func TestLoadConfigEngineWorkerVersioningIsOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "omitted", yaml: "engine:\n  hostPort: localhost:7233\n", want: false},
+		{name: "opted in", yaml: "engine:\n  hostPort: localhost:7233\n  workerVersioning: true\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\n"+tc.yaml)
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			if got := cfg.EffectiveEngineConfig().WorkerVersioning; got != tc.want {
+				t.Fatalf("EffectiveEngineConfig().WorkerVersioning = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadConfigEngineHITLSurvivesResolution pins that engine.hitl reaches
+// EffectiveEngineConfig: LoadConfig rebuilds the engine block from defaults
+// and overrides, and that rebuild used to drop HITL, so an instance that
+// opted into the #3883 operator-hold protocol silently ran without it.
+func TestLoadConfigEngineHITLSurvivesResolution(t *testing.T) {
+	path := writeInstanceYAML(t, "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\nengine:\n  hostPort: localhost:7233\n  hitl:\n    enabled: true\n    window: 4h\n")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.EngineHITLEnabled() {
+		t.Fatal("EngineHITLEnabled() = false, want the engine.hitl opt-in to survive LoadConfig")
+	}
+	if got := cfg.EffectiveEngineConfig().HITL; got == nil || got.Window != "4h" {
+		t.Fatalf("EffectiveEngineConfig().HITL = %+v, want window 4h", got)
+	}
+}
+
+func TestLoadConfigEngineTLSRejectsCertWithoutKey(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+engine:
+  hostPort: localhost:7233
+  tls:
+    certFile: /etc/temporal/tls.crt
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "certFile and keyFile must be set together") {
+		t.Fatalf("LoadConfig error = %v, want the cert/key pairing refusal", err)
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/daemonclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -25,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/workspacerevision"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // dispatchexec.go is the mode-3 in-pod stage runtime (#3699): the process a
@@ -113,7 +115,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	heartbeat.Stop()
 	if cause := context.Cause(stageCtx); cause != nil {
 		outcome.Verdict = nil
-		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: &apiv1.ErrorInfo{Code: "execution_authority_ended", Message: cause.Error()}}
+		outcome.Result = apiv1.ResultEnvelope{Status: apiv1.ResultFailure, Summary: "stage execution authority ended", Error: journal.ErrorInfoFor("execution_authority_ended", cause, false)}
 	}
 	stopFence()
 	// Surrender authorizes pod disposal. Include the complete receipt set,
@@ -158,7 +160,7 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 			envelope = apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "stage committed work that could not be carried to the next stage",
-				Error:   &apiv1.ErrorInfo{Code: "workspace_delta_failed", Message: derr.Error()},
+				Error:   journal.ErrorInfoFor("workspace_delta_failed", derr, false),
 			}
 		} else {
 			delta = published
@@ -312,7 +314,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 	// plane and inject them exactly as the local executor does. Resolution
 	// happens HERE, at stage start, not at dispatch — so no secret ever rides
 	// a dispatch payload or a pod spec (DS9/DS10, #2931).
-	creds, repoAuthScheme, credErr := resolveStageCredentialsWithScheme(ctx)
+	resolved, credErr := resolveDeclaredStageCredentials(ctx)
 	if credErr != nil {
 		// Fail closed. A stage that declared capabilities and did not get them
 		// would run uncredentialed and fail far away, against the provider,
@@ -331,11 +333,11 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 	// The working directory IS the workspace (podspec stamps WorkingDir), so
 	// checking out into "." is what puts the stage's command inside the tree.
 	// The checkout may use a credential the stage itself never receives.
-	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
+	checkoutCreds, checkoutScheme, checkoutErr := podCheckoutCredentials(ctx, resolved.creds, resolved.scheme)
 	if checkoutErr != nil {
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
-	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+	if err := checkoutRepoWorkspace(ctx, ".", stderr, checkoutCreds, checkoutScheme); err != nil {
 		// A genuine syncBase base-merge conflict is classified exactly as the
 		// self arms classify it (#813, internal/engine/activities.go's
 		// RunDeterministic and internal/runner/run.go): a business failure
@@ -349,11 +351,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
-				Error: &apiv1.ErrorInfo{
-					Code:      runner.BaseSyncConflictErrorCode,
-					Message:   err.Error(),
-					Retryable: true,
-				},
+				Error:   journal.ErrorInfoFor(runner.BaseSyncConflictErrorCode, err, true),
 			}
 		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
@@ -371,7 +369,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 	// absent: it exists to provision the working tree, and exporting it here
 	// would hand repository authority to a stage that never declared it —
 	// the over-grant #3770 exists to avoid.
-	credEnv := stageCredentialEnv(creds, repoAuthScheme)
+	credEnv := resolved.env()
 	// A provider builtin writes its result to an IMPLICIT path when the stage
 	// declared no resultFile — the local executor derives it from the
 	// subcommand (shell.go), and so must the pod, or the builtin writes a file
@@ -449,10 +447,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 	// executor registers every token with a scrubber before the stage runs;
 	// without this a stage that echoes its token surrenders it into the
 	// journal, where it is durable and widely readable.
-	registry, scrubber := journal.DefaultScrubber()
-	for _, cred := range creds {
-		registry.Register([]byte(cred.Value))
-	}
+	scrubber := podStageScrubber(resolved.withGrant(checkoutCreds), checkoutScheme)
 	outputs := map[string]interface{}{}
 	scrubbedOut := scrubber.Scrub([]byte(capturedStdout.String()))
 	scrubbedErr := scrubber.Scrub([]byte(capturedStderr.String()))
@@ -553,7 +548,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) (outcome ap
 		message = runErr.Error()
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), capturedStderr.String())
+			message = fmt.Sprintf("exit code %d: %s", exitErr.ExitCode(), scrubbedErr)
 		}
 	}
 	if timedOut {
@@ -603,7 +598,7 @@ func applyDeclaredStageResultFile(result *apiv1.ResultEnvelope, path string, dat
 		}
 	case !os.IsNotExist(readErr):
 		result.Summary = "declared result file unreadable"
-		result.Error = &apiv1.ErrorInfo{Code: "result_file_unreadable", Message: fmt.Sprintf("read result file %q: %v", path, readErr)}
+		result.Error = journal.ErrorInfoFor("result_file_unreadable", fmt.Errorf("read result file %q: %w", path, readErr), false)
 	}
 	if result.Error != nil {
 		result.Status = apiv1.ResultFailure
@@ -785,18 +780,86 @@ func resolveStageCredentialsWithScheme(ctx context.Context) ([]dispatcher.Minted
 	return resolution.Credentials, resolution.RepoAuthScheme, err
 }
 
+// podStageCredentials is a deterministic pod stage's stage-start resolution:
+// its credentials, the stated Azure DevOps scheme, and — for a goobers-CLI
+// stage whose credentials expire — the credential-refresh grant the plane
+// minted for it (Goobers#6120).
+type podStageCredentials struct {
+	creds  []dispatcher.MintedCredential
+	scheme string
+	grant  *dispatcher.CredentialGrant
+}
+
+// resolveDeclaredStageCredentials is resolveStageCredentialsWithScheme for a
+// deterministic stage's command: a goobers-CLI child also asks for a
+// credential-refresh grant for this attempt. Any other child — the project's
+// own build, which never refreshes — asks for none.
+func resolveDeclaredStageCredentials(ctx context.Context) (podStageCredentials, error) {
+	capabilities, err := stageDeclaredCapabilities()
+	if err != nil || len(capabilities) == 0 {
+		return podStageCredentials{}, err
+	}
+	client, err := credentialPlaneClient(capabilities)
+	if err != nil {
+		return podStageCredentials{}, err
+	}
+	attempt, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv(dispatcher.EnvAttempt)), 10, 32)
+	resolution, err := client.Resolve(ctx, dispatcher.CredentialResolveRequest{
+		RunID: os.Getenv(dispatcher.EnvRunID), Stage: os.Getenv(dispatcher.EnvStage), Capabilities: capabilities,
+		Grant: os.Getenv(dispatcher.EnvStageIsCLI) == "true", Attempt: int32(attempt),
+		TimeoutSeconds: int64(dispatchStageTimeout() / time.Second),
+	})
+	if err != nil {
+		return podStageCredentials{}, err
+	}
+	return podStageCredentials{creds: resolution.Credentials, scheme: resolution.RepoAuthScheme, grant: resolution.Grant}, nil
+}
+
+// env renders the child's credential environment: stageCredentialEnv plus,
+// with a grant, the endpoint and grant its refreshing sources present. The
+// endpoint is this pod's own daemon API; the pod token never leaves this
+// process.
+func (c podStageCredentials) env() []string {
+	env := stageCredentialEnv(c.creds, c.scheme)
+	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
+	if c.grant == nil || c.grant.Token == "" || daemonAPI == "" {
+		return env
+	}
+	env = append(env, executor.CredentialEndpointEnvVar+"="+daemonAPI, executor.CredentialGrantEnvVar+"="+c.grant.Token)
+	if ca := os.Getenv(daemonclient.CAEnv); strings.TrimSpace(ca) != "" {
+		// The child dials the same daemon, so it trusts the same CA; a
+		// default-deny runner class would otherwise drop the variable.
+		env = append(env, daemonclient.CAEnv+"="+ca)
+	}
+	return env
+}
+
+// withGrant adds the grant to the values the stage's scrubber redacts.
+func (c podStageCredentials) withGrant(creds []dispatcher.MintedCredential) []dispatcher.MintedCredential {
+	if c.grant == nil || c.grant.Token == "" {
+		return creds
+	}
+	return append(append([]dispatcher.MintedCredential{}, creds...), dispatcher.MintedCredential{Capability: executor.CredentialGrantEnvVar, Value: c.grant.Token})
+}
+
 // stageCredentialEnv renders the stage's own resolved credentials as the
 // GOOBERS_CRED_<capability> variables the local executor sets, plus
 // GOOBERS_REPO_AUTH_SCHEME when the plane stated the scheme of an Azure DevOps
 // repository credential. The scheme is not a secret; it tells the stage which
 // Authorization header the delivered token belongs in. The rule matches the
 // local executor's (executor.ShellExecutor.appendRepoEnv): the scheme travels
-// only with at least one credential. cred.ExpiresAt is not exported yet; the
-// consumer that raises a clear "credential expired" error lands with ADO-N18.
+// only with at least one credential. A credential whose source states an
+// expiry also gets GOOBERS_CREDENTIAL_EXPIRES_<capability>, the rule the local
+// executor applies too (#5905): the stage cannot refresh the value, and the
+// expiry lets its Azure DevOps credential source say "expired" rather than
+// "revoked or without access" when Azure DevOps answers 401.
 func stageCredentialEnv(creds []dispatcher.MintedCredential, repoAuthScheme string) []string {
-	env := make([]string, 0, len(creds)+1)
+	env := make([]string, 0, 2*len(creds)+1)
 	for _, cred := range creds {
 		env = append(env, capability.CredentialEnvVar(cred.Capability)+"="+cred.Value)
+		if cred.ExpiresAt != nil && !cred.ExpiresAt.IsZero() {
+			env = append(env, capability.CredentialExpiryEnvVar(cred.Capability)+"="+capability.FormatCredentialExpiry(*cred.ExpiresAt))
+		}
 	}
 	if repoAuthScheme != "" && len(creds) > 0 {
 		env = append(env, executor.RepoAuthSchemeEnvVar+"="+repoAuthScheme)
@@ -830,20 +893,63 @@ func stageDeclaredCapabilities() ([]string, error) {
 // not gain repository authority merely by needing a working tree. Returns nil
 // when the stage already declares a repo-shaped capability — the checkout uses
 // that one, and minting a second would be pointless.
-func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+//
+// The scheme is the one the credential plane stated beside an Azure DevOps
+// repository credential ("" for every other provider), so the checkout sends
+// the credential in the header Azure DevOps expects for its kind.
+func resolveCheckoutCredential(ctx context.Context) ([]dispatcher.MintedCredential, string, error) {
 	capability := strings.TrimSpace(os.Getenv(dispatcher.EnvCheckoutCapability))
 	if capability == "" {
-		return nil, nil
+		return nil, "", nil
 	}
-	return resolveCapabilities(ctx, []string{capability})
+	client, err := credentialPlaneClient([]string{capability})
+	if err != nil {
+		return nil, "", err
+	}
+	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), []string{capability})
+	return resolution.Credentials, resolution.RepoAuthScheme, err
 }
 
-func resolveCapabilities(ctx context.Context, capabilities []string) ([]dispatcher.MintedCredential, error) {
-	client, err := credentialPlaneClient(capabilities)
+// podCheckoutCredentials is every credential a pod's workspace checkout may
+// authenticate with: the stage's own first, then the checkout-only credential
+// the dispatcher named (#3770). The scheme is the stated Azure DevOps scheme
+// of either resolution; both describe the same repository credential, so the
+// stage's wins only because it was resolved first.
+func podCheckoutCredentials(ctx context.Context, stageCreds []dispatcher.MintedCredential, stageScheme string) ([]dispatcher.MintedCredential, string, error) {
+	checkoutCreds, checkoutScheme, err := resolveCheckoutCredential(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return client.Resolve(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), capabilities)
+	scheme := stageScheme
+	if scheme == "" {
+		scheme = checkoutScheme
+	}
+	return append(append([]dispatcher.MintedCredential{}, stageCreds...), checkoutCreds...), scheme, nil
+}
+
+// podStageScrubber is the scrubber for everything a pod stage surrenders: its
+// streams, its result file, and the failure envelope's message. It registers
+// every credential this pod held — the stage's and the checkout's — and, for
+// an Azure DevOps repository credential, every header form it can be sent in
+// (providers.ADOCredential.ScrubForms): a bare base64 Basic value has no
+// "Basic " prefix for the pattern net to key on. The daemon's minting source
+// registers the same forms, so a self runner and a pod redact the same bytes.
+func podStageScrubber(creds []dispatcher.MintedCredential, repoAuthScheme string) journal.Scrubber {
+	registry, scrubber := journal.DefaultScrubber()
+	kind := ""
+	if strings.TrimSpace(repoAuthScheme) != "" {
+		kind, _ = adoCredentialKindForScheme(repoAuthScheme)
+	}
+	for _, cred := range creds {
+		registry.Register([]byte(cred.Value))
+		if kind == "" {
+			continue
+		}
+		for _, form := range (providers.ADOCredential{Kind: kind, Secret: cred.Value}).ScrubForms() {
+			registry.Register([]byte(form))
+		}
+	}
+	return scrubber
 }
 
 // credentialPlaneClient is the pod's client for the daemon's credential plane,
@@ -887,8 +993,10 @@ func stageArtifactMediaType(mediaTypes map[string]string, name string) string {
 	return "text/plain"
 }
 
-func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) []apiv1.ArtifactPointer {
-	return recordStageArtifactsTyped(ctx, stderr, streams, nil)
+func recordStageArtifactsWithTiming(
+	ctx context.Context, stderr io.Writer, streams map[string][]byte, timing artifactTiming,
+) []apiv1.ArtifactPointer {
+	return recordStageArtifactsTypedWithTiming(ctx, stderr, streams, nil, timing)
 }
 
 // recordStageArtifactsTyped is recordStageArtifacts with per-artifact media
@@ -899,6 +1007,13 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 func recordStageArtifactsTyped(
 	ctx context.Context, stderr io.Writer, streams map[string][]byte, mediaTypes map[string]string,
 ) []apiv1.ArtifactPointer {
+	return recordStageArtifactsTypedWithTiming(ctx, stderr, streams, mediaTypes, artifactTiming{})
+}
+
+func recordStageArtifactsTypedWithTiming(
+	ctx context.Context, stderr io.Writer, streams map[string][]byte, mediaTypes map[string]string, timing artifactTiming,
+) []apiv1.ArtifactPointer {
+	timing = timing.withDefaults()
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	runID := os.Getenv(dispatcher.EnvRunID)
 	stage := os.Getenv(dispatcher.EnvStage)
@@ -919,7 +1034,10 @@ func recordStageArtifactsTyped(
 	// nil when this pod has no blob endpoint (the pre-blob-plane deployment
 	// shape); one client for the whole batch.
 	blobs := podBlobClient()
-	putCtx, cancelPut := stageBlobWriteThroughContext(ctx, blobs)
+	if blobs != nil {
+		blobs.RetryPolicy = timing.blobRetryPolicy
+	}
+	putCtx, cancelPut := stageBlobWriteThroughContext(ctx, blobs, timing.blobWriteThroughBudget)
 	defer cancelPut()
 	ops := make([]livejournal.Op, 0, len(names))
 	pointers := make([]apiv1.ArtifactPointer, 0, len(names))
@@ -1003,7 +1121,8 @@ func recordStageArtifactsTyped(
 	emitter := &livejournal.HTTPEmitter{
 		BaseURL:       daemonAPI,
 		Token:         os.Getenv(dispatcher.EnvPodToken),
-		RetryDeadline: 3 * time.Second,
+		RetryDeadline: timing.journalRetryDeadline,
+		RetryPolicy:   timing.journalRetryPolicy,
 	}
 	if _, err := emitter.Emit(ctx, livejournal.EmitRequest{
 		RunID:  runID,
@@ -1071,10 +1190,27 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // span transcript by DefaultMaxTranscriptBytes) and far below anything that
 // would look like a hung pod.
 //
-// A var, not a const, so the CEILING ITSELF is testable in bounded time (#3805):
-// a hanging plane is the one failure mode this budget exists for, and a test
-// that had to wait the real 15s to observe it would never be written.
-var blobWriteThroughBudget = 15 * time.Second
+// Tests inject a shorter per-call budget through artifactTiming so observing a
+// hanging plane never requires mutating production timing shared by other
+// tests.
+const blobWriteThroughBudget = 15 * time.Second
+
+type artifactTiming struct {
+	blobWriteThroughBudget time.Duration
+	blobRetryPolicy        dispatcher.RetryPolicy
+	journalRetryDeadline   time.Duration
+	journalRetryPolicy     livejournal.RetryPolicy
+}
+
+func (t artifactTiming) withDefaults() artifactTiming {
+	if t.blobWriteThroughBudget <= 0 {
+		t.blobWriteThroughBudget = blobWriteThroughBudget
+	}
+	if t.journalRetryDeadline <= 0 {
+		t.journalRetryDeadline = 3 * time.Second
+	}
+	return t
+}
 
 // stageBlobWriteThroughContext returns the context the write-through PUTs run
 // under, and it is DELIBERATELY NOT THE STAGE'S.
@@ -1093,9 +1229,9 @@ var blobWriteThroughBudget = 15 * time.Second
 // context.WithoutCancel keeps the caller's values while dropping its
 // cancellation, so a deadline of our own is the only thing that can stop these
 // PUTs.
-func stageBlobWriteThroughContext(ctx context.Context, blobs *dispatcher.BlobClient) (context.Context, context.CancelFunc) {
+func stageBlobWriteThroughContext(ctx context.Context, blobs *dispatcher.BlobClient, budget time.Duration) (context.Context, context.CancelFunc) {
 	if blobs == nil {
 		return ctx, func() {}
 	}
-	return context.WithTimeout(context.WithoutCancel(ctx), blobWriteThroughBudget)
+	return context.WithTimeout(context.WithoutCancel(ctx), budget)
 }

@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -103,6 +104,171 @@ func (s *adoPATCredentialSource) Credential(ctx context.Context) (ADOCredential,
 	}
 	return ADOCredential{Kind: adoCredentialPAT, Secret: token, Username: s.username}, nil
 }
+
+// ErrADODeliveredCredentialRejected reports that Azure DevOps answered HTTP
+// 401 to a credential a stage was handed rather than one it can mint. The
+// daemon delivers a stage one value per declared capability, and the stage
+// has no way to fetch another, so the request fails instead of retrying.
+// The error that carries it also wraps the original 401 response, so
+// IsAuthenticationError still reports it as an authentication failure.
+var ErrADODeliveredCredentialRejected = errors.New("ado: delivered credential rejected")
+
+// adoDeliveredCredentialRejectedError is the error a request ends with when
+// Azure DevOps answers HTTP 401 to a delivered credential. It matches
+// ErrADODeliveredCredentialRejected and unwraps to the original response
+// error, whose text ("status 401: <body>") it keeps.
+//
+// expiresAt is the expiry the daemon delivered beside the value (zero when it
+// stated none) and at is when the 401 arrived. Together they tell an expired
+// credential from one that was revoked or lacks access (#5905); without an
+// expiry the error names all three.
+//
+// refreshed is true when the credential was re-resolved through the stage's
+// credential-refresh grant after a first 401 (Goobers#6120) and Azure DevOps
+// rejected the fresh value too.
+type adoDeliveredCredentialRejectedError struct {
+	label     string
+	cause     error
+	expiresAt time.Time
+	at        time.Time
+	refreshed bool
+}
+
+func (e *adoDeliveredCredentialRejectedError) Error() string {
+	return fmt.Sprintf("%s: Azure DevOps rejected the credential delivered for %s (%s); %s: %v", ErrADODeliveredCredentialRejected, e.label, e.reason(), e.recovery(), e.cause)
+}
+
+func (e *adoDeliveredCredentialRejectedError) recovery() string {
+	if e.refreshed {
+		return "it was re-resolved once through the stage's credential-refresh grant and the fresh value was rejected too"
+	}
+	return "a stage cannot refresh it without a credential-refresh grant"
+}
+
+func (e *adoDeliveredCredentialRejectedError) reason() string {
+	switch {
+	case e.expiresAt.IsZero():
+		return "expired, revoked, or without access to this resource"
+	case !e.at.Before(e.expiresAt):
+		return "expired at " + e.expiresAt.UTC().Format(time.RFC3339)
+	default:
+		return "revoked or without access to this resource; it does not expire until " + e.expiresAt.UTC().Format(time.RFC3339)
+	}
+}
+
+func (e *adoDeliveredCredentialRejectedError) Unwrap() []error {
+	return []error{ErrADODeliveredCredentialRejected, e.cause}
+}
+
+// adoDeliveredCredentialSource is the credential a stage process received
+// from the daemon for one declared capability: a fixed value in a fixed
+// authorization scheme. It cannot refresh and keeps no state: the provider
+// ends a request that receives HTTP 401 with
+// ErrADODeliveredCredentialRejected instead of resending the value, and later
+// requests still send it (a 401 on one endpoint, for example one the
+// credential has no scope for, does not fail the others).
+type adoDeliveredCredentialSource struct {
+	kind      string
+	secret    string
+	label     string
+	expiresAt time.Time
+}
+
+// NewADODeliveredCredentialSource returns the source for a credential a stage
+// was handed: secret is the delivered value, kind is ADOCredentialKindPAT
+// (sent as HTTP Basic) or ADOCredentialKindBearer (a Microsoft Entra token),
+// and label names where it came from (the capability it was delivered for) in
+// error messages. The value is never part of an error.
+//
+// A request that Azure DevOps answers with HTTP 401 fails with
+// ErrADODeliveredCredentialRejected wrapping the 401 response: the value
+// expired, was revoked or lacks access, and a stage cannot mint another one.
+func NewADODeliveredCredentialSource(kind, secret, label string) (ADOCredentialSource, error) {
+	return NewADODeliveredCredentialSourceWithExpiry(kind, secret, label, time.Time{})
+}
+
+// NewADODeliveredCredentialSourceWithExpiry is NewADODeliveredCredentialSource
+// for a value delivered with its stated expiry (zero when none was stated).
+// The expiry only sharpens the 401 error: at or past it the credential is
+// reported as expired, before it as revoked or without access (#5905).
+func NewADODeliveredCredentialSourceWithExpiry(kind, secret, label string, expiresAt time.Time) (ADOCredentialSource, error) {
+	switch kind {
+	case adoCredentialPAT, adoCredentialBearer:
+	default:
+		return nil, fmt.Errorf("unsupported ado credential kind %q", kind)
+	}
+	if strings.TrimSpace(secret) == "" {
+		return nil, fmt.Errorf("ado credential for %s is empty", label)
+	}
+	return &adoDeliveredCredentialSource{kind: kind, secret: secret, label: label, expiresAt: expiresAt}, nil
+}
+
+func (s *adoDeliveredCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
+	if err := ctx.Err(); err != nil {
+		return ADOCredential{}, err
+	}
+	return ADOCredential{Kind: s.kind, Secret: s.secret, ExpiresAt: s.expiresAt}, nil
+}
+
+func (s *adoDeliveredCredentialSource) deliveredLabel() string     { return s.label }
+func (s *adoDeliveredCredentialSource) deliveredExpiry() time.Time { return s.expiresAt }
+
+// deliveredADOCredential is a credential a stage was handed by the daemon,
+// static or refreshable: a 401 answered to it ends the request with
+// ErrADODeliveredCredentialRejected (after the one re-resolve a refreshable
+// source gets).
+type deliveredADOCredential interface {
+	deliveredLabel() string
+	deliveredExpiry() time.Time
+}
+
+// ADORefreshableToken is a delivered credential value that can re-resolve
+// itself (credentials.RefreshingToken satisfies it): Token re-resolves near
+// the stated expiry or after Invalidate, Expiry reports the current value's.
+type ADORefreshableToken interface {
+	Token(context.Context) (string, error)
+	Expiry() time.Time
+	Invalidate()
+}
+
+// adoRefreshingDeliveredCredentialSource is adoDeliveredCredentialSource for
+// a stage that holds a credential-refresh grant (Goobers#6120). It is a
+// refreshableADOCredentialSource, so the provider's existing 401 path
+// invalidates it and resends once; the resend carries a re-resolved value.
+type adoRefreshingDeliveredCredentialSource struct {
+	kind  string
+	label string
+	token ADORefreshableToken
+}
+
+// NewADORefreshingDeliveredCredentialSource returns the source for a
+// delivered credential backed by the stage's credential-refresh grant. kind
+// and label are as for NewADODeliveredCredentialSource.
+func NewADORefreshingDeliveredCredentialSource(kind, label string, token ADORefreshableToken) (ADOCredentialSource, error) {
+	switch kind {
+	case adoCredentialPAT, adoCredentialBearer:
+	default:
+		return nil, fmt.Errorf("unsupported ado credential kind %q", kind)
+	}
+	if token == nil {
+		return nil, fmt.Errorf("ado refreshing credential for %s has no token", label)
+	}
+	return &adoRefreshingDeliveredCredentialSource{kind: kind, label: label, token: token}, nil
+}
+
+func (s *adoRefreshingDeliveredCredentialSource) Credential(ctx context.Context) (ADOCredential, error) {
+	secret, err := s.token.Token(ctx)
+	if err != nil {
+		// Token fails only when a rejected value could not be re-resolved:
+		// the request still ends as the delivered credential's rejection.
+		return ADOCredential{}, fmt.Errorf("%w: the credential delivered for %s was rejected and could not be re-resolved: %w", ErrADODeliveredCredentialRejected, s.label, err)
+	}
+	return ADOCredential{Kind: s.kind, Secret: secret, ExpiresAt: s.token.Expiry()}, nil
+}
+
+func (s *adoRefreshingDeliveredCredentialSource) Invalidate()                { s.token.Invalidate() }
+func (s *adoRefreshingDeliveredCredentialSource) deliveredLabel() string     { return s.label }
+func (s *adoRefreshingDeliveredCredentialSource) deliveredExpiry() time.Time { return s.token.Expiry() }
 
 func (c ADOCredential) authorizationHeader() (string, error) {
 	switch c.Kind {
@@ -262,7 +428,9 @@ func (s *cachedADOBearerSource) Invalidate() {
 // NewAzureCLIADOCredentialSource reuses the current Azure CLI login. tenant is
 // optional; when set, az requests the token from that tenant explicitly.
 func NewAzureCLIADOCredentialSource(runner CommandRunner, tenant string) ADOCredentialSource {
-	runner = commandRunnerOrDefault(runner)
+	if runner == nil {
+		runner = azureCLIExecRunner{}
+	}
 	return newCachedADOBearerSource(time.Now, func(ctx context.Context) (adoBearerToken, error) {
 		args := []string{
 			"account", "get-access-token",
@@ -274,9 +442,7 @@ func NewAzureCLIADOCredentialSource(runner CommandRunner, tenant string) ADOCred
 		}
 		out, err := runner.Run(ctx, "az", args...)
 		if err != nil {
-			// Azure CLI output can contain credential material on partial
-			// failures, so never copy it into the returned error.
-			return adoBearerToken{}, fmt.Errorf("azure CLI get-access-token: %w", err)
+			return adoBearerToken{}, azureCLICommandError(ctx, err, out)
 		}
 		return parseAzureCLIAccessToken(out)
 	})

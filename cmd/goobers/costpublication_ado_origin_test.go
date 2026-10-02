@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
@@ -41,7 +40,7 @@ func TestCostPublicationADODelayedUsesRecordedOrigin(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(state.serve))
 			t.Cleanup(server.Close)
 			installADOStageProvider(t, repo, server)
-			t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+			setDeliveredADOStageCredentials(t)
 			t.Setenv(executor.InputEnvVar(executor.InputResultFile), filepath.Join(t.TempDir(), "reconcile-result.json"))
 			t.Setenv(executor.GaggleEnvVar, origin)
 			if err := recordPostMergeTimeout(root, repo, "359", time.Now().Add(-time.Minute)); err != nil {

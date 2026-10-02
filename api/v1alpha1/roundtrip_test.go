@@ -75,6 +75,34 @@ func TestGaggleRoundTrip(t *testing.T) {
 	roundTripStable(t, g)
 }
 
+// TestGaggleBacklogDoneStatesRoundTrip covers ADO-N32's optional
+// backlog.doneStates, and that DeepCopy does not alias its slices and map.
+func TestGaggleBacklogDoneStatesRoundTrip(t *testing.T) {
+	g := Gaggle{
+		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "Gaggle"},
+		ObjectMeta: metav1.ObjectMeta{Name: "example-ado"},
+		Spec: GaggleSpec{
+			Project: RepoRef{Provider: ProviderADO, Owner: "example-org", Project: "example-project", Name: "web"},
+			Backlog: BacklogRef{
+				Provider: ProviderADO, Project: "example-project",
+				DoneStates: &BacklogDoneStates{
+					Categories: []BacklogStateCategory{"Resolved", "Completed", "Removed"},
+					ByType:     map[string][]string{"Bug": {"Closed"}},
+				},
+			},
+			Isolation: GaggleIsolation{Namespace: "gaggle-example-ado"},
+		},
+	}
+	roundTripStable(t, g)
+
+	copied := g.DeepCopy()
+	copied.Spec.Backlog.DoneStates.Categories[0] = "Proposed"
+	copied.Spec.Backlog.DoneStates.ByType["Bug"][0] = "Resolved"
+	if g.Spec.Backlog.DoneStates.Categories[0] != "Resolved" || g.Spec.Backlog.DoneStates.ByType["Bug"][0] != "Closed" {
+		t.Fatalf("DeepCopy aliases doneStates: %+v", g.Spec.Backlog.DoneStates)
+	}
+}
+
 func TestGooberRoundTrip(t *testing.T) {
 	g := Goober{
 		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "Goober"},
@@ -128,12 +156,18 @@ func TestWorkflowRoundTrip(t *testing.T) {
 					Retry:           &RetryPolicy{MaxAttempts: 2, BackoffSeconds: 30},
 					TimeoutSeconds:  1800,
 					Limits:          &Limits{MaxTokens: 2_000_000, MaxCostUSD: 5},
-					ExpectedOutputs: []string{"pull-request"}, Next: "tests",
+					ExpectedOutputs: []string{"pull-request"},
+					ArtifactSlots: []ArtifactSlot{{
+						Name: "patch", MediaType: "text/x-patch", SchemaPath: "schemas/patch.schema.json", MaxSize: 1_048_576,
+					}},
+					Next: "tests",
 				},
 				{
 					Name: "tests", Type: TaskDeterministic,
 					Run:  &DeterministicRun{Command: []string{"make", "test"}, Env: map[string]string{"CI": "true"}, SyncBase: true},
-					Goal: "Run the test suite.", ContinueOnError: true, Next: "ci-gate",
+					Goal: "Run the test suite.", ContinueOnError: true,
+					ArtifactInputs: map[string]ArtifactInputRef{"candidatePatch": {From: "implement.patch"}},
+					Next:           "ci-gate",
 				},
 			},
 			Gates: []Gate{

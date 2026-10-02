@@ -98,7 +98,6 @@ func TestSurrenderPutClientRequiresIdentity(t *testing.T) {
 // #3809) — a transient refusal or a dropped connection must not discard an
 // already-finished attempt's result.
 func TestSurrenderPutClientRetriesTransientFailureThenSucceeds(t *testing.T) {
-	shrinkRetryDelays(t)
 	var attempts atomic.Int32
 	const failures = 3
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +110,7 @@ func TestSurrenderPutClientRetriesTransientFailureThenSucceeds(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: time.Second}
+	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	if err := client.Put(context.Background(), "run-1", "probe-builtin", 1, []byte(`{"result":{"status":"success"}}`)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -124,7 +123,6 @@ func TestSurrenderPutClientRetriesTransientFailureThenSucceeds(t *testing.T) {
 // retry deadline on an error no amount of patience fixes, and delays the
 // pod's exit code past the point the disposal gate is waiting on.
 func TestSurrenderPutClientDoesNotRetry4xx(t *testing.T) {
-	shrinkRetryDelays(t)
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
@@ -132,7 +130,7 @@ func TestSurrenderPutClientDoesNotRetry4xx(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: time.Second}
+	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	if err := client.Put(context.Background(), "run-1", "probe-builtin", 1, []byte(`{}`)); err == nil {
 		t.Fatal("expected an error on a 400 response")
 	}
@@ -145,13 +143,12 @@ func TestSurrenderPutClientDoesNotRetry4xx(t *testing.T) {
 // retry deadline is honoured, not merely documented — Put gives up and the
 // pod would exit 1 once it expires, rather than retrying forever.
 func TestSurrenderPutClientHonoursRetryDeadline(t *testing.T) {
-	shrinkRetryDelays(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(server.Close)
 
-	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: 30 * time.Millisecond}
+	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: 30 * time.Millisecond, RetryPolicy: fastRetryPolicy()}
 	start := time.Now()
 	err := client.Put(context.Background(), "run-1", "probe-builtin", 1, []byte(`{}`))
 	elapsed := time.Since(start)
@@ -169,7 +166,6 @@ func TestSurrenderPutClientHonoursRetryDeadline(t *testing.T) {
 // This is exactly the daemon-restart shape: goobers-api can process a
 // request and be killed before the ack reaches the pod.
 func TestSurrenderPutClientRetryAfterLostAckDoesNotDoubleApply(t *testing.T) {
-	shrinkRetryDelays(t)
 	dir, err := NewSurrenderDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSurrenderDir: %v", err)
@@ -216,7 +212,7 @@ func TestSurrenderPutClientRetryAfterLostAckDoesNotDoubleApply(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: time.Second}
+	client := &SurrenderPutClient{BaseURL: server.URL, RetryDeadline: time.Second, RetryPolicy: fastRetryPolicy()}
 	want := []byte(`{"result":{"status":"success"}}`)
 	if err := client.Put(context.Background(), "run-1", "probe-builtin", 1, want); err != nil {
 		t.Fatalf("Put: %v", err)

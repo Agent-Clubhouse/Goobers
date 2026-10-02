@@ -1,0 +1,29 @@
+{
+  "schema": "goobers.dev/support-triage/v1",
+  "disposition": "not_reproduced",
+  "confidence": "high",
+  "nextAction": "Keep as a support case unless a supported reproduction is provided.",
+  "evidence": [
+    {
+      "kind": "selector_decision",
+      "subject": "run-not-reproduced",
+      "detail": "not reproduced on clean environment"
+    }
+  ],
+  "case": {
+    "runIds": [
+      "run-not-reproduced"
+    ],
+    "workflows": [
+      "workflow"
+    ],
+    "gaggles": [
+      "gaggle"
+    ],
+    "fingerprint": "workflow"
+  },
+  "cluster": {
+    "fingerprint": "workflow",
+    "occurrenceCount": 1
+  }
+}

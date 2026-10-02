@@ -7,7 +7,6 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/workspacerevision"
@@ -35,23 +34,6 @@ func (r *Runner) recordParallelRunBranch(ws *walkState) error {
 	}
 	ws.branchRecorded = true
 	return nil
-}
-
-func (r *Runner) parallelBranchGateEvaluator(jr executionJournal, in StartInput, history []journal.Event, visitedStages map[string]bool) *gate.Evaluator {
-	return &gate.Evaluator{
-		Automated: r.cfg.Automated, Journal: jr,
-		MaxRepasses: int(in.RunControls.MaxRepasses),
-		Attempts:    gateRepassSeed(history),
-		IsNeedsHumanTarget: func(target string) bool {
-			task, ok := in.Machine.Task(target)
-			return ok && task.Inputs["status"] == "needs-human"
-		},
-		RepassAttempts:               targetRepassSeed(history),
-		InfrastructureAttempts:       gateInfrastructureSeed(history),
-		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(history),
-		IsReentry:                    func(target string) bool { return visitedStages[target] },
-		LastDiffDigest:               gateDiffSeed(history),
-	}
 }
 
 func parallelTerminalOutcome(outcomes []*parallelBranchResult) (string, *parallelTaskTerminal, *parallelGateTerminal) {

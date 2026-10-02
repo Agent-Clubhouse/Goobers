@@ -1,0 +1,25 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS TELEMETRY CONFIGURE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers telemetry configure \- configure customer-owned Application Insights export from a secret reference
+.SH SYNOPSIS
+\fBgoobers telemetry configure\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers telemetry configure (--connection-string-env NAME | --connection-string-file PATH | --connection-string-store STORE/SECRET | --disable) [--profile health|journal|standard|diagnostic] [--json] [path]
+
+Configure the customer-owned Application Insights destination in one atomic
+instance.yaml update. Only the reference is stored; this command never accepts
+or writes an inline connection-string value. The profile defaults to standard,
+and bounded 72-hour replay defaults on. Stop a live daemon before changing its
+configuration. --disable removes only the direct Azure destination.
+
+Exit codes: 0 = configured, 1 = refused/invalid config, 2 = usage or I/O error.
+.fi
+.SH EXAMPLES
+.nf
+goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance
+goobers telemetry configure --connection-string-file C:\eProgramData\eGoobers\esecrets\eapplication-insights.txt C:\eProgramData\eGoobers\einstance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

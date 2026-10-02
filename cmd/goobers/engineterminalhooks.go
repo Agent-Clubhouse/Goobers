@@ -117,6 +117,14 @@ func (h *engineTerminalHooks) run(ctx context.Context, out engineTerminalOutcome
 	if h == nil {
 		return
 	}
+	// Engine completions are observed by the daemon rather than by the local
+	// runner, so their dispatch context has no provider-write attribution. Load
+	// the durable identity before invoking any terminal hook: blocked parking
+	// and escalation comments are daemon-authored GitHub writes and must carry
+	// the run that caused them.
+	if attributed, err := attributionContextForRun(ctx, h.layout, out.RunID, out.Result.FinalState); err == nil {
+		ctx = attributed
+	}
 	h.fireExistingFix(ctx, out)
 	h.fireBlocked(ctx, out)
 	h.fireFailed(ctx, out)
@@ -277,6 +285,7 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 	}
 	cause := out.Result.FailureMessage
 	code := out.Result.FailureCode
+	var faultClass telemetry.ErrorClass
 	if out.Err != nil {
 		// A walk-level failure returns (RunResult{}, err): there is no status,
 		// no final state and no failure code, so the workflow's error IS the
@@ -288,13 +297,15 @@ func (h *engineTerminalHooks) fireFailed(ctx context.Context, out engineTerminal
 		if code == "" {
 			code = engineTerminalFailureCode(out.Err)
 		}
+		faultClass = engineTerminalFaultClass(out.Err)
 	}
 	if err := h.failed(ctx, runner.FailedOutcome{
-		RunID:   out.RunID,
-		RepoRef: h.repoRef,
-		Stage:   out.Result.FinalState,
-		Cause:   cause,
-		Code:    code,
+		RunID:      out.RunID,
+		RepoRef:    h.repoRef,
+		Stage:      out.Result.FinalState,
+		Cause:      cause,
+		Code:       code,
+		FaultClass: faultClass,
 	}); err != nil {
 		h.recordHookFailure(out, out.Result.FinalState, "failed_handling_failed", err)
 	}
@@ -313,6 +324,17 @@ func engineTerminalFailureCode(err error) string {
 		return telemetry.ErrCodeInfraFailure
 	}
 	return engineWalkFailureCode
+}
+
+// engineTerminalFaultClass is the engine arm's FailedOutcome.FaultClass
+// (#5638), from the same classifier as engineTerminalFailureCode, so the
+// failure streak sees the same explicit infra class from both drivers rather
+// than depending on this arm's choice of fallback code.
+func engineTerminalFaultClass(err error) telemetry.ErrorClass {
+	if class, classifyErr := engine.ClassifyDispatchFailure(err); classifyErr == nil && class == journal.AttemptInfra {
+		return telemetry.ErrorClassInfra
+	}
+	return ""
 }
 
 // itemID resolves the run's single driving backlog item: the one pinned at
@@ -367,7 +389,7 @@ func (h *engineTerminalHooks) recordHookFailure(out engineTerminalOutcome, stage
 		Type:   journal.EventError,
 		Stage:  stage,
 		Reason: "engine terminal hook failed",
-		Error:  &journal.ErrorDetail{Code: code, Message: err.Error()},
+		Error:  journal.ErrorDetailFor(code, err),
 		Runner: map[string]any{"driver": string(journal.DriverEngine)},
 	})
 }

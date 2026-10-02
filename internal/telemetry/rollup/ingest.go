@@ -86,7 +86,7 @@ func (db *DB) ingestRun(ctx context.Context, runDir string) error {
 // issue #246) hits a stale row's primary key and rolls back the whole
 // transaction. TestDeleteRunCoversEverySchemaTable guards against the next
 // table added to insertEvents/insertSpans silently repeating this gap.
-var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
+var perRunTables = []string{"runs", "run_goober_digests", "run_cost_attribution", "stage_attempts", "stage_usage", "agent_invocations", "stage_model_usage", "gate_verdicts", "gate_classifications", "provider_mutations", "landing_intents", "run_errors", "run_error_causes", "ci_check_failures", "spans", "span_events", "harness_transcripts", "harness_transcript_schemas", "span_business_status", "curation_actions", "ready_pool_samples", "ready_claims", "ready_label_transitions", "learning_episodes"}
 
 func deleteRun(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, table := range perRunTables {
@@ -275,12 +275,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				a.errorCode = ev.Error.Code
 				a.errorClass = class
 				if !standaloneErrorCodes[k][ev.Error.Code] {
-					if _, err := tx.ExecContext(ctx, `
-						INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
-						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-						runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), ev.Error.Code,
-						nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
-						return fmt.Errorf("rollup: insert run_error (stage.finished) seq %d: %w", ev.Seq, err)
+					if err := insertRunError(ctx, tx, runID, ev, ev.Error.Code, class, " (stage.finished)"); err != nil {
+						return err
 					}
 				}
 			}
@@ -290,12 +286,8 @@ func insertEvents(ctx context.Context, tx *sql.Tx, runID string, events []journa
 				continue
 			}
 			code, class := errorCodeAndClass(ev)
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), code,
-				nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
-				return fmt.Errorf("rollup: insert run_error seq %d: %w", ev.Seq, err)
+			if err := insertRunError(ctx, tx, runID, ev, code, class, ""); err != nil {
+				return err
 			}
 			if a := stages[eventStageKeys[i]]; a != nil {
 				a.errorCode = code
@@ -477,11 +469,11 @@ func costWorkItemIdentity(ev journalEvent) (string, string) {
 	return repository, itemURL
 }
 
-// Recovered failed/conflicting operations remain journal evidence, not
+// Recovered failed/conflicting/contended operations remain journal evidence, not
 // successful external mutations for attribution or KPI purposes.
 func recoveredMutationFailed(ev journalEvent) bool {
 	outcome, _ := ev.Runner["outcome"].(string)
-	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict")
+	return ev.Type == eventMutationRecovered && (outcome == "failure" || outcome == "conflict" || outcome == "contention")
 }
 
 type ciChecksArtifact struct {
@@ -666,6 +658,45 @@ func errorCodeAndClass(ev journalEvent) (code, class string) {
 		class = typed
 	}
 	return code, class
+}
+
+func insertRunError(ctx context.Context, tx *sql.Tx, runID string, ev journalEvent, code, class, source string) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_errors (run_id, seq, stage, attempt, code, error_class, message, occurred_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		runID, ev.Seq, nullIfEmpty(ev.Stage), nullIfZeroInt(ev.Attempt), code,
+		nullIfEmpty(class), nullIfEmpty(capMessage(telemetry.Redact(ev.Error.Message))), formatTime(ev.Time)); err != nil {
+		return fmt.Errorf("rollup: insert run_error%s seq %d: %w", source, ev.Seq, err)
+	}
+	if err := insertRunErrorCauses(ctx, tx, runID, ev.Seq, ev.Error.Causes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func insertRunErrorCauses(ctx context.Context, tx *sql.Tx, runID string, seq uint64, causes []journalErrorCause) error {
+	if len(causes) == 0 {
+		return nil
+	}
+	scrubbed := make([]journalErrorCause, 0, len(causes))
+	for _, cause := range causes {
+		scrubbed = append(scrubbed, journalErrorCause{
+			Code:    cause.Code,
+			Class:   cause.Class,
+			Message: capMessage(telemetry.Redact(cause.Message)),
+		})
+	}
+	data, err := json.Marshal(scrubbed)
+	if err != nil {
+		return fmt.Errorf("rollup: encode run_error causes seq %d: %w", seq, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_error_causes (run_id, seq, causes_json)
+		VALUES (?, ?, ?)`,
+		runID, seq, string(data)); err != nil {
+		return fmt.Errorf("rollup: insert run_error causes seq %d: %w", seq, err)
+	}
+	return nil
 }
 
 var curationAgentOutputKeys = []string{
@@ -927,6 +958,8 @@ func classifyGateEvaluation(runID string, ev journalEvent) (string, string, stri
 			}
 		case reason == "UNCHANGED_REPASS":
 			classification = "unchanged-repass"
+		case reason == "POLLING_BUDGET_EXHAUSTED":
+			classification = "polling"
 		default:
 			classification = "repass-escalation"
 			if reason == "" {

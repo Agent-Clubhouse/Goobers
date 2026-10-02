@@ -83,8 +83,11 @@ const connectHelp = "Usage: goobers connect <repository> [--token-env NAME] [--s
 	"like a pasted token is rejected.\n\n" +
 	"Use owner/repository for GitHub, or organization/project/repository (or a\n" +
 	"dev.azure.com URL) for Azure DevOps. Initialize ADO instances with\n" +
-	"--template=standard --provider=ado first. ADO defaults to GOOBERS_ADO_TOKEN\n" +
-	"and records PAT authentication. Connect never changes an existing provider.\n" +
+	"--template=standard --provider=ado first; init defaults the repository to\n" +
+	"azure-cli authentication. Connect records PAT authentication for ADO, reading\n" +
+	"GOOBERS_ADO_TOKEN by default. To keep azure-cli, workload-identity or\n" +
+	"managed-identity, edit the placeholders in instance.yaml and gaggle.yaml.\n" +
+	"Connect never changes an existing provider.\n" +
 	"See docs/guides/ado-authentication.md for other authentication modes.\n\n" +
 	"For GitHub, --seed derives two label sets from the connected gaggles and idempotently\n" +
 	"ensures every one of them exists on the repository: the backlog SELECTORS\n" +
@@ -632,7 +635,8 @@ func connectRewriteGaggleFile(path, owner, name string, replace bool) (bool, err
 		return false, fmt.Errorf("no spec mapping")
 	}
 
-	changed := false
+	targetDisplayName := owner + "/" + name
+	changed := connectRewriteGaggleDisplayName(spec, connectPlaceholderOwner+"/"+connectPlaceholderName, targetDisplayName, replace)
 	if project := yamlMapValue(spec, "project"); project != nil {
 		ownerNode := yamlMapValue(project, "owner")
 		nameNode := yamlMapValue(project, "name")
@@ -673,6 +677,21 @@ func connectRewriteGaggleFile(path, owner, name string, replace bool) (bool, err
 		return false, err
 	}
 	return true, nil
+}
+
+// connectRewriteGaggleDisplayName rewrites spec.displayName when it still
+// holds the repository-coordinate placeholder. Guided init (guidedGaggle in
+// internal/instance/guided.go) renders displayName from the placeholder
+// coordinates, so the embedded template defaults ("Example", "Quickstart",
+// "Starter") never reach a freshly initialized gaggle; any other value is a
+// user edit and is only replaced under --replace.
+func connectRewriteGaggleDisplayName(spec *yaml.Node, placeholder, target string, replace bool) bool {
+	node := yamlMapValue(spec, "displayName")
+	if node == nil || node.Value == target || (node.Value != placeholder && !replace) {
+		return false
+	}
+	node.Value = target
+	return true
 }
 
 // yamlMapValue returns the value node for key in a yaml.v3 mapping node.

@@ -313,12 +313,10 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 func adoptSpan(jr *journal.Run, src SpanSource, op JournalSpanOp) error {
 	data, err := fetchSpan(src, op.Ref.Digest)
 	if err != nil {
+		spanErr := fmt.Errorf("span %q (%s): %w", op.Name, op.Ref.Digest, err)
 		return jr.Append(journal.Event{
 			Type: journal.EventError, Stage: op.Stage, Attempt: op.Attempt, AttemptClass: op.Class,
-			Error: &journal.ErrorDetail{
-				Code:    spanUnavailableErrorCode,
-				Message: fmt.Sprintf("span %q (%s): %v", op.Name, op.Ref.Digest, err),
-			},
+			Error: journal.ErrorDetailFor(spanUnavailableErrorCode, spanErr),
 		})
 	}
 	_, err = jr.RecordSpanWithSchema(op.Stage, op.Name, op.DataSchema, data)

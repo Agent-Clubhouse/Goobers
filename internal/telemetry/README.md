@@ -83,6 +83,9 @@ pipeline is configured against:
 | `goobers.recovery.restore.failures` | counter (int64) | `{failure}` | cumulative, monotonic | `goobers.recovery.reason` (`archive_invalid`/`base_missing`/`import_failed`) |
 | `goobers.storage.free_bytes` | gauge (int64) | `By` | current value | none |
 | `goobers.storage.health.tier_changes` | counter (int64) | `{transition}` | cumulative, monotonic | `goobers.storage.tier` (`healthy`/`warning`/`admission-stopped`/`measurement-unavailable`) |
+| `goobers.queue.depth` | gauge (int64) | `{item}` | current value | `goobers.queue.kind` (`schedule`/`backlog`/`refill`), `goobers.os` |
+| `goobers.queue.oldest_age` | gauge (int64) | `s` | current value | `goobers.queue.kind` (`schedule`/`backlog`/`refill`), `goobers.os` |
+| `goobers.workers.available` | gauge (int64) | `{worker}` | current value | `goobers.os` |
 
 The collector-compatibility fixtures generated from the real OTLP metric
 reader/export path live at `internal/telemetry/testdata/metric_compatibility_fixtures.json`.

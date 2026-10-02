@@ -36,14 +36,12 @@ var stageProviderCapabilities = map[string][]providers.Capability{
 	// BlockedByCount != 0, so it is structurally unreachable for a backlog
 	// provider that never sets BlockedByCount, and requiring the capability
 	// unconditionally would refuse a config over a codepath it can never
-	// actually exercise. For a provider that does set it but does not
-	// declare backlog.blockers — ADO populates BlockedByCount from
-	// Dependency-Reverse relations (providers/ado_workitems.go) without
-	// implementing the checker, tracked by #2061 — the Dispatcher already
-	// fails closed per item: the item is excluded with a warning instead of
-	// being wrongly claimed, which is CONF-5's intended outcome and a
-	// strictly narrower refusal than rejecting the whole config at
-	// preflight. (An earlier version of this table required it
+	// actually exercise. GitHub, Gitea and ADO (ADO-N32) all declare it
+	// today. For any provider that sets BlockedByCount but does not declare
+	// backlog.blockers, the Dispatcher fails closed per item: the item is
+	// excluded with a warning instead of being wrongly claimed, which is
+	// CONF-5's intended outcome and a strictly narrower refusal than
+	// rejecting the whole config at preflight. (An earlier version of this table required it
 	// unconditionally, reasoning it would "start refusing correctly" once
 	// the call became Dispatcher-gated — that was wrong: gating belongs on
 	// whether BlockedByCount is ever non-zero for a provider, not on

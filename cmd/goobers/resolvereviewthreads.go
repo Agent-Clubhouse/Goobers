@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -78,12 +77,7 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	provider, err := remediationStageProvider(root, repo, token, false)
+	provider, err := reviewThreadStageSurface[reviewThreadResolver](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: construct remediation provider: %v\n", err)
 		return 1
@@ -116,9 +110,9 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failProviderStage(stderr, "read review threads before reply", err, resolveReviewThreadsResultFile)
 		}
-		if !reviewThreadHasReply(snapshot, response.ThreadID, body) {
+		if !reviewThreadHasReply(snapshot, runID, response.ThreadID) {
 			if _, err := mutator.ReplyPullRequestReviewThread(ctx, providers.PullRequestReviewThreadReply{
-				Repository: repo, PullID: brief.SelectedNumber, CommentID: thread.CommentID, Body: body,
+				Repository: repo, PullID: brief.SelectedNumber, ThreadID: thread.ID, CommentID: thread.CommentID, Body: body,
 			}); err != nil {
 				return failProviderStage(stderr, fmt.Sprintf("reply to review thread %s", response.ThreadID), err, resolveReviewThreadsResultFile)
 			}
@@ -126,7 +120,7 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return failProviderStage(stderr, "verify review-thread reply", err, resolveReviewThreadsResultFile)
 			}
-			if !reviewThreadHasReply(snapshot, response.ThreadID, body) {
+			if !reviewThreadHasReply(snapshot, runID, response.ThreadID) {
 				pf(stderr, "error: reply to review thread %s is not visible after publication\n", response.ThreadID)
 				return 1
 			}
@@ -289,8 +283,19 @@ func failThreadResponseValidation(validationErr error, stderr io.Writer) int {
 	return 1
 }
 
+// reviewThreadResponseMarker is the hidden line that identifies this run's
+// reply to one review thread. The stage recognises its own reply by it, both
+// before posting (idempotent re-runs) and after (the visibility check).
+func reviewThreadResponseMarker(runID, threadID string) string {
+	return fmt.Sprintf("%s%s:%s -->", reviewThreadResponseMarkerPrefix, runID, threadID)
+}
+
+// reviewThreadResponseMarkerPrefix opens every reviewThreadResponseMarker.
+// pr-comment-watch reads it to recognise a Goobers-written thread reply.
+const reviewThreadResponseMarkerPrefix = "<!-- goobers:review-thread-response:"
+
 func renderReviewThreadReply(runID, headSHA string, response reviewThreadDisposition) string {
-	marker := fmt.Sprintf("<!-- goobers:review-thread-response:%s:%s -->", runID, response.ThreadID)
+	marker := reviewThreadResponseMarker(runID, response.ThreadID)
 	switch response.Disposition {
 	case "addressed":
 		return fmt.Sprintf("Addressed in `%s`.\n\n%s\n\n%s", headSHA, response.Detail, marker)
@@ -301,9 +306,23 @@ func renderReviewThreadReply(runID, headSHA string, response reviewThreadDisposi
 	}
 }
 
-func reviewThreadHasReply(snapshot providers.PullRequestReviewThreads, threadID, body string) bool {
+// reviewThreadHasReply reports whether threadID already carries this run's
+// reply. It matches the response marker on a line of its own rather than the
+// whole body: providers append run attribution to the text they post, so the
+// body read back does not equal the body the stage rendered.
+func reviewThreadHasReply(snapshot providers.PullRequestReviewThreads, runID, threadID string) bool {
+	marker := reviewThreadResponseMarker(runID, threadID)
 	for _, comment := range snapshot.InlineComments {
-		if comment.ThreadID == threadID && comment.Body == body {
+		if comment.ThreadID == threadID && bodyHasMarkerLine(comment.Body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func bodyHasMarkerLine(body, marker string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == marker {
 			return true
 		}
 	}

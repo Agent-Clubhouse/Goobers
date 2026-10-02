@@ -296,6 +296,11 @@ var commands = map[string]Command{
 		mutatesClaimLedger: true,
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so issue close-out fails at runtime"),
+			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
+			// pull-request lookup on the code provider uses a pull-request
+			// credential, because github:issues:write belongs to the backlog.
+			optional(capability.GitHubPRWrite, "optional in a GitHub/Gitea backlog for Azure DevOps code: without a pull-request credential the close-out comment does not link the pull request"),
+			optional(capability.ProviderPRWrite, "optional in a GitHub/Gitea backlog for Azure DevOps code: without a pull-request credential the close-out comment does not link the pull request"),
 		},
 	},
 	"merge-pr": {
@@ -303,13 +308,13 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so pull-request merge fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so merged-branch cleanup fails at runtime"),
-			// Azure DevOps land: the ADO branch resolves ado:pr:complete (the ADO
-			// counterpart to github:pr:merge) via providerToken to preserve the
-			// decider≠executor grant isolation. Marked optional — it is
-			// provider-conditional (used only when repo.Provider is ADO), so it
-			// must NOT be auto-derived onto GitHub merge-pr tasks; the ADO
-			// merge-review workflow declares it explicitly on this stage instead.
-			optional(capability.ADOPRComplete, "the capability-scoped credential is not injected, so Azure DevOps pull-request completion fails at runtime"),
+			// github:pr:merge is the landing authority on every provider in DSL
+			// 2.0, Azure DevOps included (docs/design/ado-parity-dsl-2-0.md
+			// §3.3). ado:pr:complete is accepted and never required: when a
+			// stage declares it, the ADO land completes with its credential
+			// instead. Either way it is a merge grant, never a PR-write grant
+			// (SEC-053). Optional, so it is never auto-derived onto a task.
+			optional(capability.ADOPRComplete, "optional on Azure DevOps: when declared, pull-request completion uses this credential instead of github:pr:merge's"),
 		},
 	},
 	"merge-queue-poll": {
@@ -318,13 +323,20 @@ var commands = map[string]Command{
 			required(capability.GitHubPRMerge, "the capability-scoped credential is not injected, so merge-queue polling fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so eviction remediation fails at runtime"),
 			required(capability.GitHubBranchDelete, "the capability-scoped credential is not injected, so queue-merged branch cleanup fails at runtime"),
-			optional(capability.ADOPRComplete, "the capability-scoped credential is not injected, so Azure DevOps queue completion fails at runtime"),
+			// Same landing rule as merge-pr (ado-parity-dsl-2-0.md §3.3).
+			optional(capability.ADOPRComplete, "optional on Azure DevOps: when declared, queue completion is watched with this credential instead of github:pr:merge's"),
 		},
 	},
 	"open-pr": {
 		ResultFile: "pr-result.json",
 		Capabilities: []CapabilityUse{
 			required(capability.ProviderPRWrite, "the configured provider's capability-scoped credential is not available, so pull-request creation fails at runtime"),
+			optional(capability.ADOWorkItemsWrite, "optional on Azure DevOps: when declared, the pull request is also linked natively to its claimed work item; without it the pull request opens with a text reference only"),
+			// Topology (b) (docs/design/ado-parity-dsl-2-0.md §7.2): the
+			// claimed-issue staleness re-check reads the backlog provider with
+			// an issue credential; without one it is skipped with a warning.
+			optional(capability.GitHubIssuesRead, "optional in a GitHub/Gitea backlog for Azure DevOps code: without it the claimed-issue staleness re-check is skipped"),
+			optional(capability.GitHubIssuesWrite, "optional in a GitHub/Gitea backlog for Azure DevOps code: accepted for the claimed-issue staleness re-check when github:issues:read is not declared"),
 		},
 	},
 	"post-merge": {
@@ -338,6 +350,10 @@ var commands = map[string]Command{
 		ResultFile: "comment-watch-result.json",
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so PR comment watching fails at runtime"),
+			// On Azure DevOps the routing labels are native pull-request labels
+			// on the project provider, which github:pr:write authorizes there
+			// (docs/design/ado-parity-dsl-2-0.md §3.1).
+			optional(capability.GitHubPRWrite, "required on Azure DevOps: without it the pull-request comment read and label routing fail at runtime; unused on GitHub and Gitea"),
 		},
 	},
 	"pr-select": {
@@ -582,6 +598,20 @@ func ResultFile(command string) (string, bool) {
 		return "", false
 	}
 	return entry.ResultFile, true
+}
+
+// IsDefaultResultFile reports whether name is one of the exact default result
+// file names owned by a guarded provider-stage command.
+func IsDefaultResultFile(name string) bool {
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return false
+	}
+	for _, entry := range commands {
+		if entry.ResultFile == name {
+			return true
+		}
+	}
+	return false
 }
 
 // effectiveSupport resolves c's result-file support: an explicit

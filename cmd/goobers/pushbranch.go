@@ -14,11 +14,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
@@ -30,9 +28,10 @@ import (
 // diagnosis invisible from the journal.
 //
 // Unlike open-pr/backlog-query/issue-close-out (which talk to a provider's
-// REST API), push-branch's target is the worktree's own git remote. GitHub uses
-// the runner-injected repo:push token. ADO matches that remote against
-// instance.yaml and resolves its configured PAT or Entra credential source.
+// REST API), push-branch's target is the worktree's own git remote. Every
+// provider pushes with the runner-injected repo:push token; an Azure DevOps
+// origin must be the routed repository and gets the ADO header in the scheme
+// the daemon delivered beside the token (pushBranchEnvironment).
 const pushBranchHelp = "Usage: goobers push-branch [path]\n\n" +
 	"Push the worktree's checked-out branch to origin, authenticated via the\n" +
 	"configured repository credential — never the host's ambient git\n" +
@@ -65,7 +64,7 @@ func runPushBranch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	env, err := pushBranchEnvironment(dir)
+	env, err := pushBranchAuth(dir)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -127,10 +126,10 @@ const pushRaceAttempts = 3
 // apply cleanly aborts and surfaces the original push rejection: conflict
 // resolution is agentic work, not a push-layer concern. Any non-race failure
 // (auth, missing remote) fails immediately, exactly as before.
-func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) error {
+func pushBranchWithRetry(dir, branch string, auth pushBranchAuthEnv, stderr io.Writer) error {
 	var err error
 	for attempt := 1; ; attempt++ {
-		err = gitPushBranch(dir, branch, env)
+		err = gitPushBranchWithAuth(dir, branch, auth)
 		if err == nil {
 			return nil
 		}
@@ -148,11 +147,50 @@ func pushBranchWithRetry(dir, branch string, env []string, stderr io.Writer) err
 			return err
 		}
 		pf(stderr, "warning: push attempt %d rejected as a ref race; rebasing onto the remote tip and retrying: %v\n", attempt, err)
-		if rebaseErr := rebaseOntoRemoteBranch(dir, branch, env); rebaseErr != nil {
+		if rebaseErr := rebaseOntoRemoteBranchWithAuth(dir, branch, auth); rebaseErr != nil {
 			pf(stderr, "warning: rebase onto remote %q failed (%v); surfacing the original push rejection\n", branch, rebaseErr)
 			return err
 		}
 	}
+}
+
+// pushBranchAuthEnv yields the credentialed git environment for ONE git
+// invocation. push-branch resolves it per push, fetch and rebase rather than
+// once at command start, so a delivered credential that expires during a
+// long push-rebase-retry loop is refreshed (Goobers#6120). A nil value means
+// no credential (the environment the git helpers compose on their own).
+type pushBranchAuthEnv func() ([]string, error)
+
+func (auth pushBranchAuthEnv) env() ([]string, error) {
+	if auth == nil {
+		return nil, nil
+	}
+	return auth()
+}
+
+func gitPushBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+	env, err := auth.env()
+	if err != nil {
+		return err
+	}
+	return gitPushBranch(dir, branch, env)
+}
+
+func rebaseOntoRemoteBranchWithAuth(dir, branch string, auth pushBranchAuthEnv) error {
+	env, err := auth.env()
+	if err != nil {
+		return err
+	}
+	return rebaseOntoRemoteBranch(dir, branch, env)
+}
+
+// pushBranchAuth is pushBranchEnvironment resolved per invocation: the origin
+// checks run once, the credential is read each time it is used.
+func pushBranchAuth(dir string) (pushBranchAuthEnv, error) {
+	if _, err := pushBranchEnvironment(dir); err != nil {
+		return nil, err
+	}
+	return func() ([]string, error) { return pushBranchEnvironment(dir) }, nil
 }
 
 // isPushRaceError classifies a push failure as a ref race worth a
@@ -506,33 +544,34 @@ func (e *policyProtectedPushError) Error() string {
 
 func (e *policyProtectedPushError) Unwrap() error { return e.err }
 
+// pushBranchEnvironment is the Git environment push-branch pushes with: the
+// repo:push credential the stage was delivered, sent the way origin's forge
+// expects it. An Azure DevOps origin gets the ADO header in the scheme the
+// daemon stated (docs/design/ado-parity-dsl-2-0.md §4.1), and only when origin
+// is the repository the stage was routed to — the credential never goes to a
+// remote it was not minted for. Nothing here reads a credential from
+// instance.yaml.
 func pushBranchEnvironment(dir string) ([]string, error) {
+	routed, isRouted := pushBranchRoutedRepo()
 	root := os.Getenv("GOOBERS_INSTANCE_ROOT")
-	if root != "" {
-		cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
-		if err != nil {
-			return nil, fmt.Errorf("load instance for repository authentication: %w", err)
-		}
-		remote, err := originURL(dir)
+	if isRouted || root != "" {
+		remote, matched, err := pushBranchADOOrigin(dir, routed, isRouted, root)
 		if err != nil {
 			return nil, err
 		}
-		if repo, ok := adoRepoForOrigin(cfg, remote); ok {
-			// One-shot command scope: push-branch runs as its own process, so
-			// it builds its own store registry (#683) for a store-backed PAT.
-			stores, err := secretstore.NewRegistry(cfg.SecretStores)
-			if err != nil {
-				return nil, err
-			}
-			source, err := adoauth.Source(repo, nil, stores)
+		if matched {
+			gitAuth, err := adoRemediationGitAuthEnvironment()
 			if err != nil {
 				return nil, err
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 			defer cancel()
-			return providers.ADOGitAuthEnvironment(ctx, source, nil, remote)
+			return gitAuth(ctx, remote)
 		}
 		if isADORemote(remote) {
+			if isRouted {
+				return nil, adoOriginRoutedMismatchError(remote, routed)
+			}
 			return nil, adoOriginMismatchError(remote)
 		}
 	}
@@ -543,6 +582,44 @@ func pushBranchEnvironment(dir string) ([]string, error) {
 	return gitAuthEnv(token), nil
 }
 
+// pushBranchRoutedRepo is the repository the scheduler routed this stage to
+// (the GOOBERS_REPO_* variables the executor and the pod dispatcher stamp), and
+// whether one was stamped at all.
+func pushBranchRoutedRepo() (providers.RepositoryRef, bool) {
+	routed := providers.RepositoryRef{
+		Provider: providers.ProviderKind(os.Getenv(executor.RepoProviderEnvVar)),
+		Owner:    os.Getenv(executor.RepoOwnerEnvVar),
+		Project:  os.Getenv(executor.RepoProjectEnvVar),
+		Name:     os.Getenv(executor.RepoNameEnvVar),
+	}
+	return routed, routed.Provider != ""
+}
+
+// pushBranchADOOrigin reads origin and reports whether it is the Azure DevOps
+// repository this push may authenticate to: the routed repository when the
+// stage was routed, otherwise (a standalone invocation that names an instance
+// root) one of the instance's configured ADO repositories. The config is read
+// for addressing only; the credential always comes from GOOBERS_CRED_REPO_PUSH.
+func pushBranchADOOrigin(dir string, routed providers.RepositoryRef, isRouted bool, root string) (string, bool, error) {
+	if isRouted {
+		remote, err := originURL(dir)
+		if err != nil {
+			return "", false, err
+		}
+		return remote, routed.Provider == providers.ProviderADO && adoOriginMatches(remote, routed.Owner, routed.Project, routed.Name), nil
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return "", false, fmt.Errorf("load instance for repository authentication: %w", err)
+	}
+	remote, err := originURL(dir)
+	if err != nil {
+		return "", false, err
+	}
+	_, ok := adoRepoForOrigin(cfg, remote)
+	return remote, ok, nil
+}
+
 // adoRepoForOrigin matches the origin remote against the instance's
 // configured ADO repositories via providers.ParseADORemoteURL (ADO-N35)
 // rather than a single canonical-string comparison, so legacy
@@ -551,15 +628,12 @@ func pushBranchEnvironment(dir string) ([]string, error) {
 // dev.azure.com remote for the same repository would. The configured
 // Owner/Project/Name are compared as-is (case-insensitively) against the
 // origin's decoded coordinates; no name character class is imposed. An origin
-// that embeds a password never matches: push-branch would otherwise place it
+// that embeds a password, or a username other than the organization or "git"
+// (which may be a token), never matches: push-branch would otherwise place it
 // on argv (`git push <url>`) and in the scoped extraheader config key, so it
 // fails closed instead.
 func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bool) {
-	if cfg == nil || remoteHasPassword(remote) {
-		return instance.RepoRef{}, false
-	}
-	org, project, name, ok := providers.ParseADORemoteURL(remote)
-	if !ok {
+	if cfg == nil {
 		return instance.RepoRef{}, false
 	}
 	for i := range cfg.Repos {
@@ -567,11 +641,27 @@ func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bo
 		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
-		if strings.EqualFold(repo.Owner, org) && strings.EqualFold(repo.Project, project) && strings.EqualFold(repo.Name, name) {
+		if adoOriginMatches(remote, repo.Owner, repo.Project, repo.Name) {
 			return repo, true
 		}
 	}
 	return instance.RepoRef{}, false
+}
+
+// adoOriginMatches reports whether remote addresses the Azure DevOps
+// repository organization/project/name, by the rules adoRepoForOrigin
+// documents: any spelling providers.ParseADORemoteURL accepts, compared
+// case-insensitively, and never an origin whose userinfo may carry a
+// credential (remoteEmbedsCredential).
+func adoOriginMatches(remote, organization, project, name string) bool {
+	if remoteEmbedsCredential(remote) {
+		return false
+	}
+	org, remoteProject, remoteName, ok := providers.ParseADORemoteURL(remote)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(organization, org) && strings.EqualFold(project, remoteProject) && strings.EqualFold(name, remoteName)
 }
 
 // remoteHasPassword reports whether a URL-form remote embeds a password in
@@ -585,22 +675,70 @@ func remoteHasPassword(remote string) bool {
 	return set
 }
 
+// remoteHasCredentialUsername reports whether a URL-form Azure DevOps remote
+// carries something other than an identity in its userinfo username. The
+// forms Azure DevOps itself produces name the organization
+// (https://<org>@dev.azure.com/..., ssh://<org>@vs-ssh.visualstudio.com/...)
+// or "git" (ssh://git@ssh.dev.azure.com/...); any other username may be a
+// token (https://<PAT>@dev.azure.com/...), which push-branch would otherwise
+// place on argv and in the scoped extraheader config key.
+func remoteHasCredentialUsername(remote string) bool {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	username := parsed.User.Username()
+	if username == "" || username == "git" {
+		return false
+	}
+	org, _, _, ok := providers.ParseADORemoteURL(remote)
+	return !ok || !strings.EqualFold(username, org)
+}
+
+// remoteEmbedsCredential reports whether a remote's userinfo may carry a
+// credential: a password, or a username that is not an identity
+// (remoteHasCredentialUsername). Such an origin is never routed.
+func remoteEmbedsCredential(remote string) bool {
+	return remoteHasPassword(remote) || remoteHasCredentialUsername(remote)
+}
+
 // adoOriginMismatchError is push-branch's fail-closed error for an ADO origin
 // adoRepoForOrigin did not route. The remote is rendered with any embedded
-// password masked, and a password-bearing origin gets its own explanation.
+// credential masked, and a credential-bearing origin gets its own explanation.
 func adoOriginMismatchError(remote string) error {
 	if remoteHasPassword(remote) {
 		return fmt.Errorf("ADO origin %q embeds a password; remove it from the remote and configure the repository's auth instead", redactedRemote(remote))
 	}
+	if remoteHasCredentialUsername(remote) {
+		return fmt.Errorf("ADO origin %q embeds a credential in its username; remove it from the remote (only the organization name or \"git\" is accepted there) and configure the repository's auth instead", redactedRemote(remote))
+	}
 	return fmt.Errorf("ADO origin %q does not match any configured repository", redactedRemote(remote))
 }
 
+// adoOriginRoutedMismatchError is adoOriginMismatchError for a routed stage:
+// the origin is not the repository the stage was routed to, so the stage's
+// repo:push credential is not sent to it.
+func adoOriginRoutedMismatchError(remote string, routed providers.RepositoryRef) error {
+	if remoteEmbedsCredential(remote) {
+		return adoOriginMismatchError(remote)
+	}
+	return fmt.Errorf("ADO origin %q does not match the routed repository %s/%s/%s", redactedRemote(remote), routed.Owner, routed.Project, routed.Name)
+}
+
 // redactedRemote renders a remote for an error message with any embedded
-// password masked.
+// password masked, and a username that may be a credential
+// (remoteHasCredentialUsername) masked too.
 func redactedRemote(remote string) string {
 	parsed, err := url.Parse(remote)
 	if err != nil {
 		return remote
+	}
+	if remoteHasCredentialUsername(remote) {
+		if _, set := parsed.User.Password(); set {
+			parsed.User = url.UserPassword("xxxxx", "xxxxx")
+		} else {
+			parsed.User = url.User("xxxxx")
+		}
 	}
 	return parsed.Redacted()
 }
@@ -623,7 +761,13 @@ func isADORemote(remote string) bool {
 // `ps`) and is never written to any file. GitHub's HTTPS token convention is
 // basic auth with the token as the password and any non-empty username;
 // "x-access-token" is GitHub's own documented placeholder for that username.
+//
+// It is built per git invocation: a repo:push value the stage holds a
+// credential-refresh grant for is refreshed here when it nears its stated
+// expiry (Goobers#6120), so a long remediation does not push with the value
+// it was handed at stage start.
 func gitAuthEnv(token string) []string {
+	token = currentStageToken(capability.RepoPush, token)
 	auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	return append(os.Environ(),
 		"GIT_CONFIG_COUNT=1",

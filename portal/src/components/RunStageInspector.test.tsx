@@ -215,15 +215,39 @@ describe("run stage inspector", () => {
         number: 1,
         status: "success",
         outputs: { verdict: "approve" },
-        artifacts: [{ name: "rationale.md", digest: "sha256:abc", size: 42, mediaType: "text/markdown", recordedSeq: 2 }],
+        artifacts: [
+          {
+            name: "rationale.md",
+            digest: "sha256:abc",
+            size: 42,
+            mediaType: "text/markdown",
+            recordedSeq: 2,
+          },
+          {
+            name: "final-report.md",
+            digest: "sha256:def",
+            size: 84,
+            mediaType: "text/markdown",
+            recordedSeq: 3,
+          },
+        ],
       }),
     ]);
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     expect(await screen.findByText("success")).toBeInTheDocument();
-    expect(screen.getByText("approve")).toBeInTheDocument();
+    const outputs = screen.getByRole("table", { name: "Attempt outputs" });
+    expect(within(outputs).getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+    expect(within(outputs).getByRole("columnheader", { name: "Value" })).toBeInTheDocument();
+    expect(within(outputs).getByRole("rowheader", { name: "verdict" })).toBeInTheDocument();
+    expect(within(outputs).getByText("approve")).toBeInTheDocument();
     expect(screen.getByText("rationale.md")).toBeInTheDocument();
     expect(screen.getByText("sha256:abc")).toBeInTheDocument();
+    expect(
+      [...document.querySelectorAll(".artifact-list .artifact-row-heading strong")].map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["final-report.md", "rationale.md"]);
     expect(client.listStageAttempts).toHaveBeenCalledWith("run-1", "review", expect.anything());
   });
 
@@ -232,6 +256,32 @@ describe("run stage inspector", () => {
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     expect(await screen.findByText("auto", { selector: "code" })).toBeInTheDocument();
+  });
+
+  it("renders structured attempt error causes when present", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "failure",
+        error: {
+          code: "review_failed",
+          message: "review gate failed: review requested changes",
+          causes: [
+            { message: "review gate failed" },
+            { code: "review_rejected", message: "review requested changes" },
+          ],
+        },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("review_failed: review gate failed: review requested changes"))
+      .toBeInTheDocument();
+    const chain = screen.getByRole("list", { name: "Attempt failure cause chain" });
+    expect(within(chain).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "review gate failed",
+      "review requested changes",
+    ]);
   });
 
   it("omits the model line when telemetry has not indexed one", async () => {
@@ -330,6 +380,7 @@ describe("run stage inspector", () => {
       const visits = await screen.findByRole("group", { name: "Stage visits" });
       const visit1 = within(visits).getByRole("button", { name: "Visit 1" });
       const visit2 = within(visits).getByRole("button", { name: "Visit 2" });
+      expect(within(visits).getAllByRole("button")).toEqual([visit2, visit1]);
       expect(visit2).toHaveAttribute("aria-pressed", "true");
 
       let retries = screen.getByRole("group", { name: "Visit 2 attempts" });
@@ -339,6 +390,7 @@ describe("run stage inspector", () => {
       const infraRetry = within(retries).getByRole("button", {
         name: "Visit 2 · Attempt 2 (infra retry)",
       });
+      expect(within(retries).getAllByRole("button")).toEqual([infraRetry, repassAttempt]);
       expect(infraRetry).toHaveAttribute("aria-pressed", "true");
       expect(screen.getByText("2m 0s")).toBeInTheDocument();
       expect(screen.getByText("success")).toBeInTheDocument();

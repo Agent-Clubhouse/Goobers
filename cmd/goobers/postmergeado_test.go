@@ -44,7 +44,15 @@ func (f *fakeADOWorkItemCloser) UpdateWorkItem(_ context.Context, req providers.
 
 func (f *fakeADOWorkItemCloser) UpdateWorkItemStatus(_ context.Context, req providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error) {
 	f.statusReqs = append(f.statusReqs, req)
-	return providers.WorkItem{}, nil
+	f.item.State = "closed"
+	labels := make([]string, 0, len(f.item.Labels)+1)
+	for _, label := range f.item.Labels {
+		if !strings.HasPrefix(label, "goobers/status:") {
+			labels = append(labels, label)
+		}
+	}
+	f.item.Labels = append(labels, "goobers/status:"+string(req.Status))
+	return f.item, nil
 }
 
 func (f *fakeADOWorkItemCloser) AuthenticatedIdentity(context.Context) (providers.ADOIdentity, error) {
@@ -115,6 +123,9 @@ func TestPerformPostMergeADOClosesReferencedWorkItem(t *testing.T) {
 	if want := "Merged in pull request #359."; closer.commentReqs[0].Comment != want {
 		t.Errorf("comment = %q, want %q", closer.commentReqs[0].Comment, want)
 	}
+	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
+		t.Errorf("removed labels = %q, want terminal ADO lifecycle labels", got)
+	}
 	if closer.commentReqs[0].Repository.Project != backlogRef.Project {
 		t.Errorf("comment targeted project %q, want backlog project %q", closer.commentReqs[0].Repository.Project, backlogRef.Project)
 	}
@@ -148,6 +159,61 @@ func TestPerformPostMergeADOIdempotentWhenAlreadyDone(t *testing.T) {
 	}
 	if len(closer.commentReqs) != 0 {
 		t.Errorf("dedupe comment writes = %d, want 0 (comment already present)", len(closer.commentReqs))
+	}
+}
+
+func TestPerformPostMergeADOReconcilesAutoCompletedWorkItemLabels(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item: providers.WorkItem{
+			ID:     "1456",
+			State:  "closed",
+			Labels: []string{"goobers/status:in-review", providers.LabelClaimed, providers.LabelReady},
+		},
+		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
+	}
+
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.statusReqs) != 1 || closer.statusReqs[0].Status != providers.WorkItemStatusDone {
+		t.Fatalf("status requests = %+v, want done reconciliation", closer.statusReqs)
+	}
+	if len(closer.commentReqs) != 1 {
+		t.Fatalf("cleanup writes = %d, want 1", len(closer.commentReqs))
+	}
+	if closer.commentReqs[0].Comment != "" {
+		t.Fatalf("cleanup comment = %q, want no duplicate comment", closer.commentReqs[0].Comment)
+	}
+	if got := strings.Join(closer.commentReqs[0].RemoveLabels, ","); got != "goobers:claimed,goobers:ready" {
+		t.Fatalf("removed labels = %q, want terminal ADO lifecycle labels", got)
+	}
+}
+
+func TestPerformPostMergeADORemovesStaleStatusAlongsideDone(t *testing.T) {
+	closer := &fakeADOWorkItemCloser{
+		item: providers.WorkItem{
+			ID:     "1456",
+			State:  "closed",
+			Labels: []string{"goobers/status:done", "goobers/status:in-review", "goobers:approved"},
+		},
+		comments: []providers.Comment{{Body: "Merged in pull request #359."}},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(context.Background(), closer, nil, backlogRef, poll, "359", "", providers.RepositoryRef{}, &stdout, &stderr)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.statusReqs) != 1 || closer.statusReqs[0].Status != providers.WorkItemStatusDone {
+		t.Fatalf("status requests = %+v, want done reconciliation", closer.statusReqs)
+	}
+	if got := strings.Join(closer.item.Labels, ","); got != "goobers:approved,goobers/status:done" {
+		t.Fatalf("labels = %q, want only the terminal status label", got)
 	}
 }
 
@@ -240,12 +306,49 @@ func TestPerformPostMergeADOCostTrustsPRThreadsByIdentityGUID(t *testing.T) {
 	}
 }
 
+// TestPerformPostMergeADOCostTrustsWorkItemsByIdentityGUID is the work-item
+// counterpart: a work-item comment from another identity that shares this
+// identity's display name cannot plant a receipt (nor, by reusing a run id,
+// replace a real one), while a receipt this identity wrote still counts.
+func TestPerformPostMergeADOCostTrustsWorkItemsByIdentityGUID(t *testing.T) {
+	ownPR := costComment(t, "goobers", "merge-review", "run-review", 30, 2_000_000_000)
+	ownPR.AuthorID = "self-guid"
+	ownItem := costComment(t, "goobers", "implementation", "run-impl", 10, 3_000_000_000)
+	ownItem.AuthorID = "self-guid"
+	planted := costComment(t, "goobers", "implementation", "run-planted", 99, 50_000_000_000)
+	planted.AuthorID = "other-guid"
+	replacing := costComment(t, "goobers", "implementation", "run-impl", 999, 40_000_000_000)
+	replacing.AuthorID = "other-guid"
+	closer := &fakeADOWorkItemCloser{
+		item:       providers.WorkItem{ID: "1456", State: "open"},
+		comments:   []providers.Comment{ownItem, planted, replacing},
+		prComments: []providers.Comment{ownPR},
+	}
+	poll := providers.PullRequestPollResult{Number: 359, Body: "Fixes #1456"}
+	var stdout, stderr bytes.Buffer
+
+	errs := performPostMergeADOWithPRComments(
+		context.Background(), closer, closer, backlogRef, poll, "359", "",
+		providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "code", Name: "repo"},
+		&stdout, &stderr,
+	)
+	if len(errs) != 0 {
+		t.Fatalf("errs = %v, want none", errs)
+	}
+	if len(closer.prCommentReqs) != 1 {
+		t.Fatalf("PR summary comments = %q, want exactly one", closer.prCommentReqs)
+	}
+	if !strings.Contains(closer.prCommentReqs[0], "**5.00 AIC**") {
+		t.Fatalf("PR summary = %q, want 5.00 AIC: work-item receipts from a same-named identity must not be counted", closer.prCommentReqs[0])
+	}
+}
+
 // TestCloseReferencedWorkItemsADOMultipleAndError proves each distinct closing
 // ref is marked done, and a per-item failure is collected (not fatal to the
 // others) — mirroring closeReferencedIssues' best-effort posture.
 func TestCloseReferencedWorkItemsADOSurfacesPerItemError(t *testing.T) {
 	closer := &erroringCloser{failID: "1456"}
-	closed, errs := closeReferencedWorkItemsADOWithComments(context.Background(), closer, backlogRef, "Fixes #1456 and closes #1457", map[string]string{
+	closed, errs := closeReferencedWorkItemsADOWithComments(context.Background(), closer, backlogRef, closingIssueNumbers("Fixes #1456 and closes #1457"), map[string]string{
 		"1456": "Merged in pull request #359.",
 		"1457": "Merged in pull request #359.",
 	})

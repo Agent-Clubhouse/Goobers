@@ -86,8 +86,12 @@ func TestEveryReadRouteHasABudgetExceptTheStream(t *testing.T) {
 			// shared CostBlob transfer-bound ceiling (apicontract.BlobBudget).
 			// Recovery delivery likewise uses a dedicated bounded archive
 			// transport, not the portal's 10s JSON client.
+			// Defect aggregates are read by nomination stage pods through a
+			// dedicated five-minute client, never by the Portal's JSON client.
 			if route.ID != apicontract.RouteRunArtifact && route.ID != apicontract.RouteRunTranscript &&
-				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteBlobGet &&
+				route.ID != apicontract.RouteCredentialResolve && route.ID != apicontract.RouteCredentialRefresh &&
+				route.ID != apicontract.RouteBlobGet &&
+				route.ID != apicontract.RouteTelemetryDefectAggregates &&
 				route.ID != apicontract.RouteRunRecovery &&
 				route.ID != apicontract.RouteRunRecoveryPublish &&
 				budget >= clientAbortBackstop {

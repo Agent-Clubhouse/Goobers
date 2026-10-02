@@ -91,6 +91,7 @@ var inputSchemas = map[string][]Input{
 		{Name: "maxItems", Type: InputInteger, State: InputCurrent},
 		{Name: "parkLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "reconcileMetadata", Type: InputBoolean, State: InputCurrent},
+		{Name: "reconcileScanLimit", Type: InputInteger, State: InputCurrent},
 		{Name: "requireLabels", Type: InputStringList, State: InputCurrent},
 		{Name: "respectAssignee", Type: InputBoolean, State: InputCurrent},
 		{Name: "resultFile", Type: InputPath, State: InputCurrent},
@@ -132,7 +133,11 @@ var inputSchemas = map[string][]Input{
 	),
 	"gather-ci-failures":       schema(pathsIn("resultFile"), durationsIn("timeout")),
 	"gather-implement-context": schema(stringsIn("base"), integersIn("maxHotFiles"), pathsIn("resultFile"), durationsIn("timeout")),
-	"gather-issue-context":     schema(pathsIn("resultFile"), durationsIn("timeout")),
+	"gather-issue-context": schema(
+		stringsIn("parentCrossProject"), stringListsIn("parentFields", "parentIncludeTypes"),
+		booleansIn("parentTraversal"), integersIn("parentMaxDepth", "parentMaxFieldBytes", "parentMaxItems"),
+		pathsIn("resultFile"), durationsIn("timeout"),
+	),
 	"gather-pr-context": schema(
 		stringsIn("base", "headPrefix", "minSeverity", "remediationAlgorithm", "selectedNumber"),
 		pathsIn("resultFile"), durationsIn("timeout"),
@@ -157,14 +162,14 @@ var inputSchemas = map[string][]Input{
 		integersIn("pullNumber"), durationsIn("pollIntervalSeconds", "pollMaxIntervalSeconds", "pollTimeoutSeconds", "timeout"), pathsIn("resultFile"),
 	),
 	"open-pr": schema(
-		stringsIn("base", "body", "configRoot", "head", "title", "tutorConfigSource"),
+		stringsIn("base", "body", "configRoot", "head", "itemID", "itemTitle", "title", "tutorConfigSource"),
 		booleansIn("confineToActionRoots", "confineToConfigRoot", "confineToDocsRoots", "recordLiveVerification", "runIdFooter"),
 		stringListsIn("actionRoots", "docsRoots"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"post-merge": schema(integersIn("pullNumber"), pathsIn("resultFile"), durationsIn("timeout")),
 	"pr-claim":   schema(durationsIn("leaseDuration", "timeout"), pathsIn("resultFile")),
 	"pr-comment-watch": schema(
-		stringsIn("base"), integersIn("maxPullRequests"),
+		stringsIn("base", "identityMode"), integersIn("maxPullRequests"),
 		stringListsIn("excludeAuthors", "excludeLabels", "headPrefixes", "unparkLabels"),
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
@@ -198,7 +203,7 @@ var inputSchemas = map[string][]Input{
 		pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"report-pr-status": schema(
-		stringsIn("description", "pull-request-url", "state", "statusGenre", "statusName", "targetUrl"),
+		stringsIn("description", "headSha", "pull-request-url", "state", "statusGenre", "statusName", "targetUrl"),
 		integersIn("prNumber"), pathsIn("resultFile"), durationsIn("timeout"),
 	),
 	"resolve-review-threads": schema(pathsIn("resultFile"), durationsIn("timeout")),

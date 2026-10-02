@@ -35,6 +35,14 @@ credentials:
       env: GOOBERS_GITHUB_REVIEW_TOKEN
 telemetry:
   enabled: true
+  # Optional direct trace, committed-journal, and whitelisted diagnostic export
+  # to a customer-owned Application Insights resource. The connection string is
+  # always indirect; never put its resolved value in this file. See
+  # docs/guides/azure-monitor.md.
+  # collectionProfile: standard # health | journal | standard | diagnostic
+  # azureMonitor:
+  #   connectionString:
+  #     env: APPLICATIONINSIGHTS_CONNECTION_STRING
   # Automatic journal + rollup pruning is opt-out: it is ON by default even
   # with this block absent, at BOTH a 90-day window AND a 500-run cap — a
   # run is pruned once EITHER bound is exceeded (they are OR'd, not AND'd),

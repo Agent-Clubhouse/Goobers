@@ -929,11 +929,24 @@ writer. Today the coupling is the opposite:
 Steps 1–6 are what list visibility waits on; step 7 never delays it. Today they
 share one transaction, so list visibility waits on span files.
 
+The daemon resolves the existing journal roots at each intake pass rather than
+pinning them at startup. For local-runner instances, live configuration reload
+can therefore add a gaggle without making its runs invisible until a restart.
+Discovery includes retained
+gaggle roots and the legacy root, not only the currently configured gaggles, so
+removing a gaggle from the manifest does not hide its history. Directory
+discovery errors leave intake pending and are reported by the projector.
+
 ### 6.3 Repair: a rate bound, plus a projection floor
 
 Repair does not need to be cheap; it needs to be **rate-limited and always making
 progress**.
 
+- Repair refreshes the same journal-root discovery at each bounded step. Before
+  removing a row whose journal was not found, it refreshes once more after
+  selecting reverse candidates: a new root may have been projected since the
+  step began. Discovery errors stop the step instead of treating an unreadable
+  root inventory as proof that journals were deleted.
 - A **fixed I/O budget** (configured entries/second), walking continuously and
   cycling, with a durable forward cursor **per runs root** and a round-robin
   scheduler cursor. The budget is global: adding a gaggle divides progress

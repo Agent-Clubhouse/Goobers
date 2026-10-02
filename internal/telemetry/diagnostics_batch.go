@@ -83,21 +83,40 @@ func (d *DiagnosticExporter) exportBatch(batch diagnosticBatch) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, diagnosticExportTimeout)
-	response, err := d.client.Export(ctx, batch.request)
+	delivered := batch.count
+	if d.azure != nil {
+		for _, resourceLogs := range batch.request.ResourceLogs {
+			for _, scopeLogs := range resourceLogs.ScopeLogs {
+				if err := d.azure.exportDiagnosticRecords(ctx, resourceLogs.Resource, scopeLogs.LogRecords); err != nil {
+					d.failures.Add(1)
+					delivered = 0
+					break
+				}
+			}
+		}
+	}
+	if d.client != nil {
+		response, err := d.client.Export(ctx, batch.request)
+		if err != nil {
+			d.failures.Add(1)
+			delivered = 0
+		} else {
+			rejected := response.GetPartialSuccess().GetRejectedLogRecords()
+			if rejected < 0 || uint64(rejected) > batch.count {
+				// A malformed acknowledgement cannot establish any delivery.
+				rejected = int64(batch.count)
+			}
+			if rejected > 0 {
+				d.failures.Add(1)
+			}
+			if accepted := batch.count - uint64(rejected); accepted < delivered {
+				delivered = accepted
+			}
+		}
+	}
 	cancel()
-	if err != nil {
-		d.failures.Add(1)
-		d.dropped.Add(batch.count)
-		return
+	if delivered < batch.count {
+		d.dropped.Add(batch.count - delivered)
 	}
-	rejected := response.GetPartialSuccess().GetRejectedLogRecords()
-	if rejected < 0 || uint64(rejected) > batch.count {
-		// A malformed acknowledgement cannot establish any delivery.
-		rejected = int64(batch.count)
-	}
-	if rejected > 0 {
-		d.failures.Add(1)
-		d.dropped.Add(uint64(rejected))
-	}
-	d.delivered.Add(batch.count - uint64(rejected))
+	d.delivered.Add(delivered)
 }

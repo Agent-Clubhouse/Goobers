@@ -219,7 +219,13 @@ that retry policy. A clean daemon exit, including the drain requested by
 The task launches a hidden, non-interactive Windows PowerShell host that waits
 for `__service-supervise` and propagates its exit code. This keeps Task Scheduler
 attached to the supervisor for stop, restart, and failure-retry behavior without
-opening a persistent console or Windows Terminal tab.
+opening a persistent console or Windows Terminal tab. Because that console is
+hidden, the supervisor writes its own and the daemon's output, timestamped and
+redacted, to `daemon.log` in the instance root. When the supervised daemon
+fails, `task-start` and `task-status` report the last recorded startup or
+supervisor failure from that log alongside the task's last result. Tasks
+installed by an earlier release do not capture this output; run
+`task-uninstall` and `task-install` to pick it up.
 
 The task runs the stable `__service-supervise` host, so self-update activation,
 health monitoring, and rollback use the same mutable binary layout as the other
@@ -309,11 +315,12 @@ Two deliberate limits on what the record claims:
   `processUptimeSeconds` is this process's lifetime, not cumulative healthy
   availability across restarts.
 
-Export of this record to an OpenTelemetry collector is **not** implemented. It
-needs the separately configurable operational-diagnostics stream tracked by
-#5243, whose whole point is that configuring a workflow-journal destination must
-not silently start exporting machine and account labels. The record is local
-evidence until that lands.
+When tenant telemetry is explicitly enabled, this record is exported on the
+operational-diagnostics stream as `goobers.service.health`. The `health`,
+`journal`, and default `standard` profiles omit `machineName` and `accountName`;
+the `diagnostic` profile includes them only after that separate consent choice.
+With no tenant telemetry destination configured, the record remains local
+evidence. See [Azure Monitor tenant telemetry](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/azure-monitor.md).
 
 ## Dirty restart journal event
 

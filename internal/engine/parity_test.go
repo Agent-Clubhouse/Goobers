@@ -353,6 +353,12 @@ const (
 	// is already spent — or a fresh one — and the divergence reappears on the
 	// next interruption rather than on the next release.
 	rowInfraRepassBudgetResumed parityRow = "E11-infra-repass-budget-resumed"
+	// rowTimeoutPollingBudget is the timeout-polling half added by #5558: a
+	// pending-only CI poll sequence may exceed the policy maxRepasses budget
+	// without spending it, but is still bounded by the gate's own
+	// maxTimeoutPolls policy and journals POLLING_BUDGET_EXHAUSTED when that
+	// dedicated budget is spent.
+	rowTimeoutPollingBudget parityRow = "E11-timeout-polling-budget"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows

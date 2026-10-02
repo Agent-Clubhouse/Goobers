@@ -16,6 +16,8 @@ const (
 	AttrWorkflow                      = "goobers.workflow"
 	AttrWorkflowVersion               = "goobers.workflow.version"
 	AttrWorkflowDigest                = "goobers.workflow.digest"
+	AttrConfigGeneration              = "goobers.config.generation"
+	AttrTriggerKind                   = "goobers.trigger.kind"
 	AttrGooberDigest                  = "goobers.goober.digest"
 	AttrGoober                        = "goobers.goober"
 	AttrModel                         = "goobers.model"
@@ -72,6 +74,8 @@ func AllAttributes() []Attribute {
 		AttrWorkflow,
 		AttrWorkflowVersion,
 		AttrWorkflowDigest,
+		AttrConfigGeneration,
+		AttrTriggerKind,
 		AttrGooberDigest,
 		AttrGoober,
 		AttrModel,

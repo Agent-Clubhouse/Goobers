@@ -113,16 +113,9 @@ func runConfigShow(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render the config as JSON instead of YAML")
 	fs.Usage = helpUsage(stderr, "config show")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	l := instance.NewLayout(root)
@@ -169,16 +162,9 @@ func runConfigMaterialize(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("config materialize", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "config materialize")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	layout := instance.NewLayout(root)
@@ -221,16 +207,9 @@ func runConfigDiff(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	against := fs.String("against", "reference-workflows", "canonical config source root")
 	fs.Usage = helpUsage(stderr, "config diff")
-	if err := fs.Parse(args); err != nil {
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
 		return 2
-	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
-	}
-	root := "."
-	if fs.NArg() == 1 {
-		root = fs.Arg(0)
 	}
 
 	layout := instance.NewLayout(root)

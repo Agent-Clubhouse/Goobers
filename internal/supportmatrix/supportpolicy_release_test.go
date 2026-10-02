@@ -643,13 +643,19 @@ func runSupportCommand(t *testing.T, directory, name string, args ...string) str
 	t.Helper()
 	command := exec.Command(name, args...)
 	if name == "git" {
+		// The checkout can be mounted with a different owner in CI. Keep
+		// testgit's host-config isolation while trusting only this checkout,
+		// which the tests themselves need to inspect.
+		checkout := supportCheckoutRoot(t)
 		command = testgit.Command(args...)
 		command.Env = append(command.Env,
-			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_COUNT=3",
 			"GIT_CONFIG_KEY_0=core.autocrlf",
 			"GIT_CONFIG_VALUE_0=false",
 			"GIT_CONFIG_KEY_1=core.safecrlf",
 			"GIT_CONFIG_VALUE_1=false",
+			"GIT_CONFIG_KEY_2=safe.directory",
+			"GIT_CONFIG_VALUE_2="+checkout,
 		)
 	}
 	command.Dir = directory
@@ -658,4 +664,24 @@ func runSupportCommand(t *testing.T, directory, name string, args ...string) str
 		t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return string(output)
+}
+
+func supportCheckoutRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("cannot find checkout .git directory")
+		}
+		dir = parent
+	}
 }

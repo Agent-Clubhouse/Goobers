@@ -26,6 +26,9 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"carrying the nominated label, excludes anything flake-watch already\n" +
 	"fingerprints, enforces maxPerRun, and creates issues with a retry-safe\n" +
 	"idempotency key.\n\n" +
+	"file-issues files GitHub issues only. It refuses any other repository\n" +
+	"provider (Azure DevOps, Gitea) with an error, so work nomination is not\n" +
+	"available there.\n\n" +
 	"goobers:approved (the SEC-047 trust label) is applied on one condition\n" +
 	"only (decision 004): the nomination's evidence names a finding — a go\n" +
 	"vet diagnostic, a golangci-lint issue (linter + file + line) or a go\n" +
@@ -187,11 +190,11 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	if !findingsSummary.Available {
 		pf(stderr, "warning: %s; no nomination can be approved\n", findingsSummary.Reason)
 	}
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
+	env, ok := resolveProviderStageEnv(root, stderr)
+	if !ok {
 		return 1
 	}
+	repo := env.repoRef()
 	if repo.Provider != providers.ProviderGitHub {
 		pf(stderr, "error: file-issues does not support repository provider %q\n", repo.Provider)
 		return 1

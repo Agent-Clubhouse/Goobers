@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -190,6 +191,58 @@ func TestUpdateBehindPRHonorsDispatchTarget(t *testing.T) {
 	})
 }
 
+func TestUpdateBehindPRTargetBypassesBroadHeadPrefix(t *testing.T) {
+	mergeable := true
+	state := &updateBehindServer{
+		mergeable:  &mergeable,
+		labels:     []string{needsRemediationLabel},
+		targetHead: "backprop/fix-reviewed-pr",
+	}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+	t.Setenv(executor.TriggerRefEnvVar, remediationTriggerRefFor(55))
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "update-behind-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.exactCalls < 1 || state.updateCalls != 1 || !strings.Contains(string(data), `"selectedNumber":"55"`) {
+		t.Fatalf("exactCalls = %d, updateCalls = %d, stdout = %q, result = %s", state.exactCalls, state.updateCalls, stdout, data)
+	}
+}
+
+func TestUpdateBehindPRTargetPreservesBroadEligibilityContext(t *testing.T) {
+	mergeable := true
+	state := &updateBehindServer{
+		mergeable:               &mergeable,
+		includeEarlierCandidate: true,
+		targetHead:              "backprop/fix-reviewed-pr",
+	}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+	t.Setenv(executor.TriggerRefEnvVar, remediationTriggerRefFor(55))
+
+	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "targeted PR #55 does not need remediation this cycle") {
+		t.Fatalf("stdout = %q, want uncrowned behind-base target refused in a multi-PR queue", stdout)
+	}
+	if state.updateCalls != 0 {
+		t.Fatalf("update-branch calls = %d, want 0", state.updateCalls)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "update-behind-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"noWork":true`) {
+		t.Fatalf("result = %s, want explicit no-work", data)
+	}
+}
+
 // TestUpdateBehindPRRefusesUnselectableTarget covers the fail-closed half:
 // a targeted PR that is ineligible, or absent from the lane's scope entirely,
 // ends the run as an explicit no-work naming the reason. It must never fall
@@ -283,7 +336,28 @@ func (s *targetedRemediationServer) start(t *testing.T) *httptest.Server {
 	mux.HandleFunc(prefix+"/git/ref/", func(w http.ResponseWriter, _ *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"object": map[string]string{"sha": s.baseSHA}})
 	})
-	mux.HandleFunc(prefix+"/pulls", func(w http.ResponseWriter, _ *http.Request) {
+	pullsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != prefix+"/pulls" {
+			number, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, prefix+"/pulls/"))
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			for _, pr := range s.prs {
+				if pr.number == number {
+					writeFakeJSON(w, map[string]interface{}{
+						"number": pr.number, "state": "open", "draft": false,
+						"html_url": fmt.Sprintf("https://github.test/%s/%s/pull/%d", s.owner, s.repo, pr.number),
+						"head":     map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
+						"base":     map[string]interface{}{"ref": s.base, "sha": s.baseSHA},
+						"labels":   labelsJSON(pr.labels),
+					})
+					return
+				}
+			}
+			http.NotFound(w, r)
+			return
+		}
 		payload := make([]map[string]interface{}, 0, len(s.prs))
 		for _, pr := range s.prs {
 			payload = append(payload, map[string]interface{}{
@@ -295,7 +369,9 @@ func (s *targetedRemediationServer) start(t *testing.T) *httptest.Server {
 			})
 		}
 		writeFakeJSON(w, payload)
-	})
+	}
+	mux.HandleFunc(prefix+"/pulls", pullsHandler)
+	mux.HandleFunc(prefix+"/pulls/", pullsHandler)
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
 		calls := 0
 		serveBulkCheckStates(t, w, r, &calls, map[string]string{})
@@ -484,6 +560,34 @@ func TestGatherPRContextHonorsDispatchTarget(t *testing.T) {
 	})
 }
 
+func TestGatherPRContextTargetBypassesBroadHeadPrefix(t *testing.T) {
+	target := remediationTarget{number: 71, targeted: true}
+	listCalled := false
+	adapter := gatherPRContextAdapter{
+		list: func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error) {
+			listCalled = true
+			return []providers.PullRequestSummary{{
+				Number: 70, State: "open", Base: "main", Head: "goobers/implementation/other",
+			}}, nil
+		},
+		get: func(_ context.Context, id string) (providers.PullRequestSummary, error) {
+			if id != "71" {
+				t.Fatalf("GetPullRequest id = %q, want 71", id)
+			}
+			return providers.PullRequestSummary{
+				Number: 71, State: "open", Base: "main", Head: "backprop/fix-reviewed-pr",
+			}, nil
+		},
+	}
+	prs, err := gatherPRContextPullRequests(t.Context(), adapter, providers.RepositoryRef{}, "main", "goobers/", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !listCalled || len(prs) != 2 || prs[1].Head != "backprop/fix-reviewed-pr" {
+		t.Fatalf("listCalled = %t, prs = %+v, want broad context plus exact targeted backprop PR", listCalled, prs)
+	}
+}
+
 // TestGatherPRContextRefusesUnselectableTarget proves the fail-closed half on
 // the remediation lane's context stage: a target outside the lane's scope ends
 // the run as an explicit no-work naming the reason, selecting no pull request
@@ -565,11 +669,29 @@ func setupTargetedGatherPRContextADO(t *testing.T, runID string) (root, workDir 
 			adoPR(359, lowerBranch), adoPR(360, upperBranch),
 		}})
 	})
-	for _, id := range []int{359, 360} {
+	for id, branch := range map[int]string{359: lowerBranch, 360: upperBranch} {
 		mux.HandleFunc(prBase+"/"+strconv.Itoa(id)+"/threads", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
 		})
+		mux.HandleFunc(prBase+"/"+strconv.Itoa(id)+"/labels", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSONResp(t, w, map[string]interface{}{"value": []map[string]interface{}{{
+				"id": "1", "name": needsRemediationLabel,
+			}}})
+		})
+		// PR detail: the selected PR's CI state is read from its policy
+		// evaluations (ADO-N22), which need the project id.
+		mux.HandleFunc(prBase+"/"+strconv.Itoa(id), func(w http.ResponseWriter, _ *http.Request) {
+			detail := adoPR(id, branch)
+			detail["repository"] = map[string]interface{}{
+				"id": "repo-guid", "name": repo.Name,
+				"project": map[string]string{"id": "proj-guid", "name": repo.Project},
+			}
+			writeJSONResp(t, w, detail)
+		})
 	}
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+	})
 	mux.HandleFunc("/"+repo.Owner+"/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSONResp(t, w, map[string]interface{}{
 			"authenticatedUser": map[string]string{"id": "merge-review-bot-guid", "providerDisplayName": "merge-review-bot"},
@@ -579,7 +701,7 @@ func setupTargetedGatherPRContextADO(t *testing.T, runID string) (root, workDir 
 	t.Cleanup(server.Close)
 
 	original := newADOProviderForStage
-	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	newADOProviderForStage = func(routed providers.RepositoryRef, _ providers.ADOCredentialSource) (*providers.ADOProvider, error) {
 		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
 			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
 	}

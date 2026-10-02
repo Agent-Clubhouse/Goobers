@@ -50,6 +50,7 @@ floating-point values, so large integer values survive unchanged.
 | Log attribute | OTLP type | Meaning |
 |---|---|---|
 | `goobers.journal.schema_version` | int | `1`, the export contract version, not a replacement for the body's `schema` |
+| `goobers.telemetry.stream` | string | `journal`, for routing alongside diagnostic Logs in a shared destination |
 | `goobers.journal.kind` | string | `run` or `scheduler` |
 | `goobers.journal.id` | string | Run ID, or the persisted scheduler journal identity |
 | `goobers.journal.seq` | string | Unsigned decimal sequence, equal to the JSON body's `seq` |

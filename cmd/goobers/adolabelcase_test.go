@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/labelpredicate"
@@ -89,4 +90,47 @@ func newADOLabelCaseScanServer(t *testing.T, tags map[int]string) *httptest.Serv
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
+}
+
+// TestContinuationEligibilityFoldsADOLabelCase pins that a continuation's
+// re-check of a source item read with GetWorkItem compares labels ignoring
+// case on ADO: an exclude tag a human first wrote as Needs-Design stops the
+// continuation, and a required tag in another case still satisfies it. On
+// GitHub the comparison stays exact.
+func TestContinuationEligibilityFoldsADOLabelCase(t *testing.T) {
+	filter, err := labelpredicate.Compile("", []string{"team-a"}, []string{"needs-design"})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	policy := &continuationEligibilityPolicy{
+		requireLabels: []string{"team-a"}, excludeLabels: []string{"needs-design"}, labelFilter: filter,
+	}
+	excluded := providers.WorkItem{ID: "7", Labels: []string{"Team-A", "Needs-Design"}}
+	err = validateContinuationEligibility(excluded, providers.ProviderADO, "7", policy)
+	if err == nil || !strings.Contains(err.Error(), `excluded label "needs-design"`) {
+		t.Fatalf("ADO exclude in other case: err = %v, want the continuation stopped by the excluded label", err)
+	}
+	eligible := providers.WorkItem{ID: "8", Labels: []string{"TEAM-A"}}
+	if err := validateContinuationEligibility(eligible, providers.ProviderADO, "8", policy); err != nil {
+		t.Fatalf("ADO require in other case: err = %v, want eligible", err)
+	}
+	if err := validateContinuationEligibility(eligible, providers.ProviderGitHub, "8", policy); err == nil {
+		t.Fatal("GitHub require in other case: want the exact comparison unchanged (not eligible)")
+	}
+}
+
+// TestParentEligibleForDecompositionFoldsADOTrustLabel pins that a custom
+// trustLabel matches an ADO tag first written in another case, and that
+// GitHub keeps its exact comparison.
+func TestParentEligibleForDecompositionFoldsADOTrustLabel(t *testing.T) {
+	item := providers.WorkItem{ID: "7", State: "open", Labels: []string{"Example:Trusted"}}
+	if !parentEligibleForDecomposition(item, providers.ProviderADO, "example:trusted") {
+		t.Fatal("ADO parent with trust tag in other case: want eligible")
+	}
+	if parentEligibleForDecomposition(item, providers.ProviderGitHub, "example:trusted") {
+		t.Fatal("GitHub parent with trust label in other case: want the exact comparison unchanged")
+	}
+	if !slices.Equal(item.Labels, []string{"Example:Trusted"}) {
+		t.Fatalf("caller's labels mutated to %v", item.Labels)
+	}
 }

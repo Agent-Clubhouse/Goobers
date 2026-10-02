@@ -258,6 +258,19 @@ func TestCodexAdapterMaterializesScopedMCPConfig(t *testing.T) {
 	}
 }
 
+func TestCodexGoobersIOOverrideUsesBareServerName(t *testing.T) {
+	overrides := appendCodexStdioOverrides(nil, goobersIOServerName, "goobers", nil, nil, nil)
+	commandOverride := `mcp_servers.goobers-io.command="goobers"`
+	if !slices.Contains(overrides, commandOverride) {
+		t.Fatalf("overrides = %v, want %q", overrides, commandOverride)
+	}
+	for _, override := range overrides {
+		if strings.Contains(override, `mcp_servers."goobers-io"`) {
+			t.Fatalf("quoted goobers-io name leaks literal quotes to Codex: %q", override)
+		}
+	}
+}
+
 func TestCodexAdapterRejectsReservedMCPEnvironment(t *testing.T) {
 	for _, envName := range []string{
 		codexModelEnv,

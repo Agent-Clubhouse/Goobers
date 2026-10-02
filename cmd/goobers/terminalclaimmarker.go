@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
@@ -49,19 +51,25 @@ var newTerminalClaimMarkerProvider = func(source providers.TokenSource, opts ...
 	return providers.NewGitHubProvider("", append([]func(*providers.GitHubProvider){providers.WithTokenSource(source)}, opts...)...)
 }
 
-// buildTerminalClaimMarkerRelease mirrors buildTerminalRunAbortLabeler's shape
-// — the same credential/capability wiring and per-gaggle project scoping — but
-// github:issues:write (the ordinary label/comment surface, and a daemon-identity
-// capability, so the release is attributed to the same bot login that wrote the
-// claim) rather than github:pr:write.
+// newTerminalADOClaimMarkerProvider is the Azure DevOps arm of the same seam.
+var newTerminalADOClaimMarkerProvider = func(repo instance.RepoRef, registrar providers.SecretRegistrar, stores credentials.StoreResolver) (workItemClaimReleaser, error) {
+	return adoauth.Provider(repo, nil, registrar, nil, nil, stores)
+}
+
+// buildTerminalClaimMarkerRelease builds the terminal claim-marker release for
+// the gaggle's backlog provider. GitHub mirrors buildTerminalRunAbortLabeler's
+// shape — the same credential/capability wiring and per-gaggle project scoping —
+// but github:issues:write (the ordinary label/comment surface, and a
+// daemon-identity capability, so the release is attributed to the same bot login
+// that wrote the claim). Azure DevOps goes through
+// buildTerminalADOClaimMarkerRelease.
 //
 // Returns a nil func for a repo-less instance (the credential-free demo) and for
-// any non-GitHub configured provider: ADO and Gitea claim markers keep relying on
-// backlog curation's reconciliation pass exactly as they do today, which is
-// unchanged behavior rather than a regression. The returned RepositoryRef is the
-// repo the release targets; on GitHub the backlog and the code repo coincide
-// (backlogRepoRefForGaggle is an ADO-only rewrite), so no further routing applies.
-func buildTerminalClaimMarkerRelease(cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
+// a provider without a terminal release (Gitea keeps relying on backlog
+// curation's reconciliation pass). The returned RepositoryRef is the backlog
+// target: on GitHub the backlog and the code repo coincide, while on ADO it is
+// the gaggle's backlog project (backlogRepoRefForGaggle).
+func buildTerminalClaimMarkerRelease(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, providers.RepositoryRef{}, nil
 	}
@@ -79,11 +87,32 @@ func buildTerminalClaimMarkerRelease(cfg *instance.Config, project apiv1.RepoRef
 			repo.Provider = providers.ProviderKind(project.Provider)
 		}
 	}
-	if repo.Provider != providers.ProviderGitHub {
+	switch repo.Provider {
+	case providers.ProviderADO:
+		release, backlog := buildTerminalADOClaimMarkerRelease(l, cfg, project, registrar, stores)
+		if backlog.Provider == providers.ProviderGitHub {
+			// A GitHub backlog for ADO code (topology (b)): the claim marker
+			// lives on the GitHub issue, released with the backlog repository's
+			// credential.
+			return buildTerminalGitHubClaimMarkerRelease(cfg, backlog, credentialBindingOwner(project), project.Name, backlogRoleFor(backlog.Owner, backlog.Name), registrar, stores)
+		}
+		if backlog.Provider != providers.ProviderADO {
+			return nil, providers.RepositoryRef{}, nil
+		}
+		return release, backlog, nil
+	case providers.ProviderGitHub:
+	default:
 		return nil, providers.RepositoryRef{}, nil
 	}
-	gaggleOwner := project.Owner
-	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
+	return buildTerminalGitHubClaimMarkerRelease(cfg, repo, project.Owner, project.Name, nil, registrar, stores)
+}
+
+// buildTerminalGitHubClaimMarkerRelease is the GitHub arm of
+// buildTerminalClaimMarkerRelease: repo is the GitHub repository holding the
+// issue, and (owner, name, backlog) select the credential exactly as the
+// gaggle's stages get it.
+func buildTerminalGitHubClaimMarkerRelease(cfg *instance.Config, repo providers.RepositoryRef, owner, name string, backlog *credentials.BacklogRole, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef, error) {
+	resolver, grants, err := buildRoleCredentials(cfg, stores, owner, name, backlog, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}
@@ -104,6 +133,73 @@ func buildTerminalClaimMarkerRelease(cfg *instance.Config, project apiv1.RepoRef
 		return item, scrubTerminalError(registrar, err)
 	}
 	return release, repo, nil
+}
+
+// buildTerminalADOClaimMarkerRelease is the Azure DevOps arm of
+// buildTerminalClaimMarkerRelease. The release addresses the gaggle's backlog
+// project — where the work item and its claim breadcrumbs live — with the
+// configured code repository's organization-scoped credential source
+// (adoauth), so PAT, Azure CLI, workload identity and managed identity keep
+// their configured behavior.
+//
+// The provider is built lazily, once per terminal cleanup
+// (terminalReleaseProvider), rather than at daemon start: terminal
+// cleanup is best-effort, so an ADO credential source that cannot be built
+// (an unconfigured project repo, a missing workload-identity environment) is
+// journaled as a claim_marker_release_failed event on the run that needed it
+// instead of failing runtime startup for an instance that never reaches this
+// path.
+func buildTerminalADOClaimMarkerRelease(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (claimMarkerReleaseFunc, providers.RepositoryRef) {
+	routed := terminalRepositoryRefForProject(cfg, project)
+	configured, configErr := terminalConfiguredRepo(cfg, project)
+	if configErr == nil && routed.Project == "" {
+		routed.Project = configured.Project
+	}
+	backlog := backlogRepoRefForGaggle(l, routed)
+	release := func(ctx context.Context, req providers.ClaimWorkItemRequest) (providers.WorkItem, error) {
+		if configErr != nil {
+			return providers.WorkItem{}, scrubTerminalError(registrar, configErr)
+		}
+		provider, err := terminalReleaseProvider(ctx, func() (workItemClaimReleaser, error) {
+			return newTerminalADOClaimMarkerProvider(configured, registrar, stores)
+		})
+		if err != nil {
+			return providers.WorkItem{}, scrubTerminalError(registrar, fmt.Errorf("build terminal ADO claim-marker provider: %w", err))
+		}
+		item, err := provider.ReleaseWorkItemClaim(ctx, req)
+		return item, scrubTerminalError(registrar, err)
+	}
+	return release, backlog
+}
+
+// terminalReleaseScope memoizes the provider a release func builds, for the
+// span of one terminal cleanup (releaseTerminalClaimMarkers). Without it an
+// ADO release built a new credential source per ledger entry: with azure-cli
+// auth, one az subprocess per item inside one cleanup's time budget.
+type terminalReleaseScope struct {
+	once     sync.Once
+	provider workItemClaimReleaser
+	err      error
+}
+
+type terminalReleaseScopeKey struct{}
+
+// withTerminalReleaseScope returns ctx carrying a fresh per-cleanup scope.
+func withTerminalReleaseScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, terminalReleaseScopeKey{}, &terminalReleaseScope{})
+}
+
+// terminalReleaseProvider builds the release provider once per cleanup scope
+// in ctx and reuses it for every entry; a build error is returned to every
+// release in that scope, so each entry still journals why it did not land.
+// Outside a scope it builds a provider per call, as before.
+func terminalReleaseProvider(ctx context.Context, build func() (workItemClaimReleaser, error)) (workItemClaimReleaser, error) {
+	scope, ok := ctx.Value(terminalReleaseScopeKey{}).(*terminalReleaseScope)
+	if !ok {
+		return build()
+	}
+	scope.once.Do(func() { scope.provider, scope.err = build() })
+	return scope.provider, scope.err
 }
 
 // releaseTerminalClaimMarkers ends the provider-visible claim epoch for every
@@ -140,7 +236,7 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 	if release == nil {
 		return
 	}
-	entries, err := terminalClaimMarkerEntries(l, runID)
+	entries, err := terminalClaimMarkerEntries(l, runID, repo.Provider)
 	if err != nil {
 		// A claims-lock timeout is already journaled as such by withClaimLock;
 		// the run's ledger release below defers to the recovery sweep on the
@@ -153,7 +249,7 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 	if len(entries) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), terminalClaimMarkerTimeout)
+	ctx, cancel := context.WithTimeout(withTerminalReleaseScope(context.Background()), terminalClaimMarkerTimeout)
 	defer cancel()
 	for _, entry := range entries {
 		if _, err := release(ctx, providers.ClaimWorkItemRequest{
@@ -178,8 +274,8 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 // a claim-release breadcrumb onto — retiring it here would either error against
 // a nonexistent issue or, worse, land on whatever issue happens to share its
 // numeral suffix. Skips claims from a different provider than the one this
-// instance's terminal cleanup is credentialed for.
-func terminalClaimMarkerEntries(l instance.Layout, runID string) ([]localscheduler.ClaimEntry, error) {
+// terminal cleanup targets.
+func terminalClaimMarkerEntries(l instance.Layout, runID string, provider providers.ProviderKind) ([]localscheduler.ClaimEntry, error) {
 	var entries []localscheduler.ClaimEntry
 	err := withClaimLockForRun(
 		filepath.Join(l.SchedulerDir(), claimLockFileName),
@@ -204,7 +300,7 @@ func terminalClaimMarkerEntries(l instance.Layout, runID string) ([]localschedul
 				if strings.HasPrefix(entry.ItemID, claimsclient.MergeLockItemPrefix) {
 					continue
 				}
-				if entry.Provider != "" && entry.Provider != string(providers.ProviderGitHub) {
+				if entry.Provider != "" && entry.Provider != string(provider) {
 					continue
 				}
 				entries = append(entries, entry)
@@ -235,10 +331,7 @@ func recordClaimMarkerReleaseError(log *journal.InstanceLog, entry localschedule
 		Gaggle:   entry.Gaggle,
 		Workflow: entry.Workflow,
 		RunID:    entry.RunID,
-		Error: &journal.ErrorDetail{
-			Code:    claimMarkerReleaseErrorCode,
-			Message: err.Error(),
-		},
-		Runner: map[string]any{"operation": claimLockOperationRunRelease},
+		Error:    journal.ErrorDetailFor(claimMarkerReleaseErrorCode, err),
+		Runner:   map[string]any{"operation": claimLockOperationRunRelease},
 	})
 }

@@ -284,6 +284,12 @@ func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 
 func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
 	for _, workflow := range guidedWorkflowOrder {
+		if workflow == GuidedWorkflowMergeReview {
+			// Guided merge-review is Azure DevOps-only; GitHub refuses it
+			// (TestInitGuidedGitHubRefusesMergeReview).
+			t.Run(workflow, assertGuidedADOSingleWorkflow(workflow))
+			continue
+		}
 		t.Run(workflow, func(t *testing.T) {
 			opts := GuidedOptions{
 				GaggleName:           "widget",
@@ -698,5 +704,160 @@ func TestCheckGuidedSourceInstancePathsRejectsSymlinkedOverlap(t *testing.T) {
 	err := CheckGuidedSourceInstancePaths(filepath.Join(sourceLink, "runtime"), sourceRoot)
 	if err == nil || !strings.Contains(err.Error(), "must be separate paths") {
 		t.Fatalf("CheckGuidedSourceInstancePaths symlinked overlap error = %v", err)
+	}
+}
+
+func guidedADOOptions(workflows ...string) GuidedOptions {
+	return GuidedOptions{
+		GaggleName: "widget", RepoProvider: "ado",
+		RepoOwner: "example-org", RepoProject: "example-project", RepoName: "widget",
+		CopilotTokenEnv: "MODEL_TOKEN", PullRequestCI: slices.Contains(workflows, GuidedWorkflowImplementation),
+		Workflows: workflows,
+	}
+}
+
+// assertGuidedADOSingleWorkflow runs guided setup on Azure DevOps with only
+// workflow selected (Azure CLI auth) and checks that exactly that workflow is
+// scaffolded against the ADO repository.
+func assertGuidedADOSingleWorkflow(workflow string) func(*testing.T) {
+	return func(t *testing.T) {
+		opts := guidedADOOptions(workflow)
+		opts.RepoAuthKind = ADOAuthAzureCLI
+		root := filepath.Join(t.TempDir(), "guided")
+		if _, err := initGuidedForTest(root, opts); err != nil {
+			t.Fatalf("InitGuided: %v", err)
+		}
+		set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+		if err != nil {
+			t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+		}
+		if len(set.Workflows) != 1 || set.Workflows[0].Name != workflow {
+			t.Fatalf("guided workflows = %+v, want only %q", set.Workflows, workflow)
+		}
+		cfg, err := LoadConfig(NewLayout(root).ConfigFile())
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if len(cfg.Repos) != 1 || cfg.Repos[0].Provider != "ado" || cfg.Repos[0].Auth == nil || cfg.Repos[0].Auth.Kind != ADOAuthAzureCLI {
+			t.Fatalf("guided repos = %+v, want one ado repository with azure-cli auth", cfg.Repos)
+		}
+	}
+}
+
+func TestInitGuidedADOAcceptsEveryAuthKind(t *testing.T) {
+	for _, kind := range []string{"", ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity, ADOAuthPAT} {
+		t.Run("kind="+kind, func(t *testing.T) {
+			opts := guidedADOOptions(GuidedWorkflowBacklogCuration)
+			opts.RepoAuthKind = kind
+			opts.RepoTokenEnv = "ADO_TOKEN"
+			root := filepath.Join(t.TempDir(), "guided")
+			if _, err := initGuidedForTest(root, opts); err != nil {
+				t.Fatalf("InitGuided with auth kind %q: %v", kind, err)
+			}
+			cfg, err := LoadConfig(NewLayout(root).ConfigFile())
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			wantKind, wantEnv := kind, ""
+			if kind == "" {
+				wantKind = ADOAuthAzureCLI
+			}
+			if kind == ADOAuthPAT {
+				wantEnv = "ADO_TOKEN"
+			}
+			repo := cfg.Repos[0]
+			if repo.Auth == nil || repo.Auth.Kind != wantKind || repo.Token.Env != wantEnv {
+				t.Fatalf("repository auth = %+v token = %+v, want kind %q env %q", repo.Auth, repo.Token, wantKind, wantEnv)
+			}
+			if len(cfg.Runner.EnvPassthrough) != 0 {
+				t.Fatalf("ADO scaffold adds envPassthrough %v", cfg.Runner.EnvPassthrough)
+			}
+		})
+	}
+}
+
+func TestInitGuidedADORejectsBeforeWriting(t *testing.T) {
+	unknownKind := guidedADOOptions(GuidedWorkflowBacklogCuration)
+	unknownKind.RepoAuthKind = "azcli"
+	for name, test := range map[string]struct {
+		opts GuidedOptions
+		want string
+	}{
+		"work-nomination": {opts: guidedADOOptions(GuidedWorkflowBacklogCuration, GuidedWorkflowWorkNomination), want: "file-issues stage files GitHub issues only"},
+		"unknown kind":    {opts: unknownKind, want: `got "azcli"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "guided")
+			_, err := initGuidedForTest(root, test.opts)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("InitGuided error = %v, want %q", err, test.want)
+			}
+			if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+				t.Fatalf("refused guided setup wrote root, stat error = %v", statErr)
+			}
+		})
+	}
+}
+
+// TestInitGuidedGitHubRefusesMergeReview pins that guided setup offers
+// merge-review on Azure DevOps only: guided GitHub setup grants merge-review
+// no pull-request token, so it is refused before anything is written.
+func TestInitGuidedGitHubRefusesMergeReview(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "guided")
+	_, err := initGuidedForTest(root, GuidedOptions{
+		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
+		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
+		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview},
+	})
+	if err == nil || !strings.Contains(err.Error(), "merge-review workflow on Azure DevOps only") {
+		t.Fatalf("InitGuided error = %v, want the Azure DevOps-only merge-review refusal", err)
+	}
+	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("refused guided setup wrote root, stat error = %v", statErr)
+	}
+}
+
+// TestInitGuidedADOUsesADOInstructions pins the per-provider instruction
+// selection: an ADO scaffold gets the curator's instructions-ado.md variant,
+// a GitHub scaffold keeps the canonical instructions.md, and goobers with no
+// variant are copied unchanged on both.
+func TestInitGuidedADOUsesADOInstructions(t *testing.T) {
+	read := func(t *testing.T, root, goober string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(NewLayout(root).ConfigDir(), "gaggles", "widget", "goobers", goober, "instructions.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	adoRoot := filepath.Join(t.TempDir(), "ado")
+	if _, err := initGuidedForTest(adoRoot, guidedADOOptions(GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview)); err != nil {
+		t.Fatalf("InitGuided ADO: %v", err)
+	}
+	githubRoot := filepath.Join(t.TempDir(), "github")
+	githubOpts := GuidedOptions{
+		GaggleName: "widget", RepoOwner: "example-org", RepoName: "widget",
+		RepoTokenEnv: "REPO_TOKEN", WorkTrackingTokenEnv: "ISSUES_TOKEN", PullRequestTokenEnv: "PR_TOKEN",
+		CopilotTokenEnv:  "MODEL_TOKEN",
+		RepoPushTokenEnv: "PUSH_TOKEN", PullRequestCI: true,
+		Workflows: []string{GuidedWorkflowBacklogCuration, GuidedWorkflowImplementation},
+	}
+	if _, err := initGuidedForTest(githubRoot, githubOpts); err != nil {
+		t.Fatalf("InitGuided GitHub: %v", err)
+	}
+	adoCurator, githubCurator := read(t, adoRoot, "curator"), read(t, githubRoot, "curator")
+	for _, githubOnly := range []string{"set-milestone", "blocked-by", "GitHub"} {
+		if strings.Contains(adoCurator, githubOnly) {
+			t.Errorf("ADO curator instructions mention %q", githubOnly)
+		}
+	}
+	if !strings.Contains(adoCurator, "Predecessor link") || !strings.Contains(adoCurator, "Iteration Path") {
+		t.Error("ADO curator instructions do not describe Predecessor links and iterations")
+	}
+	if !strings.Contains(githubCurator, "set-milestone") {
+		t.Error("GitHub curator instructions lost set-milestone")
+	}
+	if read(t, adoRoot, "reviewer") != read(t, githubRoot, "reviewer") {
+		t.Error("reviewer has no ADO variant but its instructions differ by provider")
 	}
 }

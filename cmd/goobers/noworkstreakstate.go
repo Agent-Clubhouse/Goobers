@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -60,20 +59,19 @@ type noWorkStreakRecord struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// noWorkStreakDocument is one item's record as it lives at its own
-// scheduler-state key, carrying the record key it was written for so a
-// mis-keyed document is caught rather than acted on.
-type noWorkStreakDocument struct {
-	Schema string             `json:"schema"`
-	Key    string             `json:"key"`
-	Record noWorkStreakRecord `json:"record"`
-}
-
 // noWorkStreakStateKey is the scheduler-state key holding one item's record,
 // a pure function of noWorkStreakKey (provider/owner/name#itemID).
 func noWorkStreakStateKey(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return stateclient.NoWorkStreakKey(fmt.Sprintf("%x", sum))
+}
+
+var noWorkStreakRecordSpec = keyedStateRecordSpec[noWorkStreakRecord]{
+	schema:      noWorkStreakStateSchema,
+	operation:   noWorkStreakStateLockOperation,
+	errorPrefix: "decode no-work-streak state",
+	field:       keyedStateRecordFieldRecord,
+	stateKey:    noWorkStreakStateKey,
 }
 
 // noWorkStreakKey identifies one item's repeated-no-work state across
@@ -82,33 +80,6 @@ func noWorkStreakStateKey(key string) string {
 // records address the same item identity through different key families.
 func noWorkStreakKey(repo providers.RepositoryRef, itemID string) string {
 	return string(repo.Provider) + "/" + repo.Owner + "/" + repo.Name + "#" + itemID
-}
-
-func decodeNoWorkStreakRecord(value stateclient.Value, key string) (noWorkStreakRecord, error) {
-	if !value.Exists() {
-		return noWorkStreakRecord{}, nil
-	}
-	var doc noWorkStreakDocument
-	if err := json.Unmarshal(value.Data, &doc); err != nil {
-		return noWorkStreakRecord{}, fmt.Errorf("decode no-work-streak state: %w", err)
-	}
-	if doc.Schema != noWorkStreakStateSchema {
-		return noWorkStreakRecord{}, fmt.Errorf(
-			"decode no-work-streak state: unsupported schema %q, want %q", doc.Schema, noWorkStreakStateSchema)
-	}
-	if doc.Key != key {
-		return noWorkStreakRecord{}, fmt.Errorf(
-			"decode no-work-streak state: record is keyed to %q, not %q", doc.Key, key)
-	}
-	return doc.Record, nil
-}
-
-func encodeNoWorkStreakRecord(key string, record noWorkStreakRecord) ([]byte, error) {
-	return json.Marshal(noWorkStreakDocument{
-		Schema: noWorkStreakStateSchema,
-		Key:    key,
-		Record: record,
-	})
 }
 
 // updateNoWorkStreakRecord is the record's read-modify-write: one lock
@@ -121,21 +92,9 @@ func updateNoWorkStreakRecord(
 	key string,
 	fn func(noWorkStreakRecord) (noWorkStreakRecord, bool, error),
 ) error {
-	return store.Update(ctx, noWorkStreakStateKey(key), noWorkStreakStateLockOperation,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeNoWorkStreakRecord(value, key)
-			if err != nil {
-				return nil, false, err
-			}
-			next, write, err := fn(current)
-			if err != nil || !write {
-				return nil, false, err
-			}
-			data, err := encodeNoWorkStreakRecord(key, next)
-			if err != nil {
-				return nil, false, err
-			}
-			return data, true, nil
+	return updateKeyedStateRecord(ctx, store, key, noWorkStreakRecordSpec,
+		func(current noWorkStreakRecord, _ bool) (noWorkStreakRecord, bool, error) {
+			return fn(current)
 		})
 }
 

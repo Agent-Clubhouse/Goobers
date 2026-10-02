@@ -234,6 +234,7 @@ func completeResultEnvelope() apiv1.ResultEnvelope {
 		Error: &apiv1.ErrorInfo{
 			Code:      "RETRY",
 			Message:   "a retryable failure",
+			Causes:    []apiv1.ErrorCause{{Code: "transient", Class: "infra", Message: "temporary provider failure"}},
 			Retryable: true,
 		},
 		Integrity:         apiv1.IntegrityDerived,
@@ -372,6 +373,33 @@ func completeRemediationBrief() apiv1.RemediationBrief {
 				URL:       "https://example.test/issues/1704",
 				Integrity: apiv1.IntegrityMaintainer,
 			}},
+			Ancestry: &apiv1.RemediationAncestry{
+				Status:       "incomplete",
+				Provider:     "ado",
+				MaxDepth:     3,
+				MaxItems:     10,
+				CrossProject: "deny",
+				IncludeTypes: []string{"Feature", "Initiative"},
+				Items: []apiv1.RemediationAncestor{{
+					QualifiedID: "ado:project:1700",
+					Provider:    "ado",
+					Project:     "project",
+					ID:          "1700",
+					Depth:       1,
+					ParentOf:    []string{"ado:project:1704"},
+					Type:        "Initiative",
+					Title:       "Schema discipline",
+					State:       "Active",
+					URL:         "https://example.test/workitems/1700",
+					Fields: []apiv1.RemediationAncestorField{{
+						Name: "System.Description", Value: "Keep every schema closed.", Truncated: true,
+					}},
+					Integrity: apiv1.IntegrityUnapproved,
+				}},
+				Omissions: []apiv1.RemediationAncestryOmission{{
+					Child: "ado:project:1700", Parent: "1600", Depth: 2, Reason: "access-denied", Detail: "forbidden",
+				}},
+			},
 		},
 	}
 }
@@ -461,7 +489,11 @@ func completeJournalEvent() journal.Event {
 		// telemetry.GenAIEventSchema whenever the adapter leaves it empty).
 		DataSchema:  "goobers.dev/telemetry/genai-event/v1",
 		ExternalRef: &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "42", URL: "https://example.test/pr/42", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-		Error:       &journal.ErrorDetail{Code: "boom", Message: "detail"},
+		Error: &journal.ErrorDetail{
+			Code:    "boom",
+			Message: "detail",
+			Causes:  []journal.ErrorCause{{Code: "wrapped", Class: "workflow", Message: "wrapped detail"}},
+		},
 		Redaction: &journal.RedactionInfo{
 			Target:    "artifacts/sha256/cc/leak.txt",
 			OldDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

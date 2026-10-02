@@ -28,17 +28,127 @@ type openPRProvider interface {
 	OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error)
 }
 
+type adoPullRequestWorkItemLinker interface {
+	LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error
+}
+
+// adoNativeWorkItemLink reports whether open-pr links the pull request to its
+// item natively: only on Azure DevOps, for a claimed item that is an ADO work
+// item. A backlog on another provider (topology (b)) holds no work item to
+// link, and linking the ADO work item that happens to share the id would
+// attach the pull request to an unrelated item.
+func adoNativeWorkItemLink(root string, repo providers.RepositoryRef, haveIssue bool, issueID string) bool {
+	if repo.Provider != providers.ProviderADO || !haveIssue || issueID == "" {
+		return false
+	}
+	return !backlogOnOtherProvider(repo, backlogRepoRefForStage(root, repo))
+}
+
+// textOnlyADOWorkItemLink stands in for the native linker when native linking
+// applies but the stage was not delivered an ado:work-items:write credential.
+// Native linking is best-effort (#5925): the pull request still opens, with
+// its text reference to the work item and a note saying it is not linked
+// natively. A delivered credential that Azure DevOps rejects still fails the
+// stage (linkADOPullRequestToWorkItem).
+type textOnlyADOWorkItemLink struct{}
+
+func (textOnlyADOWorkItemLink) LinkPullRequestToWorkItem(context.Context, providers.RepositoryRef, providers.RepositoryRef, string, string) error {
+	return nil
+}
+
+// adoWorkItemsWriteDelivered reports whether the runner delivered a
+// credential for ado:work-items:write to this stage process.
+func adoWorkItemsWriteDelivered() bool {
+	return os.Getenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite))) != ""
+}
+
+// textOnlyWorkItemLinkNote is appended to the body of a pull request that
+// open-pr could not link natively to its work item.
+func textOnlyWorkItemLinkNote(body, issueID string) string {
+	return strings.TrimRight(body, "\n") + "\n\n" + fmt.Sprintf(
+		"_Not linked natively to work item #%s: this stage was not given the %s capability, so the work item is referenced by text only._",
+		issueID, capability.ADOWorkItemsWrite)
+}
+
+func openPRWorkItemLinker(root string, repo providers.RepositoryRef, haveIssue bool, issueID string, stderr io.Writer) (adoPullRequestWorkItemLinker, error) {
+	if !adoNativeWorkItemLink(root, repo, haveIssue, issueID) {
+		return nil, nil
+	}
+	if !adoWorkItemsWriteDelivered() {
+		pf(stderr, "warning: no %s credential was delivered to this stage; the pull request is opened without a native link to work item #%s (declare %s on open-pr to link it natively)\n",
+			capability.ADOWorkItemsWrite, issueID, capability.ADOWorkItemsWrite)
+		return textOnlyADOWorkItemLink{}, nil
+	}
+	return newProviderForStageSurface[adoPullRequestWorkItemLinker](root, repo, false,
+		withStageProviderCapability(capability.ADOWorkItemsWrite),
+		withStageProviderMutations("issue"),
+	)
+}
+
+func linkADOPullRequestToWorkItem(
+	ctx context.Context,
+	linker adoPullRequestWorkItemLinker,
+	repo providers.RepositoryRef,
+	root, issueID, pullID string,
+	haveIssue bool,
+	stderr io.Writer,
+) int {
+	if !adoNativeWorkItemLink(root, repo, haveIssue, issueID) {
+		return 0
+	}
+	if linker == nil {
+		pf(stderr, "error: ADO provider cannot create native work-item links\n")
+		return 1
+	}
+	err := linker.LinkPullRequestToWorkItem(ctx, repo, backlogRepoRefForStage(root, repo), issueID, pullID)
+	if err == nil {
+		return 0
+	}
+	if providers.IsNotFoundError(err) {
+		pf(stderr, "warning: work item #%s no longer resolves; pull request %s could not be linked natively\n", issueID, pullID)
+		return 0
+	}
+	return failProviderStage(stderr, "link pull request to work item", err, "pr-result.json")
+}
+
+func openPullRequestWithADOLink(
+	ctx context.Context,
+	provider openPRProvider,
+	linker adoPullRequestWorkItemLinker,
+	repo providers.RepositoryRef,
+	root, issueID string,
+	haveIssue bool,
+	prReq providers.PullRequestRequest,
+	tutorHoldout *tutorHoldoutRecord,
+	stderr io.Writer,
+) (providers.PullRequestResult, int) {
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
+		prReq.Body = textOnlyWorkItemLinkNote(prReq.Body, issueID)
+	}
+	result, err := provider.OpenPullRequest(ctx, prReq)
+	if err != nil {
+		if tutorHoldout != nil {
+			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
+				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
+				return providers.PullRequestResult{}, 1
+			}
+		}
+		return providers.PullRequestResult{}, failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	}
+	return result, linkADOPullRequestToWorkItem(ctx, linker, repo, root, issueID, result.ID, haveIssue, stderr)
+}
+
 const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Open the run's PR — or, on a repass through this stage, find and update\n" +
 	"the PR it already opened (idempotent: the run's branch name is stable\n" +
 	"across repasses, providers.BranchName). Writes prNumber/pull-request-url\n" +
 	"to the declared result file for a downstream stage's Task.InputsFrom.\n\n" +
 	"Inputs (Task.Inputs / inputsFrom): title, body, head (default the run's\n" +
-	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"),\n" +
-	"resultFile, timeout. PR metadata is configured through these workflow\n" +
-	"inputs — there are no --title/--body flags — and a stage may bind them\n" +
-	"from an upstream stage's declared output with inputsFrom rather than a\n" +
-	"static value:\n\n" +
+	"stable branch), base (default GOOBERS_BASE_BRANCH, else \"main\"), itemID,\n" +
+	"itemTitle, resultFile, timeout. PR metadata is configured through these\n" +
+	"workflow inputs — there are no --title/--body flags — and a stage may\n" +
+	"bind them from an upstream stage's declared output with inputsFrom\n" +
+	"rather than a static value:\n\n" +
 	"    - name: open-pr\n" +
 	"      run:\n" +
 	"        command: [\"goobers\", \"open-pr\"]\n" +
@@ -52,17 +162,73 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"claimed item's title, recovered from the run journal (so it survives a\n" +
 	"resume or repass); otherwise the generic \"Automated implementation\". An\n" +
 	"empty value is not an override — every empty input falls back.\n\n" +
+	"itemID explicitly identifies a selected backlog item when the workflow\n" +
+	"read it without claiming. If a claimed item also exists, the IDs must\n" +
+	"match. On ADO, native work-item linking separately uses the\n" +
+	"ado:work-items:write capability, which the ADO repository credential backs\n" +
+	"when the stage declares it. Without it the pull request still opens, with\n" +
+	"a text reference and a note that the item is not linked natively; a\n" +
+	"delivered credential that ADO rejects fails the stage. GitHub never\n" +
+	"resolves that capability.\n\n" +
 	"Body precedence: an explicitly set non-empty body is used as given and\n" +
 	"bypasses structured rendering; otherwise a structured body is rendered\n" +
 	"from the run journal's recorded review and local-CI evidence; otherwise a\n" +
 	"generic one-line body. A claimed item still augments an unstructured body\n" +
 	"— explicit or generic — with a \"Fixes #<id>\" back-reference, so explicit\n" +
 	"body text does not cost the issue linkage. The structured body carries\n" +
-	"its own linkage and is never appended to.\n\n" +
+	"its own linkage and is never appended to. When the backlog lives on\n" +
+	"another provider than the pull request (a GitHub backlog for Azure\n" +
+	"DevOps code), both name the item by its full URL instead of \"#<id>\",\n" +
+	"which that provider would read as one of its own items.\n\n" +
 	"A workflow that claims no item, or whose journal holds no recognized\n" +
 	"review/local-CI evidence, therefore gets generic metadata unless it sets\n" +
 	"these inputs. That is the fallback working, not a missing feature.\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
+
+func openPRIssue(root, runID string) (id, title string, ok bool, err error) {
+	id, title, ok = claimedIssueFromJournal(root, runID)
+	explicitID := strings.TrimSpace(providerInput("itemID", ""))
+	explicitTitle := strings.TrimSpace(providerInput("itemTitle", ""))
+	if explicitID == "" {
+		if explicitTitle != "" && !ok {
+			return "", "", false, fmt.Errorf("open-pr input itemTitle requires itemID when the run has no claimed item")
+		}
+		if explicitTitle != "" {
+			title = explicitTitle
+		}
+		return id, title, ok, nil
+	}
+	if ok && id != explicitID {
+		return "", "", false, fmt.Errorf("open-pr input itemID %q conflicts with claimed item %q", explicitID, id)
+	}
+	id, ok = explicitID, true
+	if explicitTitle != "" {
+		title = explicitTitle
+	}
+	return id, title, ok, nil
+}
+
+// openPRTitle resolves the pull request title. In topology (b) a bare "#<n>"
+// in it (the issue title is the default) is rewritten to the backlog issue's
+// URL, because the title becomes the Azure DevOps squash-commit title, where
+// "#<n>" names ADO work item n; see crossProviderIssueText.
+func openPRTitle(root, runID string, repo providers.RepositoryRef) (title, issueID, issueTitle string, haveIssue bool, err error) {
+	issueID, issueTitle, haveIssue, err = openPRIssue(root, runID)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	title = providerInput("title", "")
+	if title == "" && haveIssue {
+		title = issueTitle
+	}
+	if title == "" {
+		title = "Automated implementation"
+	}
+	if haveIssue && issueID != "" {
+		title = crossProviderIssueText(title, issueID, prIssueReference(root, repo, issueID))
+	}
+	return title, issueID, issueTitle, haveIssue, nil
+}
 
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
@@ -84,7 +250,6 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	stageProvider, err := newProviderForStage(root, repo, false,
 		withStageProviderCapability(capability.ProviderPRWrite),
 		withStageProviderMutations("pr"),
-		withStageProviderOpenPR(),
 	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -107,19 +272,15 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// both sides. Recovered from the run journal (resume-safe), so this holds on
 	// a repass too. Falls back to the generic title/body when the run claimed no
 	// issue (other workflows) or an explicit title/body input is set.
-	issueID, issueTitle, haveIssue := claimedIssueFromJournal(root, runID)
-	title := providerInput("title", "")
-	if title == "" {
-		if haveIssue && issueTitle != "" {
-			title = issueTitle
-		} else {
-			title = "Automated implementation"
-		}
+	title, issueID, issueTitle, haveIssue, err := openPRTitle(root, runID, repo)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	body := providerInput("body", "")
 	structuredBody := false
 	if body == "" {
-		body, structuredBody, err = renderStructuredPRBody(root, runID, issueID, issueTitle)
+		body, structuredBody, err = renderStructuredPRBody(root, runID, issueID, prIssueReference(root, repo, issueID), issueTitle)
 		if err != nil {
 			pf(stderr, "error: render pull request body from journal: %v\n", err)
 			return 1
@@ -129,7 +290,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if haveIssue && issueID != "" && !structuredBody {
-		body += "\n\nFixes #" + issueID
+		body += "\n\nFixes " + prIssueReference(root, repo, issueID)
 	}
 	_, journalErr := stageRunJournal(root, runID)
 	if journalErr != nil && !errors.Is(journalErr, journalclient.ErrRunNotFound) {
@@ -251,7 +412,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if haveIssue && issueID != "" {
 		issuesRepo := backlogRepoRefForStage(root, repo)
 		ctxCheck, cancelCheck := providerCommandContext()
-		item, checkErr := provider.GetWorkItem(ctxCheck, issuesRepo, issueID)
+		item, checkErr := openPRWorkItem(ctxCheck, root, repo, issuesRepo, provider, issueID)
 		cancelCheck()
 		switch {
 		case providers.IsNotFoundError(checkErr):
@@ -268,6 +429,12 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 			}
 			return 0
 		}
+	}
+
+	workItemLinker, err := openPRWorkItemLinker(root, repo, haveIssue, issueID, stderr)
+	if err != nil {
+		pf(stderr, "error: resolve ADO work-item link authority: %v\n", err)
+		return 1
 	}
 
 	// Persist the mandatory finding before the external mutation. If the
@@ -293,15 +460,9 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	result, err := provider.OpenPullRequest(ctx, prReq)
-	if err != nil {
-		if tutorHoldout != nil {
-			if cleanupErr := clearTutorHoldoutsForRun(root, tutorHoldout.Gaggle, tutorHoldout.AuthoringRunID); cleanupErr != nil {
-				pf(stderr, "error: discard Tutor live verification after open pull request failed: %v (open pull request: %v)\n", cleanupErr, err)
-				return 1
-			}
-		}
-		return failProviderStage(stderr, "open pull request", err, "pr-result.json")
+	result, code := openPullRequestWithADOLink(ctx, provider, workItemLinker, repo, root, issueID, haveIssue, prReq, tutorHoldout, stderr)
+	if code != 0 {
+		return code
 	}
 
 	if recordTutorLiveVerification {

@@ -12,7 +12,9 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -90,6 +92,15 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 	if err != nil {
 		return err
 	}
+	if terminal {
+		disposable, err := recoveryCleanupRepositorylessDisposable(target.Path)
+		if err != nil {
+			return err
+		}
+		if disposable {
+			return nil
+		}
+	}
 	baseRef, err := recoveryCleanupBaseRef(target)
 	if err != nil {
 		return err
@@ -103,8 +114,47 @@ func recoveryCleanupCurrentTarget(ctx context.Context, layout instance.Layout, c
 			return nil
 		}
 	}
+	// A checkout that never reached a commit and holds no tracked, staged, or
+	// non-ignored untracked content has nothing a snapshot could capture, in
+	// either phase; Retain would only fail resolving a merge base against the
+	// unborn HEAD and leave the cleanup deferred forever.
+	if err := worktree.VerifyCleanupTargetEmptyWithoutHEAD(ctx, target); err == nil {
+		return nil
+	}
 	_, _, err = recovery.Retain(ctx, request, publication)
 	return err
+}
+
+func recoveryCleanupRepositorylessDisposable(path string) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect cleanup git metadata: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("inspect repository-less cleanup target: %w", err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("repository-less cleanup target is not a directory")
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, fmt.Errorf("inspect repository-less cleanup contents: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !recoveryCleanupDisposableRootArtifact(entry.Name()) {
+			return false, fmt.Errorf("repository-less cleanup target contains unretained files")
+		}
+	}
+	return true, nil
+}
+
+func recoveryCleanupDisposableRootArtifact(name string) bool {
+	return name == mutationsidecar.FileName || providerstage.IsDefaultResultFile(name)
 }
 
 func recoveryCleanupHistoricalTarget(ctx context.Context, layout instance.Layout, cfg *instance.Config, cleanupRoot string, scrubber journal.Scrubber, manager *worktree.Manager, key string, target worktree.CleanupTarget) error {

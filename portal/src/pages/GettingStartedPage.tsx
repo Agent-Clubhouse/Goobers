@@ -87,7 +87,49 @@ const workflowChoices: Array<{
     outcome: "Adds implementer and reviewer goobers.",
     image: "/workflow-implementation.png",
   },
+  {
+    id: "merge-review",
+    title: "Merge review",
+    description: "Reviews open pull requests and completes the ones that pass review and policy.",
+    outcome: "Adds a reviewer goober.",
+    image: "/workflow-implementation.png",
+  },
 ];
+
+type GuidedProvider = "github" | "ado";
+
+// Guided setup refuses work-nomination on Azure DevOps (its file-issues stage
+// files GitHub issues only) and offers merge-review on Azure DevOps only.
+function workflowOffered(workflow: GuidedWorkflow, provider: GuidedProvider): boolean {
+  switch (workflow) {
+    case "work-nomination":
+      return provider !== "ado";
+    case "merge-review":
+      return provider === "ado";
+    default:
+      return true;
+  }
+}
+
+// The wizard's default selection per provider. Azure DevOps mirrors
+// `goobers init --template=standard --provider=ado`, which adds merge-review.
+function defaultGuidedWorkflows(provider: GuidedProvider): GuidedWorkflow[] {
+  return provider === "ado"
+    ? ["backlog-curation", "implementation", "merge-review"]
+    : ["work-nomination", "backlog-curation", "implementation"];
+}
+
+// providerWorkflows keeps the defaults for provider until the user changes
+// the selection, and afterwards drops only what provider does not offer.
+function providerWorkflows(
+  workflows: GuidedWorkflow[],
+  provider: GuidedProvider,
+  customized: boolean,
+): GuidedWorkflow[] {
+  return customized
+    ? workflows.filter((workflow) => workflowOffered(workflow, provider))
+    : defaultGuidedWorkflows(provider);
+}
 
 export function GettingStartedPage({ client = defaultClient }: { client?: GuidedClient } = {}) {
   const [query, setQuery] = useState<QueryState>({ status: "loading" });
@@ -107,7 +149,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   );
   const [workflows, setWorkflows] = useSessionState<GuidedWorkflow[]>(
     "goobers-wizard-workflows",
-    ["work-nomination", "backlog-curation", "implementation"],
+    defaultGuidedWorkflows("github"),
+  );
+  const [workflowsCustomized, setWorkflowsCustomized] = useSessionState(
+    "goobers-wizard-workflows-customized",
+    false,
   );
   const [issueScope, setIssueScope] = useSessionState<"all" | "assigned">(
     "goobers-wizard-issue-scope",
@@ -249,6 +295,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       setWorkflows([...workflows, "implementation"]);
     }
   }, [implementationSelected, setWorkflows, workflows]);
+
+  const provider: GuidedProvider = inspection?.provider ?? "github";
+  useEffect(() => {
+    const next = providerWorkflows(workflows, provider, workflowsCustomized);
+    if (next.length !== workflows.length || next.some((workflow, index) => workflow !== workflows[index])) {
+      setWorkflows(next);
+    }
+  }, [provider, setWorkflows, workflows, workflowsCustomized]);
 
   useEffect(() => {
     if (!inspection) {
@@ -924,19 +978,22 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               label="Learn how gaggles and workflow anatomy fit together"
             />
             <div className="guided-module-grid">
-              {workflowChoices.map((choice) => (
+              {workflowChoices.filter((choice) => workflowOffered(choice.id, provider)).map((choice) => (
                 <label className="guided-module-card" data-selected={workflows.includes(choice.id)} key={choice.id}>
                   <input
                     checked={workflows.includes(choice.id)}
                     disabled={choice.id === "implementation"}
-                    onChange={() =>
-                      choice.id !== "implementation" &&
+                    onChange={() => {
+                      if (choice.id === "implementation") {
+                        return;
+                      }
+                      setWorkflowsCustomized(true);
                       setWorkflows(
                         workflows.includes(choice.id)
                           ? workflows.filter((workflow) => workflow !== choice.id)
                           : [...workflows, choice.id],
-                      )
-                    }
+                      );
+                    }}
                     type="checkbox"
                   />
                   <img alt="" src={choice.image} />
@@ -1100,6 +1157,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               </p>
             )}
             {initResult?.stdout && <p className="guided-success">{initResult.stdout}</p>}
+            {initResult && initResult.exitCode !== 0 && (
+              <div className="guided-result" role="alert">
+                <strong>The instance was not created.</strong>
+                <pre className="code-block guided-output">
+                  {initResult.stderr.trim() || `goobers init exited with code ${initResult.exitCode}.`}
+                </pre>
+              </div>
+            )}
           </WizardPage>
         );
       case "repository-setup":

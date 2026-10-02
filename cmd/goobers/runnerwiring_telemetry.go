@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
@@ -25,22 +28,34 @@ func buildTelemetryClient(
 	l instance.Layout,
 	scrubber journal.Scrubber,
 	registry *journal.RegistryScrubber,
-	otlp instance.OTLPConfig,
+	telemetryConfig instance.TelemetryConfig,
 	stores credentials.StoreResolver,
+	// Nil keeps one-shot setup immediate; the daemon supplies its readiness signal.
+	replayStart <-chan struct{},
 ) (*telemetry.Client, error) {
 	cfg := telemetry.Config{
-		ServiceName:    "goobers",
-		ServiceVersion: version.Get().Version,
-		BuildCommit:    version.Get().Commit,
-		SpanExporter:   telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
-		Scrubber:       scrubber,
-		Batch:          true,
-		JournalRoot:    l.Root,
+		ServiceName:             "goobers",
+		ServiceVersion:          version.Get().Version,
+		BuildCommit:             version.Get().Commit,
+		SpanExporter:            telemetry.NewPerGaggleJournalSpanExporter(l.Root, scrubber),
+		Scrubber:                scrubber,
+		Batch:                   true,
+		JournalRoot:             l.Root,
+		AzureMonitorReplayStart: replayStart,
 	}
 	// Only the durable identity is trustworthy; legacy roots remain unidentified.
-	cfg.JournalInstanceID, _ = l.ReadIdentity()
-	if err := configureOTLP(ctx, &cfg, otlp, registry, stores); err != nil {
-		return nil, err
+	// Carry it on every signal as a resource attribute so operators can correlate
+	// process restarts with the same customer-managed instance and its journals.
+	cfg.JournalInstanceID, cfg.ResourceAttributes = telemetryInstanceIdentities(l.Root)
+	if telemetryConfig.OTLP != nil {
+		if err := configureOTLP(ctx, &cfg, *telemetryConfig.OTLP, registry, stores); err != nil {
+			return nil, err
+		}
+	}
+	if telemetryConfig.AzureMonitor != nil {
+		if err := configureAzureMonitor(ctx, &cfg, *telemetryConfig.AzureMonitor, telemetryConfig.EffectiveCollectionProfile(), l.Root, registry, stores); err != nil {
+			return nil, err
+		}
 	}
 	// telemetry.New may return a non-nil *Client alongside an error wrapping
 	// telemetry.ErrOTLPUnavailable (invalid TLS material) — that Client is
@@ -48,6 +63,50 @@ func buildTelemetryClient(
 	// non-nil error here as a construction failure. See daemon.go's call
 	// site for the degrade handling.
 	return telemetry.New(ctx, cfg)
+}
+
+func configureAzureMonitor(
+	ctx context.Context,
+	cfg *telemetry.Config,
+	azure instance.AzureMonitorConfig,
+	profile instance.TelemetryCollectionProfile,
+	instanceRoot string,
+	registry *journal.RegistryScrubber,
+	stores credentials.StoreResolver,
+) error {
+	ref := azure.ConnectionString.CredentialTokenRef("telemetry.azureMonitor.connectionString")
+	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{ref}, stores)
+	if err != nil {
+		return fmt.Errorf("configure Azure Monitor telemetry: %w", err)
+	}
+	connectionString, err := resolver.Resolve(ctx, ref.Name)
+	if err != nil {
+		return fmt.Errorf("resolve Azure Monitor connection string: %w", err)
+	}
+	if registry != nil {
+		registry.Register([]byte(connectionString))
+	}
+	cfg.AzureMonitorConnectionString = connectionString
+	cfg.AzureMonitorTraces = profile.IncludesTraces()
+	cfg.AzureMonitorJournalLogs = profile.IncludesJournal()
+	cfg.AzureMonitorHostIdentity = profile.IncludesHostIdentity()
+	if azure.Replay.EnabledEffective() && instanceRoot != "" {
+		// #6058: the replay spool and journal-export cursor store open SQLite
+		// through sqliteuri.File, whose contract is an absolute path. A
+		// relative instance root (`goobers up .`) became "file:///telemetry-
+		// export/…" at the filesystem root, so journal catch-up could never
+		// open its cursor store and no run journal was exported.
+		spoolRoot, err := filepath.Abs(filepath.Join(instanceRoot, "telemetry-export", "azure-monitor"))
+		if err != nil {
+			return fmt.Errorf("resolve Azure Monitor replay root: %w", err)
+		}
+		cfg.AzureMonitorReplayRoot = spoolRoot
+		cfg.AzureMonitorReplayMaxAge = azure.Replay.MaxAgeDuration()
+		cfg.AzureMonitorReplayMaxBytes = azure.Replay.MaxBytesEffective()
+	}
+	cfg.ResourceAttributes = append(cfg.ResourceAttributes,
+		attribute.String("goobers.telemetry.profile", string(profile)))
+	return nil
 }
 
 func resolveOTLPHeaders(
@@ -77,7 +136,9 @@ func resolveOTLPHeaders(
 		if err != nil {
 			return nil, fmt.Errorf("resolve telemetry OTLP header %q: %w", name, err)
 		}
-		registry.Register([]byte(value))
+		if registry != nil {
+			registry.Register([]byte(value))
+		}
 		headers[name] = value
 	}
 	return headers, nil

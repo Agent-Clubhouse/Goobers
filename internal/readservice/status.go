@@ -67,6 +67,25 @@ type SchedulerStatus struct {
 	TelemetryRetention     *TelemetryRetentionStatus
 	JournalHealth          *JournalHealthStatus
 	StorageHealth          *StorageHealthStatus
+	// ConfigReloadRejection is the newest config.reload.rejected since the
+	// last accepted reload or daemon start (#5596). Nil when none.
+	ConfigReloadRejection *ConfigReloadRejectionStatus
+}
+
+// ConfigReloadRejectionStatus is the most recent rejected config reload: when,
+// which candidate digest (empty when the tree could not be read), and why.
+type ConfigReloadRejectionStatus struct {
+	At      time.Time
+	Digest  string
+	Message string
+}
+
+func configReloadRejection(event journal.Event) *ConfigReloadRejectionStatus {
+	status := &ConfigReloadRejectionStatus{At: event.Time, Digest: runnerString(event.Runner, "newDigest")}
+	if event.Error != nil {
+		status.Message = event.Error.Message
+	}
+	return status
 }
 
 // JournalHealthStatus exposes process-lifetime instance-journal write health.
@@ -220,10 +239,22 @@ type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, e
 // model is attached, scope and limit are pushed into its indexed query instead
 // of being applied after an exhaustive projection read (#4863).
 func (s *Local) ListStatusRuns(ctx context.Context, options StatusRunOptions) ([]RunSummary, error) {
+	var (
+		runs []RunSummary
+		err  error
+	)
 	if s.readModelReads && s.sources.ReadModel != nil {
-		return s.listStatusRunsFromReadModel(ctx, options)
+		runs, err = s.listStatusRunsFromReadModel(ctx, options)
+	} else {
+		runs, err = s.runSummaries(ctx, true)
 	}
-	return s.runSummaries(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.decorateRunLineage(ctx, runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
 }
 
 type statusRunQuery struct {
@@ -565,7 +596,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 			return SchedulerStatus{}, err
 		}
 	}
-	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart, ConfigReloadRejection: projected.configReloadRejection}
 	if s.sources.InstanceLogStats != nil {
 		stats := s.sources.InstanceLogStats()
 		status.JournalHealth = &JournalHealthStatus{AppendsDropped: stats.AppendsDropped}

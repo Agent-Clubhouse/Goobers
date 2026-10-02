@@ -157,6 +157,28 @@
       "recoverySafe": false
     },
     {
+      "id": "gaggleBundleExport",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/bundle",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "gaggleBundleImport",
+      "method": "POST",
+      "path": "/api/v1/gaggles/import",
+      "actionClass": "maintenance",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workflowDetail",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workflows/{workflow}",
@@ -361,7 +383,7 @@
       "actionClass": "read-only-navigation",
       "remoteInvocable": false,
       "cost": "aggregate",
-      "budgetMs": 8000,
+      "budgetMs": 240000,
       "streaming": false,
       "recoverySafe": false
     },
@@ -566,6 +588,17 @@
       "recoverySafe": false
     },
     {
+      "id": "credentialRefresh",
+      "method": "POST",
+      "path": "/api/v1/credentials/refresh",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 45000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "stageSurrender",
       "method": "POST",
       "path": "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender",
@@ -679,6 +712,17 @@
       "id": "journalBranchOwnership",
       "method": "POST",
       "path": "/api/v1/journal/branch-ownership",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "operatorMessageSubmit",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/operator-messages",
       "actionClass": "workflow-execution",
       "remoteInvocable": false,
       "cost": "mutation",

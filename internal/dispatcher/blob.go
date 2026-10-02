@@ -14,6 +14,7 @@ import (
 
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/daemonclient"
 )
 
 // BlobPathPrefix is the blob endpoint's digest route root: one blob is
@@ -58,13 +59,16 @@ type BlobClient struct {
 	// Has are not retried: a hung fetch or probe fails the caller directly
 	// rather than blocking the fail-soft materialize contract.
 	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing for this client. Zero values retain
+	// the production defaults.
+	RetryPolicy RetryPolicy
 }
 
 func (c *BlobClient) httpClient() *http.Client {
 	if c.Client != nil {
 		return c.Client
 	}
-	return &http.Client{Timeout: defaultBlobTimeout}
+	return daemonclient.NewHTTP(defaultBlobTimeout)
 }
 
 func (c *BlobClient) blobURL(digest string) (string, error) {
@@ -140,7 +144,7 @@ func (c *BlobClient) Put(ctx context.Context, digest string, data []byte) error 
 	if deadline <= 0 {
 		deadline = defaultBlobRetryDeadline
 	}
-	return withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+	return withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
 		request, err := c.request(ctx, http.MethodPut, digest, bytes.NewReader(data))
 		if err != nil {
 			return false, fmt.Errorf("dispatcher: put blob %s: %w", digest, err)
@@ -236,7 +240,7 @@ func ResolveStageCredentials(ctx context.Context, client *http.Client, baseURL, 
 		httpRequest.Header.Set("Authorization", "Bearer "+podToken)
 	}
 	if client == nil {
-		client = &http.Client{Timeout: defaultBlobTimeout}
+		client = daemonclient.NewHTTP(defaultBlobTimeout)
 	}
 	response, err := client.Do(httpRequest)
 	if err != nil {

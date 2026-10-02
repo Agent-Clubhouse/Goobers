@@ -947,6 +947,8 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.workflow",
 		"goobers.workflow.version",
 		"goobers.workflow.digest",
+		"goobers.config.generation",
+		"goobers.trigger.kind",
 		"goobers.goober.digest",
 		"goobers.goober",
 		"goobers.model",

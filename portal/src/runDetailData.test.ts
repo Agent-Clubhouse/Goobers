@@ -13,6 +13,7 @@ import {
   eventNodeId,
   eventStage,
   eventSummary,
+  humanize,
   isFailureJournalEvent,
   journalEntries,
   keyMoments,
@@ -52,6 +53,12 @@ function event(seq: number, type: RunEvent["type"], fields: Partial<RunEvent>): 
 }
 
 describe("run detail projection", () => {
+  it("preserves known acronyms while humanizing identifiers", () => {
+    expect(humanize("update-behind-pr")).toBe("Update behind PR");
+    expect(humanize("gather-pr-context")).toBe("Gather PR context");
+    expect(humanize("pr-remediation")).toBe("PR remediation");
+  });
+
   it("orders and derives state at a sequence without mutating source data", () => {
     const events = [
       event(4, "gate.evaluated", {
@@ -215,7 +222,7 @@ describe("run detail projection", () => {
         stage: "pre-review",
         visit: 1,
         status: "completed",
-        result: "Needs changes → Implement",
+        result: "Needs changes · Next: Implement",
       }),
       expect.objectContaining({
         stage: "lint-fast",
@@ -1065,6 +1072,78 @@ describe("run failure banner", () => {
       code: "harness.crash",
       stage: "implement",
       causalEventSeq: 2,
+    });
+  });
+
+  it("preserves structured causes from the causal failure event", () => {
+    const run = terminalRun({ terminalReason: "stage review finished with status failure" });
+    const events = [
+      event(2, "stage.finished", {
+        stage: "review",
+        attempt: 1,
+        status: "failure",
+        error: {
+          code: "review_failed",
+          message: "review gate failed: review requested changes",
+          causes: [
+            { message: "review gate failed" },
+            { code: "review_rejected", message: "review requested changes" },
+          ],
+        },
+      }),
+    ];
+
+    expect(runFailure(run, events)).toMatchObject({
+      message: "review gate failed: review requested changes",
+      causes: [
+        { message: "review gate failed" },
+        { code: "review_rejected", message: "review requested changes" },
+      ],
+      code: "review_failed",
+      stage: "review",
+      attempt: 1,
+      causalEventSeq: 2,
+    });
+  });
+
+  it("uses structured causes from the terminal run_failed event", () => {
+    const run = terminalRun({ terminalReason: "github_rate_limited: list pull requests: status 403, remaining 0" });
+    const events = [
+      event(2, "stage.finished", {
+        stage: "implement",
+        attempt: 1,
+        status: "failure",
+        error: {
+          code: "github_rate_limited",
+          message: "list pull requests: status 403, remaining 0",
+          causes: [
+            { message: "list pull requests" },
+            { code: "github_rate_limited", class: "infra", message: "status 403, remaining 0" },
+          ],
+        },
+      }),
+      event(3, "error", {
+        stage: "implement",
+        error: {
+          code: "run_failed",
+          message: "github_rate_limited: list pull requests: status 403, remaining 0",
+          causes: [
+            { message: "list pull requests" },
+            { code: "github_rate_limited", class: "infra", message: "status 403, remaining 0" },
+          ],
+        },
+      }),
+    ];
+
+    expect(runFailure(run, events)).toMatchObject({
+      message: "github_rate_limited: list pull requests: status 403, remaining 0",
+      code: "run_failed",
+      stage: "implement",
+      causalEventSeq: 3,
+      causes: [
+        { message: "list pull requests" },
+        { code: "github_rate_limited", class: "infra", message: "status 403, remaining 0" },
+      ],
     });
   });
 

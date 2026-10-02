@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/daemonclient"
 )
 
 // defaultCredentialTimeout bounds a resolve. Short on purpose: credentials are
@@ -48,15 +49,29 @@ const defaultCredentialRetryDeadline = 3 * time.Minute
 type MintedCredential struct {
 	Capability string `json:"capability"`
 	Value      string `json:"value"`
+	// ExpiresAt is the expiry the plane stated for Value
+	// (httpapi.MintedCredential), nil when its source states none. The pod
+	// delivers it to the stage beside the value (#5905).
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 // CredentialResolution is one resolve answer: the minted credentials, plus
 // the non-secret authorization scheme ("basic" or "bearer") the plane states
 // for an Azure DevOps repository credential (httpapi.CredentialResolveResponse
 // RepoAuthScheme). RepoAuthScheme is empty for every other provider.
+//
+// Grant is the stage credential-refresh grant the plane minted when the
+// request asked for one and the stage qualifies (Goobers#6120); nil otherwise.
 type CredentialResolution struct {
 	Credentials    []MintedCredential
 	RepoAuthScheme string
+	Grant          *CredentialGrant
+}
+
+// CredentialGrant mirrors httpapi.CredentialGrantDelivery.
+type CredentialGrant struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 // CredentialResolveClient resolves a stage's declared credential capabilities
@@ -72,15 +87,18 @@ type CredentialResolveClient struct {
 	Token string
 	// Client overrides the HTTP client; nil uses a bounded default.
 	Client *http.Client
-	// RetryDeadline bounds how long Resolve retries a transport error or 5xx
+	// RetryDeadline bounds how long ResolveStage retries a transport error or 5xx
 	// response before giving up. Zero uses defaultCredentialRetryDeadline.
 	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing for this client. Zero values retain
+	// the production defaults.
+	RetryPolicy RetryPolicy
 }
 
 // CredentialResolveRefusal is the credential plane's own answer to a resolve —
 // a non-200 status carrying the plane's diagnostic — as distinct from a
 // transport fault (a dial that never reached the plane, a timeout, an
-// unreadable body), which Resolve returns untyped. The split is what a pod
+// unreadable body), which ResolveStage returns untyped. The split is what a pod
 // classifies a failed resolve by: a refusal the plane will repeat for every
 // pod of this stage (403 capability_undeclared, 409 gate_pin_missing, 400
 // invalid_request) is a configuration outcome, and spending a fresh pod on it
@@ -111,42 +129,55 @@ func (e *CredentialResolveRefusal) Deterministic() bool {
 	return e.Status >= 400 && e.Status < 500
 }
 
-// Resolve returns the credentials the daemon grants this run's stage. An empty
-// capability list resolves to nothing WITHOUT calling the daemon: a stage that
-// declared no capabilities must not cause a credential request at all.
+// ResolveStage returns the credentials the daemon grants this run's stage,
+// with the authorization scheme the plane states for an Azure DevOps
+// repository credential. An empty capability list resolves to nothing WITHOUT
+// calling the daemon: a stage that declared no capabilities must not cause a
+// credential request at all.
 //
 // A non-200 answer from the plane is returned as a *CredentialResolveRefusal;
 // every other failure — including a plane that could not be reached — is an
 // untyped error, so errors.As on the refusal type separates the plane's
 // judgement from the transport's.
-func (c *CredentialResolveClient) Resolve(ctx context.Context, runID, stage string, capabilities []string) ([]MintedCredential, error) {
-	resolution, err := c.ResolveStage(ctx, runID, stage, capabilities)
-	return resolution.Credentials, err
+func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage string, capabilities []string) (CredentialResolution, error) {
+	return c.Resolve(ctx, CredentialResolveRequest{RunID: runID, Stage: stage, Capabilities: capabilities})
 }
 
-// ResolveStage is Resolve returning the whole answer, including the
-// authorization scheme the plane states for an Azure DevOps repository
-// credential. Its request, retry and refusal behaviour are Resolve's.
-func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage string, capabilities []string) (CredentialResolution, error) {
-	if len(capabilities) == 0 {
+// CredentialResolveRequest is one resolve call. Grant asks the plane for a
+// stage credential-refresh grant (Goobers#6120) for Attempt, sized from
+// TimeoutSeconds when the pinned definition declares no timeout; only the
+// pod's stage-start resolve of a deterministic stage sets it.
+type CredentialResolveRequest struct {
+	RunID          string   `json:"runId"`
+	Stage          string   `json:"stage"`
+	Capabilities   []string `json:"capabilities,omitempty"`
+	Grant          bool     `json:"grant,omitempty"`
+	Attempt        int32    `json:"attempt,omitempty"`
+	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty"`
+}
+
+// Resolve is ResolveStage for a full request.
+func (c *CredentialResolveClient) Resolve(ctx context.Context, resolve CredentialResolveRequest) (CredentialResolution, error) {
+	if len(resolve.Capabilities) == 0 {
 		return CredentialResolution{}, nil
 	}
 	base := strings.TrimRight(c.BaseURL, "/")
 	if base == "" {
 		return CredentialResolution{}, errors.New("dispatcher: credential client has no base URL")
 	}
-	if runID == "" || stage == "" {
-		return CredentialResolution{}, fmt.Errorf("dispatcher: credential resolve requires run and stage (got run %q stage %q)", runID, stage)
+	if resolve.RunID == "" || resolve.Stage == "" {
+		return CredentialResolution{}, fmt.Errorf("dispatcher: credential resolve requires run and stage (got run %q stage %q)", resolve.RunID, resolve.Stage)
 	}
-	body, err := json.Marshal(struct {
-		RunID        string   `json:"runId"`
-		Stage        string   `json:"stage"`
-		Capabilities []string `json:"capabilities,omitempty"`
-	}{RunID: runID, Stage: stage, Capabilities: capabilities})
+	body, err := json.Marshal(resolve)
 	if err != nil {
 		return CredentialResolution{}, fmt.Errorf("dispatcher: encode credential resolve request: %w", err)
 	}
-	endpoint := base + apicontract.CredentialResolvePath
+	return c.post(ctx, base+apicontract.CredentialResolvePath, body)
+}
+
+// post sends one credential-plane request with the client's bearer, retrying
+// a transport fault or 5xx until the retry deadline.
+func (c *CredentialResolveClient) post(ctx context.Context, endpoint string, body []byte) (CredentialResolution, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return CredentialResolution{}, fmt.Errorf("dispatcher: build credential resolve request: %w", err)
@@ -157,7 +188,7 @@ func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage
 	}
 	client := c.Client
 	if client == nil {
-		client = &http.Client{Timeout: defaultCredentialTimeout}
+		client = daemonclient.NewHTTP(defaultCredentialTimeout)
 	}
 	deadline := c.RetryDeadline
 	if deadline <= 0 {
@@ -169,7 +200,7 @@ func (c *CredentialResolveClient) ResolveStage(ctx context.Context, runID, stage
 	// credential per call rather than consuming a one-shot grant. A repeated
 	// resolve can only return the same entitlement again.
 	var resolution CredentialResolution
-	retryErr := withRetry(ctx, deadline, func(ctx context.Context) (bool, error) {
+	retryErr := withRetryPolicy(ctx, deadline, c.RetryPolicy, func(ctx context.Context) (bool, error) {
 		// A fresh request per attempt: an *http.Request body is consumed by
 		// the first send, so a retried request would post an empty body and
 		// be refused as invalid — a self-inflicted non-retryable failure.
@@ -220,6 +251,7 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 	var decoded struct {
 		Credentials    []MintedCredential `json:"credentials"`
 		RepoAuthScheme string             `json:"repoAuthScheme"`
+		Grant          *CredentialGrant   `json:"grant"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		return CredentialResolution{}, false, fmt.Errorf("dispatcher: decode credential resolve response: %w", err)
@@ -232,5 +264,57 @@ func (c CredentialResolveClient) resolveOnce(client *http.Client, request *http.
 			return CredentialResolution{}, false, fmt.Errorf("dispatcher: credential plane returned an empty value for capability %q", cred.Capability)
 		}
 	}
-	return CredentialResolution{Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme}, false, nil
+	return CredentialResolution{Credentials: decoded.Credentials, RepoAuthScheme: decoded.RepoAuthScheme, Grant: decoded.Grant}, false, nil
+}
+
+// defaultCredentialRefreshDeadline bounds a mid-stage refresh's retries. It is
+// short: the caller is a live provider request that already has a value to
+// fall back on (a proactive refresh) or has already failed (a 401).
+const defaultCredentialRefreshDeadline = 30 * time.Second
+
+// CredentialRefreshClient re-resolves one capability mid-stage through the
+// credential plane's refresh route, authenticated by the stage's
+// credential-refresh grant (Goobers#6120). It is what a deterministic stage —
+// local or in a pod — holds instead of the pod token, which it never sees.
+type CredentialRefreshClient struct {
+	// BaseURL is GOOBERS_CREDENTIAL_ENDPOINT.
+	BaseURL string
+	// Grant is GOOBERS_CREDENTIAL_GRANT.
+	Grant string
+	// Client overrides the HTTP client; nil uses a bounded default.
+	Client *http.Client
+	// RetryDeadline bounds retries; zero uses defaultCredentialRefreshDeadline.
+	RetryDeadline time.Duration
+	// RetryPolicy overrides retry pacing.
+	RetryPolicy RetryPolicy
+}
+
+// Refresh returns a freshly minted value for capability. A non-200 answer is a
+// *CredentialResolveRefusal, as for ResolveStage.
+func (c *CredentialRefreshClient) Refresh(ctx context.Context, capability string) (MintedCredential, error) {
+	base := strings.TrimRight(c.BaseURL, "/")
+	if base == "" || c.Grant == "" {
+		return MintedCredential{}, errors.New("dispatcher: credential refresh client has no endpoint or grant")
+	}
+	body, err := json.Marshal(struct {
+		Capability string `json:"capability"`
+	}{Capability: capability})
+	if err != nil {
+		return MintedCredential{}, fmt.Errorf("dispatcher: encode credential refresh request: %w", err)
+	}
+	deadline := c.RetryDeadline
+	if deadline <= 0 {
+		deadline = defaultCredentialRefreshDeadline
+	}
+	resolver := CredentialResolveClient{BaseURL: base, Token: c.Grant, Client: c.Client, RetryDeadline: deadline, RetryPolicy: c.RetryPolicy}
+	resolution, err := resolver.post(ctx, base+apicontract.CredentialRefreshPath, body)
+	if err != nil {
+		return MintedCredential{}, err
+	}
+	for _, minted := range resolution.Credentials {
+		if minted.Capability == capability {
+			return minted, nil
+		}
+	}
+	return MintedCredential{}, fmt.Errorf("dispatcher: credential refresh returned no value for capability %q", capability)
 }

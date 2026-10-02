@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS GAGGLE EXPORT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers gaggle export \- export a sanitized portable gaggle bundle
+.SH SYNOPSIS
+\fBgoobers gaggle export\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers gaggle export [--output <file>] <gaggle> [path]
+
+Validate the source configuration and write a deterministic JSON bundle.
+The digest is stable for unchanged sanitized definitions; exportedAt is not
+part of the digest. Without --output, write the bundle to stdout.
+.fi
+.SH EXAMPLES
+.nf
+goobers gaggle export example
+goobers gaggle export --output example.bundle.json example ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

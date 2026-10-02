@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -284,6 +285,188 @@ func TestOpenPRRoutesADOThroughExecutorInjectedAuthentication(t *testing.T) {
 	}
 }
 
+// TestOpenPRADOWorkItemLinkUsesDedicatedCapabilityBestEffort pins #5925's
+// best-effort rule: without a delivered ado:work-items:write credential the
+// linker resolves to the text-only stand-in (the pull-request credential is
+// never used for the work-item write), and with one it resolves a native
+// linker from that credential.
+func TestOpenPRADOWorkItemLinkUsesDedicatedCapabilityBestEffort(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Repos = []instance.RepoRef{{
+		Provider: "ado",
+		Owner:    "org",
+		Project:  "project",
+		Name:     "repo",
+		Token:    instance.TokenRef{Env: "ADO_OPEN_PR_PAT"},
+	}}
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "org", Project: "project", Name: "repo"}
+	t.Setenv(executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "pr-only-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
+
+	var stderr strings.Builder
+	linker, err := openPRWorkItemLinker(root, repo, true, "42", &stderr)
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker without dedicated capability: %v", err)
+	}
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); !textOnly {
+		t.Fatalf("openPRWorkItemLinker without dedicated capability = %T, want the text-only stand-in", linker)
+	}
+	if !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), string(capability.ADOWorkItemsWrite)) {
+		t.Fatalf("stderr = %q, want a warning naming %s", stderr.String(), capability.ADOWorkItemsWrite)
+	}
+
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "work-item-token")
+	stderr.Reset()
+	linker, err = openPRWorkItemLinker(root, repo, true, "42", &stderr)
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker with dedicated capability: %v", err)
+	}
+	if linker == nil {
+		t.Fatal("openPRWorkItemLinker returned nil linker")
+	}
+	if _, textOnly := linker.(textOnlyADOWorkItemLink); textOnly {
+		t.Fatal("openPRWorkItemLinker with a delivered credential returned the text-only stand-in")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no warning when the credential is delivered", stderr.String())
+	}
+}
+
+func TestOpenPRIssueUsesExplicitReadOnlySelection(t *testing.T) {
+	t.Setenv(executor.InputEnvVar("itemID"), "3295607")
+	t.Setenv(executor.InputEnvVar("itemTitle"), "Selected canary")
+
+	id, title, ok, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "3295607" || title != "Selected canary" {
+		t.Fatalf("openPRIssue = (%q, %q, %t), want explicit selected item", id, title, ok)
+	}
+}
+
+func TestOpenPRIssueRejectsTitleWithoutIdentity(t *testing.T) {
+	t.Setenv(executor.InputEnvVar("itemTitle"), "Ambiguous item")
+
+	_, _, _, err := openPRIssue(filepath.Join(t.TempDir(), "missing-root"), "run-read-only")
+	if err == nil || !strings.Contains(err.Error(), "itemTitle requires itemID") {
+		t.Fatalf("openPRIssue error = %v, want itemTitle identity error", err)
+	}
+}
+
+func TestOpenPRIssueAcceptsMatchingClaimedIdentity(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-matching-item"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "42", "title": "Claimed title"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	t.Setenv(executor.InputEnvVar("itemID"), "42")
+
+	id, title, ok, err := openPRIssue(root, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || id != "42" || title != "Claimed title" {
+		t.Fatalf("openPRIssue = (%q, %q, %t), want matching claimed item", id, title, ok)
+	}
+}
+
+func TestOpenPRIssueRejectsConflictingClaimedIdentity(t *testing.T) {
+	root := initDemo(t)
+	const runID = "run-conflicting-item"
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventStageFinished, Stage: "query-backlog", Status: "success",
+		Outputs: map[string]any{"id": "42", "title": "Claimed title"},
+	}); err != nil {
+		t.Fatalf("record claimed item: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+	t.Setenv(executor.InputEnvVar("itemID"), "84")
+
+	_, _, _, err = openPRIssue(root, runID)
+	if err == nil || !strings.Contains(err.Error(), `itemID "84" conflicts with claimed item "42"`) {
+		t.Fatalf("openPRIssue error = %v, want conflicting identity error", err)
+	}
+}
+
+func TestOpenPRGitHubDoesNotResolveADOWorkItemAuthority(t *testing.T) {
+	previous := newADOProviderForStage
+	called := false
+	newADOProviderForStage = func(providers.RepositoryRef, providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		called = true
+		return nil, fmt.Errorf("unexpected ADO provider construction")
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+
+	linker, err := openPRWorkItemLinker("", providers.RepositoryRef{Provider: providers.ProviderGitHub}, true, "42", io.Discard)
+	if err != nil {
+		t.Fatalf("openPRWorkItemLinker for GitHub: %v", err)
+	}
+	if linker != nil {
+		t.Fatal("GitHub open-pr received an ADO work-item linker")
+	}
+	if called {
+		t.Fatal("GitHub open-pr resolved ADO work-item authority")
+	}
+}
+
+func TestOpenPRGitHubSupportsExplicitItemWithoutADOAuthority(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.ProviderPRWrite)), "run-github-explicit-item")
+	t.Setenv(executor.InputEnvVar("itemID"), "42")
+	t.Setenv(executor.InputEnvVar("itemTitle"), "Explicit GitHub issue")
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOWorkItemsWrite)), "")
+	t.Chdir(t.TempDir())
+
+	if code, stdout, stderr := runArgs(t, "open-pr", root); code != 0 {
+		t.Fatalf("open-pr: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	pr := server.prs[1]
+	server.mu.Unlock()
+	if pr == nil {
+		t.Fatal("no GitHub PR opened")
+	}
+	if pr.title != "Explicit GitHub issue" {
+		t.Fatalf("GitHub PR title = %q, want explicit issue title", pr.title)
+	}
+	if !strings.Contains(pr.body, "Fixes #42") {
+		t.Fatalf("GitHub PR body = %q, want GitHub issue back-reference", pr.body)
+	}
+}
+
 func TestOpenPRADOStageHelperProcess(t *testing.T) {
 	if os.Getenv("GOOBERS_TEST_ADO_OPEN_PR_HELPER") != "1" {
 		return
@@ -293,8 +476,8 @@ func TestOpenPRADOStageHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	baseURL := os.Getenv("GOOBERS_TEST_ADO_API_URL")
-	newADOProviderForOpenPR = func(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-		provider, err := buildADOProviderForOpenPR(root, routed)
+	newADOProviderForStage = func(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+		provider, err := buildADOProviderForStage(routed, credential)
 		if err != nil {
 			return nil, err
 		}
@@ -326,8 +509,9 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 		Type: journal.EventStageFinished, Stage: "query-backlog", Attempt: 1, Status: "success",
 		Outputs: map[string]any{
 			"id": "42", "title": "Render rich PR bodies",
-			"body":      "## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
-			"updatedAt": "2026-08-01T12:00:00Z",
+			"body":               "## Problem\nPR bodies lack context.\n\n## Notes\nDone.",
+			"acceptanceCriteria": "- [x] Include journal evidence.",
+			"updatedAt":          "2026-08-01T12:00:00Z",
 		},
 	}); err != nil {
 		t.Fatalf("record claimed issue: %v", err)
@@ -437,7 +621,7 @@ func TestOpenPRRendersStructuredJournalBodyWithRepassHistory(t *testing.T) {
 			"42",
 			"2026-08-01T12:00:00Z",
 			"Render rich PR bodies",
-			"## Problem\nPR bodies lack context.\n\n### Acceptance criteria\n- [x] Include journal evidence.\n\n## Notes\nDone.",
+			"## Problem\nPR bodies lack context.\n\n## Notes\nDone.\n\n## Acceptance Criteria\n\n- [x] Include journal evidence.",
 		),
 	} {
 		if !strings.Contains(pr.body, want) {

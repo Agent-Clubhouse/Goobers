@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +114,26 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			wantCheckNames: []string{"Build", "Status"},
 		},
 		{
+			name:      "a broken gating policy fails closed",
+			reviewers: []map[string]interface{}{{"vote": 10}},
+			evaluations: []map[string]interface{}{
+				blockingPolicy("Build", "broken"),
+			},
+			wantState:      CheckStateFailing,
+			wantReview:     ReviewDecisionApproved,
+			wantCheckNames: []string{"Build"},
+		},
+		{
+			name:      "a not applicable blocking policy is not zero policy",
+			reviewers: []map[string]interface{}{{"vote": 10}},
+			evaluations: []map[string]interface{}{
+				blockingPolicy("Build", "notApplicable"),
+			},
+			wantState:      CheckStatePending,
+			wantReview:     ReviewDecisionApproved,
+			wantCheckNames: nil,
+		},
+		{
 			// The core config-driven fix: a rejected human/merge-time policy
 			// declared human-only by its configuration id must NOT fail the gate
 			// when the gating (agent-fixable) policies are green — otherwise
@@ -155,10 +176,10 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			wantCheckNames: []string{"Require a merge strategy"},
 		},
 		{
-			name:           "no blocking policies is pending (fail-closed)",
+			name:           "no blocking policies is passing",
 			reviewers:      []map[string]interface{}{{"vote": 10}},
 			evaluations:    []map[string]interface{}{},
-			wantState:      CheckStatePending,
+			wantState:      CheckStatePassing,
 			wantReview:     ReviewDecisionApproved,
 			wantCheckNames: nil,
 		},
@@ -399,5 +420,65 @@ func TestADOProviderClosePullRequestFailure(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "status 500") {
 		t.Fatalf("ClosePullRequest error = %v, want status 500", err)
+	}
+}
+
+// TestADOProviderPublishPullRequestStatusPinsReviewedHead proves a HeadSHA
+// pin: the status lands on the latest iteration only when that iteration's
+// source commit is the pinned head, and a push after the review is refused
+// with PullRequestHeadMovedError instead of a status that would satisfy a
+// reset-on-push policy for the unreviewed commit.
+func TestADOProviderPublishPullRequestStatusPinsReviewedHead(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		headSHA    string
+		wantPosted bool
+	}{
+		{name: "latest iteration is the reviewed head", headSHA: "reviewed", wantPosted: true},
+		{name: "pin compares commit ids case-insensitively", headSHA: "REVIEWED", wantPosted: true},
+		{name: "push after review is refused", headSHA: "older", wantPosted: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			posted := false
+			mux := http.NewServeMux()
+			mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/iterations", func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, map[string]interface{}{"value": []map[string]interface{}{
+					{"id": 1, "sourceRefCommit": map[string]string{"commitId": "older"}},
+					{"id": 3, "sourceRefCommit": map[string]string{"commitId": "reviewed"}},
+					{"id": 2, "sourceRefCommit": map[string]string{"commitId": "middle"}},
+				}})
+			})
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/org/project/_apis/git/repositories/repo/pullrequests/42/iterations/3/statuses" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				posted = true
+				writeJSON(t, w, map[string]interface{}{"id": 7})
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+			_, err := provider.PublishPullRequestStatus(context.Background(), PullRequestStatusRequest{
+				Repository: RepositoryRef{Name: "repo", Project: "project"},
+				PullID:     "42",
+				Name:       "validation",
+				State:      CheckStatePassing,
+				HeadSHA:    tc.headSHA,
+			})
+			if posted != tc.wantPosted {
+				t.Fatalf("status posted = %v, want %v (err %v)", posted, tc.wantPosted, err)
+			}
+			if tc.wantPosted {
+				if err != nil {
+					t.Fatalf("PublishPullRequestStatus returned error: %v", err)
+				}
+				return
+			}
+			var moved PullRequestHeadMovedError
+			if !errors.As(err, &moved) || moved.Expected != tc.headSHA || moved.Actual != "reviewed" {
+				t.Fatalf("err = %v, want PullRequestHeadMovedError{%s -> reviewed}", err, tc.headSHA)
+			}
+		})
 	}
 }

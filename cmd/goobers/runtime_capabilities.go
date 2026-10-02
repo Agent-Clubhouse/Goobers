@@ -97,6 +97,45 @@ func (c cliCommand) withExamples(examples ...string) cliCommand {
 // always safe at runtime.
 var cliCommands []cliCommand
 
+func gaggleCLICommand() cliCommand {
+	return groupCommand(
+		"gaggle",
+		runGaggle,
+		subcommand("gaggle export", "export", apicontract.ActionReadOnlyNavigation, runGaggleExport).
+			withHelp("export a sanitized portable gaggle bundle", gaggleExportHelp).
+			withExamples("goobers gaggle export example", "goobers gaggle export --output example.bundle.json example ./instance"),
+		subcommand("gaggle import", "import", apicontract.ActionMaintenance, runGaggleImport).
+			withHelp("atomically create a gaggle from a validated bundle", gaggleImportHelp).
+			withExamples("goobers gaggle import --name copied-example example.bundle.json ./instance"),
+	).
+		withSynopsis(synopsisByID["gaggle"]).
+		withHelp("export or import sanitized portable gaggle bundles", gaggleHelp).
+		withExamples("goobers gaggle export example", "goobers gaggle import --name copied-example example.bundle.json")
+}
+
+func diagnosticsCLICommand() cliCommand {
+	return groupCommand(
+		"diagnostics",
+		runDiagnostics,
+		subcommand("diagnostics bundle", "bundle", apicontract.ActionReadOnlyNavigation, runDiagnosticsBundle).
+			withHelp("write a portable, redacted support bundle", diagnosticsBundleHelp).
+			withExamples(
+				"goobers diagnostics bundle ./my-instance",
+				"goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance",
+				"goobers diagnostics bundle --pr 4123 --json ./my-instance",
+			),
+		subcommand("diagnostics triage", "triage", apicontract.ActionReadOnlyNavigation, runDiagnosticsTriage).
+			withHelp("classify one run before filing a Goobers defect", diagnosticsTriageHelp).
+			withExamples(
+				"goobers diagnostics triage --run 8f2c --json ./my-instance",
+				"goobers diagnostics triage --run 8f2c ./my-instance",
+			),
+	).
+		withSynopsis(synopsisByID["diagnostics"]).
+		withHelp("collect redacted support evidence or classify one run", diagnosticsHelp).
+		withExamples("goobers diagnostics bundle ./my-instance", "goobers diagnostics triage --run 8f2c --json ./my-instance")
+}
+
 func init() {
 	cliCommands = []cliCommand{
 		groupCommand("roots", runRoots,
@@ -128,7 +167,7 @@ func init() {
 			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --demo ./demo"),
 		coreCommand("connect", apicontract.ActionConfigTime, runConnect).
 			withSynopsis(synopsisByID["connect"]).
-			withHelp("connect an instance to your own GitHub repository", connectHelp).
+			withHelp("connect an instance to your own GitHub or Azure DevOps repository", connectHelp).
 			withExamples(
 				"goobers connect acme/web ./my-instance",
 				"goobers connect acme/web --token-env MY_GITHUB_TOKEN --seed ./my-instance",
@@ -210,20 +249,8 @@ func init() {
 			withSynopsis(synopsisByID["scaffold"]).
 			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
 			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
-		groupCommand(
-			"diagnostics",
-			runDiagnostics,
-			subcommand("diagnostics bundle", "bundle", apicontract.ActionReadOnlyNavigation, runDiagnosticsBundle).
-				withHelp("write a portable, redacted support bundle", diagnosticsBundleHelp).
-				withExamples(
-					"goobers diagnostics bundle ./my-instance",
-					"goobers diagnostics bundle --run 8f2c --output /tmp/incident.tar.gz ./my-instance",
-					"goobers diagnostics bundle --pr 4123 --json ./my-instance",
-				),
-		).
-			withSynopsis(synopsisByID["diagnostics"]).
-			withHelp("collect a portable, redacted support bundle", diagnosticsHelp).
-			withExamples("goobers diagnostics bundle ./my-instance"),
+		gaggleCLICommand(),
+		diagnosticsCLICommand(),
 		groupCommand(
 			"agent-kit",
 			runAgentKit,
@@ -298,17 +325,17 @@ func init() {
 			"fleet",
 			runFleet,
 			subcommand("fleet join", "join", apicontract.ActionConfigTime, runFleetJoin).
-				withHelp("discover and enroll this instance with a Fleet service", fleetJoinHelp).
+				withHelp("discover and enroll this instance with a Fleet service (experimental; superseded)", fleetJoinHelp).
 				withExamples("goobers fleet join --url https://fleet.example", "goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin"),
 			subcommand("fleet status", "status", apicontract.ActionReadOnlyNavigation, runFleetStatus).
-				withHelp("show durable Fleet registration and connection state", fleetStatusHelp).
+				withHelp("show durable Fleet registration and connection state (experimental; superseded)", fleetStatusHelp).
 				withExamples("goobers fleet status", "goobers fleet status --json"),
 			subcommand("fleet leave", "leave", apicontract.ActionMaintenance, runFleetLeave).
-				withHelp("remove this instance's Fleet association and protected secrets", fleetLeaveHelp).
+				withHelp("remove this instance's Fleet association and protected secrets (experimental; superseded)", fleetLeaveHelp).
 				withExamples("goobers fleet leave"),
 		).
 			withSynopsis(synopsisByID["fleet"]).
-			withHelp("associate this instance with a Fleet service", fleetHelp).
+			withHelp("associate this instance with a Fleet service (experimental; superseded)", fleetHelp).
 			withExamples("goobers fleet join --url https://fleet.example", "goobers fleet status", "goobers fleet leave"),
 		coreCommand("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
@@ -329,7 +356,7 @@ func init() {
 			// actually accept (#4887). It previously pinned v0.1.0, which
 			// every build since has been newer than, so the shipped example
 			// failed verbatim for every reader who ran it.
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.0"),
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.5.1"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
@@ -616,6 +643,12 @@ func init() {
 		groupCommand(
 			"telemetry",
 			runTelemetry,
+			subcommand("telemetry configure", "configure", apicontract.ActionConfigTime, runTelemetryConfigure).
+				withHelp("configure customer-owned Application Insights export from a secret reference", telemetryConfigureHelp).
+				withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry configure --connection-string-file C:\\ProgramData\\Goobers\\secrets\\application-insights.txt C:\\ProgramData\\Goobers\\instance"),
+			subcommand("telemetry test", "test", apicontract.ActionMaintenance, runTelemetryTest).
+				withHelp("send one secret-safe Application Insights connectivity probe", telemetryTestHelp).
+				withExamples("goobers telemetry test ./instance", "goobers telemetry test --json ./instance"),
 			subcommand("telemetry merges", "merges", apicontract.ActionReadOnlyNavigation, runTelemetryMerges).
 				withHelp("confirmed PR landings and daily counts by originating instance", telemetryMergesHelp).
 				withExamples("goobers telemetry merges", "goobers telemetry merges --json"),
@@ -628,6 +661,9 @@ func init() {
 			subcommand("telemetry export", "export", apicontract.ActionReadOnlyNavigation, runTelemetryExport).
 				withHelp("re-emit a span-start-time window from journaled OTLP/JSON", telemetryExportHelp).
 				withExamples("goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry export --since=2026-07-01T00:00:00Z --until=2026-07-02T00:00:00Z"),
+			subcommand("telemetry mark-fix", "mark-fix", apicontract.ActionMaintenance, runTelemetryMarkFix).
+				withHelp("mark a Backprop finding for post-fix verification", telemetryMarkFixHelp).
+				withExamples("goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123"),
 			subcommand("telemetry prune", "prune", apicontract.ActionMaintenance, runTelemetryPrune).
 				withHelp("remove terminal runs outside configured retention bounds", telemetryPruneHelp).
 				withExamples("goobers telemetry prune --dry-run", "goobers telemetry prune"),
@@ -639,8 +675,8 @@ func init() {
 				withExamples("goobers telemetry compact --dry-run", "goobers telemetry compact"),
 		).
 			withSynopsis(synopsisByID["telemetry"]).
-			withHelp("query, export, prune, or compact run telemetry", telemetryHelp).
-			withExamples("goobers telemetry stats", "goobers telemetry errors", "goobers telemetry export --since=2026-07-01T00:00:00Z", "goobers telemetry prune --dry-run"),
+			withHelp("configure, test, query, export, mark fixes, prune, or compact telemetry", telemetryHelp).
+			withExamples("goobers telemetry configure --connection-string-env APPLICATIONINSIGHTS_CONNECTION_STRING ./instance", "goobers telemetry test ./instance", "goobers telemetry mark-fix --finding=backprop-0123456789abcdef0123", "goobers telemetry prune --dry-run"),
 		groupCommand(
 			"journal",
 			runJournal,

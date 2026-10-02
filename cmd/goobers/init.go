@@ -83,13 +83,20 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
 	"--template=standard non-interactively seeds backlog-curation and implementation\n" +
 	"with their three canonical personas by default. Use --workflows to select\n" +
-	"implementation, backlog-curation, and/or work-nomination. --repo accepts a\n" +
-	"GitHub owner/name or Azure DevOps identity; --branch defaults to main.\n" +
+	"implementation, backlog-curation, merge-review (Azure DevOps only), and/or\n" +
+	"work-nomination.\n" +
+	"--repo accepts a GitHub owner/name or Azure DevOps identity; --branch\n" +
+	"defaults to main.\n" +
 	"Implementation requires either --pr-ci or an explicit --ci-command JSON argv\n" +
 	"array plus comma-separated --required-capabilities (e.g. node@24).\n" +
 	"Use --issue-scope=assigned with --assigned-to to limit implementation work.\n" +
-	"Use --provider=ado for Azure DevOps placeholders and GOOBERS_ADO_TOKEN;\n" +
-	"the default provider is github. See docs/guides/ado-authentication.md.\n" +
+	"Use --provider=ado for Azure DevOps placeholders; the default provider is\n" +
+	"github. On Azure DevOps the default modules also include merge-review,\n" +
+	"work-nomination is refused (file-issues is GitHub-only), and\n" +
+	"--repo-auth-kind defaults to azure-cli (also workload-identity,\n" +
+	"managed-identity, or pat, which reads GOOBERS_ADO_TOKEN). --repo-token-env\n" +
+	"without --repo-auth-kind selects pat; with another kind it is refused. See\n" +
+	"docs/guides/ado-authentication.md and docs/guides/ado-limitations.md.\n" +
 	"It creates placeholders: configure repository identity and credential refs\n" +
 	"before running. It does not start workflows and refuses configured targets.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
@@ -146,7 +153,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	assignedTo := fs.String("assigned-to", "", "with --template=standard --issue-scope=assigned, provider identity")
 	pullRequestCI := fs.Bool("pr-ci", false, "with --template=standard, use pull-request CI instead of a local command")
 	workflows := fs.String("workflows", "", "with --template=standard, comma-separated guided workflow modules")
-	repoAuthKind := fs.String("repo-auth-kind", "", "with --template=standard and Azure DevOps, azcli or pat")
+	repoAuthKind := fs.String("repo-auth-kind", "", "with --template=standard and Azure DevOps, azure-cli (default), workload-identity, managed-identity or pat")
 	repoTokenEnv := fs.String("repo-token-env", "", "with --template=standard, repository token environment variable")
 	workTrackingTokenEnv := fs.String("work-tracking-token-env", "", "with --template=standard, work-tracking token environment variable")
 	pullRequestTokenEnv := fs.String("pr-token-env", "", "with --template=standard, pull-request token environment variable")

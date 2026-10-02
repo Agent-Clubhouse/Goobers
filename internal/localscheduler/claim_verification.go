@@ -27,7 +27,7 @@ func (v ClaimVerification) Report() ClaimVerification {
 }
 
 func validateClaimObservation(expected ClaimEntry, observation ClaimVerification) error {
-	if observation.State != "verified" && observation.State != "missing" && observation.State != "ownership-mismatch" && observation.State != "unavailable" {
+	if observation.State != "verified" && observation.State != "missing" && observation.State != "contended" && observation.State != "ownership-mismatch" && observation.State != "unavailable" {
 		return fmt.Errorf("%w: unsupported state", ErrInvalidClaimVerification)
 	}
 	if len(observation.ProviderRunID) > 1024 {
@@ -37,7 +37,7 @@ func validateClaimObservation(expected ClaimEntry, observation ClaimVerification
 		return fmt.Errorf("%w: observation predates lease", ErrInvalidClaimVerification)
 	}
 	if (observation.State == "verified" && observation.ProviderRunID != expected.RunID) ||
-		(observation.State == "ownership-mismatch" && (observation.ProviderRunID == "" || observation.ProviderRunID == expected.RunID)) ||
+		((observation.State == "contended" || observation.State == "ownership-mismatch") && (observation.ProviderRunID == "" || observation.ProviderRunID == expected.RunID)) ||
 		((observation.State == "missing" || observation.State == "unavailable") && observation.ProviderRunID != "") {
 		return fmt.Errorf("%w: state contradicts provider owner", ErrInvalidClaimVerification)
 	}

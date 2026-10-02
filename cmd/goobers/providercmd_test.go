@@ -66,8 +66,10 @@ type fakePR struct {
 	draft              bool
 	labels             []string
 	checkState         string
+	mergeable          *bool
 	files              []fakePRFile
 	reviews            []fakeReview
+	inlineComments     []fakeInlineReviewComment
 	author             string
 	assignees          []string
 	requestedReviewers []string
@@ -87,6 +89,14 @@ type fakeReview struct {
 	body      string
 	commitSHA string
 	state     string
+}
+
+type fakeInlineReviewComment struct {
+	id     int64
+	body   string
+	path   string
+	line   int
+	thread string
 }
 
 // fakePRFile is one file a fakePR touches, for the /pulls/{id}/files endpoint
@@ -179,6 +189,7 @@ type fakeGitHubServer struct {
 	// (and per-blocker) re-verification spends every cycle regardless of
 	// backlog size (#4182).
 	issueItemGetRequests int
+	hiddenIssueLabels    map[int]map[string]int
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -193,6 +204,8 @@ type fakeGitHubServer struct {
 	// past rather than abort the whole scan on.
 	commentsFailureStatus map[int]int
 	commentsFailureBody   map[int]string
+	reviewThreadsFailure  map[int]int
+	pullGetMutations      map[int][]func(*fakeGitHubServer, *fakePR)
 }
 
 // setIssueCommentsFailure makes GET /issues/{number}/comments respond with
@@ -207,6 +220,24 @@ func (s *fakeGitHubServer) setIssueCommentsFailure(number, status int, body stri
 	}
 	s.commentsFailureStatus[number] = status
 	s.commentsFailureBody[number] = body
+}
+
+func (s *fakeGitHubServer) setPullRequestReviewThreadsFailure(number, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reviewThreadsFailure == nil {
+		s.reviewThreadsFailure = map[int]int{}
+	}
+	s.reviewThreadsFailure[number] = status
+}
+
+func (s *fakeGitHubServer) mutatePullRequestOnNextGet(number int, mutate func(*fakeGitHubServer, *fakePR)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pullGetMutations == nil {
+		s.pullGetMutations = map[int][]func(*fakeGitHubServer, *fakePR){}
+	}
+	s.pullGetMutations[number] = append(s.pullGetMutations[number], mutate)
 }
 
 // setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
@@ -253,6 +284,18 @@ func (s *fakeGitHubServer) issueItemGetRequestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.issueItemGetRequests
+}
+
+func (s *fakeGitHubServer) hideIssueLabelOnNextGets(number int, label string, reads int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hiddenIssueLabels == nil {
+		s.hiddenIssueLabels = map[int]map[string]int{}
+	}
+	if s.hiddenIssueLabels[number] == nil {
+		s.hiddenIssueLabels[number] = map[string]int{}
+	}
+	s.hiddenIssueLabels[number][label] = reads
 }
 
 func (s *fakeGitHubServer) issueListPageSizeHistory() []int {
@@ -383,6 +426,43 @@ func (s *fakeGitHubServer) handleGraphQL(w http.ResponseWriter, r *http.Request)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	repository := make(map[string]interface{})
+	if rawNumber, ok := request.Variables["number"]; ok {
+		number, _ := strconv.Atoi(fmt.Sprint(rawNumber))
+		if status := s.reviewThreadsFailure[number]; status != 0 {
+			http.Error(w, "injected review-thread failure", status)
+			return
+		}
+		pr := s.prs[number]
+		if pr == nil {
+			repository["pullRequest"] = nil
+		} else {
+			nodes := make([]map[string]interface{}, 0, len(pr.inlineComments))
+			for _, comment := range pr.inlineComments {
+				line := comment.line
+				nodes = append(nodes, map[string]interface{}{
+					"id":           comment.thread,
+					"isResolved":   false,
+					"isOutdated":   false,
+					"path":         comment.path,
+					"line":         line,
+					"originalLine": line,
+					"diffSide":     "RIGHT",
+					"comments": map[string]interface{}{
+						"nodes": []map[string]interface{}{{"databaseId": comment.id}},
+					},
+				})
+			}
+			repository["pullRequest"] = map[string]interface{}{
+				"reviewThreads": map[string]interface{}{
+					"nodes": nodes,
+					"pageInfo": map[string]interface{}{
+						"hasNextPage": false,
+						"endCursor":   "",
+					},
+				},
+			}
+		}
+	}
 	for variable, value := range request.Variables {
 		if !strings.HasPrefix(variable, "ref") {
 			continue
@@ -943,7 +1023,21 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		s.issueItemGetRequests++
-		writeFakeJSON(w, issueJSON(issue))
+		out := issueJSON(issue)
+		if hidden := s.hiddenIssueLabels[num]; len(hidden) > 0 {
+			labels, _ := out["labels"].([]map[string]string)
+			visible := labels[:0]
+			for _, object := range labels {
+				label := object["name"]
+				if hidden[label] > 0 {
+					hidden[label]--
+					continue
+				}
+				visible = append(visible, object)
+			}
+			out["labels"] = visible
+		}
+		writeFakeJSON(w, out)
 	case len(parts) == 1 && r.Method == http.MethodPatch:
 		var body struct {
 			Labels    *[]string `json:"labels"`
@@ -993,7 +1087,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 				out = append(out, issueJSON(child))
 			}
 		}
-		writeFakeJSON(w, out)
+		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 3 && parts[1] == "dependencies" && parts[2] == "blocked_by" && r.Method == http.MethodGet:
 		s.dependencyRequests++
 		if status := s.dependencyFailureStatus[num]; status != 0 {
@@ -1006,7 +1100,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 				out = append(out, issueJSON(blocker))
 			}
 		}
-		writeFakeJSON(w, out)
+		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
 		if status, injected := s.commentsFailureStatus[num]; injected {
 			http.Error(w, s.commentsFailureBody[num], status)
@@ -1023,7 +1117,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			}
 			out = append(out, comment)
 		}
-		writeFakeJSON(w, out)
+		s.writePaginatedJSON(w, r, out)
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
 		out := make([]map[string]any, 0)
 		for _, event := range s.issueEvents {
@@ -1083,6 +1177,31 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+func (s *fakeGitHubServer) writePaginatedJSON(w http.ResponseWriter, r *http.Request, out []map[string]interface{}) {
+	perPage := len(out)
+	if parsed, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && parsed > 0 {
+		perPage = parsed
+	}
+	page := 1
+	if parsed, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && parsed > 0 {
+		page = parsed
+	}
+	if perPage > 0 {
+		start := min((page-1)*perPage, len(out))
+		end := min(start+perPage, len(out))
+		if end < len(out) {
+			next := *r.URL
+			query := next.Query()
+			query.Set("page", strconv.Itoa(page+1))
+			query.Set("per_page", strconv.Itoa(perPage))
+			next.RawQuery = query.Encode()
+			w.Header().Set("Link", fmt.Sprintf("<%s%s>; rel=%q", s.server.URL, next.String(), "next"))
+		}
+		out = out[start:end]
+	}
+	writeFakeJSON(w, out)
+}
+
 func (s *fakeGitHubServer) handleCommentItem(w http.ResponseWriter, r *http.Request, idString string) {
 	id, err := strconv.ParseInt(idString, 10, 64)
 	if err != nil {
@@ -1135,7 +1254,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 			for _, num := range sortedPRKeys(s.prs) {
 				pr := s.prs[num]
 				if pr.state == "open" && pr.head == wantHead && (base == "" || pr.base == base) {
-					out = append(out, prJSON(pr))
+					out = append(out, s.prJSON(pr))
 				}
 			}
 			writeFakeJSON(w, out)
@@ -1153,7 +1272,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 		for _, num := range sortedPRKeys(s.prs) {
 			pr := s.prs[num]
 			if (state == "all" || pr.state == state) && (base == "" || pr.base == base) {
-				out = append(out, prDetailJSON(pr))
+				out = append(out, s.prDetailJSON(pr))
 			}
 		}
 		if perPage, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && perPage > 0 {
@@ -1177,7 +1296,7 @@ func (s *fakeGitHubServer) handlePullsCollection(w http.ResponseWriter, r *http.
 		num := s.nextPR
 		s.nextPR++
 		s.prs[num] = &fakePR{number: num, title: body.Title, body: body.Body, head: body.Head, base: body.Base, state: "open"}
-		writeFakeJSON(w, prJSON(s.prs[num]))
+		writeFakeJSON(w, s.prJSON(s.prs[num]))
 	default:
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 	}
@@ -1200,7 +1319,13 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 	}
 	switch {
 	case len(parts) == 1 && r.Method == http.MethodGet:
-		writeFakeJSON(w, prDetailJSON(pr))
+		if mutations := s.pullGetMutations[num]; len(mutations) > 0 {
+			delete(s.pullGetMutations, num)
+			for _, mutate := range mutations {
+				mutate(s, pr)
+			}
+		}
+		writeFakeJSON(w, s.prDetailJSON(pr))
 	case len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet:
 		out := make([]map[string]interface{}, 0, len(pr.reviews))
 		for _, review := range pr.reviews {
@@ -1254,6 +1379,23 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 			"id": review.id, "body": review.body, "commit_id": review.commitSHA,
 			"state": review.state, "html_url": fmt.Sprintf("https://example/pull/%d#review-%d", num, review.id),
 		})
+	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
+		out := make([]map[string]interface{}, 0, len(pr.inlineComments))
+		for _, comment := range pr.inlineComments {
+			line := comment.line
+			out = append(out, map[string]interface{}{
+				"id":            comment.id,
+				"body":          comment.body,
+				"path":          comment.path,
+				"line":          line,
+				"original_line": line,
+				"side":          "RIGHT",
+				"diff_hunk":     "@@ -1 +1 @@",
+				"html_url":      fmt.Sprintf("https://example/pull/%d#discussion_r%d", num, comment.id),
+				"user":          map[string]string{"login": "reviewer"},
+			})
+		}
+		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "files" && r.Method == http.MethodGet:
 		if status, injected := s.filesFailureStatus[num]; injected {
 			http.Error(w, s.filesFailureBody[num], status)
@@ -1280,7 +1422,7 @@ func (s *fakeGitHubServer) handlePullItem(w http.ResponseWriter, r *http.Request
 		if body.Body != "" {
 			pr.body = body.Body
 		}
-		writeFakeJSON(w, prJSON(pr))
+		writeFakeJSON(w, s.prJSON(pr))
 	default:
 		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, r.URL.Path), http.StatusNotImplemented)
 	}
@@ -1371,17 +1513,26 @@ func issueJSON(issue *fakeIssue) map[string]interface{} {
 	return out
 }
 
-func prJSON(pr *fakePR) map[string]interface{} {
+func (s *fakeGitHubServer) prJSON(pr *fakePR) map[string]interface{} {
 	return map[string]interface{}{
 		"id": pr.number, "number": pr.number, "title": pr.title, "body": pr.body,
 		"state": pr.state, "merged": pr.merged,
-		"html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
+		"html_url": s.prHTMLURL(pr.number),
 	}
+}
+
+// prHTMLURL is a pull request's html_url in real GitHub shape
+// (https://github.com/<owner>/<repo>/pull/N), so a URL a stage publishes and
+// a later stage parses back, such as issue-close-out's merge-review
+// breadcrumb read by backlog-query's requeue reconciliation, passes the same
+// owner/repo/pull/N checks it meets in production.
+func (s *fakeGitHubServer) prHTMLURL(number int) string {
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", s.owner, s.repo, number)
 }
 
 // prDetailJSON is the ListPullRequests shape (issue #359): draft flag,
 // labels, and head/base ref+sha, none of which prJSON's open-pr shape needs.
-func prDetailJSON(pr *fakePR) map[string]interface{} {
+func (s *fakeGitHubServer) prDetailJSON(pr *fakePR) map[string]interface{} {
 	labels := make([]map[string]string, 0, len(pr.labels))
 	for _, l := range pr.labels {
 		labels = append(labels, map[string]string{"name": l})
@@ -1395,8 +1546,8 @@ func prDetailJSON(pr *fakePR) map[string]interface{} {
 		requestedReviewers = append(requestedReviewers, map[string]string{"login": reviewer})
 	}
 	return map[string]interface{}{
-		"number": pr.number, "html_url": fmt.Sprintf("https://example/pull/%d", pr.number),
-		"state": pr.state, "merged": pr.merged, "draft": pr.draft,
+		"number": pr.number, "html_url": s.prHTMLURL(pr.number),
+		"state": pr.state, "merged": pr.merged, "draft": pr.draft, "mergeable": pr.mergeable,
 		"updated_at": "2026-07-15T00:00:00Z", "body": pr.body,
 		"head":                map[string]interface{}{"ref": pr.head, "sha": pr.headSHA},
 		"base":                map[string]interface{}{"ref": pr.base, "sha": pr.baseSHA},
@@ -1513,6 +1664,38 @@ func (s *fakeGitHubServer) setPRCheckState(number int, state string) {
 	s.prs[number].checkState = state
 }
 
+func (s *fakeGitHubServer) setPRMergeable(number int, mergeable bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prs[number].mergeable = &mergeable
+}
+
+func (s *fakeGitHubServer) addPRReview(number int, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	pr.reviews = append(pr.reviews, fakeReview{
+		id:        int64(len(pr.reviews) + 1),
+		body:      "review body",
+		commitSHA: pr.headSHA,
+		state:     state,
+	})
+}
+
+func (s *fakeGitHubServer) addPRInlineReviewComment(number int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr := s.prs[number]
+	id := int64(len(pr.inlineComments) + 1)
+	pr.inlineComments = append(pr.inlineComments, fakeInlineReviewComment{
+		id:     id,
+		body:   "inline finding",
+		path:   "file.go",
+		line:   1,
+		thread: fmt.Sprintf("thread-%d-%d", number, id),
+	})
+}
+
 // setPRClosed models a fixture PR closing without merging between runs.
 func (s *fakeGitHubServer) setPRClosed(number int) {
 	s.mu.Lock()
@@ -1543,7 +1726,29 @@ func (s *fakeGitHubServer) addCommentAtAs(number int, author, body string, creat
 	s.addCommentAtAsType(number, author, "", body, createdAt)
 }
 
+// addCommentAtAsType seeds a comment the way the forge stores it. A comment
+// under Goobers' own login is stored as a daemon run wrote it, with the
+// attribution footer (stampOwnFixtureBody); use addRawComment/addRawCommentAs
+// to seed human or legacy text under the bot login byte for byte.
 func (s *fakeGitHubServer) addCommentAtAsType(number int, author, authorType, body string, createdAt time.Time) {
+	if author == s.authenticatedLogin {
+		body = stampOwnFixtureBody(body, "comment")
+	}
+	s.addRawCommentAtAsType(number, author, authorType, body, createdAt)
+}
+
+// addRawComment seeds body under Goobers' own login exactly as given, without
+// the attribution footer a daemon write carries.
+func (s *fakeGitHubServer) addRawComment(number int, body string) {
+	s.addRawCommentAs(number, s.authenticatedLogin, body)
+}
+
+// addRawCommentAs seeds body under author exactly as given.
+func (s *fakeGitHubServer) addRawCommentAs(number int, author, body string) {
+	s.addRawCommentAtAsType(number, author, "", body, time.Time{})
+}
+
+func (s *fakeGitHubServer) addRawCommentAtAsType(number int, author, authorType, body string, createdAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextCommentID++

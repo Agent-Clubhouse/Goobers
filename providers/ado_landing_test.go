@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,6 +56,7 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	provider.SetMutationRecorder(recorder)
 	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
 		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
+		DeleteSourceBranch: true,
 	})
 	if err != nil {
 		t.Fatalf("MergePullRequest returned error: %v", err)
@@ -72,6 +74,9 @@ func TestADOProviderMergePullRequestSucceedsImmediately(t *testing.T) {
 	opts, ok := patched["completionOptions"].(map[string]interface{})
 	if !ok || opts["mergeStrategy"] != "squash" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=squash", patched["completionOptions"])
+	}
+	if opts["deleteSourceBranch"] != true {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true", patched["completionOptions"])
 	}
 	// ADO-N9: the completion PATCH pins the head server-side (live probe F6),
 	// so a push between the fetch and the PATCH is refused with 409.
@@ -105,6 +110,61 @@ func adoCompletionRefusalServer(t *testing.T, status int, body string, patchCall
 	return httptest.NewServer(mux)
 }
 
+// TestADOProviderMergePullRequestOmitsDeleteSourceBranchWhenUnset proves
+// ADO-N25: completionOptions.deleteSourceBranch is only set on the
+// completion PATCH when the caller (merge-pr, gated on the stage holding
+// github:branch:delete) asked for it. An unset request must not delete the
+// source branch by default — that would silently diverge from GitHub, whose
+// branch cleanup is a separate, opt-in call (cmd/goobers/mergepr.go's
+// cleanupMergedBranch).
+func TestADOProviderMergePullRequestOmitsDeleteSourceBranchWhenUnset(t *testing.T) {
+	var patched map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
+				"lastMergeSourceCommit": map[string]string{"commitId": "head1"},
+			})
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(body, &patched); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42, "status": "completed", "mergeStatus": "succeeded",
+				"lastMergeCommit": map[string]string{"commitId": "abc123"},
+			})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	result, err := provider.MergePullRequest(context.Background(), MergePullRequestRequest{
+		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodSquash,
+	})
+	if err != nil {
+		t.Fatalf("MergePullRequest returned error: %v", err)
+	}
+	if !result.Merged {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	opts, ok := patched["completionOptions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("completionOptions missing: %#v", patched)
+	}
+	if _, present := opts["deleteSourceBranch"]; present {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted when the request did not set it", opts)
+	}
+}
+
 // TestADOProviderMergePullRequestMapsStaleHeadConflict proves ADO-N9's 409
 // mapping: a head that moves after the fetch is refused server-side with
 // TF401192, which surfaces as the typed head-moved error without a retry.
@@ -120,6 +180,12 @@ func TestADOProviderMergePullRequestMapsStaleHeadConflict(t *testing.T) {
 	var moved PullRequestHeadMovedError
 	if !errors.As(err, &moved) || moved.Expected != "head1" {
 		t.Fatalf("err = %v, want PullRequestHeadMovedError{Expected: head1}", err)
+	}
+	if want := "ado HTTP 409 GitPullRequestStaleException: TF401192: The pull request source has changed."; moved.Detail != want {
+		t.Fatalf("Detail = %q, want %q", moved.Detail, want)
+	}
+	if !strings.Contains(err.Error(), moved.Detail) {
+		t.Fatalf("err = %q, want it to carry the ADO detail", err)
 	}
 	if patchCalls != 1 {
 		t.Fatalf("PATCH calls = %d, want 1 (never retried)", patchCalls)
@@ -142,6 +208,12 @@ func TestADOProviderMergePullRequestMapsPolicyRejection(t *testing.T) {
 	var policy PullRequestPolicyNotMetError
 	if !errors.As(err, &policy) || policy.PullID != "42" {
 		t.Fatalf("err = %v, want PullRequestPolicyNotMetError for PR 42", err)
+	}
+	if want := "ado HTTP 403 GitPullRequestUpdateRejectedByPolicyException"; policy.Detail != want {
+		t.Fatalf("Detail = %q, want %q", policy.Detail, want)
+	}
+	if !strings.Contains(err.Error(), "required policies are not satisfied") || !strings.Contains(err.Error(), policy.Detail) {
+		t.Fatalf("err = %q, want the ADO message and detail", err)
 	}
 	if IsAuthenticationError(err) {
 		t.Fatalf("IsAuthenticationError(%v) = true, want false for a policy refusal", err)
@@ -371,6 +443,7 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	provider.SetMutationRecorder(recorder)
 	result, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
 		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodMerge,
+		DeleteSourceBranch: true,
 	})
 	if err != nil {
 		t.Fatalf("EnqueuePullRequest returned error: %v", err)
@@ -386,9 +459,63 @@ func TestADOProviderEnqueuePullRequestSetsAutoComplete(t *testing.T) {
 	if !ok || opts["mergeStrategy"] != "noFastForward" {
 		t.Fatalf("completionOptions = %#v, want mergeStrategy=noFastForward", patched["completionOptions"])
 	}
+	if opts["deleteSourceBranch"] != true {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch=true", patched["completionOptions"])
+	}
 	ref, ok := recorder.last()
 	if !ok || ref.Operation != "enqueue" {
 		t.Fatalf("landing receipt recorded = %#v, ok=%v, want an enqueue receipt (ADO confirmed autoCompleteSetBy.id == caller)", ref, ok)
+	}
+}
+
+// TestADOProviderEnqueuePullRequestOmitsDeleteSourceBranchWhenUnset proves
+// ADO-N25's gate on the auto-complete PATCH: an unset request leaves
+// completionOptions.deleteSourceBranch out entirely, matching the direct-
+// completion path's default.
+func TestADOProviderEnqueuePullRequestOmitsDeleteSourceBranchWhenUnset(t *testing.T) {
+	var patched map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, map[string]interface{}{
+			"authenticatedUser": map[string]interface{}{"id": "caller-1"},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
+				"createdBy": map[string]string{"id": "creator-1"},
+			})
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if err := json.Unmarshal(body, &patched); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			writeJSON(t, w, map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "notSet",
+				"autoCompleteSetBy": map[string]string{"id": "caller-1"},
+			})
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	if _, err := provider.EnqueuePullRequest(context.Background(), EnqueuePullRequestRequest{
+		Repository: adoLandingRepo(), PullID: "42", ExpectedHeadSHA: "head1", MergeMethod: MergeMethodMerge,
+	}); err != nil {
+		t.Fatalf("EnqueuePullRequest returned error: %v", err)
+	}
+	opts, ok := patched["completionOptions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("completionOptions missing: %#v", patched)
+	}
+	if _, present := opts["deleteSourceBranch"]; present {
+		t.Fatalf("completionOptions = %#v, want deleteSourceBranch omitted when the request did not set it", opts)
 	}
 }
 
@@ -477,6 +604,22 @@ func TestADOProviderPollMergeQueueEntryStates(t *testing.T) {
 			name: "active with auto-complete cleared is evicted (policy rejection)",
 			response: map[string]interface{}{
 				"pullRequestId": 42, "status": "active",
+			},
+			wantState: MergeQueueEntryEvicted,
+		},
+		{
+			name: "active with auto-complete consumed by a queued completion is pending",
+			response: map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "succeeded",
+				"completionQueueTime": "2026-01-02T03:04:05Z",
+			},
+			wantState: MergeQueueEntryPending,
+		},
+		{
+			name: "active with a queued completion that policy rejected is evicted",
+			response: map[string]interface{}{
+				"pullRequestId": 42, "status": "active", "mergeStatus": "rejectedByPolicy",
+				"completionQueueTime": "2026-01-02T03:04:05Z",
 			},
 			wantState: MergeQueueEntryEvicted,
 		},

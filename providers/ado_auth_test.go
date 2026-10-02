@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,14 +19,16 @@ import (
 )
 
 type adoAuthRunner struct {
-	name string
-	args []string
-	env  []string
-	out  []byte
-	err  error
+	calls int
+	name  string
+	args  []string
+	env   []string
+	out   []byte
+	err   error
 }
 
 func (r *adoAuthRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls++
 	r.name = name
 	r.args = append([]string(nil), args...)
 	return r.out, r.err
@@ -39,24 +42,31 @@ func (r *adoAuthRunner) RunWithEnv(_ context.Context, env []string, name string,
 }
 
 func TestAzureCLICredentialSourceCachesAndParsesToken(t *testing.T) {
-	expires := time.Now().Add(time.Hour).Unix()
-	runner := &adoAuthRunner{out: []byte(`{"accessToken":"entra-token","expires_on":` + strconv.FormatInt(expires, 10) + `}`)}
-	source := NewAzureCLIADOCredentialSource(runner, "tenant-id")
+	for _, tenant := range []string{"", "tenant.example.test"} {
+		t.Run("tenant="+tenant, func(t *testing.T) {
+			expires := time.Now().Add(time.Hour).Unix()
+			runner := &adoAuthRunner{out: []byte(`{"accessToken":"entra-token","expires_on":` + strconv.FormatInt(expires, 10) + `}`)}
+			source := NewAzureCLIADOCredentialSource(runner, tenant)
 
-	first, err := source.Credential(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := source.Credential(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Kind != adoCredentialBearer || first.Secret != "entra-token" || second.Secret != first.Secret {
-		t.Fatalf("credentials = %#v, %#v", first, second)
-	}
-	if runner.name != "az" || strings.Join(runner.args, " ") !=
-		"account get-access-token --resource "+AzureDevOpsResourceID+" --output json --tenant tenant-id" {
-		t.Fatalf("az invocation = %q %#v", runner.name, runner.args)
+			first, err := source.Credential(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := source.Credential(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.Kind != adoCredentialBearer || first.Secret != "entra-token" || second.Secret != first.Secret {
+				t.Fatalf("credentials = %#v, %#v", first, second)
+			}
+			wantArgs := []string{"account", "get-access-token", "--resource", AzureDevOpsResourceID, "--output", "json"}
+			if tenant != "" {
+				wantArgs = append(wantArgs, "--tenant", tenant)
+			}
+			if runner.calls != 1 || runner.name != "az" || !slices.Equal(runner.args, wantArgs) {
+				t.Fatalf("az invocation = %q %#v (%d calls), want %#v once", runner.name, runner.args, runner.calls, wantArgs)
+			}
+		})
 	}
 }
 
@@ -353,5 +363,193 @@ func TestADOGitAuthEnvironmentRegistersTheBasicHeader(t *testing.T) {
 	got := string(reg.Scrub([]byte("AUTHORIZATION: Basic " + encoded)))
 	if strings.Contains(got, encoded) {
 		t.Fatalf("Basic header was not scrubbed: %q", got)
+	}
+}
+
+// TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized pins the
+// stage-side contract for a credential the daemon handed a stage: it is sent
+// in its delivered scheme, a 401 is not answered by resending it, and the
+// request fails with ErrADODeliveredCredentialRejected naming where the value
+// came from, never the value itself. The error keeps the 401 response, so it
+// still classifies as an authentication failure (typed and as text), and the
+// rejection does not stick: the next request sends the value again.
+func TestADODeliveredCredentialSourceFailsClearlyAfterUnauthorized(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		wantHeader string
+	}{
+		{name: "bearer", kind: ADOCredentialKindBearer, wantHeader: "Bearer delivered-secret-value"},
+		{name: "basic", kind: ADOCredentialKindPAT, wantHeader: "Basic " + base64.StdEncoding.EncodeToString([]byte("goobers:delivered-secret-value"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, err := NewADODeliveredCredentialSource(tc.kind, "delivered-secret-value", "github:pr:write")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var headers []string
+			provider := NewADOProvider("org", "project", "",
+				WithADOCredentialSource(source),
+				func(p *ADOProvider) {
+					p.Client = adoHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+						headers = append(headers, req.Header.Get("Authorization"))
+						return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("TF400813: not authorized"))}, nil
+					})
+				},
+			)
+			_, err = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42")
+			if !errors.Is(err, ErrADODeliveredCredentialRejected) {
+				t.Fatalf("GetWorkItem error = %v, want ErrADODeliveredCredentialRejected", err)
+			}
+			if !strings.Contains(err.Error(), "github:pr:write") || !strings.Contains(err.Error(), "expired, revoked, or without access to this resource") {
+				t.Fatalf("error %q does not name the capability and the cause", err)
+			}
+			if !strings.Contains(err.Error(), "status 401") || !strings.Contains(err.Error(), "TF400813") {
+				t.Fatalf("error %q dropped the 401 response detail", err)
+			}
+			if strings.Contains(err.Error(), "delivered-secret-value") {
+				t.Fatalf("error leaks the credential: %q", err)
+			}
+			if !IsAuthenticationError(err) || !IsAuthenticationError(errors.New(err.Error())) {
+				t.Fatalf("IsAuthenticationError(%v) = false (typed or as text), want true", err)
+			}
+			if len(headers) != 1 || headers[0] != tc.wantHeader {
+				t.Fatalf("Authorization headers = %q, want exactly one %q", headers, tc.wantHeader)
+			}
+			_, _ = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "43")
+			if len(headers) != 2 || headers[1] != tc.wantHeader {
+				t.Fatalf("Authorization headers after a second request = %q, want the value sent again", headers)
+			}
+		})
+	}
+}
+
+// TestADODeliveredCredentialRejectionUsesTheDeliveredExpiry pins #5905: with
+// the expiry the daemon delivered beside the value, a 401 at or after it is
+// reported as an expired credential, and one before it as revoked or without
+// access. Either way the error stays ErrADODeliveredCredentialRejected, keeps
+// the 401 and classifies as an authentication failure.
+func TestADODeliveredCredentialRejectionUsesTheDeliveredExpiry(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		expiresAt time.Time
+		want      string
+		notWant   string
+	}{
+		{name: "past expiry", expiresAt: now.Add(-time.Minute), want: "(expired at 2026-09-28T11:59:00Z)", notWant: "revoked"},
+		{name: "at expiry", expiresAt: now, want: "(expired at 2026-09-28T12:00:00Z)", notWant: "revoked"},
+		{name: "before expiry", expiresAt: now.Add(time.Hour), want: "(revoked or without access to this resource; it does not expire until 2026-09-28T13:00:00Z)", notWant: "expired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, err := NewADODeliveredCredentialSourceWithExpiry(ADOCredentialKindBearer, "delivered-secret-value", "github:pr:write", tc.expiresAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := NewADOProvider("org", "project", "",
+				WithADOCredentialSource(source),
+				func(p *ADOProvider) {
+					p.now = func() time.Time { return now }
+					p.Client = adoHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+						return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("TF400813: not authorized"))}, nil
+					})
+				},
+			)
+			_, err = provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42")
+			if !errors.Is(err, ErrADODeliveredCredentialRejected) || !IsAuthenticationError(err) {
+				t.Fatalf("GetWorkItem error = %v, want an authentication failure matching ErrADODeliveredCredentialRejected", err)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.want) || strings.Contains(msg, tc.notWant) {
+				t.Fatalf("error %q, want it to contain %q and not %q", msg, tc.want, tc.notWant)
+			}
+			if !strings.Contains(msg, "github:pr:write") || !strings.Contains(msg, "status 401") || strings.Contains(msg, "delivered-secret-value") {
+				t.Fatalf("error %q must name the capability, keep the 401 and not leak the value", msg)
+			}
+		})
+	}
+}
+
+func TestNewADODeliveredCredentialSourceRejectsUnusableInput(t *testing.T) {
+	if _, err := NewADODeliveredCredentialSource("other", "value", "repo:push"); err == nil {
+		t.Fatal("unknown kind accepted")
+	}
+	if _, err := NewADODeliveredCredentialSource(ADOCredentialKindBearer, " ", "repo:push"); err == nil || !strings.Contains(err.Error(), "repo:push") {
+		t.Fatalf("empty secret error = %v, want one naming repo:push", err)
+	}
+}
+
+// TestADOProviderRefreshesBearerOnSignInPage pins that ADO's rejected-bearer
+// answer — a redirect to its sign-in service, which a following client sees
+// as a 203 HTML page — refreshes the credential exactly as a 401 does,
+// instead of failing the call on a JSON decode of the HTML ("invalid
+// character '<'").
+func TestADOProviderRefreshesBearerOnSignInPage(t *testing.T) {
+	for name, first := range map[string]func() *http.Response{
+		"followed redirect (203 HTML)": func() *http.Response {
+			h := make(http.Header)
+			h.Set("Content-Type", "text/html; charset=utf-8")
+			return &http.Response{StatusCode: http.StatusNonAuthoritativeInfo, Header: h, Body: io.NopCloser(strings.NewReader("<html><head><title>Azure DevOps Services | Sign In</title>"))}
+		},
+		"unfollowed redirect (302 to sign-in)": func() *http.Response {
+			h := make(http.Header)
+			h.Set("Location", "https://spsprodeus21.vssps.visualstudio.com/_signin?realm=dev.azure.com")
+			return &http.Response{StatusCode: http.StatusFound, Header: h, Body: io.NopCloser(strings.NewReader("<html><head><title>Object moved</title>"))}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := &rotatingADOCredentialSource{token: "stale-token"}
+			var headers []string
+			client := adoHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+				headers = append(headers, req.Header.Get("Authorization"))
+				if len(headers) == 1 {
+					return first(), nil
+				}
+				body := `{"id":42,"fields":{"System.WorkItemType":"Issue","System.Title":"item","System.State":"Active"}}`
+				if strings.Contains(req.URL.Path, "/workitemtypes/") {
+					body = `{"value":[{"name":"Active","category":"InProgress"}]}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			provider := NewADOProvider("org", "project", "",
+				WithADOCredentialSource(source),
+				func(p *ADOProvider) { p.Client = client },
+			)
+			if _, err := provider.GetWorkItem(context.Background(), RepositoryRef{Project: "project", Name: "repo"}, "42"); err != nil {
+				t.Fatalf("sign-in page was not treated as a refreshable 401: %v", err)
+			}
+			if len(headers) < 2 || headers[0] == headers[1] {
+				t.Fatalf("credential was not refreshed after the sign-in page: %#v", headers)
+			}
+		})
+	}
+}
+
+// TestADOSignInResponseNormalization pins which responses count as ADO's
+// rejected-credential sign-in answer: only a 203, or a redirect to the
+// sign-in service — never an ordinary 2xx or an unrelated redirect.
+func TestADOSignInResponseNormalization(t *testing.T) {
+	cases := []struct {
+		status   int
+		location string
+		want     int
+	}{
+		{http.StatusNonAuthoritativeInfo, "", http.StatusUnauthorized},
+		{http.StatusFound, "https://spsprodeus21.vssps.visualstudio.com/_signin?realm=dev.azure.com", http.StatusUnauthorized},
+		{http.StatusFound, "https://login.microsoftonline.com/common/oauth2/authorize", http.StatusUnauthorized},
+		{http.StatusFound, "https://dev.azure.com/org/project/_apis/git/repositories/other", http.StatusFound},
+		{http.StatusOK, "", http.StatusOK},
+		{http.StatusNoContent, "", http.StatusNoContent},
+	}
+	for _, tc := range cases {
+		h := make(http.Header)
+		if tc.location != "" {
+			h.Set("Location", tc.location)
+		}
+		resp := &http.Response{StatusCode: tc.status, Header: h}
+		normalizeADOSignInResponse(resp)
+		if resp.StatusCode != tc.want {
+			t.Errorf("status %d location %q: got %d, want %d", tc.status, tc.location, resp.StatusCode, tc.want)
+		}
 	}
 }

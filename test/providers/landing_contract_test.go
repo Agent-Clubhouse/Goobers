@@ -97,7 +97,7 @@ func newADOLandingBackend(t *testing.T, state string) landingBackend {
 // entry — indistinguishable from "not yet enqueued") that ADO's polling
 // model doesn't share (see MergeQueueEntryAbsent's doc); that state is
 // intentionally excluded from this cross-provider pin, the same way
-// GitHub-only capabilities like pr.review.threads are.
+// GitHub-only capabilities like pr.review.submit are.
 func TestContract_PollMergeQueueEntryLandedOracle(t *testing.T) {
 	tests := []struct {
 		state     string

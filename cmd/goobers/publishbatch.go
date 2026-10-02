@@ -65,7 +65,7 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pln(stderr, "error: plan does not match the artifact validate-plan marked valid")
 		return 1
 	}
-	repo, err := providerRepo(root)
+	repo, err := decompositionIssueRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

@@ -51,6 +51,33 @@ func TestStageRateLimitObserverEmitsSafeTypedEvent(t *testing.T) {
 	}
 }
 
+// TestStageRateLimitObserverEmitsDelayedOutcome pins ADO-N40: the "delayed"
+// outcome (X-RateLimit-Delay, diagnostic only) flows through the stage
+// sidecar the same way every other outcome does.
+func TestStageRateLimitObserverEmitsDelayedOutcome(t *testing.T) {
+	dir := PrepareStageTelemetryDir(t.TempDir())
+	observer := NewStageRateLimitObserver(dir)
+	fixed := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	observer.now = func() time.Time { return fixed }
+
+	observer.ObserveRateLimit(context.Background(), providers.RateLimitEvent{
+		Provider:       providers.ProviderADO,
+		Scope:          "dev.azure.com/org/project/_apis/wit/wiql",
+		Delay:          1500 * time.Millisecond,
+		Outcome:        providers.RateLimitOutcomeDelayed,
+		Remaining:      199997,
+		RemainingKnown: true,
+	})
+
+	events, dropped := readEmissionFile[stageEvent](filepath.Join(dir, eventsFile), validEvent)
+	if dropped != 0 || len(events) != 1 {
+		t.Fatalf("events = %#v, dropped = %d", events, dropped)
+	}
+	if events[0].Attrs["outcome"] != "delayed" || events[0].Attrs["delay_ms"] != float64(1500) {
+		t.Fatalf("event attrs = %#v", events[0].Attrs)
+	}
+}
+
 func TestClientRateLimitObserverExportsStandaloneSafeEvent(t *testing.T) {
 	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{

@@ -28,12 +28,12 @@ github.com/goobers/goobers/internal/workflow/v_2_0.CheckGaggleFeatureSupport # N
 github.com/goobers/goobers/internal/workflow/v_2_0.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
-github.com/goobers/goobers/providers.WithGiteaSecretRegistrar # Public Gitea secret-registrar option retained for external provider consumers; mirrors WithADOSecretRegistrar.
 github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
 github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.
 github.com/goobers/goobers/providers.WithGiteaMaxTransientRetries # Public Gitea transient-retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithGiteaRateLimitMaxWait # Public Gitea rate-limit wait-budget option retained for external provider consumers; mirrors WithRateLimitMaxWait.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
+github.com/goobers/goobers/providers.StampAttribution # Test-only fixture helper that stamps bodies with the attribution footer production provider writes store, so fakes model daemon runs (#5748); only _test.go callers.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
@@ -285,3 +285,22 @@ github.com/goobers/goobers/internal/workflow.WithKnownExternalTelemetryConnector
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.stageCgroup.exceeded # Per-stage memory-bound cgroup reader (#4070): constructed only by the linux startBounded, dead on targets with no cgroups.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.exceeded # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.release # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.
+
+# Decision-model (System One) client (#6073): internal/decider lands ahead of its first
+# caller, the optional semantic check after the deterministic handoff validator. The
+# whole package is exercised only by its own tests until that gate wires it; remove
+# these entries in the PR that adds the caller.
+github.com/goobers/goobers/internal/decider.New # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.isLoopback # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Client.Decide # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Client.delay # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Client.once # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.checkAnswers # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.levelKeys # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.checkDistribution # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.sleepCtx # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.StatusError.Error # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Noul # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Choice # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Score # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).
+github.com/goobers/goobers/internal/decider.Question.validate # Unwired decision-model client surface; test-exercised only until the first semantic-check caller lands (#6073).

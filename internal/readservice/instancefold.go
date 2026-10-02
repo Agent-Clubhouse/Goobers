@@ -37,6 +37,7 @@ type instanceState struct {
 	workerDivergenceOrder []string
 	workerDivergence      map[string]WorkerConfigDivergenceStatus
 	telemetryRetention    *TelemetryRetentionStatus
+	configReloadRejection *ConfigReloadRejectionStatus
 }
 
 // snapshot folds every event appended since the previous call and returns a
@@ -63,6 +64,7 @@ func (f *instanceFold) snapshot(ctx context.Context, schedulerDir string) (insta
 
 func (s *instanceState) apply(event journal.Event) {
 	s.engineFallbacks.apply(event)
+	s.applyConfigReload(event)
 	switch event.Type {
 	case journal.EventInitCompleted:
 		if !event.Time.IsZero() &&
@@ -74,7 +76,7 @@ func (s *instanceState) apply(event journal.Event) {
 			delete(s.refillBlocked, localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow})
 		}
 	case journal.EventError:
-		if event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed && event.Workflow != "" {
+		if event.Error != nil && providers.IsAuthFailureCode(event.Error.Code) && event.Workflow != "" {
 			s.blockRefill(event.Gaggle, event.Workflow, localscheduler.ReasonProviderAuth)
 		}
 	case journal.EventPollShed:
@@ -159,6 +161,17 @@ func (s *instanceState) apply(event journal.Event) {
 			!containsString(s.restart.RunIDs, event.RunID) {
 			s.restart.RunIDs = append(s.restart.RunIDs, event.RunID)
 		}
+	}
+}
+
+// applyConfigReload keeps the newest rejected reload until an accepted reload
+// or a daemon start supersedes it (#5596).
+func (s *instanceState) applyConfigReload(event journal.Event) {
+	switch event.Type {
+	case journal.EventConfigReloadRejected:
+		s.configReloadRejection = configReloadRejection(event)
+	case journal.EventConfigReloaded, journal.EventDaemonStarted:
+		s.configReloadRejection = nil
 	}
 }
 

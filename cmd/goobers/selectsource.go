@@ -42,7 +42,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 	}
 	l := layoutFor(root)
 
-	repo, err := providerRepo(root)
+	repo, err := decompositionIssueRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -114,7 +114,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			// run touched it; skip it rather than fail the whole scan.
 			continue
 		}
-		if !parentEligibleForDecomposition(item, trustLabel) {
+		if !parentEligibleForDecomposition(item, repo.Provider, trustLabel) {
 			continue
 		}
 		comments, commentsErr := issueProvider.ListComments(ctx, repo, item.ID)
@@ -152,7 +152,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			return failProviderStage(stderr, "record repository identity", recordErr, "selection.json")
 		}
 
-		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.Body, decompositionDigestLabels(item.Labels), item.State)
+		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.BodyWithAcceptanceCriteria(), decompositionDigestLabels(item.Labels), item.State)
 		if digestErr != nil {
 			if releaseErr := ledger.ReleaseScoped(ctx, key, runID); releaseErr != nil {
 				pf(stderr, "error: release claim %s after digest failure: %v\n", item.ID, releaseErr)
@@ -236,11 +236,14 @@ func writeSelectSourceNoWork(stdout, stderr io.Writer, reason string) int {
 // parentEligibleForDecomposition re-verifies the live parent state
 // independently of whatever it looked like when the source run claimed it
 // (design doc §2.1's fail-closed list): open, maintainer-approved, and not
-// already mid-implementation review.
-func parentEligibleForDecomposition(item providers.WorkItem, trustLabel string) bool {
+// already mid-implementation review. On ADO a trust tag first written in
+// another case still counts: the labels are folded onto trustLabel's
+// spelling for this check only.
+func parentEligibleForDecomposition(item providers.WorkItem, kind providers.ProviderKind, trustLabel string) bool {
 	if item.State != "" && !strings.EqualFold(item.State, "open") {
 		return false
 	}
+	item.Labels = providers.FoldLabelsForCompare(kind, item.Labels, []string{trustLabel})
 	if !item.HasLabel(trustLabel) {
 		return false
 	}

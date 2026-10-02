@@ -1658,6 +1658,9 @@ func TestShellExecutor_SelfBinResolvesGoobersToken(t *testing.T) {
 	if result2.Status != apiv1.ResultFailure || result2.Error == nil || result2.Error.Code != "exec_start" {
 		t.Fatalf("without SelfBin, bare \"goobers\" must fail at exec_start: %+v", result2)
 	}
+	if len(result2.Error.Causes) == 0 {
+		t.Fatalf("exec_start causes were not preserved: %+v", result2.Error)
+	}
 }
 
 // TestShellExecutor_RefusesScriptBodyNamingGuardedCredentialPath closes the

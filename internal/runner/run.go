@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/creditgraph"
@@ -382,6 +383,16 @@ type FailedOutcome struct {
 	// terminal (#3361) must not feed work-quality signals like the
 	// failure-streak circuit breaker (#3364).
 	Code string
+	// FaultClass is the runner's own classification of the terminal, set
+	// only where the runner KNOWS who owns the fault rather than having to
+	// re-derive it from Code (#5638): today, telemetry.ErrorClassInfra for a
+	// dispatch that exhausted its infrastructure retry budget — the same
+	// failure the runner already journaled as retryFailureClass "infra".
+	// Empty means "not classified here": consumers fall back to
+	// telemetry.ClassifyError(Code). A session timeout is never classified
+	// infra here (invoke.Timeout is not an infrastructure marker), so the
+	// #1054 timeout case still reaches consumers by its code.
+	FaultClass telemetry.ErrorClass
 }
 
 // FailedHandler is Config.Failed's shape. Implementations are instance-level
@@ -633,6 +644,12 @@ type Config struct {
 	// replaces it (never merged); empty leaves every task's own requireLabels
 	// (or its absence) untouched.
 	BacklogQueryRequireLabels string
+	// BacklogQueryBacklogLabels and BacklogQueryLabelPredicate are the
+	// gaggle's spec.backlog.labels / labelPredicate scope. They are conjoined
+	// with backlog-query task inputs and cannot be replaced by task-local
+	// selectors.
+	BacklogQueryBacklogLabels  string
+	BacklogQueryLabelPredicate string
 }
 
 func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
@@ -1337,6 +1354,7 @@ type walkState struct {
 	repassAttempts       map[string]int
 	infraGateAttempts    map[string]int
 	infraRepassAttempts  map[string]int
+	pollAttempts         map[string]int
 	gateDiffDigests      map[string]string
 	visitedStages        map[string]bool
 	// evidenceRejections is the per-gate budget for the runner's own
@@ -1633,6 +1651,27 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 	return s
 }
 
+func (r *Runner) newWalkGateEvaluator(ws *walkState) *gate.Evaluator {
+	return &gate.Evaluator{
+		Automated:   r.runAutomated(ws.in, ws.jr),
+		Journal:     ws.jr,
+		MaxRepasses: int(ws.in.RunControls.MaxRepasses),
+		Attempts:    ws.gateAttempts,
+		IsNeedsHumanTarget: func(target string) bool {
+			task, ok := ws.in.Machine.Task(target)
+			return ok && task.Inputs["status"] == "needs-human"
+		},
+		RepassAttempts:               ws.repassAttempts,
+		InfrastructureAttempts:       ws.infraGateAttempts,
+		InfrastructureRepassAttempts: ws.infraRepassAttempts,
+		PollAttempts:                 ws.pollAttempts,
+		IsReentry: func(target string) bool {
+			return ws.visitedStages[target]
+		},
+		LastDiffDigest: ws.gateDiffDigests,
+	}
+}
+
 // walk advances the machine from startState to a terminal state (or a
 // human-gate/drain pause), journaling every stage/gate attempt and every
 // artifact produced along the way. Gate dispatch (bounded repass, escalation,
@@ -1652,23 +1691,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	// itself, so every run on the repository checks whether the base has moved
 	// past the failure that parked it.
 	r.releaseBaselineParks(ctx, ws)
-	ws.gateEval = &gate.Evaluator{
-		Automated:   r.runAutomated(ws.in, ws.jr),
-		Journal:     ws.jr,
-		MaxRepasses: int(ws.in.RunControls.MaxRepasses),
-		Attempts:    ws.gateAttempts,
-		IsNeedsHumanTarget: func(target string) bool {
-			task, ok := ws.in.Machine.Task(target)
-			return ok && task.Inputs["status"] == "needs-human"
-		},
-		RepassAttempts:               ws.repassAttempts,
-		InfrastructureAttempts:       ws.infraGateAttempts,
-		InfrastructureRepassAttempts: ws.infraRepassAttempts,
-		IsReentry: func(target string) bool {
-			return ws.visitedStages[target]
-		},
-		LastDiffDigest: ws.gateDiffDigests,
-	}
+	ws.gateEval = r.newWalkGateEvaluator(ws)
 	runConcurrent := func(p apiv1.Parallel, existing *parallelExec) (Result, bool, error) {
 		if err := validateConcurrentParallelWorkspaces(ws.in.Machine, p); err != nil {
 			res, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, p.Name, ws.steps, fmt.Errorf("runner: %w", err))
@@ -2846,12 +2869,9 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 		// NotifyEscalated best-effort contract below. Surfacing the escalation is
 		// best-effort; the run must still reach its terminal phase.
 		if aerr := jr.Append(journal.Event{
-			Type: journal.EventError,
-			Gate: gr.Gate,
-			Error: &journal.ErrorDetail{
-				Code:    "gate_terminal_item_resolution_failed",
-				Message: err.Error(),
-			},
+			Type:  journal.EventError,
+			Gate:  gr.Gate,
+			Error: journal.ErrorDetailFor("gate_terminal_item_resolution_failed", err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal terminal item resolution failure for gate %q: %w", gr.Gate, aerr)
 		}
@@ -2862,12 +2882,9 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 	for _, itemID := range itemIDs {
 		if err := r.cfg.Escalation.NotifyEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, gr, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
-				Type: journal.EventError,
-				Gate: gr.Gate,
-				Error: &journal.ErrorDetail{
-					Code:    "gate_terminal_notification_failed",
-					Message: err.Error(),
-				},
+				Type:  journal.EventError,
+				Gate:  gr.Gate,
+				Error: journal.ErrorDetailFor("gate_terminal_notification_failed", err),
 			}); aerr != nil {
 				return fmt.Errorf("runner: journal terminal notification failure for gate %q: %w", gr.Gate, aerr)
 			}
@@ -2914,7 +2931,7 @@ func (r *Runner) notifyBlocked(ctx context.Context, jr *journal.Run, o BlockedOu
 	if err := r.cfg.Blocked(ctx, o); err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: o.Stage,
-			Error: &journal.ErrorDetail{Code: "blocked_handling_failed", Message: err.Error()},
+			Error: journal.ErrorDetailFor("blocked_handling_failed", err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal blocked-handling failure for %q: %w", o.Stage, aerr)
 		}
@@ -2945,10 +2962,7 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 		if aerr := jr.Append(journal.Event{
 			Type:  journal.EventError,
 			Stage: stage,
-			Error: &journal.ErrorDetail{
-				Code:    "stage_terminal_item_resolution_failed",
-				Message: err.Error(),
-			},
+			Error: journal.ErrorDetailFor("stage_terminal_item_resolution_failed", err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal terminal item resolution failure for stage %q: %w", stage, aerr)
 		}
@@ -2961,10 +2975,7 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 			if aerr := jr.Append(journal.Event{
 				Type:  journal.EventError,
 				Stage: stage,
-				Error: &journal.ErrorDetail{
-					Code:    "stage_terminal_notification_failed",
-					Message: err.Error(),
-				},
+				Error: journal.ErrorDetailFor("stage_terminal_notification_failed", err),
 			}); aerr != nil {
 				return fmt.Errorf("runner: journal terminal notification failure for stage %q: %w", stage, aerr)
 			}
@@ -2994,7 +3005,7 @@ func (r *Runner) notifyRateLimited(ctx context.Context, jr *journal.Run, o RateL
 	if err := r.cfg.RateLimited(ctx, o); err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: o.Stage,
-			Error: &journal.ErrorDetail{Code: "rate_limited_handling_failed", Message: err.Error()},
+			Error: journal.ErrorDetailFor("rate_limited_handling_failed", err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal rate-limited-handling failure for %q: %w", o.Stage, aerr)
 		}
@@ -3017,7 +3028,7 @@ func (r *Runner) notifyFailed(ctx context.Context, jr *journal.Run, o FailedOutc
 	if err := r.cfg.Failed(ctx, o); err != nil {
 		if aerr := jr.Append(journal.Event{
 			Type: journal.EventError, Stage: o.Stage,
-			Error: &journal.ErrorDetail{Code: "failed_handling_failed", Message: err.Error()},
+			Error: journal.ErrorDetailFor("failed_handling_failed", err),
 		}); aerr != nil {
 			return fmt.Errorf("runner: journal failed-handling failure for run %q: %w", o.RunID, aerr)
 		}
@@ -3225,7 +3236,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	}
 	appendErr := jr.Append(journal.Event{
 		Type:   journal.EventError,
-		Error:  &journal.ErrorDetail{Code: "run_failed", Message: origErr.Error()},
+		Error:  journal.ErrorDetailFor("run_failed", origErr),
 		Runner: terminalRunner,
 	})
 	// #1054: leave a human-visible trace on the driving item before finish()'s
@@ -3234,7 +3245,7 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 	// walk), the exact case that was silently returning the issue to ready.
 	// SIGTERM must not skip the trace, but a stalled-run watchdog can interrupt
 	// a hung provider call. The full origErr is what the item's comment records.
-	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error(), Code: failureCode})
+	nerr := r.notifyFailed(stalledAttemptContext(ctx), jr, FailedOutcome{RunID: runID, Seq: jr.Seq(), RepoRef: repoRef, Stage: finalState, Cause: origErr.Error(), Code: failureCode, FaultClass: terminalFaultClass(origErr)})
 	if stalledResult, stalled, stalledErr := r.finishStalledRequest(ctx, runID, jr, finalState, steps); stalled {
 		return stalledResult, stalledErr
 	}
@@ -3267,6 +3278,10 @@ func (r *Runner) failTerminal(ctx context.Context, runID string, jr *journal.Run
 func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journal.Run, repoRef apiv1.RepoRef, stage string, steps int, cause *apiv1.ErrorInfo) (Result, error) {
 	code, message := failureCauseFrom(cause)
 	journaledMessage := message
+	var causes []journal.ErrorCause
+	if cause != nil {
+		causes = journalErrorCausesFrom(cause.Causes)
+	}
 	var terminalRunner map[string]any
 	if code != "" {
 		// Code-prefixed for the on-disk cause event only (matching #545's
@@ -3284,7 +3299,7 @@ func (r *Runner) finishStageFailure(ctx context.Context, runID string, jr *journ
 	}
 	if aerr := jr.Append(journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage},
+		Error:  &journal.ErrorDetail{Code: "run_failed", Message: journaledMessage, Causes: causes},
 		Runner: terminalRunner,
 	}); aerr != nil {
 		// This degenerate journal-write failure routes through failTerminal,
@@ -3992,7 +4007,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 					if resolveErr != nil {
 						if aerr := jr.Append(journal.Event{
 							Type: journal.EventError, Stage: t.Name,
-							Error: &journal.ErrorDetail{Code: "existingfix_item_resolution_failed", Message: resolveErr.Error()},
+							Error: journal.ErrorDetailFor("existingfix_item_resolution_failed", resolveErr),
 						}); aerr != nil {
 							res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix item-resolution error for %q: %w", t.Name, aerr))
 							return "", res, false, err
@@ -4010,7 +4025,7 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 				if herr := r.cfg.ExistingFix(stalledAttemptContext(ctx), o); herr != nil {
 					if aerr := jr.Append(journal.Event{
 						Type: journal.EventError, Stage: t.Name,
-						Error: &journal.ErrorDetail{Code: "existingfix_handling_failed", Message: herr.Error()},
+						Error: journal.ErrorDetailFor("existingfix_handling_failed", herr),
 					}); aerr != nil {
 						res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix handler error for %q: %w", t.Name, aerr))
 						return "", res, false, err
@@ -4255,7 +4270,7 @@ func (r *Runner) attributeAfterTerminalIfMissing(jr *journal.Run) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Reason: "Backprop attribution inspection failed",
-			Error: &journal.ErrorDetail{Code: "backprop_attribution_inspection_failed", Message: err.Error()},
+			Error: journal.ErrorDetailFor("backprop_attribution_inspection_failed", err),
 		})
 		return
 	}
@@ -4270,7 +4285,7 @@ func (r *Runner) attributeAfterTerminal(jr *journal.Run) {
 	if err != nil {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Reason: "Backprop enrollment inspection failed",
-			Error: &journal.ErrorDetail{Code: "backprop_enrollment_failed", Message: err.Error()},
+			Error: journal.ErrorDetailFor("backprop_enrollment_failed", err),
 		})
 		return
 	}
@@ -4280,7 +4295,7 @@ func (r *Runner) attributeAfterTerminal(jr *journal.Run) {
 	if _, err := r.attributeRun(jr.Dir(), nil); err != nil {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Reason: "Backprop attribution failed",
-			Error: &journal.ErrorDetail{Code: "backprop_attribution_failed", Message: err.Error()},
+			Error: journal.ErrorDetailFor("backprop_attribution_failed", err),
 		})
 	}
 }
@@ -4326,7 +4341,7 @@ func (r *Runner) notifyTerminal(jr *journal.Run, runID string, phase journal.Run
 	}
 	if aerr := jr.Append(journal.Event{
 		Type:  journal.EventError,
-		Error: &journal.ErrorDetail{Code: "terminal_notification_failed", Message: err.Error()},
+		Error: journal.ErrorDetailFor("terminal_notification_failed", err),
 	}); aerr != nil {
 		return fmt.Errorf("runner: journal terminal-notification failure for run %q: %w", runID, aerr)
 	}
@@ -4602,9 +4617,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			Stage:            t.Name,
 			Integrity:        admission.Actual,
 			MinimumIntegrity: admission.Minimum,
-			Error: &journal.ErrorDetail{
-				Code: apiv1.IntegrityAdmissionErrorCode, Message: admission.Error(),
-			},
+			Error:            journal.ErrorDetailFor(apiv1.IntegrityAdmissionErrorCode, admission),
 		}); appendErr != nil {
 			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal integrity refusal for %q: %w", t.Name, appendErr)
 		}
@@ -4718,6 +4731,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 		result, mutations, cleanup, dispatchErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			applyTaskUsageBudget(usageLimits, &usage, cumulativeUsage, &result, &dispatchErr)
+			dispatchErr = declaredArtifactRetryError(dispatchErr, result, policyAttempts < policyMaxAttempts)
 		}
 		if err := completeTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, cleanup); err != nil {
 			span.Fail(err)
@@ -4759,7 +4773,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			// now unreliable, so it is fatal, not best-effort.
 			if aerr := jr.Append(journal.Event{
 				Type: journal.EventError, Stage: t.Name, Attempt: int(attempt), AttemptClass: class,
-				Error: &journal.ErrorDetail{Code: "executor_error", Message: dispatchErr.Error()},
+				Error: journal.ErrorDetailFor("executor_error", dispatchErr),
 				Runner: map[string]any{
 					retryFailureClassKey:  string(failureClass),
 					infraCommittedWorkKey: infraFailedAttemptCommittedWork,
@@ -4848,6 +4862,17 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	// once, and every path inside either returns or continues.
 	err := fmt.Errorf("runner: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
 	return apiv1.ResultEnvelope{}, nil, err
+}
+
+// terminalFaultClass is FailedOutcome.FaultClass for a walk-level terminal:
+// infra exactly when origErr still carries the invoke infrastructure marker —
+// the marker dispatchRetryFailureClass journaled as retryFailureClass "infra"
+// while the attempts were being spent — else unclassified.
+func terminalFaultClass(origErr error) telemetry.ErrorClass {
+	if dispatchRetryFailureClass(origErr) == journal.AttemptInfra {
+		return telemetry.ErrorClassInfra
+	}
+	return ""
 }
 
 func dispatchRetryFailureClass(err error) journal.AttemptClass {
@@ -5043,6 +5068,27 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 	return resolved
 }
 
+func (r *Runner) defaultBacklogQueryInputs(task apiv1.Task, inputs map[string]string) map[string]string {
+	inputs = defaultBacklogQueryAssignedTo(task, inputs, r.cfg.BacklogQueryAssignedTo)
+	return defaultBacklogQueryRequireLabels(task, inputs, r.cfg.BacklogQueryRequireLabels)
+}
+
+func (r *Runner) applyInvocationBacklogQueryBacklogScope(task apiv1.Task, inputs map[string]interface{}) (map[string]interface{}, error) {
+	return backlogdefaults.ApplyBacklogScopeToInvocation(task, inputs, r.cfg.BacklogQueryBacklogLabels, r.cfg.BacklogQueryLabelPredicate)
+}
+
+func (r *Runner) finalizeInvocationInputs(task apiv1.Task, env *apiv1.InvocationEnvelope, fanIn *parallelExec) error {
+	inputs, err := r.applyInvocationBacklogQueryBacklogScope(task, env.Inputs)
+	if err != nil {
+		return fmt.Errorf("stage %q backlog scope: %w", task.Name, err)
+	}
+	env.Inputs = inputs
+	if fanIn != nil && task.Name == fanIn.spec.Join {
+		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	}
+	return nil
+}
+
 // dispatchTask provisions one attempt's workspace and invokes the task's
 // executor. It never journals its own result/err — runTask owns attempt/
 // retry journaling so a retried attempt is never mistaken for the run's
@@ -5073,7 +5119,9 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // upstreamResult.Outputs fails the stage closed, since InputsFrom is a
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
-// open read).
+// open read). Gaggle backlog labels/predicate are then conjoined onto the
+// resolved inputs so upstream bindings can narrow but never replace gaggle
+// scope.
 func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, cleanup func(bool) error, err error) {
 	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
 	upstream, upstreamResult := tf.upstream, tf.upstreamResult
@@ -5084,8 +5132,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, nil, fmt.Errorf("project stage %q inputs: %w", t.Name, err)
 	}
-	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
-	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
+	taskInputs = r.defaultBacklogQueryInputs(t, taskInputs)
 	var experiment bandit.Config
 	var assignment bandit.Assignment
 	var experimentObservations []bandit.Observation
@@ -5136,11 +5183,7 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 					Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 					MediaType: "application/json", Integrity: ref.Integrity,
 				}},
-				Error: &apiv1.ErrorInfo{
-					Code:      baseSyncConflictErrorCode,
-					Message:   prepErr.Error(),
-					Retryable: true,
-				},
+				Error: journal.ErrorInfoFor(baseSyncConflictErrorCode, prepErr, true),
 			}, nil, nil, nil
 		}
 		// #572: a transient network/remote failure provisioning the stage's
@@ -5231,8 +5274,8 @@ func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, cl
 		}
 		env.Inputs[inputKey] = v
 	}
-	if fanIn != nil && t.Name == fanIn.spec.Join {
-		env.Inputs[BranchCompletenessInput] = fanIn.completeness()
+	if err := r.finalizeInvocationInputs(t, &env, fanIn); err != nil {
+		return apiv1.ResultEnvelope{}, nil, nil, err
 	}
 
 	switch t.Type {
@@ -5475,12 +5518,13 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 	defer cancelCapture()
 	ctx = captureCtx
 	journalFailure := func(cause error) {
+		detail := journal.ErrorDetailFor("unpushed_diff_record_failed", cause)
+		if detail != nil {
+			detail.Message = unpushedDiffCaptureFailure(captureCtx, cause, workspace.worktree.Branch).Error()
+		}
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{
-				Code:    "unpushed_diff_record_failed",
-				Message: unpushedDiffCaptureFailure(captureCtx, cause, workspace.worktree.Branch).Error(),
-			},
+			Error: detail,
 		})
 	}
 	// Cheap local guard before Diff: on a blobless mirror Diff is a remote
@@ -5663,7 +5707,22 @@ func errorDetailFrom(result apiv1.ResultEnvelope) *journal.ErrorDetail {
 			message = summary
 		}
 	}
-	return &journal.ErrorDetail{Code: result.Error.Code, Message: message}
+	return &journal.ErrorDetail{Code: result.Error.Code, Message: message, Causes: journalErrorCausesFrom(result.Error.Causes)}
+}
+
+func journalErrorCausesFrom(causes []apiv1.ErrorCause) []journal.ErrorCause {
+	if len(causes) == 0 {
+		return nil
+	}
+	out := make([]journal.ErrorCause, 0, len(causes))
+	for _, cause := range causes {
+		out = append(out, journal.ErrorCause{
+			Code:    cause.Code,
+			Class:   cause.Class,
+			Message: cause.Message,
+		})
+	}
+	return out
 }
 
 // dispositionReason is the human-facing explanation posted to the driving item

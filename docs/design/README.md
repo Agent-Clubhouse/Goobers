@@ -14,12 +14,12 @@ word — read the page, not this table, before depending on it.
 
 | Status | Documents |
 |---|---:|
-| `draft` | 14 |
+| `draft` | 15 |
 | `approved` | 19 |
 | `implemented` | 27 |
 | `superseded` | 4 |
 | `historical` | 6 |
-| **Total** | **70** |
+| **Total** | **71** |
 
 ## `docs/adr/`
 
@@ -67,6 +67,7 @@ word — read the page, not this table, before depending on it.
 | [Design: needs-human label taxonomy — decision vs. status](needs-human-taxonomy.md) | `implemented` | — | — | #2028, #1974 | — | — | — |
 | [Notification output boundary](notification-output.md) | `historical` | — | — | — | — | — | — |
 | [Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)](onboarding-first-value-ladder.md) | `draft` | — | — | — | — | — | 09db115bb (2026-09-06) |
+| [Design: Plan-driven dynamic fan-out](plan-driven-dynamic-fan-out.md) | `draft` | workflow DSL, runner, journal, conformance | #1310 | — | — | — | — |
 | [Portal read architecture — a rethink](portal-read-architecture.md) | `implemented` | — | — | #1912, #1913, #1945, #1946, #1948, #1950, #1951, #1952 | — | — | — |
 | [Scoping note: portal "reveal in Finder" and non-loopback (tier-2+) deployments](portal-reveal-remote-posture.md) | `implemented` | — | — | #2305, #2884 | — | — | — |
 | [Design: Provider access layer — unified providers, connections and explicit credentials (DSL 3.0)](provider-access-layer.md) | `draft` | — | #2061 | — | — | — | 47de1f0d6 (2026-09-25) |

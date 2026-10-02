@@ -97,3 +97,35 @@ func electionExcludedSet(ctx context.Context, provider remediationProvider, repo
 	}
 	return unionPRSets(demoted, unlandable), nil
 }
+
+// blockerElectionExclusions returns the recorded sibling blockers pr-select
+// must not wait behind: the unlandable set it already had (#5602) plus every
+// named blocker electionExcludedSet drops from candidacy. pr-select's
+// blocked-on-sibling hold and the election must agree on who can still land;
+// when they disagree, elect-lander crowns a successor pr-select never selects.
+// Only open PRs named as a live blocker are resolved, so a queue with no held
+// PRs makes no extra provider reads.
+func blockerElectionExclusions(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, openPRs []providers.PullRequestSummary, recordedBlockers map[int][]int, unlandable map[int]bool, stderr io.Writer) (map[int]bool, error) {
+	named := map[int]bool{}
+	for _, blockers := range recordedBlockers {
+		for _, b := range blockers {
+			if !unlandable[b] {
+				named[b] = true
+			}
+		}
+	}
+	if len(named) == 0 {
+		return unlandable, nil
+	}
+	var candidates []providers.PullRequestSummary
+	for _, pr := range openPRs {
+		if named[pr.Number] {
+			candidates = append(candidates, pr)
+		}
+	}
+	excluded, err := electionExcludedSet(ctx, provider, repo, candidates, "", stderr)
+	if err != nil {
+		return nil, err
+	}
+	return unionPRSets(unlandable, excluded), nil
+}

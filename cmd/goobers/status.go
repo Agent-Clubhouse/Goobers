@@ -124,6 +124,24 @@ func journalHealthStatusLine(status readservice.SchedulerStatus) string {
 		status.JournalHealth.AppendsDropped)
 }
 
+// configReloadRejectionStatusLine reports a config edit the daemon has not
+// applied because its reload was rejected (#5596). Silent otherwise.
+func configReloadRejectionStatusLine(status readservice.SchedulerStatus) string {
+	rejection := status.ConfigReloadRejection
+	if rejection == nil {
+		return ""
+	}
+	digest := rejection.Digest
+	if len(digest) > 12 {
+		digest = digest[:12]
+	}
+	if digest == "" {
+		digest = "unreadable"
+	}
+	return fmt.Sprintf("Warning: config reload rejected at %s (candidate %s); the previous config is still in force: %s\n",
+		rejection.At.UTC().Format(time.RFC3339), digest, rejection.Message)
+}
+
 // storageHealthStatusLine reports tiered low-disk protection's current tier
 // (#4873). Silent when healthy, matching journalHealthStatusLine's
 // only-say-something-when-it-matters convention.
@@ -163,12 +181,21 @@ func renderSchedulerStatus(
 	now time.Time,
 ) {
 	renderStatusFleetSummary(text, summary, now)
+	renderSchedulerStatusSignals(text, status, now)
+}
+
+func renderSchedulerStatusSignals(
+	text *strings.Builder,
+	status readservice.SchedulerStatus,
+	now time.Time,
+) {
 	text.WriteString(daemonRestartStatusLine(status, now))
 	text.WriteString(providerQuotaStatusLine(status, now))
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
+	text.WriteString(configReloadRejectionStatusLine(status))
 	text.WriteString(workerConfigDivergenceStatusLines(status, now))
 	text.WriteString(refusedWorkflowStatusLines(status))
 	text.WriteString(isolationMandateStatusLines(status))
@@ -258,6 +285,9 @@ var (
 	loadStatusPRLabelCounts = queryStatusPRLabelCounts
 	newStatusGitHubProvider = providers.NewGitHubProvider
 	newStatusGiteaProvider  = providers.NewGiteaProvider
+	loadStatusFleetFacts    = func(ctx context.Context, reads *readservice.Local) ([]readservice.StatusFleetFact, error) {
+		return reads.StatusFleetFacts(ctx)
+	}
 )
 
 type statusPRLabelCountCache struct {
@@ -354,6 +384,7 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 type statusJSONSummary struct {
 	Recovery       *recoveryView                  `json:"recovery,omitempty"`
 	EngineFallback *readmodel.EngineFallback      `json:"engineFallback,omitempty"`
+	Lineage        *readservice.RunLineage        `json:"lineage,omitempty"`
 	RunID          string                         `json:"runId"`
 	Workflow       string                         `json:"workflow"`
 	Gaggle         string                         `json:"gaggle"`
@@ -390,7 +421,55 @@ type statusJSONOutput struct {
 	// (#2971) — which target-branch CI failure is holding which subjects.
 	// Omitted when the local baseline store cannot be read.
 	BaselineBlockers *statusBaselineBlockers `json:"baselineBlockers,omitempty"`
+	Collection       *statusCollection       `json:"collection,omitempty"`
 	Runs             []statusJSONSummary     `json:"runs"`
+}
+
+type statusCollection struct {
+	State   string                  `json:"state"`
+	Queries []statusCollectionQuery `json:"queries"`
+}
+
+type statusCollectionQuery struct {
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	DurationMillis int64  `json:"durationMillis"`
+	Error          string `json:"error,omitempty"`
+}
+
+func statusCollectionPartial(name string, started time.Time, err error) statusCollection {
+	return statusCollection{
+		State: "partial",
+		Queries: []statusCollectionQuery{{
+			Name:           name,
+			State:          "failed",
+			DurationMillis: time.Since(started).Milliseconds(),
+			Error:          err.Error(),
+		}},
+	}
+}
+
+func statusCollectionUnavailableText(collection *statusCollection) string {
+	if collection == nil || collection.State != "partial" {
+		return ""
+	}
+	var text strings.Builder
+	for _, query := range collection.Queries {
+		if query.State != "failed" || query.Error == "" {
+			continue
+		}
+		fmt.Fprintf(&text, "Status collection partial: %s unavailable after %s: %s\n",
+			query.Name, time.Duration(query.DurationMillis)*time.Millisecond, query.Error)
+	}
+	return text.String()
+}
+
+func statusFleetSummaryUnavailableText(query *statusCollectionQuery) string {
+	if query == nil {
+		return ""
+	}
+	return fmt.Sprintf("Workflow summary unavailable: %s failed after %s: %s\n\n",
+		query.Name, time.Duration(query.DurationMillis)*time.Millisecond, query.Error)
 }
 
 func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -595,6 +674,7 @@ func statusJSONSummaries(runs []runSummary) []statusJSONSummary {
 	for i, r := range runs {
 		summaries[i] = statusJSONSummary{
 			EngineFallback: r.EngineFallback,
+			Lineage:        r.Lineage,
 			RunID:          r.RunID,
 			Workflow:       r.Workflow,
 			Gaggle:         r.Gaggle,
@@ -786,13 +866,16 @@ func newStatusFleetSummaryLoader(
 	layout instance.Layout,
 	runLoader *statusRunLoader,
 	location *time.Location,
-) func([]apiv1.Workflow, []runSummary, readservice.SchedulerStatus, time.Time) (statusFleetSummary, error) {
+) statusFleetSummaryLoader {
 	return func(
 		workflows []apiv1.Workflow,
 		runs []runSummary,
 		schedulerStatus readservice.SchedulerStatus,
 		now time.Time,
 	) (statusFleetSummary, error) {
+		if query := runLoader.fleetSummaryUnavailable(); query != nil {
+			return statusFleetSummary{}, fmt.Errorf("workflow summary unavailable: %s failed: %s", query.Name, query.Error)
+		}
 		if runLoader.projected {
 			runs = runLoader.fleetRuns
 		}
@@ -806,6 +889,61 @@ func newStatusFleetSummaryLoader(
 		}
 		return buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, location)
 	}
+}
+
+type statusFleetSummaryLoader func(
+	[]apiv1.Workflow,
+	[]runSummary,
+	readservice.SchedulerStatus,
+	time.Time,
+) (statusFleetSummary, error)
+
+func appendStatusFleetSummaryText(
+	text *strings.Builder,
+	runLoader *statusRunLoader,
+	loadFleetSummary statusFleetSummaryLoader,
+	workflows []apiv1.Workflow,
+	runs []runSummary,
+	status readservice.SchedulerStatus,
+	statusAvailable bool,
+	now time.Time,
+) error {
+	if query := runLoader.fleetSummaryUnavailable(); query != nil {
+		text.WriteString(statusFleetSummaryUnavailableText(query))
+		if statusAvailable {
+			renderSchedulerStatusSignals(text, status, now)
+		}
+		return nil
+	}
+	summary, err := loadFleetSummary(workflows, runs, status, now)
+	if err != nil {
+		return err
+	}
+	if statusAvailable {
+		renderSchedulerStatus(text, summary, status, now)
+	} else {
+		renderStatusFleetSummary(text, summary, now)
+	}
+	return nil
+}
+
+func optionalStatusFleetSummary(
+	runLoader *statusRunLoader,
+	loadFleetSummary statusFleetSummaryLoader,
+	workflows []apiv1.Workflow,
+	runs []runSummary,
+	status readservice.SchedulerStatus,
+	supportsWatch bool,
+	now time.Time,
+) (*statusFleetSummary, error) {
+	if !supportsWatch || runLoader.fleetSummaryUnavailable() != nil {
+		return nil, nil
+	}
+	summary, err := loadFleetSummary(workflows, runs, status, now)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
 }
 
 func statusWorkflowLastEvals(
@@ -957,6 +1095,7 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options
 	for i, run := range summaries {
 		runs[i] = runSummary{
 			EngineFallback: run.EngineFallback,
+			Lineage:        run.Lineage,
 			RunID:          run.ID,
 			Workflow:       run.Workflow,
 			Gaggle:         run.Gaggle,
@@ -994,12 +1133,14 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 // runRunTable help: `status` supports --daemon/--watch and reports the extra
 // workflow/PR lines, while `runs list` is the flag-reduced alias. runRunTable
 // selects between them via helpUsage(stderr, command) (#1095).
-const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
+const statusHelp = "Usage: goobers status [--api=<url>] [--daemon | --agents | --json] [--all] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [--watch [--interval=2s]] [path]\n\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
 	"Normal and daemon status identify the root path, durable instance ID, and owning PID,\n" +
 	"and warn when the root is marked historical or its identity cannot be verified.\n" +
 	"Each run includes work identity, stage liveness, PR trajectory, claim drift, latest error, and review rationale.\n" +
+	"Continuations identify their immutable source, resume target, reused branch, injected inputs, and historical repasses;\n" +
+	"source runs identify each continuation and its independent phase.\n" +
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"PR queue evidence shows historical eligibility, exclusions, claim/label comparisons,\n" +
 	"and next steps from the existing daemon projection, never current claim authority.\n" +
@@ -1023,7 +1164,7 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--all]
 	"--watch are refused because the probe reports only the live moment.\n" +
 	"Exit codes: 0 = OK, 1 = validation errors, 2 = usage/IO error.\n"
 
-const runsListHelp = "Usage: goobers runs list [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
+const runsListHelp = "Usage: goobers runs list [--api=<url>] [--json] [--phase=<phase>[,<phase>...]] [--workflow=<name>] [--gaggle=<name>] [--limit=N] [path]\n\n" +
 	"Alias for the goobers status run table, with the same flags (minus --daemon/--watch).\n" +
 	"Validate active config, show warnings, and list runs under an instance's\n" +
 	"runs/ directory with their current phase, newest first (default path \".\").\n" +
@@ -1075,6 +1216,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	workflowFilter := fs.String("workflow", "", "filter by workflow name")
 	gaggleFilter := fs.String("gaggle", "", "filter by gaggle name")
 	limit := fs.Int("limit", 50, "maximum number of runs to show (default: 50; 0 for all)")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	// Only `status` supports --daemon, --watch/--interval, and the #712 pause
 	// line — all daemon/process runtime state, not part of `runs list`'s
 	// plain, scriptable run table.
@@ -1129,19 +1271,10 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		return 2
 	}
 
-	phases := make(map[journal.RunPhase]struct{})
-	if *phaseFilter != "" {
-		for _, value := range strings.Split(*phaseFilter, ",") {
-			phase := journal.RunPhase(strings.TrimSpace(value))
-			switch phase {
-			case journal.PhaseRunning, journal.PhaseCompleted, journal.PhaseFailed,
-				journal.PhaseAborted, journal.PhaseEscalated:
-				phases[phase] = struct{}{}
-			default:
-				pf(stderr, "error: invalid phase %q (want running, completed, failed, aborted, or escalated)\n", value)
-				return 2
-			}
-		}
+	phases, err := parseStatusPhases(*phaseFilter)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
@@ -1154,6 +1287,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
+	}
+	if code, handled := maybeRunRemoteRunTable(*api, root, fs.NArg() == 1, supportsWatch, daemon, agents, watch, interval, *jsonOutput, statusOptions{
+		phases: phases, workflow: *workflowFilter, gaggle: *gaggleFilter, limit: *limit,
+	}, stdout, stderr); handled {
+		return code
 	}
 
 	l := instance.NewLayout(root)
@@ -1286,19 +1424,13 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
 		}
 		status, err := reads.SchedulerStatus(context.Background())
-		if err == nil {
-			summary, summaryErr := loadFleetSummary(textWorkflows, runs, status, now)
-			if summaryErr != nil {
-				return "", summaryErr
-			}
-			renderSchedulerStatus(&text, summary, status, now)
-		} else {
-			summary, summaryErr := loadFleetSummary(textWorkflows, runs, readservice.SchedulerStatus{}, now)
-			if summaryErr != nil {
-				return "", summaryErr
-			}
-			renderStatusFleetSummary(&text, summary, now)
+		if err != nil {
+			status = readservice.SchedulerStatus{}
 		}
+		if summaryErr := appendStatusFleetSummaryText(&text, runLoader, loadFleetSummary, textWorkflows, runs, status, err == nil, now); summaryErr != nil {
+			return "", summaryErr
+		}
+		text.WriteString(statusCollectionUnavailableText(runLoader.collectionStatus()))
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
 			text.WriteString(prLabelStatusUnavailableText(err))
@@ -1369,12 +1501,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		if statusErr != nil {
 			status = readservice.SchedulerStatus{}
 		}
-		summary, err := loadFleetSummary(set.Workflows, allRuns, status, now)
+		fleetSummary, err = optionalStatusFleetSummary(runLoader, loadFleetSummary, set.Workflows, allRuns, status, supportsWatch, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
 		}
-		fleetSummary = &summary
 	}
 	runs, olderRuns := selectStatusRuns(allRuns, options)
 	if *jsonOutput {
@@ -1427,6 +1558,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			Summary:                fleetSummary,
 			ParkedBacklog:          parked,
 			BaselineBlockers:       baselineBlockers,
+			Collection:             runLoader.collectionStatus(),
 			Runs:                   statusRecoverySummaries(l, runs, now),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
@@ -1449,6 +1581,23 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	printStatusRecovery(stdout, l, runs, now)
 	renderOlderRunsHint(stdout, olderRuns)
 	return 0
+}
+
+func parseStatusPhases(filter string) (map[journal.RunPhase]struct{}, error) {
+	phases := make(map[journal.RunPhase]struct{})
+	if filter == "" {
+		return phases, nil
+	}
+	for _, value := range strings.Split(filter, ",") {
+		phase := journal.RunPhase(strings.TrimSpace(value))
+		switch phase {
+		case journal.PhaseRunning, journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
+			phases[phase] = struct{}{}
+		default:
+			return nil, fmt.Errorf("invalid phase %q (want running, completed, failed, aborted, or escalated)", value)
+		}
+	}
+	return phases, nil
 }
 
 func selectStatusRuns(runs []runSummary, options statusOptions) ([]runSummary, int) {
@@ -1518,6 +1667,29 @@ func renderStatus(stdout io.Writer, runs []runSummary, now time.Time) {
 			heartbeat, pr, claim, r.Operator.NextTransition)
 		pf(stdout, "  workflow: %s / %s; started %s; last activity %s\n",
 			r.Gaggle, r.Workflow, r.StartedAt.Format(time.RFC3339), formatLastActivity(now, r.LastActivityAt))
+		if r.Lineage != nil {
+			if r.Lineage.Source != nil {
+				detail := fmt.Sprintf("  continuation: source %s (%s); target %s; branch %s; historical repasses %d",
+					r.Lineage.Source.ID, r.Lineage.Source.Phase, r.Lineage.ResumeTarget,
+					r.Lineage.WorkspaceBranch, r.Lineage.HistoricalRepassCount)
+				if len(r.Lineage.InjectedInputs) > 0 {
+					names := make([]string, len(r.Lineage.InjectedInputs))
+					for i, input := range r.Lineage.InjectedInputs {
+						names[i] = input.Name
+					}
+					sort.Strings(names)
+					detail += "; injected inputs " + strings.Join(names, ", ")
+				}
+				pf(stdout, "%s\n", detail)
+			}
+			if len(r.Lineage.Continuations) > 0 {
+				related := make([]string, len(r.Lineage.Continuations))
+				for i, continuation := range r.Lineage.Continuations {
+					related[i] = fmt.Sprintf("%s (%s)", continuation.ID, continuation.Phase)
+				}
+				pf(stdout, "  continued by: %s\n", strings.Join(related, ", "))
+			}
+		}
 		if r.Operator.Issue != nil && r.Operator.Issue.Title != "" {
 			pf(stdout, "  work: #%s %s\n", r.Operator.Issue.Number, r.Operator.Issue.Title)
 		}

@@ -80,6 +80,52 @@ var credentialedCapabilities = []capability.Capability{
 	capability.ADOPRComplete,
 }
 
+// adoRepoCredentialedCapabilities are backed by a repository's own credential
+// only when that repository is on Azure DevOps (#5925). The ADO repository
+// credential backs ado:work-items:write, so a stage that declares it (open-pr's
+// native work-item link) needs no separate credentials: entry; a GitHub or
+// Gitea repository credential never backs an Azure Boards capability. Only a
+// stage that declares the capability receives its credential, which keeps
+// work-item mutation separate from pull-request creation and completion.
+var adoRepoCredentialedCapabilities = []capability.Capability{capability.ADOWorkItemsWrite}
+
+// repoCredentialedCapabilityNames is the capability set credentials.RunnerGrants
+// binds to a repository credential: credentialedCapabilities plus
+// adoRepoCredentialedCapabilities. Callers pass the grants through
+// withoutNonADORepoGrants, which drops the ADO-only ones for a repository on
+// another provider.
+func repoCredentialedCapabilityNames() []string {
+	names := make([]string, 0, len(credentialedCapabilities)+len(adoRepoCredentialedCapabilities))
+	for _, c := range credentialedCapabilities {
+		names = append(names, string(c))
+	}
+	for _, c := range adoRepoCredentialedCapabilities {
+		names = append(names, string(c))
+	}
+	return names
+}
+
+// withoutNonADORepoGrants drops each grant of an adoRepoCredentialedCapabilities
+// capability whose credential is a GitHub or Gitea repository's own. Grants
+// from credentials: entries and the daemon identity are kept: an explicit
+// entry is the operator's decision.
+func withoutNonADORepoGrants(repos []instance.RepoRef, grants []credentials.Grant) []credentials.Grant {
+	nonADORepoRefs := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		if repo.Provider != string(apiv1.ProviderADO) {
+			nonADORepoRefs[repo.Owner+"/"+repo.Name] = true
+		}
+	}
+	kept := grants[:0:0]
+	for _, grant := range grants {
+		if nonADORepoRefs[grant.Ref] && slices.Contains(adoRepoCredentialedCapabilities, capability.Capability(grant.Capability)) {
+			continue
+		}
+		kept = append(kept, grant)
+	}
+	return kept
+}
+
 // daemonIdentityRefName is the resolver ref name a configured DaemonIdentity's
 // credential (static token or App-minted) is registered under (#1780),
 // namespaced away from repo refs ("owner/name") and explicit credentials:
@@ -147,7 +193,7 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, set *instance.Con
 		grantedCapabilities, ok := grantedCapabilitiesByGaggle[workflowGaggle]
 		if !ok {
 			var err error
-			grantedCapabilities, err = configuredCredentialGrants(cfg, gaggleProjectRef(set, workflowGaggle))
+			grantedCapabilities, err = configuredCredentialGrants(cfg, gaggleProjectRef(set, workflowGaggle), gaggleBacklogRef(set, workflowGaggle))
 			if err != nil {
 				return fmt.Errorf("workflow %q: resolve configured credential grants: %w", workflowName, err)
 			}
@@ -194,7 +240,7 @@ func validateStoredCopilotAuthBoundaries(cfg *instance.Config, set *instance.Con
 	return nil
 }
 
-func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (map[string]bool, error) {
+func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef, backlog apiv1.BacklogRef) (map[string]bool, error) {
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	for _, repo := range cfg.Repos {
 		owner := repo.Owner
@@ -212,11 +258,10 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (ma
 		})
 	}
 
+	role := gaggleBacklogRole(project, backlog)
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
 	if cfg.DaemonIdentity != nil {
-		for _, c := range daemonIdentityCapabilities {
-			overrides = append(overrides, credentials.Grant{Capability: string(c), Ref: daemonIdentityRefName})
-		}
+		overrides = append(overrides, daemonIdentityOverrides(role)...)
 	}
 	for i, credential := range cfg.Credentials {
 		key, err := credentialGrantKey(credential)
@@ -230,11 +275,7 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (ma
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	caps := make([]string, len(credentialedCapabilities))
-	for i, c := range credentialedCapabilities {
-		caps[i] = string(c)
-	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, repoCredentialedCapabilityNames(), overrides))
 	result := make(map[string]bool, len(grants))
 	for _, grant := range grants {
 		result[grant.Capability] = true
@@ -245,11 +286,15 @@ func configuredCredentialGrants(cfg *instance.Config, project apiv1.RepoRef) (ma
 var copilotModelLister harness.CopilotModelLister
 
 func harnessEnvironmentPolicy(cfg instance.RunnerConfig) harness.EnvironmentConfig {
+	// Validated at load; an unparseable value cannot reach here, and zero
+	// keeps the adapter default.
+	settle, _ := cfg.RequiredMCPSettleTimeoutDuration()
 	return harness.EnvironmentConfig{
-		ExtraAllowlist: cfg.EnvPassthrough,
-		Unset:          cfg.HarnessEnvUnset,
-		SessionArgs:    cfg.HarnessSessionArgs,
-		PreflightArgs:  cfg.HarnessPreflightArgs,
+		ExtraAllowlist:           cfg.EnvPassthrough,
+		Unset:                    cfg.HarnessEnvUnset,
+		SessionArgs:              cfg.HarnessSessionArgs,
+		PreflightArgs:            cfg.HarnessPreflightArgs,
+		RequiredMCPSettleTimeout: settle,
 	}
 }
 
@@ -288,6 +333,8 @@ func buildHarnessRegistry(envCaps map[string]string, environment harness.Environ
 		DeferDiscovery:      deferModelDiscovery,
 		ModelCredential:     modelCredential,
 		EphemeralTmp:        ephemeralTmp,
+
+		RequiredMCPSettleTimeout: environment.RequiredMCPSettleTimeout,
 	}
 	if customLauncher {
 		copilotAdapter.RequiredTools = []string{"task_complete"}
@@ -400,6 +447,9 @@ type deterministicExecutorInput struct {
 	// daemon-side ci-poll provider an Azure DevOps gaggle builds from its
 	// configured credential.
 	CredentialStores credentials.StoreResolver
+	// CredentialGrants mints mid-stage credential-refresh grants for the
+	// executor's goobers-CLI stages (Goobers#6120); nil outside a daemon.
+	CredentialGrants executor.StageCredentialGrants
 }
 
 func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Deterministic, error) {
@@ -416,6 +466,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ConfigDirectory = input.ConfigDirectory
 	shell.ScratchDir = input.ScratchDir
+	shell.CredentialGrants = input.CredentialGrants
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
 	// #4070: bound what one stage subprocess may take, so a heavy stage
 	// cannot evict the daemon it shares a memory cgroup with. Resolved (and
@@ -633,19 +684,13 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		}
 		poller = providers.NewGiteaProvider(e.giteaRepo.BaseURL, token)
 	default:
-		set, err := e.injector.Materialize(ctx, env.Capabilities)
+		// Not a snapshot (#3489, Goobers#6120): an expiring token is
+		// re-resolved through the injector near its expiry and after a 401.
+		githubPoller, err := localCIPollGitHubPoller(ctx, e.injector, required, e.registrar)
 		if err != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credentials: %w", err)
+			return apiv1.ResultEnvelope{}, err
 		}
-		token, err := set.Token(ctx, string(capability.ProviderPRWrite))
-		if err != nil {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("resolve ci-poll credential: %w", err)
-		}
-		if newPRPoller != nil {
-			poller = newPRPoller(token)
-		} else {
-			poller = providers.NewGitHubProvider(token)
-		}
+		poller = githubPoller
 	}
 	ciPoll, err := executor.NewCIPollExecutor(poller, e.recorder)
 	if err != nil {

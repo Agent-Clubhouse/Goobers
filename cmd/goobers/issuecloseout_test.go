@@ -71,7 +71,7 @@ func TestIssueCloseOutCommentsClosesAndReleasesClaim(t *testing.T) {
 	if issue.state != "closed" {
 		t.Fatalf("issue state = %q, want closed", issue.state)
 	}
-	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://example/pull/1") {
+	if len(issue.comments) != 1 || !strings.Contains(issue.comments[0], "https://github.com/your-org/your-repo/pull/1") {
 		t.Fatalf("issue comments = %+v, want exactly one linking pull/1", issue.comments)
 	}
 	var recordedClose bool
@@ -369,9 +369,10 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
 	}
-	if len(parked.comments) != 1 || parked.comments[0] != "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?" {
-		t.Fatalf("issue comments = %v, want exact routed reason and question", parked.comments)
+	if len(parked.comments) != 1 {
+		t.Fatalf("issue comments = %v, want exactly the routed reason and question", parked.comments)
 	}
+	assertBodyEqualIgnoringAttribution(t, parked.comments[0], "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?")
 }
 
 func TestValidateIssueCloseOutParkComment(t *testing.T) {

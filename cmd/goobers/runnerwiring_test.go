@@ -243,18 +243,24 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 	t.Setenv("RUNNERWIRING_OTLP_SECRET", secret)
 	registry := journal.NewRegistryScrubber()
 	scrubber := journal.Chain(registry, journal.NewPatternScrubber())
+	layout := instance.NewLayout(t.TempDir())
+	instanceID, err := layout.EnsureIdentity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	client, err := buildTelemetryClient(
 		context.Background(),
-		instance.NewLayout(t.TempDir()),
+		layout,
 		scrubber,
 		registry,
-		instance.OTLPConfig{
+		instance.TelemetryConfig{OTLP: &instance.OTLPConfig{
 			Endpoint: "http://" + listener.Addr().String(),
 			Insecure: true,
 			Headers: map[string]instance.TokenRef{
 				"authorization": {Env: "RUNNERWIRING_OTLP_SECRET"},
 			},
-		},
+		}},
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -292,8 +298,73 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatal("registered collector credential appeared in exported span data")
 		}
+		if len(req.ResourceSpans) != 1 || req.ResourceSpans[0].Resource == nil {
+			t.Fatalf("resource spans = %d, want one populated resource", len(req.ResourceSpans))
+		}
+		gotInstanceID := ""
+		for _, attr := range req.ResourceSpans[0].Resource.Attributes {
+			if attr.Key == "goobers.instance.id" {
+				gotInstanceID = attr.Value.GetStringValue()
+				break
+			}
+		}
+		if gotInstanceID != instanceID {
+			t.Fatalf("goobers.instance.id = %q, want %q", gotInstanceID, instanceID)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("collector did not receive an OTLP export")
+	}
+}
+
+func TestConfigureAzureMonitorResolvesAndRegistersConnectionString(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING", connectionString)
+	registry := journal.NewRegistryScrubber()
+	var cfg telemetry.Config
+	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_APPLICATIONINSIGHTS_CONNECTION_STRING"},
+	}, instance.TelemetryProfileStandard, t.TempDir(), registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AzureMonitorConnectionString != connectionString {
+		t.Fatal("resolved connection string was not passed to telemetry config")
+	}
+	if !cfg.AzureMonitorJournalLogs || !cfg.AzureMonitorTraces || cfg.AzureMonitorHostIdentity {
+		t.Fatal("one Azure Monitor destination did not enable the standard journal stream")
+	}
+	if scrubbed := string(registry.Scrub([]byte("prefix " + connectionString + " suffix"))); strings.Contains(scrubbed, connectionString) {
+		t.Fatalf("connection string was not registered with scrubber: %q", scrubbed)
+	}
+}
+
+func TestConfigureAzureMonitorCollectionProfiles(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_PROFILE_CONNECTION", connectionString)
+	for _, tc := range []struct {
+		profile                   instance.TelemetryCollectionProfile
+		journal, traces, identity bool
+	}{
+		{instance.TelemetryProfileHealth, false, false, false},
+		{instance.TelemetryProfileJournal, true, false, false},
+		{instance.TelemetryProfileStandard, true, true, false},
+		{instance.TelemetryProfileDiagnostic, true, true, true},
+	} {
+		t.Run(string(tc.profile), func(t *testing.T) {
+			var cfg telemetry.Config
+			err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+				ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_PROFILE_CONNECTION"},
+			}, tc.profile, t.TempDir(), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AzureMonitorJournalLogs != tc.journal || cfg.AzureMonitorTraces != tc.traces || cfg.AzureMonitorHostIdentity != tc.identity {
+				t.Fatalf("routing = journal:%v traces:%v identity:%v", cfg.AzureMonitorJournalLogs, cfg.AzureMonitorTraces, cfg.AzureMonitorHostIdentity)
+			}
+			if len(cfg.ResourceAttributes) != 1 || string(cfg.ResourceAttributes[0].Key) != "goobers.telemetry.profile" || cfg.ResourceAttributes[0].Value.AsString() != string(tc.profile) {
+				t.Fatalf("profile resource attributes = %+v", cfg.ResourceAttributes)
+			}
+		})
 	}
 }
 
@@ -339,7 +410,7 @@ func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
 		instance.NewLayout(t.TempDir()),
 		nil,
 		journal.NewRegistryScrubber(),
-		instance.OTLPConfig{
+		instance.TelemetryConfig{OTLP: &instance.OTLPConfig{
 			Endpoint: listener.Addr().String(),
 			TLS: &instance.OTLPTLSConfig{
 				CAFile:     serverCert.certFile,
@@ -347,7 +418,8 @@ func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
 				CertFile:   clientCert.certFile,
 				KeyFile:    clientCert.keyFile,
 			},
-		},
+		}},
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -800,6 +872,12 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	}
 	if copilot.Name() != "copilot-cli" {
 		t.Fatalf("adapter Name = %q, want existing diagnostic identity copilot-cli", copilot.Name())
+	}
+	// The launcher prefix stays the bare CLI: --no-remote-export is enforced
+	// on every final session argv by the adapter, not carried in the prefix
+	// an operator override could replace.
+	if got, want := strings.Join(copilot.Command, " "), "copilot"; got != want {
+		t.Fatalf("copilot launcher = %q, want built-in default %q", got, want)
 	}
 	if copilot.EnvCapabilities[string(capability.AgentModel)] != copilotModelEnv {
 		t.Fatalf("agent:model env = %q, want %q", copilot.EnvCapabilities[string(capability.AgentModel)], copilotModelEnv)
@@ -1802,7 +1880,7 @@ func TestBuildCredentialsTokenlessADOIdentityBacksItsOwnRepoGrants(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(grants) != len(credentialedCapabilities) {
+	if len(grants) != len(repoCredentialedCapabilityNames()) {
 		t.Fatalf("ADO identity grants = %#v, want one per credentialed capability", grants)
 	}
 	for _, grant := range grants {
@@ -3333,6 +3411,59 @@ func TestCIPollCredentialAdmitsDeclaredCapability(t *testing.T) {
 	}
 	if len(reg.registered) != 1 || string(reg.registered[0]) != "ci-poll-token-value" {
 		t.Fatalf("registered secrets = %q, want the ci-poll token", reg.registered)
+	}
+}
+
+// TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized: the local
+// ci-poll source resolves once at stage start, reuses that value per poll,
+// and re-resolves through the injector once after a 401 invalidates it
+// (#6154 on top of Goobers#6120) — including for a value with no expiry.
+func TestCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) {
+	calls := 0
+	resolver, err := credentials.NewResolverWithSources(nil, map[string]credentials.ResolveFunc{
+		"ci-poll": func(context.Context) (string, error) {
+			calls++
+			return fmt.Sprintf("ci-poll-token-%d", calls), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewResolverWithSources: %v", err)
+	}
+	reg := &escTestRegistrar{}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{{
+		Capability: string(capability.ProviderPRWrite),
+		Ref:        "ci-poll",
+	}}, reg)
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	first, source, err := ciPollTokenSource(context.Background(), injector, string(capability.ProviderPRWrite), reg)
+	if err != nil {
+		t.Fatalf("ciPollTokenSource: %v", err)
+	}
+	refreshable, ok := source.(providers.RefreshableTokenSource)
+	if !ok {
+		t.Fatalf("source %T is not refreshable", source)
+	}
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != first {
+			t.Fatalf("Token = %q, %v; want the stage-start value %q", token, err, first)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("resolved %d times before any 401, want only the stage-start resolve", calls)
+	}
+	refreshable.Invalidate()
+	second, err := source.Token(context.Background())
+	if err != nil || second != "ci-poll-token-2" {
+		t.Fatalf("Token after 401 = %q, %v; want one re-resolved value", second, err)
+	}
+	if calls != 2 {
+		t.Fatalf("resolved %d times, want exactly one re-resolve", calls)
+	}
+	if len(reg.registered) == 0 || string(reg.registered[len(reg.registered)-1]) != second {
+		t.Fatalf("registered secrets = %q, want the re-resolved value registered", reg.registered)
 	}
 }
 
@@ -5113,5 +5244,29 @@ func TestBuildDeterministicExecutorRefusesGuardedCredentialPath(t *testing.T) {
 	}
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "credential_read_refused" {
 		t.Fatalf("script result = %+v, want a credential_read_refused failure", result)
+	}
+}
+
+// TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot is
+// #6058: `goobers up .` passes a relative instance root. The replay spool root
+// must still be absolute, because the journal-export cursor store and replay
+// index open SQLite through sqliteuri.File, which only accepts absolute paths.
+func TestConfigureAzureMonitorReplayRootIsAbsoluteForRelativeInstanceRoot(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("GOOBERS_TEST_RELATIVE_ROOT_CONNECTION", connectionString)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var cfg telemetry.Config
+	err := configureAzureMonitor(context.Background(), &cfg, instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "GOOBERS_TEST_RELATIVE_ROOT_CONNECTION"},
+	}, instance.TelemetryProfileStandard, ".", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(cfg.AzureMonitorReplayRoot) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want an absolute path for a relative instance root", cfg.AzureMonitorReplayRoot)
+	}
+	if !strings.HasSuffix(cfg.AzureMonitorReplayRoot, filepath.Join("telemetry-export", "azure-monitor")) {
+		t.Fatalf("AzureMonitorReplayRoot = %q, want it under the instance root's telemetry-export/azure-monitor", cfg.AzureMonitorReplayRoot)
 	}
 }

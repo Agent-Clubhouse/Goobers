@@ -289,17 +289,64 @@ func TestWindowsScheduledTaskActionIsHiddenSynchronousAndSafelyQuoted(t *testing
 		"-ExecutionPolicy Bypass",
 		`-Command "`,
 		`& 'C:\Program Files\O''Brien''s Goobers\goobers.exe'`,
-		`__service-supervise 'C:\Users\O''Brien\Goobers Instance\'`,
+		`__service-supervise --daemon-log 'C:\Users\O''Brien\Goobers Instance\'`,
 		`exit $LASTEXITCODE`,
 	} {
 		if !strings.Contains(arguments, want) {
 			t.Fatalf("arguments = %q, missing %q", arguments, want)
 		}
 	}
-	for _, forbidden := range []string{"Start-Process", "start /b", "cmd.exe"} {
+	// PowerShell redirection (">", "*>>") of native stderr terminates the host under
+	// ErrorActionPreference=Stop in Windows PowerShell 5.1; the supervisor owns the log.
+	for _, forbidden := range []string{"Start-Process", "start /b", "cmd.exe", ">"} {
 		if strings.Contains(arguments, forbidden) {
 			t.Fatalf("arguments = %q, contains detached launcher %q", arguments, forbidden)
 		}
+	}
+}
+
+func TestWindowsScheduledTaskStartReportsImmediateChildFailure(t *testing.T) {
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 0\n"},
+		{},
+		{output: "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 1\n"},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\goobers.exe`,
+		InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+		UserName:     `CONTOSO\alice`,
+		Runner:       runner,
+	})
+
+	_, err := manager.StartTask(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "service failed while starting: 0x00000001") {
+		t.Fatalf("StartTask error = %v, want immediate child failure", err)
+	}
+}
+
+func TestWindowsScheduledTaskStartIgnoresStaleLastFailureBeforeRunning(t *testing.T) {
+	staleFailure := "Run As User: CONTOSO\\alice\nStatus: Ready\nLast Result: 1\nLast Run Time: 9/29/2026 3:00:00 PM\n"
+	runner := &fakeRunner{responses: []commandResponse{
+		{output: staleFailure},
+		{},
+		{output: staleFailure},
+		{output: "Run As User: CONTOSO\\alice\nStatus: Running\nLast Result: 267009\nLast Run Time: 9/29/2026 4:00:00 PM\n", repeat: serviceReadinessChecks},
+	}}
+	manager := newTestManager(t, Config{
+		GOOS:         "windows",
+		Executable:   `C:\goobers.exe`,
+		InstanceRoot: `C:\Users\alice\AppData\Local\Goobers`,
+		UserName:     `CONTOSO\alice`,
+		Runner:       runner,
+	})
+
+	status, err := manager.StartTask(context.Background())
+	if err != nil {
+		t.Fatalf("StartTask returned stale failure: %v", err)
+	}
+	if !status.Running {
+		t.Fatalf("status = %+v, want running", status)
 	}
 }
 

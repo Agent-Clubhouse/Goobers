@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
@@ -219,11 +220,9 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 	if err != nil {
 		return err
 	}
-	var authEnv []string
-	if creds, credErr := resolveCheckoutCredential(ctx); credErr == nil {
-		if token := gitToken(creds); token != "" {
-			authEnv = gitAuthEnv(token)
-		}
+	authEnv, err := recoveryFetchAuthEnv(ctx, url)
+	if err != nil {
+		return err
 	}
 	var cmd *exec.Cmd
 	if authEnv != nil {
@@ -236,4 +235,26 @@ func fetchRecoveryBaseRef(ctx context.Context, dir, base string) error {
 		return fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// recoveryFetchAuthEnv is the git credential environment for the recovery
+// base fetch: the checkout credential, sent the way the checkout sends it. On
+// Azure DevOps with a scheme the credential plane stated, that is the
+// URL-scoped Authorization header (Bearer plus X-VSS-ForceMsaPassThrough for a
+// Microsoft Entra token); every other provider keeps the Basic extraheader.
+// A credential that cannot be resolved leaves the fetch anonymous, as before.
+func recoveryFetchAuthEnv(ctx context.Context, url string) ([]string, error) {
+	creds, scheme, credErr := resolveCheckoutCredential(ctx)
+	var token string
+	if credErr == nil {
+		token = gitToken(creds)
+	}
+	if token == "" {
+		return nil, nil
+	}
+	provider := apiv1.Provider(os.Getenv(executor.RepoProviderEnvVar))
+	if ado := adoCheckoutAuthFor(apiv1.RepoRef{Provider: provider}, scheme, url); ado.scheme != "" {
+		return adoCheckoutGitAuthEnv(ctx, token, ado)
+	}
+	return gitAuthEnv(token), nil
 }

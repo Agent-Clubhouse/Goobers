@@ -55,7 +55,12 @@ var checkoutCloneURL = runner.DefaultRepoCloneURL
 // checkoutRepoWorkspace clones the run's repository into dir when the stage
 // declared a repo workspace. It is a no-op for scratch, which keeps the
 // pre-checkout behaviour byte-identical for stages that never needed it.
-func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential) error {
+//
+// repoAuthScheme is the non-secret scheme ("basic" or "bearer") the credential
+// plane stated beside an Azure DevOps repository credential, and "" for every
+// other provider. On Azure DevOps it selects the URL-scoped Authorization
+// header every other in-pod ADO git operation sends (checkoutGitAuthEnv).
+func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, creds []dispatcher.MintedCredential, repoAuthScheme string) error {
 	mode := strings.TrimSpace(os.Getenv(dispatcher.EnvStageWorkspace))
 	if mode == "" || mode == string(apiv1.WorkspaceScratch) {
 		return nil
@@ -112,7 +117,7 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		base = "main"
 	}
 
-	gitEnv, err := checkoutGitAuthEnv(dir, creds)
+	gitEnv, err := checkoutGitAuthEnv(ctx, dir, creds, adoCheckoutAuthFor(ref, repoAuthScheme, cloneURL))
 	if err != nil {
 		return err
 	}
@@ -409,15 +414,45 @@ func workspaceMergeConflictFiles(ctx context.Context, dir string, gitEnv []strin
 	return files, nil
 }
 
-// gitAuthEnv builds the git child environment from a credential the stage
-// already declared. No new credential surface: the workspace is provisioned
-// with what the stage was granted, and a stage that declared nothing gets an
-// anonymous clone — which is correct for a public repository and fails at the
-// clone with git's own message for a private one.
-func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]string, error) {
+// adoCheckoutAuth names the Azure DevOps repository a workspace checkout
+// authenticates to and the scheme its credential was delivered in. The zero
+// value means "not Azure DevOps": the checkout keeps the askpass helper.
+type adoCheckoutAuth struct {
+	scheme   string
+	cloneURL string
+}
+
+// adoCheckoutAuthFor is the Azure DevOps half of a checkout's authentication.
+// It is set only when the repository is on Azure DevOps AND the credential
+// plane stated a scheme: a scheme is never guessed from the token's shape, so
+// a repository without a stated scheme keeps the askpass path unchanged.
+func adoCheckoutAuthFor(ref apiv1.RepoRef, repoAuthScheme, cloneURL string) adoCheckoutAuth {
+	scheme := strings.TrimSpace(repoAuthScheme)
+	if ref.Provider != apiv1.ProviderADO || scheme == "" {
+		return adoCheckoutAuth{}
+	}
+	return adoCheckoutAuth{scheme: scheme, cloneURL: cloneURL}
+}
+
+// checkoutGitAuthEnv builds the git child environment from a credential the
+// stage already declared. No new credential surface: the workspace is
+// provisioned with what the stage was granted, and a stage that declared
+// nothing gets an anonymous clone — which is correct for a public repository
+// and fails at the clone with git's own message for a private one.
+//
+// On Azure DevOps the credential goes in the URL-scoped Authorization header,
+// in the scheme the daemon stated (providers.ADOGitAuthEnvironment): Basic for
+// a PAT, and Bearer plus X-VSS-ForceMsaPassThrough for a Microsoft Entra
+// token. That is the environment push-branch, rebase-pr and the other in-pod
+// ADO git operations already use; the askpass helper would send an Entra
+// token as a Basic password, which Azure DevOps does not accept everywhere.
+func checkoutGitAuthEnv(ctx context.Context, dir string, creds []dispatcher.MintedCredential, ado adoCheckoutAuth) ([]string, error) {
 	token := gitToken(creds)
 	if token == "" {
 		return nil, nil
+	}
+	if ado.scheme != "" {
+		return adoCheckoutGitAuthEnv(ctx, token, ado)
 	}
 	// OUTSIDE the workspace, deliberately. `git clone <url> .` refuses a
 	// non-empty destination, so a helper written into the workspace makes the
@@ -438,6 +473,21 @@ func checkoutGitAuthEnv(dir string, creds []dispatcher.MintedCredential) ([]stri
 	// script holds no secret, which is the property internal/credentials exists
 	// to preserve.
 	return credentials.GitAuthEnvironment(askpass, token), nil
+}
+
+// adoCheckoutGitAuthEnv renders the Azure DevOps checkout environment for the
+// delivered token. The header lives only in this child environment
+// (GIT_CONFIG_VALUE_n), never on argv or in a persisted config.
+func adoCheckoutGitAuthEnv(ctx context.Context, token string, ado adoCheckoutAuth) ([]string, error) {
+	kind, err := adoCredentialKindForScheme(ado.scheme)
+	if err != nil {
+		return nil, err
+	}
+	source, err := providers.NewADODeliveredCredentialSource(kind, token, "the workspace checkout")
+	if err != nil {
+		return nil, err
+	}
+	return providers.ADOGitAuthEnvironment(ctx, source, nil, ado.cloneURL)
 }
 
 // runGit runs one git command and returns an error carrying GIT'S OWN message.

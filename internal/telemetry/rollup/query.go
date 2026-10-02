@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // RunSummary is a queryable row from the runs table (TEL-032).
@@ -24,6 +26,13 @@ type RunSummary struct {
 	StartedAt       time.Time
 	FinishedAt      time.Time // zero if the run has not finished
 	DurationMs      int64     // 0 if the run has not finished
+}
+
+// ContinuationRun is the indexed identity and phase of a direct continuation.
+type ContinuationRun struct {
+	RunID       string
+	SourceRunID string
+	Status      string
 }
 
 // StageAttempt is a queryable row from the stage_attempts table.
@@ -103,6 +112,7 @@ type RunError struct {
 	Code       string
 	ErrorClass string
 	Message    string
+	Causes     []journal.ErrorCause
 	OccurredAt time.Time
 }
 
@@ -169,6 +179,42 @@ func (db *DB) Runs(ctx context.Context) ([]RunSummary, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// ContinuationRuns returns direct continuations grouped by source run.
+func (db *DB) ContinuationRuns(ctx context.Context, sourceRunIDs []string) (map[string][]ContinuationRun, error) {
+	out := make(map[string][]ContinuationRun)
+	if len(sourceRunIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(sourceRunIDs))
+	args := make([]any, len(sourceRunIDs))
+	for i, id := range sourceRunIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := db.readDB().QueryContext(ctx, `
+		SELECT run_id, trigger_ref, status
+		FROM runs
+		WHERE trigger_kind = 'manual' AND trigger_ref IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY run_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: query continuation runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var row ContinuationRun
+		var status sql.NullString
+		if err := rows.Scan(&row.RunID, &row.SourceRunID, &status); err != nil {
+			return nil, fmt.Errorf("rollup: scan continuation run: %w", err)
+		}
+		row.Status = status.String
+		out[row.SourceRunID] = append(out[row.SourceRunID], row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rollup: iterate continuation runs: %w", err)
+	}
+	return out, nil
 }
 
 // RunRef is a run's identity plus the immutable ordering key the run list
@@ -610,8 +656,10 @@ func (db *DB) ProviderMutations(ctx context.Context, runID string) ([]ProviderMu
 // RunErrors returns every error event for runID, in seq order.
 func (db *DB) RunErrors(ctx context.Context, runID string) ([]RunError, error) {
 	rows, err := db.readDB().QueryContext(ctx, `
-		SELECT seq, stage, attempt, code, error_class, message, occurred_at FROM run_errors
-		WHERE run_id = ? ORDER BY seq`, runID)
+		SELECT re.seq, re.stage, re.attempt, re.code, re.error_class, re.message, rec.causes_json, re.occurred_at
+		FROM run_errors re
+		LEFT JOIN run_error_causes rec ON rec.run_id = re.run_id AND rec.seq = re.seq
+		WHERE re.run_id = ? ORDER BY re.seq`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("rollup: query run_errors: %w", err)
 	}
@@ -620,12 +668,17 @@ func (db *DB) RunErrors(ctx context.Context, runID string) ([]RunError, error) {
 	var out []RunError
 	for rows.Next() {
 		var e RunError
-		var stage, class, message, occurredAt sql.NullString
+		var stage, class, message, causesJSON, occurredAt sql.NullString
 		var attempt sql.NullInt64
-		if err := rows.Scan(&e.Seq, &stage, &attempt, &e.Code, &class, &message, &occurredAt); err != nil {
+		if err := rows.Scan(&e.Seq, &stage, &attempt, &e.Code, &class, &message, &causesJSON, &occurredAt); err != nil {
 			return nil, fmt.Errorf("rollup: scan run_error: %w", err)
 		}
 		e.Stage, e.ErrorClass, e.Message = stage.String, class.String, message.String
+		if causesJSON.Valid {
+			if err := json.Unmarshal([]byte(causesJSON.String), &e.Causes); err != nil {
+				return nil, fmt.Errorf("rollup: decode run_error causes seq %d: %w", e.Seq, err)
+			}
+		}
 		e.Attempt = int(attempt.Int64)
 		if e.OccurredAt, err = parseTime(occurredAt); err != nil {
 			return nil, err

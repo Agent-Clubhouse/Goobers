@@ -20,6 +20,7 @@
     ],
     "offline": "Provision a local file GOPROXY with all selected modules, version lists and metadata, plus cached checksum verification data. Put a compatible Go on PATH and set GOTOOLCHAIN=local. GOPROXY=off alone can fail even for cached go-run tools because their deprecation/version metadata lookup is disabled; a warm source tree alone is not sufficient.",
     "sites": [
+	  "integration-dependency/go:go-modules",
       ".github/actions/setup-golangci-lint/action.yml/Install golangci-lint ${{ inputs.version }}:go-modules",
       ".github/workflows/ci.yml#checks/Download modules:go-modules",
       ".github/workflows/ci.yml#checks/Verify GitHub Actions are pinned:go-modules",
@@ -53,6 +54,7 @@
       ".github/workflows/ci.yml#windows-smoke/Build Windows validation binary:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Download modules:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Validate Windows daemon and implementation workflow:go-modules",
+      ".github/workflows/ci.yml#windows-smoke/Windows Azure CLI credential diagnostics:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows CLI runtime:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows bounded diagnostic history:go-modules",
       ".github/workflows/ci.yml#windows-smoke/Windows containment and journals:go-modules",
@@ -153,6 +155,7 @@
     "sites": [
       ".github/workflows/ci.yml#checks/Install Portal dependencies and pinned Chromium:npm-packages",
       ".github/workflows/ci.yml#checks/Install Portal dependencies and pinned Chromium[2]:npm-packages",
+      ".github/workflows/ci.yml#checks/Install Portal dependencies and pinned Chromium[3]:npm-packages",
       "Makefile#portal-install::npm-packages",
       "Makefile#portal-playwright-install::npm-packages",
       "portal-install:npm-packages",
@@ -180,6 +183,7 @@
     "offline": "Preinstall the exact Chromium revision and completion marker into PLAYWRIGHT_BROWSERS_PATH. resolvePortalPlaywrightSkip validates the revision/marker before skipping the installer, including read-only baked caches.",
     "sites": [
       ".github/workflows/ci.yml#checks/Install Portal dependencies and pinned Chromium:playwright-browsers",
+      ".github/workflows/ci.yml#checks/Install Portal dependencies and pinned Chromium[2]:playwright-browsers",
       "Makefile#portal-playwright-install::playwright-browsers",
       "portal-playwright-install:playwright-browsers"
     ]
@@ -261,11 +265,11 @@
   },
   {
     "id": "browser-system-packages",
-    "what": "Linux shared libraries required by the Chromium build (--with-deps)",
+    "what": "Linux shared libraries required by the Chromium build (install-deps when ldd reports a missing library)",
     "from": [
       "Runner-configured OS package mirrors"
     ],
-    "offline": "no-offline-path: the hosted Playwright installation step requests --with-deps and has no explicit offline OS-package provisioning switch. A browser cache alone does not satisfy this dependency.",
+    "offline": "no-offline-path: the hosted Playwright installation step runs install-deps when the runner image lacks a Chromium library and has no explicit offline OS-package provisioning switch. A browser cache alone does not satisfy this dependency.",
     "sites": [
       ".github/workflows/ci.yml#checks/Install Portal dependencies and pinned Chromium:browser-system-packages"
     ]

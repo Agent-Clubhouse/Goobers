@@ -71,8 +71,13 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"acceptance, before dispatch.\n" +
 	"Without --no-wait, local API callers observe dispatch status then wait\n" +
 	"for the run's terminal journal phase. API failures never silently fall\n" +
-	"back to files. --no-api explicitly selects local execution/file delegation\n" +
+	"back to files. When TLS publishes only a wildcard bind address, the CLI\n" +
+	"reports that no certificate-valid client endpoint exists and uses same-root\n" +
+	"file delegation. --no-api explicitly selects local execution/file delegation\n" +
 	"and overrides $GOOBERS_DAEMON_API; it cannot be combined with --api.\n" +
+	"Without a live daemon, workflows with an effective runControls.maxRunDuration\n" +
+	"are rejected before dispatch, including inherited limits and --no-wait runs.\n" +
+	"Start `goobers up` for that instance and submit through the daemon instead.\n" +
 	"Targeted --pr runs currently require --no-api from the instance root.\n" +
 	"--github-progress publishes the versioned hosted-progress contract to one\n" +
 	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
@@ -98,7 +103,9 @@ const runHelp = "Usage: goobers run [--force] [--gaggle <name>] [--github-progre
 	"and acceptance (default 30s; must be positive). A timed-out submission has\n" +
 	"unknown acceptance; retry the printed request ID with the same options.\n" +
 	"The command returns once the daemon accepts the trigger because\n" +
-	"a remote client cannot watch the run's journal.\n"
+	"a remote client cannot watch the run's journal. For local file delegation,\n" +
+	"--no-wait returns after dispatch, or after workflow/PR validation succeeds\n" +
+	"and the live daemon durably accepts a capacity-queued request.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "continue" {
@@ -344,6 +351,14 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		pf(stderr, "error: --pr requires a workflow subscribed to the pull_request event\n")
 		return 1
 	}
+	// Agent-Clubhouse/Goobers#5557: reject duration-limited standalone runs
+	// before dispatch because this path has no watchdog.
+	if matches == 1 {
+		if err := validateStandaloneRunDuration(setup, localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
 
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)
@@ -448,6 +463,28 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	return exitForPhase(phase)
 }
 
+func validateStandaloneRunDuration(setup *schedulerSetup, identity localscheduler.WorkflowIdentity) error {
+	machine := setup.Machines[identity]
+	if machine == nil {
+		return fmt.Errorf("workflow %q in gaggle %q has no compiled definition", identity.Workflow, identity.Gaggle)
+	}
+	for _, gaggle := range setup.Definitions.Gaggles {
+		if gaggle.Name != identity.Gaggle {
+			continue
+		}
+		controls, err := resolveWorkflowRunControls(setup.Config, setup.RepoRefs[identity], gaggle, apiv1.Workflow{Spec: machine.Def.Spec})
+		if err != nil {
+			return fmt.Errorf("workflow %q run controls: %w", identity.Workflow, err)
+		}
+		if controls.MaxRunDuration > 0 {
+			return fmt.Errorf("workflow %s/%s sets runControls.maxRunDuration=%s, which standalone execution cannot enforce; start `goobers up` for this instance and submit the run through the daemon",
+				identity.Gaggle, identity.Workflow, controls.MaxRunDuration)
+		}
+		return nil
+	}
+	return fmt.Errorf("no gaggle named %q for workflow %q", identity.Gaggle, identity.Workflow)
+}
+
 func flagWasSet(args []string, name string) bool {
 	for _, arg := range args {
 		if arg == "--"+name || arg == "-"+name || strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=") {
@@ -515,7 +552,7 @@ func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance
 		}
 		provider, err = newProviderForStage(root, repo, true, withStageProviderToken(token))
 	default:
-		provider, err = newProviderForStage(root, repo, true)
+		provider, err = newProviderForStage(root, repo, true, withStageProviderConfiguredADOAuth())
 	}
 	if err != nil {
 		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
@@ -658,11 +695,42 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarge
 		return 2
 	}
 
-	runID, err := pollTriggerResponse(ctx, l.SchedulerDir(), requestID, triggerResponseWait())
+	resp, err := pollTriggerResponseEvent(ctx, l.SchedulerDir(), requestID, triggerResponseWait(), true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	if resp.Error != "" {
+		pf(stderr, "error: %v\n", resp.Error)
+		return 1
+	}
+	if resp.State == triggerResponseQueued {
+		pf(stdout, "accepted trigger request %s (workflow=%s, state=queued via live daemon)\n", requestID, target.Workflow)
+		if noWait {
+			pf(stdout, "inspect with: goobers status %s\n", root)
+			return 0
+		}
+		for {
+			finalResp, err := pollTriggerResponseEvent(ctx, l.SchedulerDir(), requestID, triggerResponseWait(), false)
+			if err != nil {
+				if strings.Contains(err.Error(), "timed out after") && ctx.Err() == nil {
+					continue
+				}
+				pf(stderr, "error: %v\n", err)
+				return 1
+			}
+			if finalResp.Error != "" {
+				pf(stderr, "error: %s\n", finalResp.Error)
+				return 1
+			}
+			if finalResp.State == triggerResponseQueued {
+				continue
+			}
+			resp = finalResp
+			break
+		}
+	}
+	runID := resp.RunID
 	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, target.Workflow)
 	if noWait {
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
@@ -1014,7 +1082,10 @@ const runCancelHelp = "Usage: goobers run cancel [--api=<url> | --no-api] [--req
 	"instead when no daemon is running (that path finalizes a stuck run's\n" +
 	"journal directly).\n" +
 	"A live local daemon is contacted through its HTTP API automatically.\n" +
-	"API failures never silently fall back to file delegation. Use --no-api\n" +
+	"API failures never silently fall back to file delegation. When TLS\n" +
+	"publishes only a wildcard bind address, the CLI reports that no\n" +
+	"certificate-valid client endpoint exists and uses same-root file\n" +
+	"delegation. Use --no-api\n" +
 	"to explicitly select local cancellation/file delegation; this overrides\n" +
 	"$GOOBERS_DAEMON_API and cannot be combined with --api.\n" +
 	"API cancellation uses durable, actor-and-target-bound request identities.\n" +
@@ -1073,8 +1144,10 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if handled, code := tryLocalAPICancel(l, runID, *requestID, *noAPI, stdout, stderr); handled {
+	if handled, fileFallback, code := tryLocalAPICancel(l, runID, *requestID, *noAPI, stdout, stderr); handled {
 		return code
+	} else if fileFallback {
+		*noAPI = true
 	}
 	if *requestID != "" {
 		pf(stderr, "error: --request-id requires daemon API cancellation; no live API selected\n")

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -41,6 +42,132 @@ func (s *journalLogsReceiver) Export(ctx context.Context, req *collectorlogspb.E
 func TestJournalLogsOTLPWireContract(t *testing.T) {
 	t.Run("full-client", func(t *testing.T) { testJournalLogsOTLPWireContract(t, false) })
 	t.Run("logs-only", func(t *testing.T) { testJournalLogsOTLPWireContract(t, true) })
+}
+
+func TestTenantTimelineReconstructsStartupSchedulerAndTerminalRun(t *testing.T) {
+	exporter := &journalTestExporter{
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		ignoreExportContext: true,
+	}
+	var releaseOnce sync.Once
+	releaseExporter := func() { releaseOnce.Do(func() { close(exporter.release) }) }
+	defer releaseExporter()
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte("pat-fixture-must-not-leave"))
+	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), scrubber)}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = client.journalLogs.shutdown(ctx)
+	})
+
+	root := t.TempDir()
+	unregister, err := journal.RegisterCommittedEventSink(root, "instance-fixture", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregister()
+	clockAt := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time {
+		clockAt = clockAt.Add(time.Second)
+		return clockAt
+	}
+	scheduler, _, err := journal.OpenInstanceLog(filepath.Join(root, "scheduler"), journal.WithClock(clock), journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Append(journal.Event{Type: journal.EventDaemonStarted}); err != nil {
+		t.Fatal(err)
+	}
+	// The timeline contract needs a complete, uncontended input. Park the
+	// worker in Export (outside the queue lock) before queuing the rest: the
+	// production sink intentionally drops on TryLock contention, which is
+	// covered separately, and draining concurrently made this test flaky.
+	waitJournalStarted(t, exporter.started)
+	if err := scheduler.Append(journal.Event{Type: journal.EventTriggerFired, Gaggle: "production", Workflow: "poll-and-fix", Reason: "scheduled"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const runID = "0123456789abcdef0123456789abcdef"
+	run, err := journal.Create(filepath.Join(root, "runs"), journal.RunIdentity{
+		RunID: runID, Gaggle: "production", Workflow: "poll-and-fix", WorkflowVersion: 5,
+		WorkflowDigest:   journal.Digest([]byte("workflow-definition")),
+		ConfigGeneration: "generation-17", Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil, journal.WithClock(clock), journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "poll", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "poll", Attempt: 1, Status: "success", Reason: "pat-fixture-must-not-leave"},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)},
+	} {
+		if err := run.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	releaseExporter()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.journalLogs.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if stats := client.JournalExportStats(); stats.Accepted != 6 || stats.Dropped != 0 {
+		t.Fatalf("timeline admission = %+v; want all six events accepted with no drops", stats)
+	}
+
+	exporter.mu.Lock()
+	records := append([]sdklog.Record(nil), exporter.records...)
+	exporter.mu.Unlock()
+	want := []journal.EventType{
+		journal.EventDaemonStarted, journal.EventTriggerFired, journal.EventRunStarted,
+		journal.EventStageStarted, journal.EventStageFinished, journal.EventRunFinished,
+	}
+	if len(records) != len(want) {
+		t.Fatalf("exported timeline length = %d, want %d", len(records), len(want))
+	}
+	for i, record := range records {
+		var event journal.Event
+		if err := json.Unmarshal([]byte(record.Body().AsString()), &event); err != nil {
+			t.Fatalf("timeline[%d] body: %v", i, err)
+		}
+		if event.Type != want[i] {
+			t.Fatalf("timeline[%d] = %s, want %s", i, event.Type, want[i])
+		}
+		body := record.Body().AsString()
+		if strings.Contains(body, "pat-fixture-must-not-leave") {
+			t.Fatalf("timeline[%d] leaked registered credential: %s", i, body)
+		}
+		attrs := make(map[string]any)
+		record.WalkAttributes(func(kv attribute.KeyValue) bool {
+			attrs[string(kv.Key)] = kv.Value.AsInterface()
+			return true
+		})
+		if attrs["goobers.instance.id"] != "instance-fixture" {
+			t.Fatalf("timeline[%d] missing instance correlation: %v", i, attrs)
+		}
+		if i >= 2 {
+			if attrs["goobers.gaggle"] != "production" || attrs["goobers.run.id"] != runID ||
+				attrs[AttrWorkflow] != "poll-and-fix" || attrs[AttrWorkflowVersion] != int64(5) ||
+				attrs[AttrWorkflowDigest] == "" || attrs[AttrConfigGeneration] != "generation-17" ||
+				attrs[AttrTriggerKind] != "schedule" ||
+				record.TraceID().String() != runID {
+				t.Fatalf("timeline[%d] missing run correlation: attrs=%v trace=%s", i, attrs, record.TraceID())
+			}
+		}
+		if i == 3 || i == 4 {
+			if attrs[AttrStage] != "poll" || attrs[AttrAttemptNumber] != int64(1) {
+				t.Fatalf("timeline[%d] missing stage correlation: %v", i, attrs)
+			}
+		}
+	}
 }
 
 func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
@@ -84,6 +211,8 @@ func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
 	body := []byte(`{"seq":18446744073709551615,"message":"[REDACTED]","data":{"integer":9007199254740993}}`)
 	event := journal.CommittedEvent{
 		Kind: "run", JournalID: "stable-journal", InstanceID: "instance", Gaggle: "gaggle",
+		Workflow: "workflow", WorkflowVersion: 7, WorkflowDigest: "sha256:digest",
+		ConfigGeneration: "config-42", TriggerKind: "schedule", Stage: "build", Attempt: 2,
 		RunID: "0123456789abcdef0123456789abcdef", Seq: math.MaxUint64,
 		Time: time.Unix(1700000000, 123), ObservedTime: time.Unix(1700000001, 456), Body: body,
 	}
@@ -126,24 +255,34 @@ func testJournalLogsOTLPWireContract(t *testing.T, logsOnly bool) {
 	}
 	attrs := journalWireAttrs(record.Attributes)
 	if attrs["goobers.journal.schema_version"].GetIntValue() != 1 ||
+		attrs["goobers.telemetry.stream"].GetStringValue() != "journal" ||
 		attrs["goobers.journal.seq"].GetStringValue() != "18446744073709551615" ||
 		attrs["goobers.journal.kind"].GetStringValue() != "run" ||
 		attrs["goobers.journal.id"].GetStringValue() != event.JournalID ||
 		attrs["goobers.instance.id"].GetStringValue() != event.InstanceID ||
 		attrs["goobers.gaggle"].GetStringValue() != event.Gaggle ||
-		attrs["goobers.run.id"].GetStringValue() != event.RunID || len(attrs) != 7 {
+		attrs[AttrWorkflow].GetStringValue() != event.Workflow ||
+		attrs[AttrWorkflowVersion].GetIntValue() != int64(event.WorkflowVersion) ||
+		attrs[AttrWorkflowDigest].GetStringValue() != event.WorkflowDigest ||
+		attrs[AttrConfigGeneration].GetStringValue() != event.ConfigGeneration ||
+		attrs[AttrTriggerKind].GetStringValue() != event.TriggerKind ||
+		attrs["goobers.run.id"].GetStringValue() != event.RunID ||
+		attrs[AttrStage].GetStringValue() != event.Stage ||
+		attrs[AttrAttemptNumber].GetIntValue() != int64(event.Attempt) || len(attrs) != 15 {
 		t.Fatalf("attributes = %v", attrs)
 	}
 	if got := (<-receiver.headers).Get("x-journal-test"); len(got) != 1 || got[0] != "present" {
 		t.Fatalf("headers = %v", got)
 	}
 	event.Kind, event.RunID, event.InstanceID, event.Gaggle = "scheduler", "", "", ""
+	event.Workflow, event.WorkflowDigest, event.ConfigGeneration, event.TriggerKind, event.Stage = "", "", "", "", ""
+	event.WorkflowVersion, event.Attempt = 0, 0
 	client.Commit(event)
 	if err := client.journalLogs.flush(ctx); err != nil {
 		t.Fatal(err)
 	}
 	record = (<-receiver.requests).ResourceLogs[0].ScopeLogs[0].LogRecords[0]
-	if len(record.TraceId) != 0 || len(record.SpanId) != 0 || len(record.Attributes) != 4 {
+	if len(record.TraceId) != 0 || len(record.SpanId) != 0 || len(record.Attributes) != 5 {
 		t.Fatalf("scheduler metadata = %v", record)
 	}
 	if stats := client.JournalExportStats(); stats.Accepted != 2 || stats.Dropped != 0 || stats.ExportFailures != 0 {
@@ -160,16 +299,17 @@ func journalWireAttrs(attrs []*commonpb.KeyValue) map[string]*commonpb.AnyValue 
 }
 
 type journalTestExporter struct {
-	mu          sync.Mutex
-	records     []sdklog.Record
-	started     chan struct{}
-	release     chan struct{}
-	startOnce   sync.Once
-	exportErr   error
-	flushErr    error
-	shutdownErr error
-	flushes     int
-	shutdowns   int
+	mu                  sync.Mutex
+	records             []sdklog.Record
+	started             chan struct{}
+	release             chan struct{}
+	startOnce           sync.Once
+	ignoreExportContext bool
+	exportErr           error
+	flushErr            error
+	shutdownErr         error
+	flushes             int
+	shutdowns           int
 }
 
 func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Record) error {
@@ -177,10 +317,14 @@ func (e *journalTestExporter) Export(ctx context.Context, records []sdklog.Recor
 		e.startOnce.Do(func() { close(e.started) })
 	}
 	if e.release != nil {
-		select {
-		case <-e.release:
-		case <-ctx.Done():
-			return ctx.Err()
+		if e.ignoreExportContext {
+			<-e.release
+		} else {
+			select {
+			case <-e.release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 	}
 	e.mu.Lock()
@@ -311,7 +455,7 @@ func TestJournalLogsQueueBoundsAndOwnership(t *testing.T) {
 	}
 }
 
-func TestJournalLogsRejectLargeRecordsAndContention(t *testing.T) {
+func TestJournalLogsRejectLargeRecordsButNotContention(t *testing.T) {
 	client := journalTestClient(t, &journalTestExporter{})
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: make([]byte, journalLogRecordLimit+1)})
 	client.Commit(journal.CommittedEvent{JournalID: strings.Repeat("x", journalLogRecordLimit+1)})
@@ -320,7 +464,7 @@ func TestJournalLogsRejectLargeRecordsAndContention(t *testing.T) {
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	client.journalLogs.mu.Unlock()
 	stats := client.JournalExportStats()
-	if stats.Accepted != 0 || stats.Dropped != 3 || stats.QueuedBytes != 0 {
+	if stats.Accepted != 1 || stats.Dropped != 2 || stats.DroppedLockContention != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
@@ -631,10 +775,11 @@ func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
 
 	// The first record parks the worker inside Export; the rest queue behind it.
 	const queued = 6
-	for range queued {
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, exporter.started)
+	for range queued - 1 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-exporter.started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -655,21 +800,18 @@ func TestJournalLogsShutdownDeadlineAccountsAbandonedBacklog(t *testing.T) {
 // "this record is too big", and those have different fixes.
 func TestJournalLogsAttributesDropsToDistinctCauses(t *testing.T) {
 	exporter := &journalTestExporter{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+		started:             make(chan struct{}),
+		release:             make(chan struct{}),
+		ignoreExportContext: true,
 	}
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 	defer close(exporter.release)
 
-	// Park the worker inside Export before anything else. The worker takes the
-	// queue lock whenever it is woken (every drop wakes it), so a commit racing
-	// it loses TryLock and is charged to lock_contention; filling while it was
-	// live let enough of those losses eat the small overflow margin that
-	// queue_full never fired. The constructor returns with the worker idle and
-	// unlocked, and once parked it holds no lock, so only this goroutine
-	// touches the queue from here on.
+	// Park one in-flight batch so the worker cannot free reservations while
+	// this test fills the bounded queue. The exporter ignores its context so
+	// a slow runner cannot release it during the overflow check.
 	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
-	<-exporter.started
+	waitJournalStarted(t, exporter.started)
 
 	// Missing identity.
 	client.Commit(journal.CommittedEvent{Body: []byte("{}")})
@@ -718,10 +860,11 @@ func TestJournalLogsShutdownDropsAreChargedToShutdown(t *testing.T) {
 	client := &Client{journalLogs: newJournalLogPipeline(exporter, resource.Empty(), nil)}
 
 	const queued = 6
-	for range queued {
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, exporter.started)
+	for range queued - 1 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-exporter.started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -757,10 +900,11 @@ func TestClientShutdownExportsFinalJournalDropCauses(t *testing.T) {
 	client.journalLogs.observeDrops = client.journalExportDropped
 
 	const accepted = 4
-	for range accepted {
+	client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
+	waitJournalStarted(t, logExporter.started)
+	for range accepted - 1 {
 		client.Commit(journal.CommittedEvent{JournalID: "test-journal", Body: []byte("{}")})
 	}
-	<-logExporter.started
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

@@ -1,5 +1,5 @@
 {
-  "snapshotSha256": "694ab200654f122e8df99b78aafee9ac3fbb498dc05ea17c8398966add951e6e",
+  "snapshotSha256": "f7c814fb3c69c75cb13664db8a87d5e0190083a3ab2a0918ec41205dfbe31ad3",
   "changes": [
     {
       "version": 1,
@@ -36,6 +36,30 @@
     {
       "version": 9,
       "description": "Add recovery-resume and recovery-restore (#4494) to workflow admission, requiring repo:push to fetch the configured current main when restoring retained implementation in a stage. Both are newly inventoried workflow commands; no previously inventoried command capability, result-file or claim-mutation contract changes. Standalone operator recovery-restore retains its configured authentication path. Existing configurations retain their admission behavior."
+    },
+    {
+      "version": 10,
+      "description": "Require open-pr to declare the exact ado:work-items:write capability separately from provider:pr:write before it may create the native Azure Boards ArtifactLink. All shipped open-pr workflows are updated in the same change; GitHub open-pr still uses only its provider-neutral PR credential at runtime."
+    },
+    {
+      "version": 11,
+      "description": "Make open-pr's ado:work-items:write use optional at static admission because the command is provider-neutral. GitHub workflows again compile without Azure Boards authority; ADO workflows can declare the capability, and the ADO-only runtime linker still fails closed when its dedicated credential is absent."
+    },
+    {
+      "version": 12,
+      "description": "Reword the consequence text of the optional ado:pr:complete use on merge-pr and merge-queue-poll (ADO-N2, docs/design/ado-parity-dsl-2-0.md section 3.3): github:pr:merge is the landing authority on every provider, and ado:pr:complete, when declared, is used instead on Azure DevOps. Text only: no capability, optional bit, flag or result-file field changes, so every shipped config's admission is unchanged."
+    },
+    {
+      "version": 13,
+      "description": "Add optional uses for topology (b) (ADO-N31, docs/design/ado-parity-dsl-2-0.md section 7.2): open-pr gains optional github:issues:read and github:issues:write for the claimed-issue staleness re-check on a GitHub/Gitea backlog, and issue-close-out gains optional github:pr:write and provider:pr:write for the pull-request lookup on the Azure DevOps code provider. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling and no capability is auto-derived onto a task."
+    },
+    {
+      "version": 14,
+      "description": "Reword the consequence text of open-pr's optional ado:work-items:write use (#5925): native Azure Boards linking is best-effort, so without the capability the pull request opens with a text reference only, and the Azure DevOps repository credential backs the capability when declared. Text only: no capability, optional bit, flag or result-file field changes, so every shipped config's admission is unchanged."
+    },
+    {
+      "version": 15,
+      "description": "pr-comment-watch gains native Azure DevOps support (#6130) and an OPTIONAL github:pr:write use: on Azure DevOps the routing labels are native pull-request labels on the project provider, which github:pr:write authorizes there (docs/design/ado-parity-dsl-2-0.md section 3.1), and the stage builds its ADO provider from that credential. GitHub and Gitea keep routing through github:issues:write, which stays the one required use. Additive and optional only: no required use, flag or result-file field changes, so every shipped config keeps compiling."
     }
   ]
 }

@@ -971,6 +971,51 @@ func TestUnpushedDiffIsCapturedBeforeTeardown(t *testing.T) {
 	}
 }
 
+func TestArtifactRetryAttemptPreservesWorkspaceWorkBeforeRetry(t *testing.T) {
+	const patch = "diff --git a/main.go b/main.go\n+// artifact-failed attempt work\n"
+	ws := testWorkspaces(t)
+	ws.scriptDiffSequence("implement", [][]byte{[]byte(patch), nil})
+	var published []string
+	ws.publish = func(stage string) (WorkspaceDeltaPublication, error) {
+		published = append(published, stage)
+		return WorkspaceDeltaPublication{Digest: fmt.Sprintf("sha256:%d", len(published)), Base: "b0", Tip: "b1"}, nil
+	}
+	calls := 0
+	inv := &fakeInvoker{
+		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+			calls++
+			if calls == 1 {
+				return apiv1.ResultEnvelope{
+					Status: apiv1.ResultFailure,
+					Error: &apiv1.ErrorInfo{
+						Code:      "missing_declared_artifact",
+						Message:   "declared artifact file missing: output/result.json",
+						Retryable: true,
+					},
+				}, nil
+			}
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "done"}, nil
+		},
+	}
+	env := laneEnv(t, inv, ws)
+	env.ExecuteWorkflow(Run, runInput("artifact-retry-preserves-work", agenticRetrySpec(&apiv1.RetryPolicy{MaxAttempts: 2})))
+
+	if res := laneResult(t, env); res.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed after artifact retry", res.Status)
+	}
+	if calls != 2 {
+		t.Fatalf("agentic calls = %d, want missing-artifact attempt plus retry", calls)
+	}
+	if len(published) != 2 {
+		t.Fatalf("workspace delta publications = %v, want failed attempt and retry attempt published", published)
+	}
+	proj := laneJournal(t, env)
+	captured := laneArtifact(t, proj, runner.UnpushedDiffPatchArtifactName("implement"))
+	if string(captured) != patch {
+		t.Fatalf("captured patch = %q, want artifact-failed attempt patch %q", captured, patch)
+	}
+}
+
 // TestNoUnpushedDiffRecordsNothing is the negative: a stage that left nothing
 // behind must not litter the journal with an empty patch and a sidecar
 // describing it.

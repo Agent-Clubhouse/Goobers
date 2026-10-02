@@ -12,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/providers"
 )
 
 const maxLocalCIOutputBytes = 12 * 1024
@@ -42,7 +43,7 @@ type journalArtifact struct {
 // renderStructuredPRBody projects the implementation run's existing journal
 // evidence into a reviewer-facing PR body. Workflows without reviewer or
 // local-ci evidence keep open-pr's generic fallback.
-func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bool, error) {
+func renderStructuredPRBody(root, runID, issueID, issueRef, issueTitle string) (string, bool, error) {
 	runDir, err := runDirFor(layoutFor(root), runID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -72,6 +73,7 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 	var (
 		artifacts      []journalArtifact
 		issueBody      string
+		issueCriteria  string
 		issueUpdatedAt string
 		reviews        []prBodyReview
 		latestCI       *journal.Event
@@ -85,6 +87,7 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 		if issueBody == "" && ev.Type == journal.EventStageFinished && ev.Outputs != nil {
 			if id, ok := ev.Outputs["id"].(string); ok && id == issueID {
 				issueBody, _ = ev.Outputs["body"].(string)
+				issueCriteria, _ = ev.Outputs["acceptanceCriteria"].(string)
 				// updatedAt (#2340): the claimed WorkItem's UpdatedAt, flattened
 				// into this same stage-output event by mergeResultFileOutputs
 				// (a *time.Time marshals to a JSON string). Pinned into the PR
@@ -146,7 +149,8 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 		}
 	}
 
-	return formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
+	issueBody = providers.ComposeWorkItemBody(issueBody, issueCriteria)
+	return formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdatedAt, identity.WorkflowDigest, reviews, parseUnifiedDiff(latestDiff), ci), true, nil
 }
 
 func artifactByDigest(artifacts []journalArtifact, digest string) (journal.Ref, bool) {
@@ -173,8 +177,9 @@ func stageArtifactByName(artifacts []journalArtifact, stageRefs []journal.Ref, r
 	return journal.Ref{}, false
 }
 
-func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
+func formatStructuredPRBody(issueID, issueRef, issueTitle, issueBody, issueUpdatedAt, workflowDigest string, reviews []prBodyReview, changes []prBodyChange, ci *prBodyCI) string {
 	var b strings.Builder
+	reviews = crossProviderReviews(reviews, issueID, issueRef)
 	latest := prBodyReview{}
 	if len(reviews) > 0 {
 		latest = reviews[len(reviews)-1]
@@ -182,7 +187,7 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, work
 
 	b.WriteString("## Summary\n\n")
 	if issueID != "" {
-		fmt.Fprintf(&b, "Implements #%s: **%s**.\n", html.EscapeString(issueID), html.EscapeString(issueTitle))
+		fmt.Fprintf(&b, "Implements %s: **%s**.\n", html.EscapeString(issueRef), html.EscapeString(crossProviderIssueText(issueTitle, issueID, issueRef)))
 	}
 	if summary := strings.TrimSpace(latest.verdict.Summary); summary != "" {
 		if issueID != "" {
@@ -191,7 +196,7 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, work
 		b.WriteString(summary)
 		b.WriteString("\n")
 	}
-	if criteria := markdownSection(issueBody, "acceptance criteria"); criteria != "" {
+	if criteria := crossProviderIssueText(markdownSection(issueBody, "acceptance criteria"), issueID, issueRef); criteria != "" {
 		b.WriteString("\n<details>\n<summary>Acceptance criteria</summary>\n\n")
 		b.WriteString(criteria)
 		b.WriteString("\n\n</details>\n")
@@ -270,7 +275,7 @@ func formatStructuredPRBody(issueID, issueTitle, issueBody, issueUpdatedAt, work
 
 	b.WriteString("\n---\n")
 	if issueID != "" {
-		fmt.Fprintf(&b, "Fixes #%s", html.EscapeString(issueID))
+		fmt.Fprintf(&b, "Fixes %s", html.EscapeString(issueRef))
 	}
 	digest, label := latest.diffDigest, "Reviewed diff"
 	if digest == "" {

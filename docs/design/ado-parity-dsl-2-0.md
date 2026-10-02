@@ -142,7 +142,17 @@ behaviour changes.
   `ado:pr:write` have no consumer on ADO today. In DSL 2.0 they are accepted and draw
   an advisory warning that names the `github:*` name that authorizes the operation.
   `goobers validate --strict` treats the warning as neutral. This does not break
-  configurations that followed the older docs.
+  configurations that followed the older docs. As shipped (ADO-N24) the code is
+  `CAP006`. It covers DSL 2.0 tasks and the goobers their agentic tasks and
+  gates run. `open-pr` gained a real consumer of `ado:work-items:write` (#5819:
+  it links the pull request to its work item), so a declaration on `open-pr` is
+  not reported. The link is best-effort (#5925): without a delivered credential
+  the pull request still opens with a text reference and a note, and the Azure
+  DevOps repository credential backs the capability when a stage declares it.
+  The advice is provider-neutral, since the warning fires on every provider. A task
+  that runs its own command (a custom deterministic command or an agentic stage)
+  receives the credential its declared capabilities select, so its warning only says
+  no built-in stage consumes the name, instead of advising a rename.
 - **Compile-matrix gate** (§8.1). Every shipped workflow is validated against an ADO
   gaggle.
 
@@ -217,6 +227,11 @@ one natively rather than shipping an ADO variant:
 | `pr-claim` | verify step refuses ADO (#5655) | Verify the PR state and source head through the ADO poll (ADO-N14) |
 | `update-behind-pr` | `pr.update-branch` not declared | An ADO override that derives no capability. The stage reports `not-applicable` (ADO-N15). |
 | `gather-ci-failures` | refuses ADO (#5652) | Minimal native evidence from policy evaluations (ADO-N22) |
+| `gather-issue-context`, `respond-to-findings` | build their provider through the GitHub/Gitea-only remediation factory | Narrow ADO surfaces: the selected PR and its closing work items; one closed PR thread for the response account (FU3) |
+| `schedule` trigger | the demand count errors for non-GitHub repositories, so every tick sizes to zero | No demand counter on ADO: each due tick fires one run, bounded by readiness (FU3) |
+
+The last two rows were found after the plan was written (follow-up FU3); the
+stages ran unconditionally, so every ADO run failed at `gather-issue-context`.
 
 **Why `update-behind-pr` is not applicable on ADO.** ADO always computes the merge
 against the current target (`mergeStatus`), and there is no "branch must be up to
@@ -277,6 +292,39 @@ are short. A stage that runs past expiry gets a 401. The existing single 401 ret
 then re-resolves through the credential plane for pods, and fails with a clear
 "credential expired" error locally. Long-lived agentic stages do not hold ADO
 credentials at all (credential containment, #5664).
+
+> **As shipped (ADO-N18):** a stage, local or pod, cannot refresh a delivered
+> value. A 401 fails the request at once with an "expired, revoked, or without
+> access to this resource" error that names the capability and keeps the 401
+> response, so it still classifies as an authentication failure.
+>
+> **As shipped (#5905, PO ruling 2026-09-27):** the daemon refreshes a
+> credential with a stated expiry that has less than
+> `credentials.MinDeliveredLifetime` (20 minutes) left before it delivers it,
+> to a local stage and through the credential plane; an Entra source is
+> rebuilt so the Azure SDK's cache is bypassed, and a GitHub App token is
+> re-minted. When the refresh cannot do better (the Azure CLI's own cache), the
+> still-valid value is delivered. The expiry travels as the non-secret
+> `GOOBERS_CREDENTIAL_EXPIRES_<capability>`, and the 401 error says "expired"
+> at or after it and "revoked or without access" before it. Pod re-resolve on
+> a 401 was not needed.
+>
+> **Superseded (#6120 phase 1, PO decision 2026-09-30):** the 20-minute floor
+> above is best-effort and inert on the azure-cli path: `az account
+> get-access-token` returns its cached token until about five minutes before
+> expiry, so re-minting at delivery cannot produce a longer-lived one (40
+> below-floor deliveries in 9 hours of soak). Stages can run for hours, so the
+> delivered value is no longer final for a deterministic stage: it receives a
+> stage credential-refresh grant (`GOOBERS_CREDENTIAL_ENDPOINT` +
+> `GOOBERS_CREDENTIAL_GRANT`) and re-resolves one capability through
+> `POST /api/v1/credentials/refresh`, locally and in a pod, within five minutes
+> of the stated expiry and once after a 401 or the sign-in redirect. The
+> Azure DevOps source is refreshable, so `send()`'s existing single 401 retry
+> resends with a re-resolved value. The floor stays as a first line; the grant
+> is what bounds nothing by token life. A rejected delivered credential now
+> reports `provider_auth_failed`. Agentic stages are phase 2. See
+> `docs/stage-contract.md` ("Mid-stage refresh") and
+> `distributed-state-and-coordination.md` DS10 / §11.
 
 **Harness.** Remove the ADO exception that tolerates a missing grant
 (`internal/harness/environment.go:170-173`). Once every kind backs its grants, ADO
@@ -392,6 +440,7 @@ applies prefix scopes, path filters and lazy evaluation.
   §2). Fall back to scanning the configurations when the evaluations list is empty:
   - page through `x-ms-continuationtoken`;
   - match `Prefix` scopes by ref folder;
+  - match a `DefaultBranch` scope only on the repository's default branch;
   - treat a policy with an empty scope as repo-wide.
 
 **Classification** (feeds `ci-poll` and `merge-queue-poll`):
@@ -401,25 +450,26 @@ applies prefix scopes, path filters and lazy evaluation.
 | Build or status policy `queued` / `running` | CI pending |
 | Build or status policy `rejected` / `broken` | CI failed. The build link is in `context.buildId`. |
 | Minimum-reviewers or required-reviewers policy `queued` | **Waiting on a human.** Not CI pending, and never a remediation trigger. It stays `queued` even after a self-vote (F5). |
-| Comment-resolution policy `rejected` | Unresolved threads, which feed `pr-remediation` |
-| Work-item-linking policy `rejected` | A missing link. `open-pr` adds `workItemRefs` when the backlog is ADO. |
+| Comment-resolution policy `rejected` | Unresolved threads, which feed `pr-remediation`. Not CI failing (PO ruling 2026-09-27). |
+| Work-item-linking policy `rejected` | A missing link. `open-pr` adds `workItemRefs` when the backlog is ADO. Not CI failing (PO ruling 2026-09-27). |
 
 With auto-complete armed and a human approval still missing, the PR stays `active`
 (F4). `merge-queue-poll` reports "awaiting human approval" instead of timing out or
-treating the PR as evicted.
+treating the PR as evicted. The evaluations read behind that report is diagnostic:
+when it fails, the entry is reported as plain pending rather than failing the poll.
 
 ## 6. ADO backlog correctness
 
 | # | Item | Change | Evidence |
 |---|---|---|---|
 | ADO-N10 | Claim breadcrumb authorship | Count only breadcrumbs whose `createdBy.id` equals the authenticated id. The code comment admits that authorship is not checked (`providers/ado_workitems.go:686`). | probe §5 |
-| ADO-N21 | `goobers:ready` / label transitions (#5554) | Implement `ListWorkItemLabelTransitionsForItem` (`ado_workitems.go:799`) from `GET workitems/{id}/updates`: `System.Tags` old/new diffs timed by each update's `System.ChangedDate` new value (an update's `revisedDate` is when that revision was superseded, not when it was made), paged with `$top`/`$skip`, and a fail-closed error past the 10,000-revision cap. | features §3.9 |
+| ADO-N21 | `goobers:ready` / label transitions (#5554) | Implement `ADOProvider.ListWorkItemLabelTransitionsForItem` (`providers/ado_labeltransitions.go`) from `GET workitems/{id}/updates`: `System.Tags` old/new diffs timed by each update's `System.ChangedDate` new value (an update's `revisedDate` is when that revision was superseded, not when it was made), paged with `$top`/`$skip`, and a fail-closed error past the 10,000-revision cap. | features §3.9 |
 | ADO-N32 | Blockers | Today any `Dependency-Reverse` link excludes the item, even when the predecessor is closed (`adoBlockedByCount`, `ado_workitems.go:965`). Implement the blocker checker: hydrate the predecessors and count one as blocking unless its category is Completed, Removed or Resolved (see below). Declare `backlog.blockers` (#2061). | probe §4 |
 | ADO-N33 | Hydration | Replace the per-item N+1 GET with `POST _apis/wit/workitemsbatch` (200 ids per call, `$expand: Relations`) | F12 |
 | ADO-N27 | Custom processes | Key states by type **name**, never `referenceName`. This is already true for `adoWorkItemStateCategories` (`ado_workitems.go:1106-1141`); keep it and test it against an inherited process. When no type is given, the create type is the project's **Requirement-category default type** from `workitemtypecategories`, not a hard-coded `"Issue"` (`ado_workitems.go:278`). Also send `multilineFieldsFormat` and `format=markdown`. | probe §4 |
 | ADO-N11 | Tags | Tags are case-insensitive on read. A `,` or `;` is already refused on write (`validateADOTags`, `ado_workitems.go:1058`). Humans' comma tags are split by the server, which is harmless. | probe §4 |
 | ADO-N28 | Idempotent close | Before closing, re-read the state category. Already Completed is success. Resolved (reached through `transitionWorkItems` or `Fixes #`) moves on to Completed, or stops at Resolved for a type without a Completed transition. A 412 on `test /rev` re-reads and retries. | F9 |
-| ADO-N29 | Terminal claim cleanup (#5648) | Release the provider claim epoch and the `goobers:claimed` tag on terminal runs for ADO. Today this is skipped for non-GitHub providers (`cmd/goobers/terminalclaimmarker.go:82-84`). | #5648 |
+| ADO-N29 | Terminal claim cleanup (#5648) | Release the provider claim epoch and the `goobers:claimed` tag on terminal runs for ADO. Before this item it was skipped for non-GitHub providers; the ADO release is `buildTerminalADOClaimMarkerRelease` (`cmd/goobers/terminalclaimmarker.go`). | #5648 |
 | ADO-N38 | Legacy claim tag (#1990) | Stop reading and clearing `goobers:claim-run:<b64>` | #1990 |
 
 **Resolved counts as done for blockers.** In stock Agile, a Bug is `Resolved` in the
@@ -443,12 +493,16 @@ backlog:
 
 - **Categories** give a process-agnostic default. `byType` matches state names for
   one work item type and takes precedence for that type.
-- **Uses.** The same setting decides when a predecessor stops blocking (ADO-N32) and
-  when a claimed item counts as already done (ADO-N28). Goobers' own close still
-  targets the Completed category.
+- **Uses.** The setting decides only when a predecessor stops blocking (ADO-N32).
+  It does not decide when a claimed item counts as already done: Goobers' own close
+  always drives an item to the Completed category, and a Resolved item moves on to
+  Completed (ADO-N28).
 - **Validation.** Unknown category names are errors. Unknown state names warn, and
   are checked against the project's real per-type states by
-  `validate --check-repos` (ADO-N34).
+  `validate --check-repos` (ADO-N34). Names are trimmed of surrounding whitespace
+  the same way at runtime, and `byType` keys that differ only in case are merged
+  (their state lists are combined); `validate --check-repos` warns about such
+  duplicate keys.
 - **Other providers.** GitHub and Gitea map closed to Completed, so the setting is
   accepted but has no effect there.
 
@@ -535,6 +589,41 @@ ADO-backlog project split keeps working.
 
 The reverse arrangement (backlog on ADO, code on GitHub) uses the same machinery.
 Topology (c) needs two *project* providers in one gaggle, which is DSL 3.0.
+
+**Status (ADO-N31, implemented).** A GitHub or Gitea backlog for ADO code
+validates and is routed by role. Steps 1–6 landed as follows:
+
+- **Steps 1 and 4.** `applyBacklogProject` returns the backlog provider's
+  ref (`backlogProviderRef`, shared with `statusWorkItemLookup`). Each
+  backlog stage opens that provider, and claims are keyed by it.
+- **Step 2.** `credentials.RunnerGrants` takes a backlog role. If no
+  `repos[]` entry with a credential matches the backlog `owner/name`, the
+  backlog family gets no credential, never the ADO one.
+- **Step 3.** `open-pr` and the ADO merge commit write the issue's full URL.
+  `post-merge` closes only URL references into the backlog. A bare `#N` is
+  ignored.
+- **Step 5.** The PR-coupled extras are skipped.
+- **Step 6.** The N1 gate has a (b) column (`test/providermatrix`). The live
+  (b) scenario belongs to the ADO-N16 leg.
+
+Deviations from the steps above:
+
+- **Post-merge reads the PR body, not the claims ledger.** `issue-close-out`
+  releases the claim when the PR opens, so post-merge has no claim to read.
+  It parses full-URL closing references into the backlog repository instead,
+  which cannot name the wrong item.
+- **The reverse arrangement is still refused (CFG010).** A gaggle does not
+  name the backlog's ADO organization.
+- **The ADO-N13 guard is lifted only for ADO code.** A mismatch between two
+  non-ADO providers keeps its routed provider and its CFG011 warning, so
+  GitHub and Gitea behaviour does not change.
+- **(b) stages do not run in stage pods.** A pod has no instance config to
+  route by role, so the engine refuses every stage of a (b) run before a pod
+  is created (`RunInput.RoleRoutedBacklogProvider`). The gaggle's stages run
+  on a self runner.
+
+`docs/guides/ado-limitations.md` lists what stages need to declare in (b),
+and the known gaps.
 
 ### 7.3 `validate --check-repos` on ADO (ADO-N34, v0.5.x)
 

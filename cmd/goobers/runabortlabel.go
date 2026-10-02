@@ -29,11 +29,9 @@ import (
 // carrying it (mergepr.go), even with a green verdict and passing CI —
 // defense in depth so a bypass of selection can't bypass the block too.
 //
-// Deliberately NOT self-healing (unlike goobers:merge-demoted, #950): the run
-// that owned this PR is gone, so a later commit or CI settling green must not
-// silently re-admit it to auto-merge. Only a human removing the label (after
-// deciding to close it, hand it to remediation, or take it over) re-enables
-// the PR.
+// pr-select may clear a stale marker only when the live PR is open, mergeable,
+// green, and has no prior PR comments (#5437). Anything less still requires a
+// human removing the label after deciding how to take over the orphan.
 const abortedRunLabel = "goobers:run-aborted"
 
 // prOpenOperation is the runner.operation value the mutation-sidecar replay
@@ -214,7 +212,7 @@ func appendRunAbortLabelResult(annotate terminalAnnotator, pr *journal.ExternalR
 		Runner:      map[string]any{"operation": runAbortLabelOperation},
 	}
 	if labelErr != nil {
-		ev.Error = &journal.ErrorDetail{Code: "run_abort_label_failed", Message: labelErr.Error()}
+		ev.Error = journal.ErrorDetailFor("run_abort_label_failed", labelErr)
 	}
 	if err := annotate.Append(ev); err != nil {
 		return fmt.Errorf("journal run-abort label: %w", err)

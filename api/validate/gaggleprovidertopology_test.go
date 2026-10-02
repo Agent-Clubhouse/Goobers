@@ -62,10 +62,9 @@ func issueWithCodeAndSeverity(t *testing.T, report *Report, code WarningCode, se
 	return Issue{}, false
 }
 
-// A GitHub project with an ADO backlog is refused outright (ADO-N13): every
-// backlog stage today opens the routed *project* provider, so this topology
-// would silently query ADO Boards through the GitHub-routed path (or vice
-// versa) instead of failing loudly.
+// A GitHub project with an ADO backlog stays refused: nothing in the gaggle
+// names the backlog's ADO organization, so its stages would address the
+// wrong service.
 func TestGaggleMixedProvidersRejected(t *testing.T) {
 	dir := t.TempDir()
 	writeGaggleWithProviders(t, dir, "gaggle.yaml", "alpha", "github", "ado", "")
@@ -78,16 +77,17 @@ func TestGaggleMixedProvidersRejected(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected %s error, got: %v", errorGaggleMixedProviderADO, report.Issues)
 	}
-	if !strings.Contains(issue.Message, "v0.5.x") || !strings.Contains(issue.Message, "ADO-N31") {
-		t.Fatalf("diagnostic must name v0.5.x/ADO-N31 as the release adding support, got: %q", issue.Message)
+	if !strings.Contains(issue.Message, "only for Azure DevOps code") {
+		t.Fatalf("diagnostic must name the supported mixed topology, got: %q", issue.Message)
 	}
 	if issue.Name != "alpha" {
 		t.Fatalf("expected the issue to name gaggle alpha, got %q", issue.Name)
 	}
 }
 
-// The reverse split (ADO project, GitHub backlog) is refused the same way.
-func TestGaggleMixedProvidersADOProjectGitHubBacklogRejected(t *testing.T) {
+// Topology (b) (ADO-N31): a GitHub backlog for an ADO project is routed by
+// role and validates cleanly — the ADO-N13 guard is lifted for it.
+func TestGaggleGitHubBacklogForADOProjectAccepted(t *testing.T) {
 	dir := t.TempDir()
 	writeGaggleWithProviders(t, dir, "gaggle.yaml", "alpha", "ado", "github", "")
 
@@ -95,8 +95,56 @@ func TestGaggleMixedProvidersADOProjectGitHubBacklogRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateDir: %v", err)
 	}
-	if _, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error); !ok {
-		t.Fatalf("expected %s error, got: %v", errorGaggleMixedProviderADO, report.Issues)
+	if _, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error); ok {
+		t.Fatalf("a GitHub backlog for ADO code must validate: %v", report.Issues)
+	}
+	if _, ok := issueWithCodeAndSeverity(t, report, WarningGaggleMixedProvider, Warning); ok {
+		t.Fatalf("a GitHub backlog for ADO code must not warn: %v", report.Issues)
+	}
+}
+
+// A Gitea backlog for an ADO project uses the same routing.
+func TestGaggleGiteaBacklogForADOProjectAccepted(t *testing.T) {
+	dir := t.TempDir()
+	writeGaggleWithProviders(t, dir, "gaggle.yaml", "alpha", "ado", "gitea", "https://gitea.example.com")
+
+	report, err := newV(t).ValidateDir(dir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if _, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error); ok {
+		t.Fatalf("a Gitea backlog for ADO code must validate: %v", report.Issues)
+	}
+}
+
+// Topology (b) finds the backlog repository, and its credential, by the
+// owner/name in spec.backlog.project, so any other shape is refused.
+func TestGaggleGitHubBacklogForADOProjectNeedsOwnerName(t *testing.T) {
+	dir := t.TempDir()
+	writeGaggleWithProviders(t, dir, "gaggle.yaml", "alpha", "ado", "github", "")
+	path := filepath.Join(dir, "gaggle.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := strings.Replace(string(raw), "project: acme/web\n", "project: web\n", 1)
+	if doc == string(raw) {
+		t.Fatalf("fixture has no backlog owner/name to rewrite:\n%s", raw)
+	}
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(dir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	issue, ok := issueWithCodeAndSeverity(t, report, errorGaggleMixedProviderADO, Error)
+	if !ok {
+		t.Fatalf("expected %s error for a backlog project that is not owner/name, got: %v", errorGaggleMixedProviderADO, report.Issues)
+	}
+	if !strings.Contains(issue.Message, "owner/name") {
+		t.Fatalf("diagnostic must name the owner/name requirement, got: %q", issue.Message)
 	}
 }
 

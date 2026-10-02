@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/support-triage-v1.schema.json",
+  "title": "SupportTriage",
+  "description": "Versioned support-case triage result emitted before any Goobers defect is filed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "disposition", "confidence", "nextAction", "case", "cluster"],
+  "properties": {
+    "schema": { "const": "goobers.dev/support-triage/v1", "description": "Version of the support-triage result contract." },
+    "disposition": {
+      "type": "string",
+      "description": "Deterministic support routing outcome for the report.",
+      "enum": [
+        "workflow_configuration",
+        "harness_authentication",
+        "local_environment",
+        "external_dependency",
+        "transient_failure",
+        "unsupported_version",
+        "duplicate_or_known",
+        "not_reproduced",
+        "insufficient_evidence",
+        "goobers_defect_candidate"
+      ]
+    },
+    "confidence": { "type": "string", "description": "Classifier confidence bucket.", "enum": ["low", "medium", "high"] },
+    "nextAction": { "type": "string", "minLength": 1, "description": "Recommended next support action; filing remains a separate confirmed mutation." },
+    "evidence": {
+      "type": "array",
+      "description": "Safe structured evidence that drove or constrained the disposition.",
+      "items": { "$ref": "#/$defs/evidence" }
+    },
+    "case": { "$ref": "#/$defs/case", "description": "Stable support case summary used by intake surfaces." },
+    "cluster": { "$ref": "#/$defs/cluster", "description": "Support cluster metadata for grouping similar reports." }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "description": "One sanitized structured evidence item.",
+      "additionalProperties": false,
+      "required": ["kind", "detail"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "description": "Evidence source category." },
+        "subject": { "type": "string", "description": "Run, credential, or other structured subject for the evidence." },
+        "detail": { "type": "string", "minLength": 1, "description": "Human-readable redacted evidence detail." }
+      }
+    },
+    "case": {
+      "type": "object",
+      "description": "Stable support case summary used by intake surfaces.",
+      "additionalProperties": false,
+      "required": ["fingerprint"],
+      "properties": {
+        "runIds": { "type": "array", "description": "Run identifiers included in this support case.", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "workflows": { "type": "array", "description": "Workflow names represented in this support case.", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "gaggles": { "type": "array", "description": "Gaggle names represented in this support case.", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "binaryVersion": { "type": "string", "description": "Goobers binary version that collected or produced the evidence." },
+        "platform": { "type": "string", "description": "Operating-system and architecture tuple for the producing binary." },
+        "fingerprint": { "type": "string", "description": "Stable grouping key derived from safe structured evidence." }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "description": "Support cluster metadata for grouping similar reports across versions and platforms.",
+      "additionalProperties": false,
+      "required": ["fingerprint", "occurrenceCount"],
+      "properties": {
+        "fingerprint": { "type": "string", "description": "Stable cluster fingerprint shared by matching support cases." },
+        "occurrenceCount": { "type": "integer", "minimum": 0, "description": "Number of occurrences represented by this triage result." },
+        "affectedVersions": { "type": "array", "description": "Goobers versions observed in the cluster.", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "affectedPlatforms": { "type": "array", "description": "Platforms observed in the cluster.", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "affectedHarnesses": { "type": "array", "description": "Harnesses observed in the cluster.", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "knownIssue": { "type": "string", "description": "Known issue reference when this cluster maps to a duplicate or known problem." },
+        "reproductionAttempts": { "type": "array", "description": "Bounded reproduction attempts already associated with this cluster.", "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}

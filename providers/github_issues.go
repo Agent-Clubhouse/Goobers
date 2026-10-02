@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,20 @@ const ErrorCodeRateLimited = "github_rate_limited"
 // ErrorCodeAuthFailed is the stable code for a credential that GitHub rejects
 // with 401 or a permission-denied 403.
 const ErrorCodeAuthFailed = "github_auth_failed"
+
+// ErrorCodeProviderAuthFailed is the provider-neutral code for a credential a
+// forge other than GitHub rejects — today an Azure DevOps delivered
+// credential (ErrADODeliveredCredentialRejected, Goobers#6120), which used to
+// be reported as github_auth_failed. Consumers that react to an auth failure
+// match both codes through IsAuthFailureCode.
+const ErrorCodeProviderAuthFailed = "provider_auth_failed"
+
+// IsAuthFailureCode reports whether code is either stable auth-failure code.
+// Existing consumers keyed on github_auth_failed keep working; new ones should
+// call this instead of comparing against one code.
+func IsAuthFailureCode(code string) bool {
+	return code == ErrorCodeAuthFailed || code == ErrorCodeProviderAuthFailed
+}
 
 // RateLimitError is the typed error send() returns when a rate-limited
 // request cannot be absorbed by in-request backoff — the reset is further out
@@ -249,28 +264,7 @@ func (e *LoginSelfReportRefusedError) Error() string {
 // comment instead of growing a new one every run. GitHub scopes comment IDs
 // repo-wide, not per-issue, so the edit endpoint takes no issue number.
 func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, commentID, body string) error {
-	if err := requireOwnerRepo(repo); err != nil {
-		return err
-	}
-	if commentID == "" {
-		return fmt.Errorf("comment id is required")
-	}
-	body, err := withAttribution(body, p.attribution, "comment-update")
-	if err != nil {
-		return err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
-	if err != nil {
-		return err
-	}
-	var comment restComment
-	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]string{"body": body}, &comment); err != nil {
-		return err
-	}
-	if ref, ok := commentMutationRef(ProviderGitHub, repo, comment); ok {
-		p.recordExternalRef(ctx, ref)
-	}
-	return nil
+	return updateRESTComment(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, repo, commentID, body)
 }
 
 // DeleteComment removes an issue/PR comment. A missing comment is already in
@@ -512,99 +506,7 @@ func (p *GitHubProvider) scanWorkItemLabelTransitions(
 // an external-ref mutation with before/after field digests so the run journal can
 // trace it.
 func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.Milestone != nil && *req.Milestone <= 0 {
-		return WorkItem{}, fmt.Errorf("milestone number must be positive")
-	}
-	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if req.ExpectedRevision != "" {
-		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	fields := map[string]FieldDigest{}
-	patch := map[string]interface{}{}
-	if req.Title != nil {
-		patch["title"] = *req.Title
-		fields["title"] = FieldDigest{Before: digestString(before.Title), After: digestString(*req.Title)}
-	}
-	if req.Body != nil {
-		patch["body"] = *req.Body
-		fields["body"] = FieldDigest{Before: digestString(before.Body), After: digestString(*req.Body)}
-	}
-	if req.Assignee != nil {
-		assignees := []string{}
-		if *req.Assignee != "" {
-			assignees = append(assignees, *req.Assignee)
-		}
-		patch["assignees"] = assignees
-		fields["assignee"] = FieldDigest{Before: digestString(before.Assignee), After: digestString(*req.Assignee)}
-	}
-	if req.Milestone != nil {
-		milestoneBefore := ""
-		if before.Parent != nil && before.Parent.Type == "milestone" {
-			milestoneBefore = before.Parent.ID
-		}
-		milestoneAfter := strconv.Itoa(*req.Milestone)
-		patch["milestone"] = *req.Milestone
-		fields["milestone"] = FieldDigest{Before: digestString(milestoneBefore), After: digestString(milestoneAfter)}
-	}
-	if req.State != "" {
-		state := strings.ToLower(req.State)
-		if state != "open" && state != "closed" {
-			return WorkItem{}, fmt.Errorf("unsupported state %q (want open or closed)", req.State)
-		}
-		patch["state"] = state
-		fields["state"] = FieldDigest{Before: digestString(before.State), After: digestString(state)}
-	}
-	if len(patch) > 0 {
-		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID)
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := p.do(ctx, http.MethodPatch, endpoint, patch, nil); err != nil {
-			return WorkItem{}, err
-		}
-	}
-
-	if req.Comment != "" {
-		if err := p.postComment(ctx, req.Repository, req.ID, req.Comment); err != nil {
-			return WorkItem{}, err
-		}
-		fields["comment"] = FieldDigest{After: digestString(req.Comment)}
-	}
-
-	if labelsChanged(req) {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, req.AddLabels, req.RemoveLabels); err != nil {
-			return WorkItem{}, err
-		}
-		after := applyLabelSet(before.Labels, req.AddLabels, req.RemoveLabels)
-		fields["labels"] = FieldDigest{Before: digestLabels(before.Labels), After: digestLabels(after)}
-	}
-
-	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if len(fields) > 0 {
-		p.recordExternalRef(ctx, ExternalRef{
-			Provider:  ProviderGitHub,
-			Ref:       issueRef(req.Repository, req.ID),
-			URL:       final.URL,
-			Operation: updateOperation(req),
-			Fields:    fields,
-		})
-	}
-	return final, nil
+	return updateRESTWorkItem(ctx, p, ProviderGitHub, p.BaseURL, req)
 }
 
 // ClaimWorkItem writes a best-effort claiming marker (a label plus a run-id
@@ -687,73 +589,40 @@ func (p *GitHubProvider) recordClaimFailure(ctx context.Context, req ClaimWorkIt
 }
 
 func (p *GitHubProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkItemRequest) (WorkItem, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return WorkItem{}, err
-	}
-	if req.ID == "" {
-		return WorkItem{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return WorkItem{}, fmt.Errorf("run id is required to release an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	if claimed && winner != req.RunID {
-		if !req.LedgerAuthorized {
-			return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
-		}
-	}
-	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	releasedRunID := req.RunID
-	if claimed {
-		releasedRunID = winner
-		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	if before.HasLabel(label) {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-			return WorkItem{}, err
-		}
-	}
-	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
-	if err != nil {
-		return WorkItem{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(req.Repository, req.ID),
-		URL:       final.URL,
-		Operation: "claim-release",
-		Outcome:   "success",
-		RunID:     req.RunID,
-		Fields: map[string]FieldDigest{
-			"claim":  {Before: digestString("run=" + releasedRunID), After: digestString("released")},
-			"labels": {Before: digestLabels(before.Labels), After: digestLabels(final.Labels)},
-		},
-	})
-	return final, nil
+	return releaseRESTWorkItemClaim(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req)
 }
 
-// ReconcileOrphanedWorkItemClaim closes any historical provider claim epoch,
-// removes the requested drifted labels, and records why the ledger-authoritative
-// reconciliation changed the issue.
+// ErrClaimEpochNotOwned reports that ReconcileOrphanedWorkItemClaim found an
+// open provider claim epoch other than the one its caller established as its
+// own, and so changed nothing (#5311).
+var ErrClaimEpochNotOwned = errors.New("provider claim epoch is not owned by this reconciliation")
+
+// OpenClaimEpochs lists the issue's open provider claim epochs, including the
+// ones authored by identities the claim election does not trust.
+func (p *GitHubProvider) OpenClaimEpochs(ctx context.Context, repo RepositoryRef, id string) ([]ClaimEpoch, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, errIssueIDRequired
+	}
+	return openClaimEpochs(ctx, p, p.BaseURL, repo, id)
+}
+
+// ReconcileOrphanedWorkItemClaim closes the historical provider claim epoch
+// ownedRunID, removes the requested drifted labels, and records why the
+// ledger-authoritative reconciliation changed the issue. ownedRunID is the
+// trusted epoch the caller established this instance owns; empty asserts that
+// no epoch is open. Any other open epoch, trusted or not, may be a live claim
+// of another instance, so the call then returns ErrClaimEpochNotOwned without
+// writing anything (#5311).
 func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 	ctx context.Context,
 	repo RepositoryRef,
 	id string,
 	removeLabels []string,
 	comment string,
+	ownedRunID string,
 ) (WorkItem, error) {
 	if err := requireOwnerRepo(repo); err != nil {
 		return WorkItem{}, err
@@ -775,7 +644,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 		removeLabels = append(removeLabels, LabelClaimed)
 	}
 
-	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, repo, id)
+	winner, claimed, err := ownedOrphanedClaimEpoch(ctx, p, repo, id, ownedRunID)
 	if err != nil {
 		return WorkItem{}, err
 	}
@@ -813,6 +682,27 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 	return final, nil
 }
 
+// ownedOrphanedClaimEpoch re-reads the open epochs at mutation time and
+// returns the trusted winner to release, refusing when any open epoch is not
+// ownedRunID. An epoch ownedRunID that has closed in the meantime is fine:
+// with nothing open, the label is plain drift.
+func ownedOrphanedClaimEpoch(ctx context.Context, p *GitHubProvider, repo RepositoryRef, id, ownedRunID string) (string, bool, error) {
+	epochs, err := openClaimEpochs(ctx, p, p.BaseURL, repo, id)
+	if err != nil {
+		return "", false, err
+	}
+	for _, epoch := range epochs {
+		if !epoch.Trusted || epoch.RunID != ownedRunID {
+			return "", false, fmt.Errorf("%w: issue #%s has an open claim by run %q (author %q, instance %q)",
+				ErrClaimEpochNotOwned, id, epoch.RunID, epoch.Author, epoch.InstanceID)
+		}
+	}
+	if len(epochs) == 0 {
+		return "", false, nil
+	}
+	return ownedRunID, true, nil
+}
+
 // restoreOwnedClaimLabel repairs a stripped marker for an existing epoch owner.
 // It never changes the epoch or another owner's labels; finishClaim still checks
 // the final read after this write before reporting success.
@@ -824,6 +714,12 @@ func (p *GitHubProvider) restoreOwnedClaimLabel(ctx context.Context, repo Reposi
 	return p.applyLabelChanges(ctx, repo, id, []string{label}, nil)
 }
 
+const (
+	claimLabelConvergenceWindow  = 5 * time.Second
+	claimLabelConvergenceBase    = 100 * time.Millisecond
+	claimLabelConvergenceMaxWait = time.Second
+)
+
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
 func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner, label string) (ClaimResult, error) {
@@ -833,20 +729,69 @@ func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id
 	}
 	claimed := winner == runID
 	if claimed && !item.HasLabel(label) {
-		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
+		item, err = p.waitForClaimLabel(ctx, repo, id, runID, label)
+		if err != nil {
+			return ClaimResult{}, err
+		}
+	}
+	providerRunID := ""
+	if !claimed {
+		providerRunID = winner
 	}
 	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(repo, id),
-		URL:       item.URL,
-		Operation: "claim",
-		Outcome:   claimAttemptOutcome(claimed),
-		RunID:     runID,
+		Provider: ProviderGitHub, Ref: issueRef(repo, id), URL: item.URL,
+		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
+		RunID: runID, ProviderRunID: providerRunID,
 		Fields: map[string]FieldDigest{
 			"claim": {After: digestString("run=" + winner)},
 		},
 	})
 	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
+}
+
+func (p *GitHubProvider) waitForClaimLabel(ctx context.Context, repo RepositoryRef, id, runID, label string) (WorkItem, error) {
+	deadline := p.now().Add(claimLabelConvergenceWindow)
+	for attempt := 0; ; attempt++ {
+		delay := claimLabelConvergenceDelay(attempt, p.jitter)
+		if remaining := deadline.Sub(p.now()); remaining <= 0 {
+			return WorkItem{}, &ClaimMetadataDriftError{Provider: ProviderGitHub, ItemID: id, RunID: runID, Label: label}
+		} else if delay > remaining {
+			delay = remaining
+		}
+		if err := p.sleep(ctx, delay); err != nil {
+			return WorkItem{}, err
+		}
+		item, err := p.GetWorkItem(ctx, repo, id)
+		if err != nil {
+			return WorkItem{}, err
+		}
+		if item.HasLabel(label) {
+			return item, nil
+		}
+	}
+}
+
+func claimLabelConvergenceDelay(attempt int, jitter func(time.Duration) time.Duration) time.Duration {
+	ceiling := claimLabelConvergenceBase << attempt
+	if ceiling <= 0 || ceiling > claimLabelConvergenceMaxWait {
+		ceiling = claimLabelConvergenceMaxWait
+	}
+	floor := ceiling / 2
+	if floor <= 0 {
+		floor = ceiling
+	}
+	window := ceiling - floor
+	if jitter == nil {
+		return floor
+	}
+	offset := jitter(window)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > window {
+		offset = window
+	}
+	return floor + offset
 }
 
 // applyLabelChanges adds labels (additive; GitHub ignores duplicates) and removes
@@ -881,31 +826,7 @@ func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id
 // identity. Retry-safe callers perform exact-marker adoption around this raw
 // non-idempotent POST.
 func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return Comment{}, err
-	}
-	if id == "" {
-		return Comment{}, errIssueIDRequired
-	}
-	body, err := withAttribution(body, p.attribution, "comment")
-	if err != nil {
-		return Comment{}, err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return Comment{}, err
-	}
-	var comment restComment
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
-		return Comment{}, err
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider:  ProviderGitHub,
-		Ref:       issueRef(repo, id),
-		URL:       comment.HTMLURL,
-		Operation: "comment",
-	})
-	return mapGitHubComment(comment), nil
+	return createRESTWorkItemComment(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, repo, id, body, mapGitHubComment)
 }
 
 func mapGitHubComment(c restComment) Comment {

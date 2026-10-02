@@ -135,6 +135,11 @@ var schemaLeafExceptions = map[string]string{
 	"gaggle.spec.additionalRepos.project":       "identity payload of registered gaggle.spec.additionalRepos",
 	"gaggle.spec.backlog.connectionRef":         "identity payload of registered gaggle.spec.backlog; runtime scoping defect tracked by #3296",
 	"gaggle.spec.backlog.project":               "identity payload of registered gaggle.spec.backlog",
+	// ADO-N32: provider configuration the Azure DevOps backlog provider
+	// reads to decide when a predecessor stops blocking. It is gaggle
+	// configuration, not workflow DSL vocabulary (docs/design/ado-parity-dsl-2-0.md §6).
+	"gaggle.spec.backlog.doneStates.byType":     "provider configuration payload of registered gaggle.spec.backlog (ADO-N32), not DSL vocabulary",
+	"gaggle.spec.backlog.doneStates.categories": "provider configuration payload of registered gaggle.spec.backlog (ADO-N32), not DSL vocabulary",
 	"gaggle.spec.project.branch":                "identity payload of registered gaggle.spec.project",
 	"gaggle.spec.project.connectionRef":         "identity payload of registered gaggle.spec.project; runtime scoping defect tracked by #3296",
 	"gaggle.spec.project.name":                  "identity payload of registered gaggle.spec.project",

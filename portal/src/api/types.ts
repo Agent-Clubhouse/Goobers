@@ -95,6 +95,69 @@ export interface CancelRunResult {
   code?: string;
   error?: string;
 }
+
+export interface OperatorMessageContent {
+  text?: string;
+  artifact?: {
+    path: string;
+    digest: string;
+    size: number;
+    mediaType?: string;
+  };
+}
+
+export interface OperatorMessageSubmitRequest {
+  gaggle: string;
+  targetAddress: string;
+  expiresAt?: string;
+  purpose: string;
+  content: OperatorMessageContent;
+  deliveryMode: string;
+}
+
+export interface OperatorMessageRequestRecord {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  targetAddress: string;
+  principalRef: string;
+  requestedAt: string;
+  expiresAt?: string;
+  purpose: string;
+  content: OperatorMessageContent;
+  deliveryMode: string;
+}
+
+export interface OperatorMessageAcknowledgement {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  principalRef: string;
+  acknowledgedAt: string;
+}
+
+export interface OperatorMessageOutcome {
+  schema: string;
+  requestId: string;
+  idempotencyKey: string;
+  completedAt: string;
+  status: "delivered" | "failed" | "rejected" | "expired";
+  code?: string;
+  detail?: string;
+  request?: OperatorMessageRequestRecord;
+}
+
+export interface OperatorMessageRecord {
+  request: OperatorMessageRequestRecord;
+  state: "accepted" | "acknowledged" | "delivered" | "failed" | "rejected" | "expired";
+  acknowledgement?: OperatorMessageAcknowledgement;
+  outcome?: OperatorMessageOutcome;
+}
+
+export interface OperatorMessageSubmitResponse {
+  accepted: boolean;
+  record: OperatorMessageRecord;
+}
 export type AttemptClass = "initial" | "policy" | "infra" | "human";
 export type StageAttemptStatus = "running" | "success" | "failure" | "blocked" | "no-work";
 export type OutcomeFilter = "finished" | "terminal" | "success" | "failure" | "other";
@@ -871,11 +934,32 @@ export interface RunSummary {
   retryCount: number;
   policyRetryCount: number;
   infraRetryCount: number;
+  lineage?: RunLineage;
   /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
   noWork: boolean;
   /** Projected cause of a non-completed terminal run — failed and aborted as well as escalated (#4246). */
   terminalReason?: string;
   operator?: OperatorRunSummary;
+}
+
+export interface RunLineage {
+  source?: LineageRun;
+  continuations?: LineageRun[];
+  resumeTarget?: string;
+  workspaceBranch?: string;
+  workspaceBranchSha?: string;
+  injectedInputs?: Array<{
+    name: string;
+    ref: { path: string; digest: string; integrity?: string };
+    integrity?: string;
+    source?: string;
+  }>;
+  historicalRepassCount: number;
+}
+
+export interface LineageRun {
+  id: string;
+  phase?: RunPhase;
 }
 
 export interface OperatorRunSummary {
@@ -1165,6 +1249,13 @@ export interface ExternalRef {
 export interface ErrorDetail {
   code: string;
   message?: string;
+  causes?: ErrorCause[];
+}
+
+export interface ErrorCause {
+  code?: string;
+  class?: string;
+  message?: string;
 }
 
 export interface RedactionInfo {
@@ -1311,6 +1402,9 @@ export interface TelemetryCostModelAggregate {
 
 export interface TelemetryCostRunAggregate {
   runId: string;
+  gaggle?: string;
+  workflow?: string;
+  status?: string;
   startedAt: string;
   usageAttempts: number;
   measuredAttempts: number;

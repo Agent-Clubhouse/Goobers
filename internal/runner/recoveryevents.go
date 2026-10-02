@@ -28,7 +28,7 @@ func workspaceCleanupErrorDetail(err error) *journal.ErrorDetail {
 	if errors.As(err, &observationErr) {
 		code = recoveryObservationFailureCode
 	}
-	return &journal.ErrorDetail{Code: code, Message: err.Error()}
+	return journal.ErrorDetailFor(code, err)
 }
 
 type recoveryEventJournal interface {

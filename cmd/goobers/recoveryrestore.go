@@ -11,7 +11,6 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
@@ -222,8 +221,6 @@ func recoveryRestoreGitEnvironment(ctx context.Context, layout instance.Layout, 
 	return nil, nil
 }
 
-var recoveryADOCredentialSource = adoauth.Source
-
 func stageRecoveryGitEnvironment(ctx context.Context, cfg *instance.Config, project apiv1.RepoRef, remoteURL string, registry *journal.RegistryScrubber) ([]string, error) {
 	switch project.Provider {
 	case apiv1.ProviderGitHub:
@@ -239,26 +236,21 @@ func stageRecoveryGitEnvironment(ctx context.Context, cfg *instance.Config, proj
 		}
 		return providers.GiteaGitAuthEnvironment(token, remoteURL, registry), nil
 	case apiv1.ProviderADO:
-		repo, ok := configuredRepoForProject(cfg, project)
-		if !ok {
+		if _, ok := configuredRepoForProject(cfg, project); !ok {
 			return nil, fmt.Errorf("ADO recovery repository %s/%s is not configured", project.Owner, project.Name)
 		}
-		kind := instance.ADOAuthPAT
-		if repo.Auth != nil {
-			kind = repo.Auth.Kind
-		}
-		if kind != instance.ADOAuthPAT {
-			source, err := recoveryADOCredentialSource(repo, nil, nil)
-			if err != nil {
-				return nil, err
-			}
-			return providers.ADOGitAuthEnvironment(ctx, source, registry, remoteURL)
-		}
+		// The delivered repo:push credential, in the scheme the daemon stated
+		// beside it, for every ADO auth kind: a stage never reads the
+		// repository's configured auth (docs/design/ado-parity-dsl-2-0.md §4.1).
 		token, err := providerToken(capability.RepoPush)
 		if err != nil {
 			return nil, err
 		}
-		return providers.ADOGitAuthEnvironment(ctx, providers.NewADOPATCredentialSource("goobers", token), registry, remoteURL)
+		source, err := stageADOCredentialSource(capability.RepoPush, token)
+		if err != nil {
+			return nil, err
+		}
+		return providers.ADOGitAuthEnvironment(ctx, source, registry, remoteURL)
 	default:
 		return nil, nil
 	}

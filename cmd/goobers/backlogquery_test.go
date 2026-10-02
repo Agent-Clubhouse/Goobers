@@ -245,6 +245,7 @@ func TestBacklogQueryClaimsEligibleItem(t *testing.T) {
 
 func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Raced item", "goobers:approved")
 	server.addComment(7, "goobers-claim: run=other-instance-run\n\nClaimed by another instance.")
@@ -260,12 +261,215 @@ func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	if !strings.Contains(stderr, "claim race lost for item 7 to run other-instance-run") {
 		t.Fatalf("stderr = %q, want detected-race warning", stderr)
 	}
+	// #5468: the no-work reason names the holder and where it was seen.
+	if !strings.Contains(stdout, "item 7 held by run other-instance-run (provider epoch)") {
+		t.Fatalf("stdout = %q, want no-work reason naming the provider holder", stdout)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "7"}
+	if entry, held := ledger.LookupScoped(key); held {
+		t.Fatalf("losing run retained ledger claim: %+v", entry)
+	}
+	history := ledger.HistoryForItem("7")
+	if len(history) != 1 || history[0].Verification.State != "contended" || history[0].Verification.ProviderRunID != "other-instance-run" {
+		t.Fatalf("provider contention was not retained as a distinct observation: %+v", history)
+	}
+
+	secondWorkdir := t.TempDir()
+	t.Chdir(secondWorkdir)
+	code, stdout, stderr = runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") || !strings.Contains(stderr, "delaying provider claim for item 7") {
+		t.Fatalf("backoff pass: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "item 7 deferred by claim-disagreement backoff after run other-instance-run held its provider claim, retry after") ||
+		strings.Contains(stdout, "no eligible item to claim") {
+		t.Fatalf("backoff pass stdout = %q, want a reason naming the backoff and its holder", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(secondWorkdir, mutationsSidecarFile)); !os.IsNotExist(err) {
+		t.Fatalf("backoff retried provider mutation: stat err=%v", err)
+	}
+}
+
+func TestBacklogQueryClaimWaitsForProviderLabelProjection(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Eventually visible claim", "goobers:approved")
+	server.hideIssueLabelOnNextGets(7, providers.LabelClaimed, 1)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "lagged-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-item.json")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("claim with lagged label projection: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, held := ledger.Lookup("7")
+	if !held || entry.RunID != "lagged-run" || entry.Verification.State != "verified" {
+		t.Fatalf("ledger entry = %+v, held=%v, want verified lagged-run claim", entry, held)
+	}
+	data, err := os.ReadFile("claimed-item.json")
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var item providers.WorkItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if !item.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("claimed-item.json labels = %v, want %s", item.Labels, providers.LabelClaimed)
+	}
+	if item.Integrity != apiintegrity.Maintainer {
+		t.Fatalf("claimed-item.json integrity = %q, want %q", item.Integrity, apiintegrity.Maintainer)
+	}
+}
+
+func TestBacklogQueryClaimReportsProviderLabelProjectionDrift(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Never visible claim", "goobers:approved")
+	server.hideIssueLabelOnNextGets(7, providers.LabelClaimed, 99)
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "drift-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-item.json")
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 for claim metadata drift; stdout = %q stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if result[executor.OutputErrorCode] != "claim_metadata_drift" || result[executor.OutputErrorRetryable] != true {
+		t.Fatalf("result = %#v, want retryable claim_metadata_drift", result)
+	}
 	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if entry, held := ledger.Lookup("7"); held {
-		t.Fatalf("losing run retained ledger claim: %+v", entry)
+		t.Fatalf("failed claim retained ledger entry: %+v", entry)
+	}
+}
+
+// TestBacklogQueryRepeatedContentionSkipsOnlyThatItem pins #5468 Lever D: a
+// repeated provider contention against one owner (the bd63a5681 drift
+// signal) skips that item and keeps claiming the rest of the batch. It used to
+// fail the whole stage, and the deferred rollback released every claim in a
+// curation batch over one orphaned provider epoch.
+func TestBacklogQueryRepeatedContentionSkipsOnlyThatItem(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	ledgerPath := filepath.Join(root, "scheduler", "claims.json")
+	observedAt := time.Now().Add(-3 * time.Hour)
+	seed, err := localscheduler.OpenClaimLedger(ledgerPath, localscheduler.WithLedgerClock(func() time.Time { return observedAt }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "8"}
+	if ok, _, err := seed.ClaimScoped(key, "earlier-run", "backlog-curation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed earlier claim: ok=%v err=%v", ok, err)
+	}
+	entry, _ := seed.LookupScoped(key)
+	if ok, err := seed.RecordClaimVerification(entry, localscheduler.ClaimVerification{
+		State: "contended", ObservedAt: observedAt, ProviderRunID: "orphan-run",
+	}); err != nil || !ok {
+		t.Fatalf("seed contention: ok=%v err=%v", ok, err)
+	}
+	if err := seed.ReleaseScoped(key, "earlier-run"); err != nil {
+		t.Fatal(err)
+	}
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "First item", "goobers:approved")
+	server.addIssue(8, "Orphaned item", "goobers:approved")
+	server.addIssue(9, "Third item", "goobers:approved")
+	server.addComment(8, "goobers-claim: run=orphan-run\n\nClaimed by a run that never released.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "batch-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("repeated contention failed the stage: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "provider claim ownership mismatch") || !strings.Contains(stderr, "skipping item 8") {
+		t.Fatalf("stderr = %q, want the ownership drift surfaced as a per-item skip", stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := map[string]bool{}
+	for _, claim := range ledger.ForRunAll("batch-run") {
+		held[claim.ExternalID] = true
+	}
+	if !held["7"] || !held["9"] || held["8"] || len(held) != 2 {
+		t.Fatalf("batch-run claims = %v, want items 7 and 9 only", held)
+	}
+	var mismatch bool
+	for _, entry := range ledger.HistoryForItem("8") {
+		if entry.RunID == "batch-run" && entry.Verification.State == "ownership-mismatch" && entry.Verification.ProviderRunID == "orphan-run" {
+			mismatch = true
+		}
+	}
+	if !mismatch {
+		t.Fatalf("drift was not recorded for the next cycle's backoff: %+v", ledger.HistoryForItem("8"))
+	}
+}
+
+// TestBacklogQueryNoWorkReasonNamesLedgerHolder pins #5468's truthful
+// no-work reason for the local-ledger source.
+func TestBacklogQueryNoWorkReasonNamesLedgerHolder(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	seed, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "7"}
+	if ok, _, err := seed.ClaimScoped(key, "live-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed live claim: ok=%v err=%v", ok, err)
+	}
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Held item", "goobers:approved")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "second-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work: every eligible item is already claimed by another run: item 7 held by run live-run (local ledger)") {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
+func TestClaimRefusalReasonBoundsItsList(t *testing.T) {
+	var refusals []claimRefusal
+	for index := range claimRefusalReasonLimit + 2 {
+		refusals = append(refusals, claimRefusal{itemID: strconv.Itoa(index), source: claimRefusalLedger})
+	}
+	reason := claimRefusalReason(refusals)
+	if !strings.Contains(reason, "item 0 held by an unknown run (local ledger)") || !strings.HasSuffix(reason, "; and 2 more") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
@@ -294,7 +498,8 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recovering-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
-	t.Chdir(t.TempDir())
+	workdir := t.TempDir()
+	t.Chdir(workdir)
 
 	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 || !strings.Contains(stdout, "claimed 7") {
@@ -309,6 +514,27 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 	}
 	if entry, held := ledger.Lookup("7"); !held || entry.RunID != "recovering-run" {
 		t.Fatalf("ledger entry for item 7 = %+v, held=%v, want held by recovering-run", entry, held)
+	}
+	resultData, err := os.ReadFile(filepath.Join(workdir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var resultItem providers.WorkItem
+	if err := json.Unmarshal(resultData, &resultItem); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if !resultItem.HasLabel(providers.LabelClaimed) {
+		t.Fatalf("claimed-item.json labels = %v, want %s", resultItem.Labels, providers.LabelClaimed)
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, mutationsSidecarFile))
+	if err != nil {
+		t.Fatalf("read provider mutation telemetry: %v", err)
+	}
+	if strings.Contains(string(data), "provider_ledger_ownership_mismatch") {
+		t.Fatalf("successfully reconciled stale claim was reported as ownership drift: %s", data)
+	}
+	if !strings.Contains(string(data), `"outcome":"contention"`) || !strings.Contains(string(data), `"outcome":"success"`) {
+		t.Fatalf("claim lifecycle telemetry did not distinguish contention and reconciliation: %s", data)
 	}
 }
 
@@ -1443,7 +1669,7 @@ func TestBacklogQueryReleaseReconcilesHistoricalProviderClaim(t *testing.T) {
 	schedulerDir := filepath.Join(root, "scheduler")
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	server.addIssue(7, "Fix the bug", "goobers:approved", "goobers:claimed")
-	server.addComment(7, "goobers-claim: run=historical-run\n\nClaimed by an earlier Goobers version.")
+	server.addComment(7, ownInstanceClaimBreadcrumb(t, "historical-run"))
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")

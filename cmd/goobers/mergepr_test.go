@@ -1362,10 +1362,10 @@ func TestMergePRDispatchesADOAndRequiresCompletionCapability(t *testing.T) {
 	})
 	code, _, stderr := runArgs(t, "merge-pr", rootNoGrant)
 	if code != 1 {
-		t.Fatalf("code = %d, want 1 without ado:pr:complete; stderr = %q", code, stderr)
+		t.Fatalf("code = %d, want 1 without github:pr:merge or ado:pr:complete; stderr = %q", code, stderr)
 	}
-	if !strings.Contains(stderr, "ADO_PR_COMPLETE") {
-		t.Fatalf("stderr = %q, want missing ado:pr:complete capability", stderr)
+	if !strings.Contains(stderr, "GITHUB_PR_MERGE") {
+		t.Fatalf("stderr = %q, want missing github:pr:merge capability", stderr)
 	}
 
 	root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
@@ -1559,27 +1559,103 @@ func TestMergePRRecordsRequiredStatusCheckPendingAsRefusal(t *testing.T) {
 	}
 }
 
-func TestMergePRKeepsUnrecognized405AsProviderFailure(t *testing.T) {
+func TestMergePRRecordsUnrecognized405AsRefusal(t *testing.T) {
 	st := &mergePRServerState{
 		draft: false, checkState: "success", headSHA: "head123", baseSHA: "base456",
 		mergeRefusalStatus: http.StatusMethodNotAllowed,
-		mergeRefusalBody:   `{"message":"Repository rule violations found\n\nChanges must be made through the merge queue"}`,
+		mergeRefusalBody:   `{"message":"Repository rule violations found\n\n1 review requesting changes by reviewers with write access.\n\n"}`,
 	}
 	server := newMergePRServer(t, "your-org", "your-repo", st)
 	root, dir := mergePREnv(t, server.URL, false, map[string]string{
 		"pullNumber": "9", "verdict": "pass", "headSha": "head123", "baseSha": "base456",
 	})
 
-	code, _, _ := runArgs(t, "merge-pr", root)
-	if code == 0 {
-		t.Fatal("code = 0, want a provider-stage failure for an unrecognized 405")
+	code, _, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q; a merge-endpoint 405 is a business refusal", code, stderr)
 	}
 	result := readMergeResult(t, dir)
-	if _, ok := result["errorCode"]; !ok {
-		t.Fatalf("result = %+v, want the generic provider error envelope", result)
+	if merged, _ := result["merged"].(bool); merged {
+		t.Fatalf("result = %+v, want merged=false", result)
 	}
-	if _, ok := result["reason"]; ok {
-		t.Fatalf("result = %+v, must not classify an unrelated 405 as a merge refusal", result)
+	wantReason := "merge-refused: Repository rule violations found 1 review requesting changes by reviewers with write access."
+	if result["reason"] != wantReason {
+		t.Fatalf("result = %+v, want reason=%q", result, wantReason)
+	}
+	if result["selectedNumber"] != "9" || result["selectedHeadSha"] != "head123" {
+		t.Fatalf("result = %+v, want refusal routing outputs", result)
+	}
+	if _, ok := result["errorCode"]; ok {
+		t.Fatalf("result = %+v, want no generic provider error envelope", result)
+	}
+}
+
+// TestMergePRFailuresAlwaysEmitRefusalOutputs pins #5527: merge-gate routes a
+// failed merge-pr to record-merge-refusal, whose inputsFrom needs
+// selectedNumber, selectedHeadSha and reason. Every failure path — a missing
+// landing credential on either provider, a non-refusal provider error on the
+// merge call — must still emit them alongside its typed errorCode, or the run
+// crashes resolving inputs instead of recording why it did not merge.
+func TestMergePRFailuresAlwaysEmitRefusalOutputs(t *testing.T) {
+	inputs := func(number, head, base string) map[string]string {
+		return map[string]string{"pullNumber": number, "verdict": "pass", "headSha": head, "baseSha": base}
+	}
+	cases := []struct {
+		name       string
+		setup      func(t *testing.T) (root, dir string)
+		wantNumber string
+		wantHead   string
+		wantReason string
+	}{
+		{
+			name: "github missing credential",
+			setup: func(t *testing.T) (string, string) {
+				st := &mergePRServerState{checkState: "success", headSHA: "head123", baseSHA: "base456"}
+				return mergePREnv(t, newMergePRServer(t, "your-org", "your-repo", st).URL, true, inputs("9", "head123", "base456"))
+			},
+			wantNumber: "9", wantHead: "head123", wantReason: "no credential",
+		},
+		{
+			name: "github merge endpoint non-refusal error",
+			setup: func(t *testing.T) (string, string) {
+				st := &mergePRServerState{
+					checkState: "success", headSHA: "head123", baseSHA: "base456",
+					mergeRefusalStatus: http.StatusUnprocessableEntity, mergeRefusalBody: `{"message":"Validation Failed"}`,
+				}
+				return mergePREnv(t, newMergePRServer(t, "your-org", "your-repo", st).URL, false, inputs("9", "head123", "base456"))
+			},
+			wantNumber: "9", wantHead: "head123", wantReason: "merge pull request",
+		},
+		{
+			name: "ado missing completion credential",
+			setup: func(t *testing.T) (string, string) {
+				server, _ := newADOMergePRServer(t, "headsha1", "basesha1")
+				return adoMergePREnv(t, server.URL, true, inputs("359", "headsha1", "basesha1"))
+			},
+			wantNumber: "359", wantHead: "headsha1", wantReason: "no credential",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, dir := tc.setup(t)
+			code, _, stderr := runArgs(t, "merge-pr", root)
+			if code != 1 {
+				t.Fatalf("code = %d, want 1 (the failure stays a typed stage failure), stderr = %q", code, stderr)
+			}
+			result := readMergeResult(t, dir)
+			if code, _ := result[executor.OutputErrorCode].(string); code == "" {
+				t.Fatalf("result = %+v, want the typed errorCode preserved", result)
+			}
+			if result["selectedNumber"] != tc.wantNumber || result["selectedHeadSha"] != tc.wantHead {
+				t.Fatalf("result = %+v, want selectedNumber=%q selectedHeadSha=%q for record-merge-refusal", result, tc.wantNumber, tc.wantHead)
+			}
+			if merged, ok := result["merged"].(bool); !ok || merged {
+				t.Fatalf("result = %+v, want merged=false", result)
+			}
+			if reason, _ := result["reason"].(string); !strings.Contains(reason, tc.wantReason) {
+				t.Fatalf("reason = %q, want it to contain %q", reason, tc.wantReason)
+			}
+		})
 	}
 }
 

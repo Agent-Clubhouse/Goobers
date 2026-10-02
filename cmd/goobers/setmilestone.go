@@ -50,12 +50,15 @@ func runSetMilestone(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	repo, err := providerRepo(root)
+	// Milestones belong to the backlog: the routed repository, as before,
+	// unless the gaggle's backlog is on another provider (topology (b)), where
+	// github:milestones:write is bound to the backlog repository's credential.
+	repo, err := decompositionIssueRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Built through the stage seam so the client always matches the routed
+	// Built through the stage seam so the client always matches the
 	// repository's provider; a provider without milestones refuses the update.
 	provider, err := newProviderForStage(root, repo, false,
 		withStageProviderCapability(capability.GitHubMilestonesWrite),

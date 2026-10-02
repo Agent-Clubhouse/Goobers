@@ -3,10 +3,60 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
+
+func remediationPullRequests(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	base, headPrefix string,
+	target remediationTarget,
+) ([]providers.PullRequestSummary, error) {
+	return remediationPullRequestCandidates(ctx, repo, base, headPrefix, target, provider.ListPullRequests, func(ctx context.Context, id string) (providers.PullRequestSummary, error) {
+		return provider.GetPullRequest(ctx, repo, id)
+	})
+}
+
+func remediationPullRequestCandidates(
+	ctx context.Context,
+	repo providers.RepositoryRef,
+	base, headPrefix string,
+	target remediationTarget,
+	list func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error),
+	get func(context.Context, string) (providers.PullRequestSummary, error),
+) ([]providers.PullRequestSummary, error) {
+	prs, err := list(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+	})
+	if err != nil || !target.targeted {
+		return prs, err
+	}
+	filtered := prs[:0]
+	for _, candidate := range prs {
+		if candidate.Number != target.number {
+			filtered = append(filtered, candidate)
+		}
+	}
+	pr, err := get(ctx, fmt.Sprint(target.number))
+	if err != nil {
+		if providers.IsNotFoundError(err) {
+			return filtered, nil
+		}
+		return nil, fmt.Errorf("read targeted PR #%d: %w", target.number, err)
+	}
+	if pr.Number != target.number {
+		return nil, fmt.Errorf("targeted PR lookup returned #%d, want #%d", pr.Number, target.number)
+	}
+	if pr.Merged || !strings.EqualFold(pr.State, "open") || (base != "" && pr.Base != base) {
+		return filtered, nil
+	}
+	return append(filtered, pr), nil
+}
 
 // remediationProvider is the narrow surface the pr-remediation lane needs.
 // Both *providers.GitHubProvider and
@@ -50,9 +100,10 @@ var (
 
 // remediationStageProvider builds the provider a pr-remediation stage talks
 // to, dispatched by the routed repo's kind — the openpr.go per-kind idiom
-// (github | gitea | default-error). ADO is default-error: it declares
-// neither pr.review.threads nor the CI/branch-tip read surfaces this lane
-// needs, and CONF-6's preflight refuses it before a run ever starts.
+// (github | gitea | default-error). ADO is default-error: *ADOProvider does
+// not implement this broad surface (the CI/branch-tip reads among others), so
+// an ADO-capable stage builds a narrow surface through remediationStageSurface
+// instead, as pr-claim and the review-thread stages do.
 // token is the stage's own capability-scoped credential (providerToken);
 // cached selects the conditional-GET read cache on the GitHub arm only —
 // the cache is a GitHub HTTPClient decorator (apireadcache.go) and the
@@ -90,4 +141,52 @@ func remediationStageProviderWithRecorder(root string, repo providers.Repository
 	default:
 		return nil, fmt.Errorf("pr-remediation does not support repository provider %q", repo.Provider)
 	}
+}
+
+// remediationStageSurface builds a pr-remediation stage's provider through a
+// narrow surface T rather than the broad remediationProvider factory above,
+// so a stage that only names the calls it actually makes routes through
+// every registered provider — including ADO — rather than the GitHub/Gitea-
+// only default-error dispatch. newProviderForStageSurface's own type
+// assertion still fails loudly if a routed backend does not implement T, so
+// this stays as safe as the broad factory for the surfaces GitHub and Gitea
+// already satisfy. pr-claim (ADO-N14) uses it for its PR-poll-only surface;
+// it is intended for reuse by other narrow pr-remediation surfaces.
+func remediationStageSurface[T any](root string, repo providers.RepositoryRef, token string, opts ...stageProviderOption) (T, error) {
+	allOpts := append([]stageProviderOption{withStageProviderToken(token)}, opts...)
+	return newProviderForStageSurface[T](root, repo, false, allOpts...)
+}
+
+// reviewThreadReader is gather-review-threads' narrow provider surface: the
+// one call it makes. GitHub, Gitea and ADO all implement it.
+type reviewThreadReader interface {
+	ListPullRequestReviewThreads(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestReviewThreads, error)
+}
+
+// reviewThreadResolver is resolve-review-threads' narrow provider surface.
+// Replying and resolving (providers.PullRequestReviewThreadMutator) stay a
+// separate type assertion so a provider that can read but not mutate threads
+// (Gitea) keeps its specific refusal.
+type reviewThreadResolver interface {
+	reviewThreadReader
+	GetPullRequest(ctx context.Context, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error)
+}
+
+// reviewThreadStageSurface builds a review-thread stage's provider through
+// remediationStageSurface, so ADO (ADO-N20) routes like GitHub and Gitea.
+// Every provider is built from the stage's declared github:pr:write
+// credential; on ADO it is sent in the daemon-delivered scheme, so every ADO
+// auth kind backs it (ADO-N18) — the same rule as pr-claim. cached selects
+// the GitHub-only conditional-GET read cache.
+func reviewThreadStageSurface[T any](root string, repo providers.RepositoryRef, cached bool) (T, error) {
+	var zero T
+	token, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		return zero, err
+	}
+	opts := []stageProviderOption{withStageProviderCapability(capability.GitHubPRWrite)}
+	if cached && repo.Provider == providers.ProviderGitHub {
+		opts = append(opts, withStageProviderCache())
+	}
+	return remediationStageSurface[T](root, repo, token, opts...)
 }

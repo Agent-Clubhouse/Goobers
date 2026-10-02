@@ -14,6 +14,8 @@ import (
 	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
 
+const engineTopologyRestartMessage = "adding or removing a gaggle requires a daemon restart while the engine is enabled (the live journal writer and projection reconciler are pinned to the boot-time gaggle set)"
+
 // engineTopologyChanged reports whether next's gaggle set differs from
 // current's (#3642). buildLiveJournalWriter's runsDirs and
 // launchEngineProjection's runsDirs (engineprojection.go) are each computed

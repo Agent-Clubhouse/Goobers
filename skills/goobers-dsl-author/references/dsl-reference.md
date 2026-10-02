@@ -231,16 +231,16 @@ Use only the target release's registry. The current set is:
 | `github:pr:review` | Submit provider-native pull-request reviews. |
 | `provider:ci:cancel` | Cancel bounded pending provider CI only for an exact reviewed pull-request head. |
 | `github:branch:delete` | Delete a remote GitHub branch. |
-| `github:pr:merge` | Merge a GitHub pull request. |
+| `github:pr:merge` | Merge a pull request; the landing authority on every provider, Azure DevOps included. |
 | `contents:read` | Fetch a separately declared reference repository with its repo-scoped read credential. |
 | `github:code-scanning:read` | Read GitHub code-scanning alerts. Read-only; grants no issue, pull-request, or contents write. |
 | `github:dependabot-alerts:read` | Read GitHub Dependabot alerts. A separate GitHub permission from code scanning, so a workflow can take one feed without the other. |
-| `ado:code:read` | Inspect Azure Repos code and pull requests read-only. |
-| `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
-| `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |
+| `ado:code:read` | Inspect Azure Repos code and pull requests read-only. Inert in DSL 2.0 (`CAP006`); do not generate it. |
+| `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. Inert in DSL 2.0 (`CAP006`); generate `github:pr:write`. |
+| `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). Inert in DSL 2.0 (`CAP006`); generate `github:pr:write`. |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
-| `ado:pr:complete` | Complete (merge) an Azure Repos pull request; the ADO counterpart to `github:pr:merge`. |
-| `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
+| `ado:pr:complete` | Complete (merge) an Azure Repos pull request. Optional: accepted alongside the required `github:pr:merge`; when declared, Azure DevOps completion uses it instead. |
+| `ado:work-items:write` | Update explicitly selected Azure Boards work items. Consumed only by `open-pr` (linking an ADO pull request to its work item); elsewhere inert in DSL 2.0 (`CAP006`); generate `github:issues:write`. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |
 | `agent:model` | Supply an agentic harness with its model credential. |
@@ -248,6 +248,23 @@ Use only the target release's registry. The current set is:
 Grant the minimum set. Deterministic tasks declare their own required
 capabilities. For an agentic task, each task capability must also appear in the
 referenced goober's capability list.
+
+**Azure DevOps (DSL 2.0 rebinding rule).** Generate the same capabilities for
+an Azure DevOps gaggle as for a GitHub one. A `github:*` capability on a
+provider-dispatched stage authorizes the same operation on the provider the
+stage routes to and selects its credential: `github:issues:*` and
+`github:milestones:write` route to the backlog provider (Boards work items),
+`github:pr:write`, `github:pr:review` and `github:branch:delete` to the
+project provider (PR threads, labels, statuses, branch deletion), and
+`github:pr:merge` is the landing authority (completion or auto-complete).
+`ado:pr:complete` is optional and honoured when declared on `merge-pr` or
+`merge-queue-poll`; `ado:work-items:write` is optional and consumed by
+`open-pr` (native work-item link); `ado:pr:status` is accepted on
+`report-pr-status` but harmless. `ado:code:read`, `ado:pr:comment`,
+`ado:pr:write` and `ado:work-items:write` (outside `open-pr`) have no
+built-in DSL 2.0 consumer: validation accepts them with the strict-neutral
+warning `CAP006`, which names the `github:*` capability to declare instead
+(on a custom command it only notes that no built-in stage consumes the name).
 
 ## Pre-validation checklist
 

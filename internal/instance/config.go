@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/selfupdate"
 	"github.com/goobers/goobers/internal/speechnotify"
 	"github.com/goobers/goobers/internal/strictyaml"
+	"github.com/goobers/goobers/internal/temporaldial"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -354,6 +355,13 @@ type RunnerConfig struct {
 	// LivenessTimeout is the maximum age of the scheduler tick heartbeat before
 	// the daemon is reported unhealthy. Empty defaults to two minutes.
 	LivenessTimeout string `json:"livenessTimeout,omitempty" yaml:"livenessTimeout,omitempty"`
+	// RequiredMCPSettleTimeout bounds how long the Copilot adapter's pre-model
+	// readiness check waits for the required goobers-io MCP server to leave its
+	// startup state (#5397). It is separate from the check's other bounded
+	// phases, and the invocation timeout still applies. Empty keeps the
+	// adapter's default (30s); a server still starting when it expires is
+	// reported as unavailable, exactly as before.
+	RequiredMCPSettleTimeout string `json:"requiredMCPSettleTimeout,omitempty" yaml:"requiredMCPSettleTimeout,omitempty"`
 	// DefaultStageTimeout is the baseline deadline for a deterministic stage
 	// that declares no timeoutSeconds of its own. Empty keeps the built-in
 	// executor.DefaultTimeout, so an unconfigured instance is unchanged.
@@ -397,7 +405,9 @@ type RunnerConfig struct {
 	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
-	// keep the built-in default (["copilot"] / ["claude"]).
+	// keep the built-in default (["copilot"] / ["claude"]). Whatever the
+	// Copilot prefix, the adapter appends --no-remote-export to every Copilot
+	// session it launches, so an override cannot re-enable session export.
 	//
 	// The launcher was always data on the adapter (harness.CopilotAdapter.Command)
 	// but hardcoded at the composition root, so pointing a harness at a
@@ -802,12 +812,16 @@ const (
 	// short-lived, installation-scoped tokens exchanged for a signed App JWT
 	// per resolve, replacing a static PAT with no rotation machinery.
 	GitHubAuthApp = "github-app"
+	// GitHubAuthAppToken reads an externally minted installation token from
+	// token and declares its App identity without access to the App private key.
+	// The external issuer owns renewal and must bind the token to Slug.
+	GitHubAuthAppToken = "github-app-token"
 )
 
 // RepoAuthConfig selects a repository credential source without embedding
 // credential material in configuration. Kind values are provider-specific:
 // ADO accepts pat/azure-cli/workload-identity/managed-identity, GitHub
-// accepts pat/github-app; fields beyond Kind belong to one provider's kinds
+// accepts pat/github-app/github-app-token; fields beyond Kind belong to one provider's kinds
 // and are rejected elsewhere at load.
 type RepoAuthConfig struct {
 	Kind string `json:"kind" yaml:"kind"`
@@ -829,7 +843,8 @@ type RepoAuthConfig struct {
 	// in-process; stages receive minted installation tokens, never the key.
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
 	// Slug is the App's URL-safe handle (the part before "[bot]" in its
-	// GitHub login, e.g. "my-app" for "my-app[bot]") for kind github-app.
+	// GitHub login, e.g. "my-app" for "my-app[bot]") for github-app and
+	// github-app-token. Required for externally minted installation tokens.
 	// Installation tokens cannot call GET /user, so the provider identity's
 	// login — which every trusted-comment check (claim markers, verdicts,
 	// handoffs) compares against — must be declared here (#3343). Without it
@@ -839,11 +854,11 @@ type RepoAuthConfig struct {
 }
 
 // BotLogin returns the GitHub login this auth block authenticates as, when
-// declarable: the App slug plus "[bot]" for kind github-app with Slug set,
+// declarable: the App slug plus "[bot]" for either App kind with Slug set,
 // otherwise empty (a PAT's login is discoverable via GET /user at runtime and
 // needs no declaration).
 func (a *RepoAuthConfig) BotLogin() string {
-	if a == nil || a.Kind != GitHubAuthApp || strings.TrimSpace(a.Slug) == "" {
+	if a == nil || (a.Kind != GitHubAuthApp && a.Kind != GitHubAuthAppToken) || strings.TrimSpace(a.Slug) == "" {
 		return ""
 	}
 	return strings.TrimSpace(a.Slug) + "[bot]"
@@ -1308,8 +1323,16 @@ type TelemetryConfig struct {
 	// Enabled toggles OTel client construction, span emission, local SQLite
 	// ingest, and configured collector push. Defaults to true.
 	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// CollectionProfile selects the versioned signal/privacy contract for
+	// tenant export. Empty is the recommended standard profile.
+	CollectionProfile TelemetryCollectionProfile `json:"collectionProfile,omitempty" yaml:"collectionProfile,omitempty"`
 	// OTLP opts into pushing the same spans to an OTLP/gRPC collector.
 	OTLP *OTLPConfig `json:"otlp,omitempty" yaml:"otlp,omitempty"`
+	// AzureMonitor opts into direct trace, committed-journal, and whitelisted
+	// diagnostic export to a customer-owned Application Insights resource. The
+	// connection string is always resolved indirectly; it is never valid inline
+	// instance configuration.
+	AzureMonitor *AzureMonitorConfig `json:"azureMonitor,omitempty" yaml:"azureMonitor,omitempty"`
 	// Diagnostics has its own opt-in collector; it never inherits journal export.
 	Diagnostics *DiagnosticsConfig `json:"diagnostics,omitempty" yaml:"diagnostics,omitempty"`
 	// Retention bounds terminal run journals and their rollup rows. Automatic
@@ -1320,6 +1343,20 @@ type TelemetryConfig struct {
 	// first-enable grace window (see TelemetryRetentionConfig.FirstEnable)
 	// rather than immediate deletion.
 	Retention *TelemetryRetentionConfig `json:"retention,omitempty" yaml:"retention,omitempty"`
+}
+
+// AzureMonitorConfig configures direct Application Insights ingestion without
+// requiring an operator-managed OpenTelemetry Collector. The connection string
+// is a destination credential and therefore uses the same TokenRef seam as all
+// other secrets.
+type AzureMonitorConfig struct {
+	ConnectionString TokenRef                  `json:"connectionString" yaml:"connectionString"`
+	Replay           *AzureMonitorReplayConfig `json:"replay,omitempty" yaml:"replay,omitempty"`
+}
+
+// Enabled reports whether a direct Azure Monitor destination is configured.
+func (c *AzureMonitorConfig) Enabled() bool {
+	return c != nil && c.ConnectionString.Configured()
 }
 
 // TelemetryRetentionConfig controls pruning of terminal run telemetry.
@@ -1446,6 +1483,19 @@ type EngineConfig struct {
 	// protocol (#3883). Nil or disabled leaves every engine run settling at
 	// its terminal exactly as it did before, which is the rollback posture.
 	HITL *EngineHITLConfig `json:"hitl,omitempty" yaml:"hitl,omitempty"`
+	// TLS opts the Temporal frontend connection into TLS or mTLS (#5289).
+	// Nil keeps the plaintext dial a local dev Temporal expects; every dial
+	// site builds its options through temporaldial.Options with this value.
+	TLS *temporaldial.TLS `json:"tls,omitempty" yaml:"tls,omitempty"`
+	// WorkerVersioning opts `goobers worker` into Temporal worker-deployment
+	// versioning (#5950): pollers register as deployment "goobers", version
+	// goobers.<build>, with Pinned as the default workflow behavior. It is
+	// OFF by default because nothing in the product sets the deployment's
+	// current version (#5407): a versioned worker whose build is not current
+	// receives no tasks, so every upgrade that changes the build ID would
+	// stall the engine until an operator ran set-current-version. Off, the
+	// worker polls unversioned, which is what a reference Temporal expects.
+	WorkerVersioning bool `json:"workerVersioning,omitempty" yaml:"workerVersioning,omitempty"`
 }
 
 // EngineHITLConfig is the instance's posture on holding an engine-driven run's
@@ -2031,6 +2081,23 @@ func (c RunnerConfig) LivenessTimeoutDuration() (time.Duration, error) {
 	return timeout, nil
 }
 
+// RequiredMCPSettleTimeoutDuration resolves the required-MCP settle budget.
+// Zero means unset: the harness keeps its own default, so the fallback stays
+// owned by the adapter that applies it.
+func (c RunnerConfig) RequiredMCPSettleTimeoutDuration() (time.Duration, error) {
+	if c.RequiredMCPSettleTimeout == "" {
+		return 0, nil
+	}
+	timeout, err := time.ParseDuration(c.RequiredMCPSettleTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("runner.requiredMCPSettleTimeout %q: %w", c.RequiredMCPSettleTimeout, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("runner.requiredMCPSettleTimeout must be positive, got %s", timeout)
+	}
+	return timeout, nil
+}
+
 // DefaultStageTimeoutDuration resolves the baseline deterministic-stage
 // deadline. Zero means "unset" — the caller keeps its own built-in default
 // rather than substituting one here, so the fallback stays owned by the
@@ -2136,6 +2203,9 @@ func (c *Config) resolveEngineConfig(lookupEnv func(string) (string, bool)) (Eng
 		if c.Engine.TaskQueue != "" {
 			resolved.TaskQueue = c.Engine.TaskQueue
 		}
+		resolved.HITL = c.Engine.HITL
+		resolved.TLS = c.Engine.TLS
+		resolved.WorkerVersioning = c.Engine.WorkerVersioning
 	}
 	var envResolution engineEnvResolution
 	overrides := []struct {
@@ -2223,6 +2293,9 @@ func (c EngineConfig) Validate() error {
 		if err := c.HITL.Validate(); err != nil {
 			return fmt.Errorf("hitl: %w", err)
 		}
+	}
+	if err := c.TLS.Validate(); err != nil {
+		return fmt.Errorf("tls: %w", err)
 	}
 	return nil
 }

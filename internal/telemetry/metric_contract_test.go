@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
@@ -168,6 +170,11 @@ func TestMetricContractMatchesRuntimeEmission(t *testing.T) {
 	client.SnapshotFallback("no_base_ref")
 	client.SnapshotRestoreFailed("base_missing")
 	client.StorageHealthSampled("warning", 2048, true)
+	client.RecordSchedulerQueueSaturation(context.Background(), []QueueSaturationSample{
+		{QueueKind: "schedule", OperatingSystem: runtime.GOOS, Depth: 0, ObservedAt: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)},
+		{QueueKind: "backlog", OperatingSystem: runtime.GOOS, Depth: 2, OldestEnqueuedAt: time.Date(2026, 9, 30, 11, 55, 0, 0, time.UTC), ObservedAt: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)},
+		{QueueKind: "refill", OperatingSystem: runtime.GOOS, Depth: 1, OldestEnqueuedAt: time.Date(2026, 9, 30, 11, 59, 0, 0, time.UTC), ObservedAt: time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)},
+	}, &WorkerAvailabilitySample{OperatingSystem: runtime.GOOS, Available: 0})
 	client.RecordWorkcopyUsage(context.Background(), worktree.UsageMeasurement{
 		Operation:        worktree.UsageOperationCreate,
 		Gaggle:           "acme-web",

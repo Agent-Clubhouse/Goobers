@@ -36,6 +36,7 @@ type candidateFindingsArtifact struct {
 	Findings            []rollup.Finding                `json:"findings"`
 	CausalCredit        []readmodel.CausalNodeCredit    `json:"causalCredit,omitempty"`
 	AttributionCohorts  []creditgraph.CohortAggregation `json:"attributionCohorts,omitempty"`
+	FaultAudit          *creditgraph.FaultAuditReport   `json:"faultAudit,omitempty"`
 	PromotionSignals    []readservice.PromotionSignal   `json:"promotionSignals,omitempty"`
 	PromotionCandidates []readservice.PromotionSignal   `json:"promotionCandidates"`
 	NoWork              bool                            `json:"noWork,omitempty"`
@@ -552,7 +553,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	result, err := detectCandidateFindingsWithCausalCredit(
-		db, creditStore, *window, since, root, queryGaggle, *workflow,
+		context.Background(), db, creditStore, *window, since, root, queryGaggle, *workflow,
 		aggregates, learningActions, thresholds,
 	)
 	if err != nil {
@@ -587,6 +588,7 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 }
 
 func detectCandidateFindingsWithCausalCredit(
+	ctx context.Context,
 	db *rollup.DB,
 	creditStore *readmodel.Store,
 	window time.Duration,
@@ -601,7 +603,7 @@ func detectCandidateFindingsWithCausalCredit(
 	if thresholds == (rollup.Thresholds{}) {
 		thresholds = rollup.DefaultThresholds()
 	}
-	findings, err := db.Detect(context.Background(), rollup.DetectRequest{
+	findings, err := db.Detect(ctx, rollup.DetectRequest{
 		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
 	})
@@ -610,7 +612,7 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 	correlationalValues := map[string]float64{}
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{
+		credits, creditErr := creditStore.CreditAssignment(ctx, readmodel.CreditOptions{
 			Gaggle: gaggle, Since: since,
 		})
 		if creditErr != nil {
@@ -628,7 +630,7 @@ func detectCandidateFindingsWithCausalCredit(
 			if previous, ok := correlationalValues[node]; !ok || failureShare > previous {
 				correlationalValues[node] = failureShare
 			}
-			runIDs, runErr := creditStore.CreditAssignmentRunIDs(context.Background(), readmodel.CreditOptions{
+			runIDs, runErr := creditStore.CreditAssignmentRunIDs(ctx, readmodel.CreditOptions{
 				Gaggle: gaggle, Since: since,
 			}, credit, thresholds.MaxFlaggedRuns)
 			if runErr != nil {
@@ -690,7 +692,7 @@ func detectCandidateFindingsWithCausalCredit(
 	if err != nil {
 		return candidateFindingsArtifact{}, err
 	}
-	result.CausalCredit, err = creditStore.CausalCredit(context.Background(), readmodel.CausalOptions{
+	result.CausalCredit, err = creditStore.CausalCredit(ctx, readmodel.CausalOptions{
 		Gaggle: gaggle, Workflow: workflowName, Since: since, WorkflowGraph: graph,
 	})
 	if err != nil {
@@ -726,13 +728,20 @@ func detectCandidateFindingsWithCausalCredit(
 	}
 	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
 	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
-		cohorts, err := readservice.StoredAttributionCohorts(context.Background(), root, creditStore, readservice.StoredAttributionQuery{
+		cohorts, err := readservice.StoredAttributionCohorts(ctx, root, creditStore, readservice.StoredAttributionQuery{
 			Gaggle: gaggle, Workflow: workflowName, Since: since,
 		})
 		if err != nil {
 			return candidateFindingsArtifact{}, fmt.Errorf("query attribution cohorts: %w", err)
 		}
 		result.AttributionCohorts = cohorts
+		audit, err := readservice.StoredFaultAudit(ctx, root, creditStore, readservice.StoredAttributionQuery{
+			Gaggle: gaggle, Workflow: workflowName, Since: since,
+		}, creditgraph.FaultAuditConfig{})
+		if err != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("audit attribution fault domains: %w", err)
+		}
+		result.FaultAudit = &audit
 	}
 	return result, nil
 }
@@ -864,7 +873,7 @@ func runTelemetryQueryOverPlane(
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefectAggregateTimeout)
 	defer cancel()
 	response, err := client.DefectAggregates(ctx, telemetryclient.DefectAggregateRequest{
 		Gaggle:     request.gaggle,
@@ -1004,6 +1013,7 @@ func candidateFindingsFromPlane(
 			CounterEvidence:      planeEvidenceLinks(cohort.CounterEvidence),
 		})
 	}
+	artifact.FaultAudit = faultAuditReportFromPlane(response.FaultAudit)
 	for _, signal := range response.PromotionSignals {
 		artifact.PromotionSignals = append(artifact.PromotionSignals, readservicePromotionSignal(signal))
 	}
@@ -1019,6 +1029,42 @@ func candidateFindingsFromPlane(
 		artifact.Note = strings.TrimSpace(artifact.Note + " (answer truncated at the plane's cardinality ceiling)")
 	}
 	return artifact
+}
+
+func faultAuditReportFromPlane(report *telemetryclient.FaultAuditReport) *creditgraph.FaultAuditReport {
+	if report == nil {
+		return nil
+	}
+	return &creditgraph.FaultAuditReport{
+		Schema:              report.Schema,
+		Mode:                report.Mode,
+		Since:               report.Since,
+		Until:               report.Until,
+		ObservationsScanned: report.ObservationsScanned,
+		ProductFindings:     faultFindingsFromPlane(report.ProductFindings),
+		ExternalFindings:    faultFindingsFromPlane(report.ExternalFindings),
+		WorkflowFindings:    faultFindingsFromPlane(report.WorkflowFindings),
+		UnknownFindings:     faultFindingsFromPlane(report.UnknownFindings),
+		Suppressed:          report.Suppressed,
+		Truncated:           report.Truncated,
+	}
+}
+
+func faultFindingsFromPlane(findings []telemetryclient.FaultFinding) []creditgraph.FaultFinding {
+	result := make([]creditgraph.FaultFinding, 0, len(findings))
+	for _, finding := range findings {
+		result = append(result, creditgraph.FaultFinding{
+			ID: finding.ID, Signature: finding.Signature, Domain: creditgraph.FaultDomain(finding.Domain),
+			Confidence: finding.Confidence, RunIDs: finding.RunIDs, Workflows: finding.Workflows,
+			EffectiveVersions: finding.EffectiveVersions, Environments: finding.Environments,
+			NodePaths: finding.NodePaths, Evidence: planeEvidenceLinks(finding.Evidence),
+			CounterEvidence: finding.CounterEvidence, Rationale: finding.Rationale,
+			AlternativeDomains: finding.AlternativeDomains, RecommendedOwner: finding.RecommendedOwner,
+			RecommendedAction: finding.RecommendedAction,
+			Verification:      creditgraph.VerificationState(finding.Verification),
+		})
+	}
+	return result
 }
 
 func planeContributingPaths(paths []telemetryclient.ContributingPath) []creditgraph.ContributingPath {

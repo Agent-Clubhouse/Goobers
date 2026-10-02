@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -133,16 +134,17 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 //     wrong-object hazard, §0.5). Clearing the label is the re-entry trigger that
 //     lets merge-review re-select the reworked PR.
 //
-// The provider and Git publication both use config-sourced ADO auth. The
-// repo:push capability authorizes publication without requiring a separately
-// materialized PAT when the repository uses Azure CLI or managed identity.
+// The provider and Git publication each use the credential their declared
+// capability delivered: github:pr:write for the pull request, repo:push for the
+// branch publication (docs/design/ado-parity-dsl-2-0.md §3.1). Every ADO auth
+// kind backs both in the daemon, so no instance config is read here.
 func runPushRemediatedADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	gitAuth, err := adoRemediationGitAuthEnvironment(root, repo)
+	gitAuth, err := adoRemediationGitAuthEnvironment()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -280,6 +282,9 @@ func runPushRemediatedCoreWithAuth(
 	if current.State != "open" || current.Merged {
 		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
 	}
+	if code, stop := enforcePushRevision(root, repo, selectedNumber, current, stdout, stderr); stop {
+		return code
+	}
 
 	if err := forcePushWithLeaseWithAuth(ctx, ".", current.Head, state.HeadSHA, gitAuth); err != nil {
 		return failProviderStage(
@@ -296,6 +301,53 @@ func runPushRemediatedCoreWithAuth(
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
 	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
+}
+
+// enforcePushRevision applies the shared revision precondition (#6128) to the
+// PR read push-remediated is about to publish against. It is in addition to,
+// never instead of, the force-with-lease on the recorded pre-remediation SHA:
+// the lease refuses a push if the remote moved since the checkpoint recorded
+// it, while this refuses one if the PR is no longer at the revision this run
+// selected — the case where the checkpoint itself recorded a head the run's
+// work was never derived from. A stale selection publishes nothing, releases
+// the claim, and ends the run as a distinct no-work outcome.
+func enforcePushRevision(root string, repo providers.RepositoryRef, selectedNumber int, current providers.PullRequestSummary, stdout, stderr io.Writer) (int, bool) {
+	runID, _, err := providerRunContext()
+	if err != nil {
+		return failProviderStage(stderr, "read run context", err, pushRemediatedResultName), true
+	}
+	expected, recorded, err := loadPRExpectedRevision(root, runID, repo, selectedNumber)
+	if err != nil {
+		return failPRRevision(stderr, "load claimed pull request revision", err, pushRemediatedResultName), true
+	}
+	check, err := evaluatePRRevision(expected, recorded, current)
+	if err != nil {
+		return failPRRevision(stderr, fmt.Sprintf("verify pull request #%d revision before publishing", selectedNumber), err, pushRemediatedResultName), true
+	}
+	if check.State != prRevisionStale {
+		return 0, false
+	}
+	if err := releasePRRemediationClaim(root); err != nil {
+		return failProviderStage(stderr, "release remediation PR claim", err, pushRemediatedResultName), true
+	}
+	reason := fmt.Sprintf("stale selection: PR #%d moved from this run's %s head %s to %s",
+		selectedNumber, expected.Source, check.Expected, check.Live)
+	pf(stdout, "no work: %s; nothing published, claim released so the next cycle re-selects it\n", reason)
+	if err := writeProviderStagePayload(providerInput("resultFile", pushRemediatedResultName), map[string]interface{}{
+		"selectedNumber":              strconv.Itoa(selectedNumber),
+		pushRemediatedPublishedOutput: "false",
+		"head":                        "",
+		pushRemediatedLocalHeadOutput: "",
+		executor.OutputNoWork:         true,
+		"noWorkReason":                reason,
+		"outcome":                     prClaimOutcomeStaleSelection,
+		"expectedHeadSha":             check.Expected,
+		"liveHeadSha":                 check.Live,
+	}); err != nil {
+		pf(stderr, "error: write push-remediated result: %v\n", err)
+		return 2, true
+	}
+	return 0, true
 }
 
 func skipTerminalRemediatedPullRequest(selectedNumber int, stdout, stderr io.Writer) int {

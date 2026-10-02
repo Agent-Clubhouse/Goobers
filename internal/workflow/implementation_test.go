@@ -257,7 +257,11 @@ func TestImplementationWorkflowCompiles(t *testing.T) {
 	// gaggle's ciCommand already resolved to the same argv at config-load
 	// time, so the RUNTIME command is unchanged; only the hashed definition
 	// moved, and the example no longer reads as a Go project.
-	const wantDigest = "sha256:a8607589552819e69e8792b8f26bbde4637668b3a64e7f3ffcfdfc310faa9b55"
+	// #5397: the review gate declares a bounded agentic.retry so a transient
+	// reviewer-harness infrastructure failure no longer discards the run.
+	// #5558: ci-gate declares maxTimeoutPolls so pending-only CI polling has a
+	// dedicated bound separate from the failed-CI repass budget.
+	const wantDigest = "sha256:ac960dc3507b1965d48eed549bee8eda1aca0581021d5735ba603ad021e653c1"
 	if m.Digest() != wantDigest {
 		t.Logf("implementation digest = %s", m.Digest())
 		t.Errorf("digest drift for implementation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

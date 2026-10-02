@@ -173,6 +173,18 @@ func TestADOEntityWebURLScoping(t *testing.T) {
 			kind: "pr", id: "42", want: "",
 		},
 		{
+			// Spaces in a project or repository name must not break the
+			// markdown link a receipt or PR comment renders.
+			name: "project and repository names are path escaped", organization: "org", project: "Example Service",
+			repo: RepositoryRef{Name: "Example Repo"}, kind: "pr", id: "42",
+			want: "https://dev.azure.com/org/Example%20Service/_git/Example%20Repo/pullrequest/42",
+		},
+		{
+			name: "work item project is path escaped", organization: "org", project: "Example Service",
+			repo: RepositoryRef{Name: "repo"}, kind: "issue", id: "7",
+			want: "https://dev.azure.com/org/Example%20Service/_workitems/edit/7",
+		},
+		{
 			name: "no id stays unknown", organization: "org", project: "proj",
 			repo: RepositoryRef{Name: "repo"}, kind: "issue", id: "", want: "",
 		},

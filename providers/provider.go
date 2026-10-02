@@ -34,6 +34,14 @@ func validateCommitFile(file CommitFile) error {
 }
 
 // Provider combines repo, backlog, and trigger operations for a backend.
+//
+// Under SetAttribution (AttributionConfigurer), which every daemon stage
+// applies, a write stores its body with the attribution footer appended, and
+// the bodies returned by write calls and by list and get calls are those
+// stored, stamped bodies. Code that reads back text Goobers wrote and compares
+// it with the text it meant to write must compare StripAttribution(stored)
+// with strings.TrimSpace(intended), never the raw body
+// (attribution_contract_test.go pins this on every stamping provider).
 type Provider interface {
 	RepoProvider
 	BacklogProvider
@@ -125,11 +133,12 @@ type MergeQueuePoller interface {
 }
 
 // WorkItemBlockerChecker reports whether a work item has an unresolved
-// native blocker. Optional (backlog.blockers). ADO does not implement or
-// declare it — dependency-link modeling reaches parity under #2061 — so the call
-// site (cmd/goobers/backlogquery.go) goes through Dispatcher: an ADO item
-// with a nonzero BlockedByCount fails closed (excluded with a warning)
-// instead of the fail-open stub #2059 used to return (CONF-5, #2078).
+// native blocker. Optional (backlog.blockers). GitHub and Gitea read native
+// issue dependencies; ADO reads predecessor links and their state (ADO-N32).
+// The call site (cmd/goobers/backlogquery.go) goes through Dispatcher, so a
+// provider that does not declare it has an item with a nonzero
+// BlockedByCount fail closed (excluded with a warning) instead of the
+// fail-open stub #2059 used to return (CONF-5, #2078).
 type WorkItemBlockerChecker interface {
 	HasOpenWorkItemBlocker(context.Context, RepositoryRef, string) (bool, error)
 }
@@ -196,6 +205,20 @@ type PullRequestReviewThreadProvider interface {
 type PullRequestReviewThreadMutator interface {
 	ReplyPullRequestReviewThread(context.Context, PullRequestReviewThreadReply) (PullRequestInlineComment, error)
 	ResolvePullRequestReviewThread(context.Context, RepositoryRef, string) error
+}
+
+// PullRequestCIFailureReader returns a pull request's failing CI evidence
+// when the provider scopes CI to the pull request rather than to a commit
+// (Azure DevOps policy evaluations). HeadSHA is the source head the provider
+// reports for the pull request when the evidence was read.
+type PullRequestCIFailureReader interface {
+	PullRequestCIFailures(ctx context.Context, repo RepositoryRef, pullID string) (PullRequestCIFailures, error)
+}
+
+// PullRequestCIFailures is pull-request-scoped CI failure evidence.
+type PullRequestCIFailures struct {
+	HeadSHA  string
+	Failures []CIFailureDetail
 }
 
 // PullRequestBranchUpdater incorporates a pull request's base branch through

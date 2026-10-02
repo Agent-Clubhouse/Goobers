@@ -291,6 +291,13 @@ func TestPullRequestURLMatchesConfiguredRepository(t *testing.T) {
 			want: true,
 		},
 		{
+			// The provider path-escapes names it builds into web URLs.
+			name: "ado escaped project and repository names",
+			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "Example Service", Name: "Example Repo"},
+			url:  "https://dev.azure.com/acme/Example%20Service/_git/Example%20Repo/pullrequest/42",
+			want: true,
+		},
+		{
 			name: "ado wrong organization",
 			repo: apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "acme", Project: "platform", Name: "web"},
 			url:  "https://dev.azure.com/other/platform/_git/web/pullrequest/42",

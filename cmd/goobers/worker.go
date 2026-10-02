@@ -19,6 +19,7 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/temporaldial"
 	"github.com/goobers/goobers/internal/version"
 	"github.com/goobers/goobers/internal/workerhost"
 	"github.com/goobers/goobers/internal/worktree"
@@ -355,15 +356,17 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// only a settled attempt's pod is disposed. Never fatal — see
 		// sweepWorkerStageOrphans. The worker-lifetime loop below rechecks pods
 		// that become terminal after this initial sweep.
-		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr)
 	}
 
 	host, err := newWorkerHost(workerhost.Config{
 		HostPort:     *hostPort,
 		Namespace:    *namespace,
+		TLS:          engineConfig.TLS,
 		TaskQueues:   queues,
 		DrainTimeout: *drain,
 		BuildVersion: version.Get().Version,
+		Versioning:   engineConfig.WorkerVersioning,
 		Deps:         engineRuntime.deps,
 	})
 	if err != nil {
@@ -371,7 +374,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, stdout, stderr)
+	ctx, stop := workerSignalContext(recurringStageSweeper, *hostPort, *namespace, engineConfig.TLS, stdout, stderr)
 	defer stop()
 
 	// #4153: the worker's config tree has no live writer, so it can sit
@@ -395,8 +398,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s\n",
-		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version))
+	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s; worker versioning %s\n",
+		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version), onOff(engineConfig.WorkerVersioning))
 	err = runWorkerHost(ctx, host)
 	if errors.Is(err, workerhost.ErrAbandonedWork) {
 		pf(stderr, "error: %v\n", err)
@@ -410,12 +413,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// onOff renders an opt-in's state for the worker's startup line.
+func onOff(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
+}
+
 // workerSignalContext joins recurring reconciliation to the worker's signal
 // lifetime. Cleanup cancels an in-flight sweep and waits for its goroutine so
 // no background writer outlives runWorker's output streams.
-func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, stdout, stderr io.Writer) (context.Context, func()) {
+func workerSignalContext(sweeper stageOrphanSweeper, hostPort, namespace string, tls *temporaldial.TLS, stdout, stderr io.Writer) (context.Context, func()) {
 	ctx, stop := signals.SetupSignalContext()
-	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, stdout, stderr, workerSweepInterval)
+	done := startPeriodicWorkerStageOrphanSweeps(ctx, sweeper, hostPort, namespace, tls, stdout, stderr, workerSweepInterval)
 	return ctx, func() {
 		stop()
 		<-done

@@ -195,6 +195,76 @@ func credentialPlaneStub(t *testing.T, grant []string) string {
 	return server.URL
 }
 
+// TestPodCIPollCredentialSourceReResolvesOnlyAfterUnauthorized: the pod's
+// ci-poll source serves the stage-start value without calling the credential
+// plane per poll, and re-resolves (and registers the new value) once after
+// the provider's 401 invalidates it (#6154 on top of Goobers#6120). This holds
+// for a value with no stated expiry too, so a PAT keeps #6154's bounded retry.
+func TestPodCIPollCredentialSourceReResolvesOnlyAfterUnauthorized(t *testing.T) {
+	capabilities := []string{string(capability.ProviderPRWrite)}
+	setPodCIPollEnv(t, ciPollFixture{
+		inputs:       defaultCIPollFixture().inputs,
+		capabilities: capabilities,
+		repoOwner:    "acme",
+		repoName:     "web",
+	})
+	calls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc(apicontract.CredentialResolvePath, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var req struct {
+			Capabilities []string `json:"capabilities"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !reflect.DeepEqual(req.Capabilities, capabilities) {
+			t.Errorf("requested capabilities = %v, want %v", req.Capabilities, capabilities)
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			Credentials []dispatcher.MintedCredential `json:"credentials"`
+		}{Credentials: []dispatcher.MintedCredential{{
+			Capability: string(capability.ProviderPRWrite),
+			Value:      fmt.Sprintf("pod-ci-poll-token-%d", calls),
+		}}})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	reg := &escTestRegistrar{}
+	source := podCIPollTokenSource([]dispatcher.MintedCredential{{
+		Capability: string(capability.ProviderPRWrite), Value: "pod-ci-poll-token-0",
+	}}, string(capability.ProviderPRWrite), reg)
+	refreshable, ok := source.(providers.RefreshableTokenSource)
+	if !ok {
+		t.Fatalf("source %T is not refreshable", source)
+	}
+
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != "pod-ci-poll-token-0" {
+			t.Fatalf("Token = %q, %v; want the stage-start value", token, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("credential plane called %d times before any 401, want 0", calls)
+	}
+	refreshable.Invalidate()
+	for range 2 {
+		token, err := source.Token(context.Background())
+		if err != nil || token != "pod-ci-poll-token-1" {
+			t.Fatalf("Token after 401 = %q, %v; want one re-resolved value", token, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("credential plane called %d times, want exactly one re-resolve", calls)
+	}
+	if len(reg.registered) != 1 || string(reg.registered[0]) != "pod-ci-poll-token-1" {
+		t.Fatalf("registered = %q, want the re-resolved value", reg.registered)
+	}
+}
+
 // stubPRPoller substitutes the fixture poller on the seam BOTH substrates
 // resolve through.
 func stubPRPoller(t *testing.T, poller executor.PRPoller) {

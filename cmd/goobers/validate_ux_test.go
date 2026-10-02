@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestValidateSurfacesResolvedLargeRepoPreset(t *testing.T) {
@@ -712,13 +713,23 @@ func TestValidateErrorsOnMissingDSLVersionPin(t *testing.T) {
 		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: 2.0, 3.0) — the transitional default is gone now that DSL 1.4 is dropped",
+		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: " + loadableDSLVersionsForTest() + ") — the transitional default is gone now that DSL 1.4 is dropped",
 		"config directory failed validation",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
 		}
 	}
+}
+
+func loadableDSLVersionsForTest() string {
+	var versions []string
+	for _, version := range supportmatrix.GetDSL().Versions() {
+		if version.Level != supportmatrix.LevelUnsupported {
+			versions = append(versions, version.Version)
+		}
+	}
+	return strings.Join(versions, ", ")
 }
 
 func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
@@ -731,7 +742,7 @@ func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
 
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, "spec:\n  gaggle: example",
-		"spec:\n  gaggle: example\n  requires:\n    capabilities:\n      - pr.review.threads")
+		"spec:\n  gaggle: example\n  requires:\n    capabilities:\n      - pr.review.submit")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 1 {
@@ -739,7 +750,7 @@ func TestValidateRejectsUnmetProviderCapabilityRequirement(t *testing.T) {
 	}
 	for _, want := range []string{
 		"requires provider capability",
-		"pr.review.threads",
+		"pr.review.submit",
 		`"ado"`,
 	} {
 		if !strings.Contains(stdout, want) {
@@ -1087,5 +1098,35 @@ func TestValidateStrictDoesNotPromoteUnhonoredConnectionRef(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "REF012") {
 		t.Fatalf("strict validate did not report the unhonored connectionRef:\n%s", stdout)
+	}
+}
+
+// TestValidateStrictDoesNotPromoteInertADOCapability covers CAP006's
+// strict-neutrality (ADO-N24, docs/design/ado-parity-dsl-2-0.md §3.1). Older
+// docs told Azure DevOps authors to grant ado:pr:write, which no DSL 2.0 stage
+// consumes; the advisory names github:pr:write instead, but promoting it
+// under --strict would turn an unchanged, working pipeline red on upgrade.
+func TestValidateStrictDoesNotPromoteInertADOCapability(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitQuickstart(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	gooberPath := filepath.Join(root, "config", "gaggles", "example", "goobers", "reviewer", "goober.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	replaceInFile(t, gooberPath, "    - agent:model", "    - agent:model\n    - ado:pr:write")
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "CAP006") || !strings.Contains(stdout, `"github:pr:write" authorizes`) {
+		t.Fatalf("strict validate did not report the inert ado:pr:write grant naming github:pr:write:\n%s", stdout)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/activetime"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/workspacerevision"
@@ -282,6 +283,11 @@ type ShellExecutor struct {
 	// to a stage pod. Empty for every other provider, and by default, which
 	// stamps nothing.
 	RepoAuthScheme string
+	// CredentialGrants mints the stage credential-refresh grant a
+	// goobers-CLI stage with an expiring credential receives (Goobers#6120,
+	// appendCredentialGrant). Nil — every caller but the daemon's own local
+	// runner — delivers no grant, which is the pre-grant behavior.
+	CredentialGrants StageCredentialGrants
 }
 
 type builtinErrorReport struct {
@@ -823,10 +829,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
 	//
-	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that
-	// WRAPS the goobers CLI in another process (command[0] names the
-	// wrapper, not "goobers") but still needs the same context its nested
-	// invocation does — declared per-stage rather than guessed from argv[0].
+	// run.InjectRunContext (#3484) is the explicit opt-in for a stage that WRAPS the goobers CLI
+	// (command[0] names the wrapper) but needs the same context its nested invocation does.
 	injectRunContext := StageInvokesGoobersCLI(command) || run.InjectRunContext
 	declaredEnv := declaredStageEnvironment(e.DefaultEnv, run.Env)
 	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
@@ -841,6 +845,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
 	stageEnv = e.appendRepoEnv(stageEnv, env, injectRunContext)
+	stageEnv, revokeGrant := e.appendCredentialGrant(stageEnv, env, injectRunContext, resolvedTimeout.Duration, registry)
+	defer revokeGrant()
 	if implicitResultFile != "" {
 		stageEnv = append(stageEnv, InputEnvVar(InputResultFile)+"="+implicitResultFile)
 	}
@@ -892,7 +898,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, resolvedTimeout.Duration)
+	runCtx, cancel := activetime.WithTimeout(ctx, resolvedTimeout.Duration)
 	defer cancel()
 
 	// Substitute the running daemon's own binary for a bare "goobers" token: the
@@ -934,7 +940,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		err = describeNetworkNoneStartFailure(run.Network, err)
 		return apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
-			Error:   &apiv1.ErrorInfo{Code: "exec_start", Message: err.Error(), Retryable: false},
+			Error:   journal.ErrorInfoFor("exec_start", err, false),
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
@@ -1227,11 +1233,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			)))
 		}
 		result.Status = apiv1.ResultFailure
-		result.Error = &apiv1.ErrorInfo{
-			Code:      "provider_error",
-			Message:   providerErr.Error(),
-			Retryable: false,
-		}
+		result.Error = journal.ErrorInfoFor("provider_error", providerErr, false)
 		result.Summary = fmt.Sprintf("provider stage %q failed", command[1])
 		return result, nil
 	}
@@ -1282,11 +1284,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			// Untrusted declared path (#120): escapes the workspace lexically
 			// or via a symlink. Fail the stage closed, never follow it.
 			result.Status = apiv1.ResultFailure
-			result.Error = &apiv1.ErrorInfo{
-				Code:      "result_file_path_escape",
-				Message:   fmt.Sprintf("declared result file %q escapes the workspace: %v", resultFile, perr),
-				Retryable: false,
-			}
+			result.Error = journal.ErrorInfoFor("result_file_path_escape", fmt.Errorf("declared result file %q escapes the workspace: %w", resultFile, perr), false)
 			result.Summary = "declared result file path escapes the workspace"
 			return result, nil
 		default:

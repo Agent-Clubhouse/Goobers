@@ -379,6 +379,27 @@ func runUpContext(parentCtx context.Context, args []string, stdout, stderr io.Wr
 	return runUpContextWithForce(parentCtx, nil, args, stdout, stderr)
 }
 
+func daemonTriggerSweep(
+	ctx context.Context,
+	l instance.Layout,
+	log *journal.InstanceLog,
+	durableTriggers *durableTriggerService,
+	sched *localscheduler.Scheduler,
+	heartbeat *atomic.Int64,
+	options triggerSweepOptions,
+) func() error {
+	return func() error {
+		var sweepErr error
+		if options == (triggerSweepOptions{}) {
+			sweepErr = sweepPendingTriggers(ctx, l.SchedulerDir(), log, sched, time.Now)
+		} else {
+			sweepErr = sweepPendingTriggersWithOptions(ctx, l.SchedulerDir(), log, sched, time.Now, options)
+		}
+		err := errors.Join(durableTriggers.Drain(ctx), sweepErr)
+		return recordTriggerSweepProgress(heartbeat, err, time.Now())
+	}
+}
+
 func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, args []string, stdout, stderr io.Writer) int {
 	stdout = syncStartupStdout(stdout) // #4570
 	// #4252: process-start reference point for logGateFlip's elapsed-time
@@ -594,17 +615,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// expired-claim reap — setup's included — a no-op until the renewal set
 	// has been rebuilt from ledger + liveness below.
 	claimRecoveryGate := localscheduler.NewRecoveryGate()
-	schedulerSetupStarted := time.Now()
-	setupOptions := []schedulerSetupOption{
-		withDesktopNotifications(notifications, stderr),
-		withStartupProgress(newSchedulerSetupProgress(stdout, schedulerSetupStarted, time.Now)),
-		withClaimRecoveryGate(claimRecoveryGate),
-	}
+	setupOptions, startTelemetryReplay := daemonStartupSetupOptions(notifications, stdout, stderr, claimRecoveryGate)
+	buildSetup := buildSchedulerSetup
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
-	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
+		buildSetup = buildSchedulerSetupAllowingInvalidConfig
 	}
+	setup, err = retryTransientStartup(ctx, stderr, func() (*schedulerSetup, error) { return buildSetup(ctx, l, &wg, setupOptions...) })
 	if err != nil {
 		return daemonStartupFailure(ctx, err, func() {
 			printValidationIssues(stderr, validationReportFromError(err))
@@ -914,7 +930,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// authenticator below) every resolve answers a typed 403 rather than
 	// handing raw secret material to any local caller. Local modes never need
 	// the plane; their resolution stays in-process via buildCredentialEnv.
-	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog).withStageGrants(l.Root, apiServer.Address(), setup.Config.API.TLS != nil)
 	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
 	setup.CredentialPlane = credentialPlane
 	// The surrender plane (#3699) rides beside the blob store, under the same
@@ -951,11 +967,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
+	apiHandlerOpts = append(apiHandlerOpts, withDaemonRunJournalServices(l, setup.InstanceLog)...)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(claimPlane),
-		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(durableTriggers),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCancelService(cancelPlane),
@@ -996,7 +1012,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// constructed below; until then the service fails closed with a documented
 	// 503/workflow_mutations_unavailable envelope.
 	workflowMutations := newWorkflowMutationService(l)
-	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithWorkflowMutations(workflowMutations))
+	apiHandlerOpts = append(apiHandlerOpts, workflowMutationHandlerOptions(workflowMutations)...)
 	// The telemetry read plane's containment (decision 005 R4 / finding 002
 	// C3). Wired unconditionally: without it every pod telemetry read is
 	// refused, so this is what OPENS the plane, and a daemon that serves stage
@@ -1040,7 +1056,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(credentialPlane.grantKey())))
 		apiAuthorizer = httpapi.RequireRoles()
 	} else if !instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		// Non-loopback with no human authenticator configured: serve the pod
@@ -1054,7 +1070,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained.WithCredentialGrants(credentialPlane.grantKey())))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
@@ -1336,6 +1352,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
+	drainedDowntime := readDrainedDowntime(setup.InstanceLog, stderr)
 	sweepStalled := func(now time.Time, recoveryRunDirs ...[]string) error {
 		return sweepStalledRuns(
 			ctx,
@@ -1344,7 +1361,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			engineGuards,
 			setup.InstanceLog,
-			stalledSweepDependencies(setup),
+			stalledSweepDependencies(setup, drainedDowntime),
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
 			now,
@@ -1482,11 +1499,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
-	triggerSweep := func() error {
-		err := errors.Join(durableTriggers.Drain(ctx), sweepPendingTriggers(ctx, l.SchedulerDir(), setup.InstanceLog, sched, time.Now))
-		return recordTriggerSweepProgress(&lastTriggerSweepAtNanos, err, time.Now())
-	}
-	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", triggerSweep))
+	triggerSweep := daemonTriggerSweep(ctx, l, setup.InstanceLog, durableTriggers, sched, &lastTriggerSweepAtNanos, triggerSweepOptions{})
+	startupTriggerSweep := daemonTriggerSweep(ctx, l, setup.InstanceLog, durableTriggers, sched, &lastTriggerSweepAtNanos, triggerSweepOptions{
+		staleLegacyMissingDeadline: true,
+		recoverActiveRequests:      true,
+	})
+	triggerSweepErrors.report(runStartupPhase(stdout, tracker, "trigger-request-reconcile", "", startupTriggerSweep))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
 	claimAdminSweepErrors.report(reconcileStartupClaimAdmin(l, setup, recoverExpiredClaims, tracker, stdout))
 	stopClaimAdminSweep := startClaimAdminSweep(l, setup.InstanceLog, recoverExpiredClaims, claimAdminSweepErrors)
@@ -1795,6 +1813,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		tracker.completeBudget(time.Now())
 		ready.Store(true)
 		pf(stdout, "%s startup phase=ready status=done target=%q address=%s\n", startupTimestamp(), "api", apiServer.Address())
+		startTelemetryReplay()
 	}
 	// Now that the API is up and status/dashboard reads no longer block on
 	// it, run the broad retention sweep deferred above (#4373).
@@ -2122,7 +2141,23 @@ func forceDaemonRuns(done <-chan struct{}, runners *daemonRunnerRegistry, stdout
 
 // stalledSweepDependencies is the daemon-owned wiring the stalled-run sweep
 // needs when it has to terminalize a run no live Runner owns.
-func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
+// readDrainedDowntime reads the graceful-drain downtime the stalled-run sweep
+// credits (#5601). The daemon has already journaled its own start, so the
+// newest interval ends at this lifetime's beginning. A read failure credits
+// nothing, which is the pre-#5601 behavior, and says so.
+func readDrainedDowntime(log *journal.InstanceLog, stderr io.Writer) []daemonDowntime {
+	if log == nil {
+		return nil
+	}
+	events, err := journal.ReadInstanceLog(log.Dir())
+	if err != nil {
+		pf(stderr, "warning: read daemon lifecycle for stalled-run downtime credit: %v\n", err)
+		return nil
+	}
+	return cleanDaemonDowntime(events)
+}
+
+func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDowntime) *stalledSweepDeps {
 	return &stalledSweepDeps{
 		PrepareTerminal: func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 			// The stalled run's gaggle is only knowable from its runs-tree
@@ -2143,6 +2178,7 @@ func stalledSweepDependencies(setup *schedulerSetup) *stalledSweepDeps {
 		// Without it the terminal append records no intake watermark and the
 		// projector never re-reads the run (#5278).
 		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
+		DrainedDowntime: drainedDowntime,
 	}
 }
 

@@ -43,7 +43,7 @@ var legacyUndocumentedSchemas = map[string]legacyUndocumented{
 	"journal-event.schema.json":          {0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
 	"remediation-brief-v1.schema.json":   {53, "68b9a4dd55e1be7fca8b1093698a07791e47914e1dd5c3f02c81f15f07101529"},
 	"remediation-brief-v2.schema.json":   {68, "489a2a169f844fc77bc359b75627839a7b43520cabe2c068c0d9e9cdbf52996c"},
-	"result.schema.json":                 {8, "1a5331ef336ceae49591b15e92f0bbd7a7a2c7aec005de93077d9d54d3d68f40"},
+	"result.schema.json":                 {0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
 }
 
 func TestDescriptionCoverage(t *testing.T) {

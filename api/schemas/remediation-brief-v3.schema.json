@@ -415,6 +415,166 @@
           "type": "array",
           "description": "Originating backlog issues.",
           "items": { "$ref": "#/$defs/issue" }
+        },
+        "ancestry": {
+          "$ref": "#/$defs/ancestry",
+          "description": "Bounded parent ancestry of the originating issues; present only when parent traversal is enabled."
+        }
+      }
+    },
+    "ancestry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "provider", "maxDepth", "maxItems", "crossProject", "items", "omissions"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["complete", "incomplete", "unsupported"],
+          "description": "Collection completeness: complete, incomplete (see omissions), or unsupported by this provider."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider the ancestry was read from."
+        },
+        "maxDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum parent depth traversed."
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of parent work items read."
+        },
+        "crossProject": {
+          "type": "string",
+          "enum": ["deny", "allow"],
+          "description": "Policy for parents in another project or repository."
+        },
+        "includeTypes": {
+          "type": "array",
+          "description": "Work-item types serialized; absent means every type.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "items": {
+          "type": "array",
+          "description": "Parent work items ordered by depth, then qualified id.",
+          "items": { "$ref": "#/$defs/ancestor" }
+        },
+        "omissions": {
+          "type": "array",
+          "description": "Parents not included, with the reason each was omitted.",
+          "items": { "$ref": "#/$defs/ancestryOmission" }
+        }
+      }
+    },
+    "ancestor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["qualifiedId", "provider", "project", "id", "depth", "parentOf", "fields", "integrity"],
+      "properties": {
+        "qualifiedId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable provider:project:id identity."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider that owns the parent work item."
+        },
+        "project": {
+          "type": "string",
+          "description": "Project or repository containing the parent work item."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-local work-item id."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Distance from the originating issue; 1 is its immediate parent."
+        },
+        "parentOf": {
+          "type": "array",
+          "description": "Qualified ids of the children this work item is the parent of.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "type": {
+          "type": "string",
+          "description": "Provider work-item type, including custom process types."
+        },
+        "title": {
+          "type": "string",
+          "description": "Provider-authored parent title."
+        },
+        "state": {
+          "type": "string",
+          "description": "Provider-native parent state."
+        },
+        "url": {
+          "type": "string",
+          "description": "Provider URL for the parent work item."
+        },
+        "fields": {
+          "type": "array",
+          "description": "Selected intent-carrying fields, each cut to the configured byte bound.",
+          "items": { "$ref": "#/$defs/ancestorField" }
+        },
+        "integrity": {
+          "$ref": "#/$defs/integrity",
+          "description": "Provenance grade of the parent title and fields."
+        }
+      }
+    },
+    "ancestorField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider field reference name."
+        },
+        "value": {
+          "type": "string",
+          "description": "Provider-authored field value."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the value was cut to the configured byte bound."
+        }
+      }
+    },
+    "ancestryOmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["child", "depth", "reason"],
+      "properties": {
+        "child": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Qualified id of the work item whose parent was omitted."
+        },
+        "parent": {
+          "type": "string",
+          "description": "Parent id or qualified id, when known."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Depth the omitted parent would have occupied."
+        },
+        "reason": {
+          "type": "string",
+          "enum": ["max-depth", "max-items", "cycle", "cross-project", "excluded-type", "not-found", "access-denied", "read-failed"],
+          "description": "Why the parent was omitted."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Bounded supplementary detail."
         }
       }
     },

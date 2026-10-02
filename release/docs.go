@@ -32,7 +32,11 @@ const (
 		"places `goobers` in `$HOME/.local/bin`. See\n" +
 		"[Release installation and verification](docs/guides/releases.md) for\n" +
 		"prerequisites, version pinning, install-directory overrides, pre-releases, and\n" +
-		"the Windows path.\n\n"
+		"the Windows path.\n\n" +
+		"Confirm the installed release before initializing an instance:\n\n" +
+		"```sh\n" +
+		"goobers version\n" +
+		"```\n\n"
 	readmeSourceInstall = "## Quick start\n\n" +
 		"Tour the full workflow locally without credentials or network writes:\n\n" +
 		"```sh\n" +

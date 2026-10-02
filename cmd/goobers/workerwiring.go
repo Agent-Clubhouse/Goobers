@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -11,6 +12,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -173,6 +175,38 @@ type gaggleSeams struct {
 	// "could not read Username for 'https://github.com'". Workspace
 	// provisioning has to use this one instead.
 	manager *worktree.Manager
+	// harnessRefusals names the workflows whose agentic harness failed this
+	// kit's preflight, with the failure. Non-empty means the kit is DEGRADED:
+	// it serves every other workflow, refuses those workflows' agentic stages
+	// with a retryable infrastructure error, and is never cached, so the next
+	// build re-preflights the failed harness instead of pinning a transient
+	// failure for the life of the snapshot (#5949).
+	harnessRefusals map[localscheduler.WorkflowIdentity]string
+}
+
+// degraded reports whether some workflow's harness failed this kit's
+// preflight. A degraded kit is served but never published into a snapshot.
+func (g *gaggleSeams) degraded() bool { return len(g.harnessRefusals) > 0 }
+
+// refuseUnavailableHarness fails an agentic stage whose workflow's harness
+// failed this kit's preflight. It is an infrastructure failure — retried, not
+// charged to the run — because the typical cause is transient (a sign-in
+// check rate-limited by the provider); the retry rebuilds the kit and
+// re-preflights. An envelope without a workflow name cannot be scoped, so it
+// is refused whenever any harness failed, as it was before scoping (#5949).
+func (g *gaggleSeams) refuseUnavailableHarness(env apiv1.InvocationEnvelope) error {
+	if !g.degraded() {
+		return nil
+	}
+	if env.WorkflowID == "" {
+		return invoke.InfrastructureFailure(fmt.Errorf("worker: harness preflight: %w", &harnessPreflightFailures{Refusals: g.harnessRefusals}))
+	}
+	identity := localscheduler.WorkflowIdentity{Gaggle: env.Gaggle, Workflow: env.WorkflowID}
+	reason, refused := g.harnessRefusals[identity]
+	if !refused {
+		return nil
+	}
+	return invoke.InfrastructureFailure(fmt.Errorf("worker: harness preflight: workflow %q (gaggle %q): %s", identity.Workflow, identity.Gaggle, reason))
 }
 
 // newWorkerSeams loads an instance from root and prepares per-gaggle executor
@@ -239,6 +273,9 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, err
 	}
+	if built.seams.degraded() {
+		return built.seams, nil
+	}
 	w.snapshot.Store(snapshot.withGaggle(gaggle, built))
 	return built.seams, nil
 }
@@ -277,7 +314,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
+	harnessInfo, harnessRefusals, err := preflightWorkerHarnesses(cfg, set, goobers, stores)
 	if err != nil {
 		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
@@ -313,6 +350,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		WorktreeManager:     nil,
 		BranchNamespaces:    branchNamespacesByGaggle(set),
 		GaggleProject:       project,
+		GaggleBacklog:       gaggleBacklogRef(set, gaggle),
 		HarnessInfo:         harnessInfo,
 		CredentialStores:    stores,
 		SandboxPosture:      instance.EffectiveAgenticSandbox(cfg, nil),
@@ -329,9 +367,27 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		return nil, fmt.Errorf("worker: buildRunnerConfig returned no worktree manager for gaggle %q", gaggle)
 	}
 	return &builtGaggleSeams{
-		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr},
+		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr, harnessRefusals: harnessRefusals},
 		fingerprint: fingerprint,
 	}, nil
+}
+
+// preflightWorkerHarnesses preflights the harnesses this gaggle's workflows
+// reference. A harness failure is scoped to the workflows that depend on it,
+// as the daemon scopes it (#5163): the worker used to fail the WHOLE kit, so
+// one workflow's transient harness failure (a rate-limited sign-in check)
+// failed every unrelated workflow's activity that triggered the build
+// (#5949). Any other preflight error still fails the build closed.
+func preflightWorkerHarnesses(cfg *instance.Config, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec, stores credentials.StoreResolver) (harnessPreflightInfo, map[localscheduler.WorkflowIdentity]string, error) {
+	info, err := preflightHarnesses(goobers, set.Workflows, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand, harnessModelCredentialResolver(cfg, stores))
+	if err == nil {
+		return info, nil, nil
+	}
+	var failures *harnessPreflightFailures
+	if !errors.As(err, &failures) || len(failures.Refusals) == 0 {
+		return nil, nil, err
+	}
+	return info, maps.Clone(failures.Refusals), nil
 }
 
 // recorderFor returns the artifact recorder and secret registrar for one run.
@@ -452,6 +508,9 @@ func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) 
 		return apiv1.ResultEnvelope{}, err
 	}
 	defer release()
+	if err := g.refuseUnavailableHarness(env); err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	exec, err := a.executor(g, env)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
@@ -472,6 +531,9 @@ func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) 
 		return apiv1.Verdict{}, err
 	}
 	defer release()
+	if err := g.refuseUnavailableHarness(env); err != nil {
+		return apiv1.Verdict{}, err
+	}
 	exec, err := a.executor(g, env)
 	if err != nil {
 		return apiv1.Verdict{}, err
@@ -514,6 +576,17 @@ func gaggleProjectRef(set *instance.ConfigSet, gaggle string) apiv1.RepoRef {
 		}
 	}
 	return apiv1.RepoRef{}
+}
+
+// gaggleBacklogRef returns the named gaggle's backlog, or the zero value when
+// the gaggle is not configured.
+func gaggleBacklogRef(set *instance.ConfigSet, gaggle string) apiv1.BacklogRef {
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == gaggle {
+			return set.Gaggles[i].Spec.Backlog
+		}
+	}
+	return apiv1.BacklogRef{}
 }
 
 // resolveGoobersForGaggle returns the goober specs a declared gaggle's stages

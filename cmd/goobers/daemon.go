@@ -59,7 +59,9 @@ type schedulerSetup struct {
 	Runners      map[string]*runner.Runner
 	LegacyRunner *runner.Runner
 	Telemetry    *telemetry.Client
-	RollupDB     *rollup.DB
+	// Shared only by this setup's trace, journal, and diagnostic exporters.
+	TelemetryReplayStart <-chan struct{}
+	RollupDB             *rollup.DB
 	// ReadModel is the portal run read model (read.db). Present but unread at
 	// this stage — see the construction site and design §6.6 step 1.
 	ReadModel *readmodel.Store
@@ -290,6 +292,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	claimProviders := claimProvidersByGaggle(set)
+	// This daemon owns identity creation (workers and telemetry observers do
+	// not). Publish it before any exporter or scheduler journal captures its
+	// identity: creating it later in runner construction left first-boot
+	// scheduler records unidentified until restart and changed their replay
+	// identity inputs across those lifetimes.
+	if _, err := l.EnsureIdentity(ctx); err != nil {
+		return nil, fmt.Errorf("initialize daemon instance identity: %w", err)
+	}
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use
@@ -365,11 +375,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	}()
 	if cfg.TelemetryEnabled() {
 		reportStartupProgress(options.startupProgress, "opening telemetry state")
-		var otlpConfig instance.OTLPConfig
-		if cfg.Telemetry.OTLP != nil {
-			otlpConfig = *cfg.Telemetry.OTLP
-		}
-		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig, secretStores)
+		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, cfg.Telemetry, secretStores, options.telemetryReplayStart)
 		if err != nil {
 			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
 				return nil, err
@@ -529,6 +535,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Runners:                  definitions.Runners,
 		LegacyRunner:             legacyRunner,
 		Telemetry:                tel,
+		TelemetryReplayStart:     options.telemetryReplayStart,
 		RollupDB:                 rollupDB,
 		ReadModel:                readModel,
 		Watermarks:               watermarks,
@@ -637,10 +644,7 @@ func recoverSchedulerClaims(
 			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
 				instanceLog.AppendBestEffort(journal.Event{
 					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
-					Error: &journal.ErrorDetail{
-						Code:    "legacy_claim_ownership_unresolved",
-						Message: resolveErr.Error(),
-					},
+					Error: journal.ErrorDetailFor("legacy_claim_ownership_unresolved", resolveErr),
 				})
 			}
 			return namespace, resolveErr
@@ -795,6 +799,8 @@ func buildSchedulerDefinitions(
 	branchNamespaces := branchNamespacesByGaggle(set)
 	selfIdentities := selfIdentitiesByGaggle(cfg, set)
 	requireLabelsDefaults := requireLabelsByGaggle(set)
+	backlogLabelsDefaults := backlogLabelsByGaggle(set)
+	backlogLabelPredicateDefaults := backlogLabelPredicatesByGaggle(set)
 	// Each gaggle's project repo drives its runner's per-gaggle credential
 	// scoping (MGV-5, #1012): its stages are granted that repo's own token. A
 	// gaggle with no configured Gaggle object (a single-gaggle default) has no
@@ -832,8 +838,8 @@ func buildSchedulerDefinitions(
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, hooks, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
-			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
-			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], generation,
+			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleBacklogRef(set, gaggle), gaggleAdditionalRepos[gaggle], harnessInfo,
+			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], backlogLabelsDefaults[gaggle], backlogLabelPredicateDefaults[gaggle], generation,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("initialize gaggle %q runtime: %w", gaggle, err)
@@ -958,7 +964,7 @@ func buildSchedulerDefinitions(
 		}
 		if len(scheds) > 0 {
 			project := gaggleProjects[wf.Spec.Gaggle]
-			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project); err != nil {
+			if err := validateScheduledWorkflowCredentialEnvironment(machine, cfg, project, gaggleBacklogRef(set, wf.Spec.Gaggle)); err != nil {
 				return nil, err
 			}
 		}
@@ -1123,8 +1129,8 @@ func compileSchedulerMachinesWithProgress(
 	)
 }
 
-func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef) error {
-	envByCapability, err := scheduledWorkflowCredentialEnvironments(cfg, project)
+func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, cfg *instance.Config, project apiv1.RepoRef, backlog apiv1.BacklogRef) error {
+	envByCapability, err := scheduledWorkflowCredentialEnvironments(cfg, project, backlog)
 	if err != nil {
 		return err
 	}
@@ -1150,7 +1156,7 @@ func validateScheduledWorkflowCredentialEnvironment(machine *workflow.Machine, c
 	return nil
 }
 
-func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1.RepoRef) (map[string]string, error) {
+func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1.RepoRef, backlog apiv1.BacklogRef) (map[string]string, error) {
 	bindings := make([]credentials.RepoBinding, 0, len(cfg.Repos))
 	envByRef := make(map[string]string, len(cfg.Repos)+len(cfg.Credentials)+1)
 	for _, repo := range cfg.Repos {
@@ -1171,11 +1177,10 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 		bindings = append(bindings, credentials.RepoBinding{Owner: owner, Name: repo.Name, TokenRef: tokenRef})
 	}
 
+	role := gaggleBacklogRole(project, backlog)
 	overrides := make([]credentials.Grant, 0, len(daemonIdentityCapabilities)+len(cfg.Credentials))
 	if cfg.DaemonIdentity != nil {
-		for _, capability := range daemonIdentityCapabilities {
-			overrides = append(overrides, credentials.Grant{Capability: string(capability), Ref: daemonIdentityRefName})
-		}
+		overrides = append(overrides, daemonIdentityOverrides(role)...)
 		if cfg.DaemonIdentity.Token != nil && cfg.DaemonIdentity.Token.Env != "" {
 			envByRef[daemonIdentityRefName] = cfg.DaemonIdentity.Token.Env
 		} else if cfg.DaemonIdentity.GitHubApp() && cfg.DaemonIdentity.PrivateKey != nil && cfg.DaemonIdentity.PrivateKey.Env != "" {
@@ -1198,11 +1203,7 @@ func scheduledWorkflowCredentialEnvironments(cfg *instance.Config, project apiv1
 	if project.Provider == apiv1.ProviderADO && project.Project != "" {
 		owner += "/" + project.Project
 	}
-	caps := make([]string, len(credentialedCapabilities))
-	for i, capability := range credentialedCapabilities {
-		caps[i] = string(capability)
-	}
-	grants := credentials.RunnerGrants(bindings, owner, project.Name, caps, overrides)
+	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, owner, project.Name, role, repoCredentialedCapabilityNames(), overrides))
 	envByCapability := make(map[string]string, len(grants))
 	for _, grant := range grants {
 		if env := envByRef[grant.Ref]; env != "" {
@@ -1295,13 +1296,13 @@ func buildRetainedLegacyRunner(
 	}
 	rn, manager, _, err := buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
-		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
+		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
 		instance.EffectiveAgenticSandbox(cfg, nil),
 		instance.EffectiveSelfIdentity(cfg, nil),
 		// Same reasoning: no gaggle to consult for a RequireLabels default.
-		"",
+		"", "", "",
 	)
 	return rn, manager, err
 }
@@ -1336,12 +1337,15 @@ func buildRuntimeRunner(
 	terminalNotifier runner.TerminalNotifier,
 	branchNamespaces map[string]string,
 	gaggleProject apiv1.RepoRef,
+	gaggleBacklog apiv1.BacklogRef,
 	additionalRepos []apiv1.RepoRef,
 	harnessInfo harnessPreflightInfo,
 	stores credentials.StoreResolver,
 	sandboxPosture instance.SandboxPosture,
 	selfIdentity string,
 	requireLabelsDefault string,
+	backlogLabelsDefault string,
+	backlogLabelPredicateDefault string,
 	generations ...string,
 ) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
 	appliedConfigDigest, err := deterministicStageConfigDigest(l.ConfigDir(), l.Gaggle())
@@ -1363,6 +1367,7 @@ func buildRuntimeRunner(
 		WorktreeManager:      manager,
 		BranchNamespaces:     branchNamespaces,
 		GaggleProject:        gaggleProject,
+		GaggleBacklog:        gaggleBacklog,
 		AdditionalRepos:      additionalRepos,
 		HarnessInfo:          harnessInfo,
 		CredentialStores:     stores,
@@ -1381,6 +1386,8 @@ func buildRuntimeRunner(
 		return nil, nil, nil, fmt.Errorf("initialize daemon instance identity: %w", err)
 	}
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
+	runnerCfg.BacklogQueryBacklogLabels = backlogLabelsDefault
+	runnerCfg.BacklogQueryLabelPredicate = backlogLabelPredicateDefault
 	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
@@ -1392,7 +1399,7 @@ func buildRuntimeRunner(
 	// issue-close-out (the `no-work` outcome short-circuits straight to
 	// completed) cannot leave claims.json and the provider disagreeing until
 	// the next backlog-curation cycle.
-	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(cfg, gaggleProject, sharedReg, stores)
+	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, nil, err
 	}

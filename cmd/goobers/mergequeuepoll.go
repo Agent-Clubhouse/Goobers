@@ -516,12 +516,13 @@ func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
 // GitHub path uses (branch cleanup, DequeuePullRequest, PR-as-work-item
 // remediation labeling) stay unreachable on ADO.
 //
-// Completion (merge) authority rides on the ado:pr:complete capability
-// (capability.ADOPRComplete), the ADO counterpart to github:pr:merge, resolved
-// BEFORE the provider is constructed — mirroring how the GitHub path gates the
-// poll on github:pr:merge — so this stage cannot silently acquire completion
-// authority from an ordinary ado:pr:write grant (pr-lifecycle-loop §7,
-// decider≠executor).
+// Completion (merge) authority is github:pr:merge, the landing authority on
+// every provider, or ado:pr:complete when the stage declared it
+// (landingAuthority, docs/design/ado-parity-dsl-2-0.md §3.3). It is resolved
+// BEFORE the provider is constructed, and a stage holding neither fails
+// closed, so this stage cannot acquire completion authority from an ordinary
+// github:pr:write or ado:pr:write grant (pr-lifecycle-loop §7,
+// decider≠executor; SEC-053).
 //
 // PERIPHERAL GitHub side effects are documented no-ops on ADO:
 //   - opt-out dequeue (DequeuePullRequest, §1d:166): no ADO equivalent — the
@@ -539,14 +540,16 @@ func mergeQueuePollBackoff(base, max time.Duration, attempt int) time.Duration {
 // Wiring the ADO remediation-routing and branch-cleanup follow-ups is deferred
 // to the ADO merge epic (CONF-3 #2076).
 func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	// Completion authority is a distinct capability from ordinary
-	// ado:pr:write. Resolve the grant before constructing the provider so an
-	// un-granted stage fails closed rather than completing a pull request.
-	if _, err := providerToken(capability.ADOPRComplete); err != nil {
+	// Completion authority is distinct from PR-write authority. The provider
+	// is built from the credential delivered for the landing capability
+	// alone, so an un-granted stage fails closed here rather than completing
+	// a pull request with some other capability's credential.
+	authority, err := landingAuthority(repo)
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
+	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(authority))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -627,7 +630,7 @@ func mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile string, stdout, st
 // outcome is written so queue-gate can still read it; the remediation routing
 // is deferred to the ADO merge epic (CONF-3 #2076).
 func mergeQueuePollEvictedADO(pullNumber, resultFile string, stdout, stderr io.Writer) int {
-	reason := fmt.Sprintf("merge queue evicted pull request #%s: its build against the projected merge state failed; ado remediation labeling deferred to the ADO merge epic (CONF-3 #2076)", pullNumber)
+	reason := fmt.Sprintf("auto-complete for pull request #%s was cleared while it was still active (a branch policy rejected completion, or it was cancelled); ado remediation labeling deferred to the ADO merge epic (CONF-3 #2076)", pullNumber)
 	if err := writeQueueResult(resultFile, pullNumber, "evicted", "", nil, reason); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

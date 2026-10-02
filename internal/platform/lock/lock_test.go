@@ -57,6 +57,42 @@ func TestTryAcquireExistingDoesNotCreateMissingLock(t *testing.T) {
 	}
 }
 
+func TestTryAcquireExistingInRoot(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if _, err = TryAcquireExistingInRoot(root, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing: %v", err)
+	}
+	if _, err = TryAcquireExistingInRoot(root, "../escape"); err == nil {
+		t.Fatal("escaped root")
+	}
+	path := filepath.Join(dir, "existing")
+	if err = os.WriteFile(path, []byte("unchanged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := TryAcquireExistingInRoot(root, "existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other, err := TryAcquireExisting(path); !errors.Is(err, ErrHeld) {
+		if other != nil {
+			_ = other.Release()
+		}
+		t.Fatalf("rooted lock did not exclude writer: %v", err)
+	}
+	if err = held.Release(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "unchanged" {
+		t.Fatalf("lock mutated content: %q %v", data, err)
+	}
+}
+
 func TestLockHelperProcess(t *testing.T) {
 	if os.Getenv(lockHelperEnv) != "1" {
 		return

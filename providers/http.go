@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -211,6 +212,27 @@ func IsRequiredStatusCheckPendingError(err error) bool {
 		strings.Contains(message, " is expected")
 }
 
+// MergeRefusalReason returns the provider message when GitHub's merge endpoint
+// rejected a pull request with HTTP 405. GitHub uses that status for multiple
+// business refusals whose wording evolves independently of Goobers; callers
+// must record the refusal rather than turn an unfamiliar message into an
+// infrastructure failure that leaves downstream refusal outputs missing.
+func MergeRefusalReason(err error) (string, bool) {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) || responseErr.statusCode != http.StatusMethodNotAllowed {
+		return "", false
+	}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(responseErr.body), &response) == nil {
+		if message := strings.Join(strings.Fields(response.Message), " "); message != "" {
+			return message, true
+		}
+	}
+	return "provider rejected the merge request", true
+}
+
 // mentionsMergeConflict reports whether a provider response body names a
 // merge-conflict refusal. GitHub's merge endpoint phrases this as
 // "Pull Request is not mergeable"; the explicit "merge conflict" wording is
@@ -280,11 +302,52 @@ func newProviderResponseError(resp *http.Response, method, endpoint string, body
 		method:             method,
 		endpoint:           endpoint,
 		statusCode:         resp.StatusCode,
-		body:               strings.TrimSpace(string(body)),
+		body:               responseErrorBody(resp.StatusCode, body),
 		retryAfter:         strings.TrimSpace(resp.Header.Get("Retry-After")),
 		rateLimitRemaining: strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")),
 		rateLimitReset:     strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")),
 	}
+}
+
+// responseErrorBody is the body text an error carries. A 401 answered with an
+// HTML page — Azure DevOps' sign-in page, which #6111 maps to 401 — is
+// summarized rather than embedded (Goobers#6120): kilobytes of markup bury
+// the one fact the error exists to state. Every other body is kept verbatim.
+func responseErrorBody(status int, body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if status != http.StatusUnauthorized || !looksLikeHTML(text) {
+		return text
+	}
+	summary := fmt.Sprintf("HTML sign-in page, %d bytes, not shown", len(body))
+	if title := htmlTitle(text); title != "" {
+		summary += fmt.Sprintf("; title %q", title)
+	}
+	return "<" + summary + ">"
+}
+
+func looksLikeHTML(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") ||
+		(strings.HasPrefix(lower, "<") && strings.Contains(lower, "<body"))
+}
+
+// htmlTitle extracts a short <title>, which on a sign-in page names it.
+func htmlTitle(text string) string {
+	lower := strings.ToLower(text)
+	start := strings.Index(lower, "<title>")
+	if start < 0 {
+		return ""
+	}
+	start += len("<title>")
+	end := strings.Index(lower[start:], "</title>")
+	if end < 0 {
+		return ""
+	}
+	title := strings.Join(strings.Fields(text[start:start+end]), " ")
+	if len(title) > 80 {
+		title = title[:80] + "…"
+	}
+	return title
 }
 
 // CommandRunner executes external commands such as git clone.
@@ -547,7 +610,12 @@ func capDescriptionWithFooter(body, runID string, maxChars int) string {
 			footer = "\n\n---\n" + runFooter(runID)
 		}
 	}
-	budget := maxChars - utf8.RuneCountInString(marker) - utf8.RuneCountInString(footer)
+	// Closing references ("Fixes #12", "Closes <url>") are what post-merge
+	// reads to transition the work items a merged PR resolves. They usually
+	// sit at the end of the body, exactly where trimming cuts, so they are
+	// carried past the marker rather than lost with the trimmed tail.
+	closing := descriptionClosingLines(body)
+	budget := maxChars - utf8.RuneCountInString(marker) - utf8.RuneCountInString(footer) - utf8.RuneCountInString(closing)
 	if budget <= 0 {
 		// Degenerate: the footer plus marker alone already exceed the limit.
 		// Hard-truncate the fully rendered description on a rune boundary.
@@ -557,7 +625,44 @@ func capDescriptionWithFooter(body, runID string, maxChars int) string {
 	if idx := strings.LastIndexByte(trimmed, '\n'); idx > 0 {
 		trimmed = trimmed[:idx]
 	}
-	return strings.TrimRight(trimmed, " \n") + marker + footer
+	trimmed = strings.TrimRight(trimmed, " \n")
+	return trimmed + marker + droppedClosingLines(closing, trimmed) + footer
+}
+
+// droppedClosingLines keeps only the closing lines that trimming removed,
+// so a reference the kept body still shows is not repeated.
+func droppedClosingLines(closing, kept string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(closing, "\n") {
+		if line == "" || strings.Contains(kept, line) {
+			continue
+		}
+		b.WriteString("\n\n")
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// descriptionClosingKeyword matches a closing reference: a closing keyword
+// followed by "#<id>" or a URL, the two forms post-merge resolves.
+var descriptionClosingKeyword = regexp.MustCompile(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:#\d+|https?://\S+)`)
+
+// descriptionClosingLines returns body's closing-reference lines, each
+// prefixed with a blank line separator, so a capped description can keep
+// them after its truncation marker. Empty when body has none.
+func descriptionClosingLines(body string) string {
+	var b strings.Builder
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] || !descriptionClosingKeyword.MatchString(line) {
+			continue
+		}
+		seen[line] = true
+		b.WriteString("\n\n")
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 // truncateRunes returns s limited to at most max runes, cutting on a rune

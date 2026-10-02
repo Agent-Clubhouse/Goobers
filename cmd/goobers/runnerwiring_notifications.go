@@ -75,15 +75,13 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	req.ID = blockedLookupID(req.ID)
 	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
 	if req.Repository.Provider == providers.ProviderADO {
-		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
-		if err != nil {
-			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+		backlog := backlogRepoRefForGaggle(c.layout, req.Repository)
+		if !backlogOnOtherProvider(req.Repository, backlog) {
+			return c.updateADOWorkItem(ctx, req, backlog)
 		}
-		if err := c.configureAttribution(ctx, provider); err != nil {
-			return providers.WorkItem{}, err
-		}
-		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
-		return provider.UpdateWorkItem(ctx, req)
+		// A backlog on another provider (topology (b)): the item lives there,
+		// reached through that repository's configured credential below.
+		req.Repository = backlog
 	}
 	if req.Repository.Provider == providers.ProviderGitea {
 		// Gitea authenticates with a static token like GitHub (resolved per call
@@ -120,14 +118,33 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 	return provider.UpdateWorkItem(ctx, req)
 }
 
+// updateADOWorkItem is UpdateWorkItem for an item in an Azure DevOps backlog:
+// the provider authenticates as the routed code repository's configured auth
+// and addresses the backlog project.
+func (c *escalationCommenter) updateADOWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest, backlog providers.RepositoryRef) (providers.WorkItem, error) {
+	provider, err := newConfiguredADOProvider(c.layout.Root, req.Repository)
+	if err != nil {
+		return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+	}
+	if err := c.configureAttribution(ctx, provider); err != nil {
+		return providers.WorkItem{}, err
+	}
+	req.Repository = backlog
+	return provider.UpdateWorkItem(ctx, req)
+}
+
 func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
 	itemID = blockedLookupID(itemID)
 	if repository.Provider == providers.ProviderADO {
-		provider, err := newADOProviderForStage(c.layout.Root, repository)
-		if err != nil {
-			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+		backlog := backlogRepoRefForGaggle(c.layout, repository)
+		if !backlogOnOtherProvider(repository, backlog) {
+			provider, err := newConfiguredADOProvider(c.layout.Root, repository)
+			if err != nil {
+				return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+			}
+			return provider.ListComments(ctx, backlog, itemID)
 		}
-		return provider.ListComments(ctx, backlogRepoRefForGaggle(c.layout, repository), itemID)
+		repository = backlog
 	}
 	ref := repository.Owner + "/" + repository.Name
 	token, err := c.resolver.Resolve(ctx, ref)
@@ -148,7 +165,11 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
 	if repository.Provider == providers.ProviderADO {
-		return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+		backlog := backlogRepoRefForGaggle(c.layout, repository)
+		if !backlogOnOtherProvider(repository, backlog) {
+			return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
+		}
+		repository = backlog
 	}
 	ref := repository.Owner + "/" + repository.Name
 	token, err := c.resolver.Resolve(ctx, ref)
@@ -389,7 +410,13 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		// #3363) are likewise not work failures. Timeout deliberately still
 		// counts: a recurring harness session timeout is this circuit
 		// breaker's motivating case (#1054).
-		if class := telemetry.ClassifyError(o.Code); class.InfraFault() || class == telemetry.ErrorClassItemJudgment {
+		if failureStreakExempt(o) {
+			// #5588/#5598: a pr-remediation cycle this run already charged
+			// never had its fix evaluated. Mark it so the next checkpoint
+			// refunds the charge instead of escalating the PR.
+			if failedOutcomeClass(o).InfraFault() {
+				return voidRemediationChargeForRun(ctx, poster, l, o.RunID)
+			}
 			return nil
 		}
 		// #4417: o.RepoRef is the run's dispatch-time gaggle project, not
@@ -400,6 +427,27 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 		runURL, _ := failureRunURL(l, cfg, o.RunID)
 		return applyCircuitBreaker(ctx, poster, l, o.RunID, o.Stage, runURL)
 	}
+}
+
+// failureStreakExempt reports whether a failed terminal must stay out of the
+// failure streak. The runner's own classification wins (#5638): a dispatch
+// that exhausted its infrastructure retry budget is infra whatever code it
+// surfaced under — a no-agent-turn harness startup failure carried a code
+// ClassifyError could only call executor/unknown. Only an explicit class
+// exempts that way; an unclassified terminal is judged by its code, so a
+// bare session timeout still counts (#1054).
+func failureStreakExempt(o runner.FailedOutcome) bool {
+	class := failedOutcomeClass(o)
+	return class.InfraFault() || class == telemetry.ErrorClassItemJudgment
+}
+
+// failedOutcomeClass is the terminal's class: the runner's explicit
+// FaultClass when it set one, else the class of its code.
+func failedOutcomeClass(o runner.FailedOutcome) telemetry.ErrorClass {
+	if o.FaultClass != "" {
+		return o.FaultClass
+	}
+	return telemetry.ClassifyError(o.Code)
 }
 
 const failureStreakThreshold = 3

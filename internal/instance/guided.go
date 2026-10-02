@@ -30,7 +30,9 @@ const (
 	// GuidedWorkflowBacklogCuration identifies the canonical backlog-curation workflow.
 	GuidedWorkflowBacklogCuration = "backlog-curation"
 	// GuidedWorkflowWorkNomination identifies the canonical work-nomination workflow.
-	GuidedWorkflowWorkNomination   = "work-nomination"
+	GuidedWorkflowWorkNomination = "work-nomination"
+	// GuidedWorkflowMergeReview identifies the canonical merge-review workflow.
+	GuidedWorkflowMergeReview      = "merge-review"
 	guidedExampleGaggle            = "acme-web"
 	guidedExampleDisplayName       = "Acme Web"
 	guidedExampleRoot              = "gaggles/" + guidedExampleGaggle
@@ -46,13 +48,23 @@ var guidedWorkflowOrder = []string{
 	GuidedWorkflowImplementation,
 	GuidedWorkflowBacklogCuration,
 	GuidedWorkflowWorkNomination,
+	GuidedWorkflowMergeReview,
 }
 
 var guidedWorkflowGoobers = map[string][]string{
 	GuidedWorkflowImplementation:  {"implementer", "reviewer"},
 	GuidedWorkflowBacklogCuration: {"curator"},
 	GuidedWorkflowWorkNomination:  {"nominator"},
+	GuidedWorkflowMergeReview:     {"reviewer"},
 }
+
+// guidedADOAuthKinds are the Azure DevOps repository auth kinds guided setup
+// accepts: every kind the instance configuration accepts.
+var guidedADOAuthKinds = []string{ADOAuthAzureCLI, ADOAuthWorkloadIdentity, ADOAuthManagedIdentity, ADOAuthPAT}
+
+// guidedADOInstructionsFile is the Azure DevOps variant of a goober's
+// instructions, used instead of the GitHub-spelled instructions.md when present.
+const guidedADOInstructionsFile = "instructions-ado.md"
 
 // GuidedOptions describes one guided first-run instance.
 type GuidedOptions struct {
@@ -518,20 +530,8 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	if !guidedObjectName(opts.GaggleName) {
 		return fmt.Errorf("gaggle name %q must contain lowercase letters, numbers, or hyphens and start and end with a letter or number", opts.GaggleName)
 	}
-	switch opts.RepoProvider {
-	case string(apiv1.ProviderGitHub):
-		if opts.RepoProject != "" {
-			return fmt.Errorf("repository project is only valid for Azure DevOps")
-		}
-	case string(apiv1.ProviderADO):
-		if opts.RepoProject == "" {
-			return fmt.Errorf("azure DevOps repository project is required")
-		}
-		if opts.RepoAuthKind != ADOAuthAzureCLI && opts.RepoAuthKind != ADOAuthPAT {
-			return fmt.Errorf("azure DevOps guided setup supports auth kind %q or %q", ADOAuthAzureCLI, ADOAuthPAT)
-		}
-	default:
-		return fmt.Errorf("repository provider must be %q or %q", apiv1.ProviderGitHub, apiv1.ProviderADO)
+	if err := validateGuidedProvider(opts); err != nil {
+		return err
 	}
 	switch apiv1.Harness(opts.Harness) {
 	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
@@ -632,6 +632,39 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	return nil
 }
 
+// validateGuidedProvider checks the repository provider and the options that
+// depend on it. Azure DevOps accepts every repository auth kind the instance
+// configuration accepts, and refuses work-nomination, whose file-issues stage
+// files GitHub issues only. Guided merge-review is offered on Azure DevOps
+// only: guided GitHub setup grants no pull-request token to it.
+func validateGuidedProvider(opts GuidedOptions) error {
+	switch opts.RepoProvider {
+	case string(apiv1.ProviderGitHub):
+		if opts.RepoProject != "" {
+			return fmt.Errorf("repository project is only valid for Azure DevOps")
+		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowMergeReview) {
+			return fmt.Errorf("guided setup offers the %s workflow on Azure DevOps only; on GitHub select %s, %s and/or %s",
+				GuidedWorkflowMergeReview, GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration, GuidedWorkflowWorkNomination)
+		}
+	case string(apiv1.ProviderADO):
+		if opts.RepoProject == "" {
+			return fmt.Errorf("azure DevOps repository project is required")
+		}
+		if !slices.Contains(guidedADOAuthKinds, opts.RepoAuthKind) {
+			return fmt.Errorf("azure DevOps guided setup supports auth kind %s; got %q",
+				strings.Join(guidedADOAuthKinds, ", "), opts.RepoAuthKind)
+		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowWorkNomination) {
+			return fmt.Errorf("the %s workflow is not available on Azure DevOps because its file-issues stage files GitHub issues only; select %s, %s and/or %s",
+				GuidedWorkflowWorkNomination, GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration, GuidedWorkflowMergeReview)
+		}
+	default:
+		return fmt.Errorf("repository provider must be %q or %q", apiv1.ProviderGitHub, apiv1.ProviderADO)
+	}
+	return nil
+}
+
 func guidedObjectName(name string) bool {
 	if name == "" || len(name) > 54 || name[0] == '-' || name[len(name)-1] == '-' {
 		return false
@@ -717,7 +750,7 @@ func guidedRepositoryToken(opts GuidedOptions) TokenRef {
 	if opts.RepoProvider == string(apiv1.ProviderGitHub) && opts.GitHubCLIUser != "" {
 		return TokenRef{GitHubCLI: &GitHubCLIRef{Hostname: "github.com", User: opts.GitHubCLIUser}}
 	}
-	if opts.RepoProvider == string(apiv1.ProviderADO) && opts.RepoAuthKind == ADOAuthAzureCLI {
+	if opts.RepoProvider == string(apiv1.ProviderADO) && opts.RepoAuthKind != ADOAuthPAT {
 		return TokenRef{}
 	}
 	return TokenRef{Env: opts.RepoTokenEnv}
@@ -800,6 +833,15 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 		task := &workflow.Spec.Tasks[i]
 		if task.Type == apiv1.TaskAgentic {
 			task.Capabilities = prependCapability(task.Capabilities, string(capability.AgentModel))
+		}
+		// On Azure DevOps, open-pr links the pull request natively to its
+		// claimed work item only when the stage declares ado:work-items:write
+		// (cmd/goobers/openpr.go openPRWorkItemLinker); without it the PR is
+		// referenced by text only, so Boards traceability, completion-driven
+		// work-item transitions and a "Work item linking" branch policy all
+		// fail. GitHub never resolves the name, so its scaffold is unchanged.
+		if opts.RepoProvider == string(apiv1.ProviderADO) && guidedTaskRunsBuiltin(*task, "open-pr") {
+			task.Capabilities = appendCapability(task.Capabilities, string(capability.ADOWorkItemsWrite))
 		}
 		// Template the operator's answered CI command into the generated
 		// local-ci stage instead of leaving the source example's literal
@@ -899,7 +941,7 @@ func guidedGooberFiles(name string, selected map[string]bool, opts GuidedOptions
 	if err != nil {
 		return nil, fmt.Errorf("encode guided goober %s: %w", name, err)
 	}
-	instructions, err := configexamples.Files.ReadFile(sourceDir + "/instructions.md")
+	instructions, err := guidedGooberInstructions(sourceDir, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -917,6 +959,23 @@ func guidedGooberFiles(name string, selected map[string]bool, opts GuidedOptions
 	}, nil
 }
 
+// guidedGooberInstructions reads a canonical goober's instructions. On Azure
+// DevOps the instructions-ado.md variant is used when the goober has one: it
+// leaves out GitHub-only actions such as milestones and native blocked-by
+// dependencies.
+func guidedGooberInstructions(sourceDir string, opts GuidedOptions) ([]byte, error) {
+	if opts.RepoProvider == string(apiv1.ProviderADO) {
+		data, err := configexamples.Files.ReadFile(sourceDir + "/" + guidedADOInstructionsFile)
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return configexamples.Files.ReadFile(sourceDir + "/instructions.md")
+}
+
 func prependCapability(capabilities []string, name string) []string {
 	for _, existing := range capabilities {
 		if existing == name {
@@ -924,6 +983,20 @@ func prependCapability(capabilities []string, name string) []string {
 		}
 	}
 	return append([]string{name}, capabilities...)
+}
+
+func appendCapability(capabilities []string, name string) []string {
+	if slices.Contains(capabilities, name) {
+		return capabilities
+	}
+	return append(capabilities, name)
+}
+
+// guidedTaskRunsBuiltin reports whether task runs the built-in
+// `goobers <command>` stage.
+func guidedTaskRunsBuiltin(task apiv1.Task, command string) bool {
+	return task.Type == apiv1.TaskDeterministic && task.Run != nil &&
+		len(task.Run.Command) >= 2 && task.Run.Command[0] == "goobers" && task.Run.Command[1] == command
 }
 
 func guidedManifest(opts GuidedOptions) []byte {

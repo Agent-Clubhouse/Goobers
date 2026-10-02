@@ -79,6 +79,12 @@ var completionPositionalArgValues = map[string][]string{
 // authoritative definition); -h/--help is universal and added by the renderer,
 // so it is not repeated here.
 var completionFlagSpecs = map[string][]completionFlagSpec{
+	"gaggle export": {
+		{name: "output", takesArg: true, desc: "Write the bundle to a file"},
+	},
+	"gaggle import": {
+		{name: "name", takesArg: true, desc: "Destination gaggle name"},
+	},
 	"config templates import": {
 		{name: "repository", takesArg: true, desc: "Template Git repository"},
 		{name: "directory", takesArg: true, desc: "Template directory in the repository"},
@@ -380,6 +386,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},
 	"runs list": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "phase", takesArg: true, desc: "Filter by phase"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Filter by workflow"},
@@ -390,6 +397,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"status": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "agents", desc: "List in-flight agentic stages by role"},
 		{name: "all", desc: "Show individual detail for manual-only workflows"},
 		{name: "daemon", desc: "Report daemon health and identity"},
@@ -456,6 +464,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "force", desc: "Release a claim held by a non-terminal run"},
 	},
 	"trace": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "follow", desc: "Stream events until the run reaches a terminal phase"},
 		{name: "summary", desc: "Show run metadata and review verdicts"},
@@ -479,9 +488,11 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "out", takesArg: true, desc: "Write the injection record here instead of stdout"},
 	},
 	"escalations": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 	},
 	"escalations show": {
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},
 		{name: "include-verdict", desc: "Include review verdict content"},
 	},
@@ -504,6 +515,18 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Include runs at or after this RFC3339 timestamp"},
 		{name: "until", takesArg: true, desc: "Include runs at or before this RFC3339 timestamp"},
 		{name: "rebuild", desc: "Rebuild telemetry from run journals before querying"},
+	},
+	"telemetry configure": {
+		{name: "connection-string-env", takesArg: true, desc: "Environment variable containing the Application Insights connection string"},
+		{name: "connection-string-file", takesArg: true, desc: "Protected file containing the Application Insights connection string"},
+		{name: "connection-string-store", takesArg: true, desc: "Declared secret-store reference in STORE/SECRET form"},
+		{name: "profile", takesArg: true, values: []string{"health", "journal", "standard", "diagnostic"}, desc: "Telemetry collection profile"},
+		{name: "disable", desc: "Remove the direct Azure Monitor destination"},
+		{name: "json", desc: "Emit JSON"},
+	},
+	"telemetry test": {
+		{name: "json", desc: "Emit JSON"},
+		{name: "timeout", takesArg: true, desc: "Connectivity deadline"},
 	},
 	"telemetry merges": {
 		{name: "compare-github", takesArg: true, desc: "Compare an explicit GitHub owner/repository"},
@@ -546,6 +569,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "since", takesArg: true, desc: "Inclusive span-start lower bound"},
 		{name: "until", takesArg: true, desc: "Exclusive span-start upper bound"},
 	},
+	"telemetry mark-fix": {
+		{name: "finding", takesArg: true, desc: "Backprop finding ID to verify"},
+		{name: "applied-at", takesArg: true, desc: "Fix deployment time as RFC3339"},
+	},
 	"telemetry compact": {
 		{name: "dry-run", desc: "Report reclaimable data without changing it"},
 	},
@@ -586,6 +613,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "max-runs", takesArg: true, desc: "Maximum runs to collect when no run is named"},
 		{name: "output", takesArg: true, desc: "Archive path to write"},
 		{name: "json", desc: "Write the machine-readable document to stdout"},
+	},
+	"diagnostics triage": {
+		{name: "run", takesArg: true, desc: "Run id to classify"},
+		{name: "json", desc: "Write the machine-readable support-triage contract"},
 	},
 	"security-alerts-query": {
 		{name: "source", takesArg: true, values: []string{"code-scanning", "dependabot"}, desc: "Alert feed to read"},

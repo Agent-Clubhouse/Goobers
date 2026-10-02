@@ -77,7 +77,7 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 	}
 	workflows := splitLabelList(input.Workflows)
 	if !input.WorkflowsSet {
-		workflows = []string{instance.GuidedWorkflowImplementation, instance.GuidedWorkflowBacklogCuration}
+		workflows = standardDefaultWorkflows(provider)
 	}
 	opts := &instance.GuidedOptions{
 		GaggleName:   gaggleName,
@@ -91,10 +91,17 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		PullRequestCI: input.PullRequestCI, CICommand: argv, RequiredCapabilities: splitLabelList(input.Capabilities),
 	}
 	if provider == "ado" {
-		if !input.RepoAuthKindSet {
-			opts.RepoAuthKind = instance.ADOAuthPAT
+		kind, err := standardADORepoAuthKind(input)
+		if err != nil {
+			return nil, err
 		}
-		opts.RepoTokenEnv = "GOOBERS_ADO_TOKEN"
+		// An unset or empty kind defaults to azure-cli (normalizeGuidedOptions);
+		// only PAT auth names a token variable.
+		opts.RepoAuthKind = kind
+		opts.RepoTokenEnv = ""
+		if strings.TrimSpace(opts.RepoAuthKind) == instance.ADOAuthPAT {
+			opts.RepoTokenEnv = "GOOBERS_ADO_TOKEN"
+		}
 		opts.WorkTrackingTokenEnv, opts.PullRequestTokenEnv, opts.RepoPushTokenEnv = "", "", ""
 	}
 	if input.RepoTokenEnvSet {
@@ -115,6 +122,39 @@ func standardInitOptions(input standardInitInput) (*instance.GuidedOptions, erro
 		opts.CopilotTokenEnv = input.ModelTokenEnv
 	}
 	return opts, nil
+}
+
+// standardADORepoAuthKind resolves the Azure DevOps repository auth kind.
+// Only PAT auth reads a token variable, so naming one with --repo-token-env
+// and no kind selects pat (as scripted ADO onboarding did before azure-cli
+// became the default); naming one with any other kind is a usage error
+// instead of a silently ignored flag. An empty --repo-token-env names nothing.
+func standardADORepoAuthKind(input standardInitInput) (string, error) {
+	kind := strings.TrimSpace(input.RepoAuthKind)
+	if !input.RepoTokenEnvSet || strings.TrimSpace(input.RepoTokenEnv) == "" {
+		return kind, nil
+	}
+	switch kind {
+	case "":
+		return instance.ADOAuthPAT, nil
+	case instance.ADOAuthPAT:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("--repo-token-env is read only by --repo-auth-kind=%s on Azure DevOps; drop --repo-token-env or use --repo-auth-kind=%s instead of %q",
+			instance.ADOAuthPAT, instance.ADOAuthPAT, kind)
+	}
+}
+
+// standardDefaultWorkflows is the module set `init --template=standard` seeds
+// when --workflows is not given. Azure DevOps also gets merge-review so the
+// instance lands the pull requests it opens (docs/design/ado-parity-dsl-2-0.md
+// §7.1); the GitHub default is unchanged.
+func standardDefaultWorkflows(provider string) []string {
+	workflows := []string{instance.GuidedWorkflowImplementation, instance.GuidedWorkflowBacklogCuration}
+	if provider == "ado" {
+		workflows = append(workflows, instance.GuidedWorkflowMergeReview)
+	}
+	return workflows
 }
 
 func seedInitTemplate(root, template, harness string, demo bool, standard *instance.GuidedOptions, diagnostic io.Writer) (*instance.InitResult, error) {

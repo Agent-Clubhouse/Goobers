@@ -20,12 +20,20 @@ export type Route =
       id?: string;
     }
   | { page: "workflow"; id: string; gaggle?: string }
-  | { page: "run"; id: string };
+  | {
+      page: "run";
+      id: string;
+      tab?: RunDetailTab;
+      seq?: number;
+      node?: string;
+      event?: boolean;
+    };
 
 // The Runs and Insight route filters are exactly the shared scope model
 // (#2528) — kept as named aliases so call sites read in terms of the view
 // they're for, without three parallel field-by-field type declarations.
 export type RunStatusFilter = "active" | "attention" | "complete" | "all";
+export type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal";
 
 export interface RunRouteFilters extends ScopeFilters {
   status?: RunStatusFilter;
@@ -67,7 +75,13 @@ export function parseRoute(hash = window.location.hash): Route {
     return { page: "gaggle", id };
   }
   if (area === "run" && id) {
-    return { page: "run", id };
+    const tab = runDetailTabQuery(search);
+    const seq = nonnegativeIntegerQuery(search, "seq");
+    const node = optionalQuery(search, "node");
+    const event = search.get("event") === "1" ? true : undefined;
+    return tab || seq !== undefined || node || event
+      ? { page: "run", id, tab, seq, node, event }
+      : { page: "run", id };
   }
   if (area === "work-items") {
     const segments = path.split("/");
@@ -140,7 +154,17 @@ export function routeHash(route: Route): string {
     return `#/workflow/${identity}`;
   }
   if (route.page === "run") {
-    return `#/run/${encodeURIComponent(route.id)}`;
+    const search = new URLSearchParams();
+    writeQuery(search, "tab", route.tab === "diagnostics" ? "graph" : route.tab);
+    if (route.seq !== undefined) {
+      search.set("seq", String(route.seq));
+    }
+    writeQuery(search, "node", route.node);
+    if (route.event) {
+      search.set("event", "1");
+    }
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return `#/run/${encodeURIComponent(route.id)}${suffix}`;
   }
   if (route.page === "work-items") {
     if (route.provider && route.repository && route.kind && route.id) {
@@ -251,6 +275,30 @@ function runStatusQuery(search: URLSearchParams): RunStatusFilter | undefined {
     value === "all"
     ? value
     : undefined;
+}
+
+function runDetailTabQuery(search: URLSearchParams): RunDetailTab | undefined {
+  const value = optionalQuery(search, "tab");
+  if (value === "graph" || value === "diagnostics") {
+    return "diagnostics";
+  }
+  return value === "overview" ||
+    value === "artifacts" ||
+    value === "journal"
+    ? value
+    : undefined;
+}
+
+function nonnegativeIntegerQuery(
+  search: URLSearchParams,
+  name: string,
+): number | undefined {
+  const raw = optionalQuery(search, name);
+  if (raw === undefined || !/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : undefined;
 }
 
 function windowQuery(search: URLSearchParams): InsightWindow | undefined {

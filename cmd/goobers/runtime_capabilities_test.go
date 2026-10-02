@@ -47,6 +47,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	assertActionClass(t, cliSurfaceActions(), "completion fish", apicontract.ActionConfigTime)
 	assertActionClass(t, cliSurfaceActions(), "telemetry stats", apicontract.ActionReadOnlyNavigation)
 	assertActionClass(t, cliSurfaceActions(), "telemetry errors", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, cliSurfaceActions(), "telemetry mark-fix", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "telemetry prune-orphans", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "journal redact", apicontract.ActionMaintenance)
 	assertActionClass(t, cliSurfaceActions(), "claims list", apicontract.ActionReadOnlyNavigation)
@@ -78,7 +79,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	apiMetadataRoutes := map[apicontract.ActionID]bool{"discovery": true, "openapi": true, "capabilities": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true, "gaggleBundleImport": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true, "claimVerify": true,
 		// A resident worker reports a config comparison transition into the
@@ -90,7 +91,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// under the instance root and honours interventions and the recovery
 		// gate). Same machine-seam class as the rest of the claims plane.
 		"claimRecover":  true,
-		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
+		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "credentialRefresh": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
 		// Uploading recovery state transfers durable custody during execution;
 		// it is not the read-only recovery archive download route.
@@ -103,6 +104,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		"journalEscalationCandidates": true, "journalBranchOwnership": true,
 		// An admitted stage rechecks current authorization immediately before land.
 		"journalMergeAuthority": true,
+		// Human operators and same-run pods submit attributed operator input
+		// into an active run; accepted and rejected attempts are durable writes.
+		"operatorMessageSubmit": true,
 	}
 	for _, action := range apiActions {
 		if apiMetadataRoutes[action.ID] {

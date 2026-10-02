@@ -66,7 +66,7 @@ func distinctIssueRefs(pattern *regexp.Regexp, body string) []string {
 	return out
 }
 
-const needsRemediationLabel = "goobers:needs-remediation"
+const needsRemediationLabel = providers.LabelNeedsRemediation
 
 type siblingTriage struct {
 	Reason           string
@@ -187,7 +187,10 @@ const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"the merged PR and overlapping paths on each affected PR (issue\n" +
 	"#715 — a clean disjoint sibling is left untouched), and mark each\n" +
 	"issue the merged PR's body references (Fixes/Closes/Resolves #N)\n" +
-	"done. Declared input: pullNumber (required — the just-merged PR).\n" +
+	"done. When the backlog lives on another provider than the PR (a\n" +
+	"GitHub backlog for Azure DevOps code), only references by the\n" +
+	"issue's full URL count. Declared input: pullNumber (required — the\n" +
+	"just-merged PR).\n" +
 	"Exit codes: 0 = done (even if the PR body references no issue, or\n" +
 	"there are no other open PRs — both are normal outcomes, not\n" +
 	"errors), 1 = business error, 2 = usage/IO error.\n"
@@ -273,26 +276,36 @@ type adoPostMergePRComments interface {
 // unparkSelfHealedEscalations, unparkSelfHealedDemotions — is a documented no-op
 // here: each takes a concrete *GitHubProvider and issues a PR-number-as-work-item
 // write (UpdateWorkItem(ID: pr.Number, …)) that on ADO would mutate the unrelated
-// work item sharing the PR's numeric id (wrong-object hazard, §8). The provider
-// is built via the shared stage provider factory (never providerToken(github:*)); work-item
-// calls target backlogRepoRefForStage so they hit the backlog project, not the
-// routed code-repo project (§6). The reconcile-lock idempotency is unchanged.
+// work item sharing the PR's numeric id (wrong-object hazard, §8). The providers
+// are built via the shared stage provider factory, each from the credential its
+// declared capability delivered: github:pr:write for the pull request (poll and
+// threads) and github:issues:write for the backlog work items
+// (docs/design/ado-parity-dsl-2-0.md §3.1). Work-item calls target
+// backlogRepoRefForStage so they hit the backlog project, not the routed
+// code-repo project (§6). The reconcile-lock idempotency is unchanged.
 func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
+	prProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Work items (the closed PBI) live in the backlog project on ADO, not the
+	// routed code repo whose PR this stage merged; address them there (§6).
+	// A backlog on another provider (topology (b)) is opened on that provider
+	// with the github:issues:write credential bound to it (§7.2).
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issuesProvider, err := newMergeReviewProvider(root, backlogProviderRepo(repo, backlogRepo), false, withStageProviderCapability(capability.GitHubIssuesWrite))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
 	// Mandatory Provider methods (PollPullRequest here, BacklogProvider in the
 	// close) route through the dispatcher, which embeds Provider — never a
 	// concrete *providers.GitHubProvider (merge-wiring-plan.md §8).
-	dispatcher := providers.NewDispatcher(adoProvider)
-	// Work items (the closed PBI) live in the backlog project on ADO, not the
-	// routed code repo whose PR this stage merged; address them there (§6).
-	backlogRepo := backlogRepoRefForStage(root, repo)
-
 	transport := threadCommentPostMergeTransport{
-		provider: dispatcher, prComments: adoProvider, backlogRepo: backlogRepo, root: root, repo: repo,
+		provider: providers.NewDispatcher(prProvider), closer: providers.NewDispatcher(issuesProvider),
+		prComments: prProvider, backlogRepo: backlogRepo, root: root, repo: repo,
 	}
 	return runPostMergeCore(root, repo, transport, stdout, stderr)
 }
@@ -322,6 +335,7 @@ func (t issueCommentPostMergeTransport) Perform(ctx context.Context, pullNumber 
 
 type threadCommentPostMergeTransport struct {
 	provider    providers.Provider
+	closer      adoWorkItemCloser
 	prComments  adoPostMergePRComments
 	backlogRepo providers.RepositoryRef
 	root        string
@@ -333,7 +347,7 @@ func (t threadCommentPostMergeTransport) Poll(ctx context.Context, repo provider
 }
 
 func (t threadCommentPostMergeTransport) Perform(ctx context.Context, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
-	return performPostMergeADOWithPRComments(ctx, t.provider, t.prComments, t.backlogRepo, poll, pullNumber, t.root, t.repo, stdout, stderr)
+	return performPostMergeADOWithPRComments(ctx, t.closer, t.prComments, t.backlogRepo, poll, pullNumber, t.root, t.repo, stdout, stderr)
 }
 
 func runPostMergeCore(root string, repo providers.RepositoryRef, transport postMergeTransport, stdout, stderr io.Writer) int {
@@ -397,16 +411,17 @@ func performPostMergeADOWithPRComments(ctx context.Context, closer adoWorkItemCl
 // Delayed entries carry their originating gaggle explicitly. An empty legacy
 // origin remains empty so the cost resolver can apply its conservative policy.
 func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser, prComments adoPostMergePRComments, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber, root, origin string, repo providers.RepositoryRef, stdout, stderr io.Writer) []error {
-	issueIDs := closingIssueNumbers(poll.Body)
+	issueIDs := postMergeClosingIDs(poll.Body, repo, backlogRepo)
 	var report postMergeCostReport
 	if prComments != nil && costPublicationAllowed(root, origin, repo, stderr) {
 		report = collectADOPostMergeCostReport(ctx, closer, prComments, backlogRepo, repo, pullNumber, issueIDs, stderr)
 	}
 	comments := make(map[string]string, len(issueIDs))
+	pullRef := postMergePullRequestRef(pullNumber, poll.URL, repo, backlogRepo)
 	for _, issueID := range issueIDs {
-		comments[issueID] = mergedPullRequestComment(pullNumber, report, issueID)
+		comments[issueID] = mergedPullRequestCommentAt(pullRef, report, issueID)
 	}
-	closed, closeErrs := closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, poll.Body, comments)
+	closed, closeErrs := closeReferencedWorkItemsADOWithComments(ctx, closer, backlogRepo, issueIDs, comments)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}
@@ -414,16 +429,19 @@ func performPostMergeADOWithOrigin(ctx context.Context, closer adoWorkItemCloser
 	return closeErrs
 }
 
-// closeReferencedWorkItemsADOWithComments marks done every work item the merged PR's body
-// references via the same closing-keyword grammar closeReferencedIssues uses
-// (Fixes/Closes/Resolves #N) — on ADO `N` is the work-item id (open-pr writes
-// "Fixes #<itemID>"; the durable WI↔PR link is the body ref, not the claim
-// ledger, which was released at issue-close-out). It mirrors
-// closeReferencedIssues but routes through the base-Provider interface (so it
-// accepts the ADO provider) and targets backlogRepo, never the routed code repo.
-// A PR referencing no work item is a normal outcome, not an error.
-func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body string, comments map[string]string) (closed []string, errs []error) {
-	for _, id := range closingIssueNumbers(body) {
+// closeReferencedWorkItemsADOWithComments marks done every backlog item in ids:
+// the items the merged PR's body closes (postMergeClosingIDs). On ADO that is
+// the same closing-keyword grammar closeReferencedIssues uses
+// (Fixes/Closes/Resolves #N), where `N` is the work-item id (open-pr writes
+// "Fixes #<itemID>"); with a backlog on another provider (topology (b)) it is
+// the "Fixes <issue URL>" form open-pr writes there. The durable item↔PR link
+// is the body ref, not the claim ledger, which was released at
+// issue-close-out. It mirrors closeReferencedIssues but routes through the
+// base-Provider interface (so it accepts the ADO provider, or the backlog's
+// own provider) and targets backlogRepo, never the routed code repo. A PR
+// referencing no work item is a normal outcome, not an error.
+func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, ids []string, comments map[string]string) (closed []string, errs []error) {
+	for _, id := range ids {
 		if err := closeReferencedWorkItemADO(ctx, closer, backlogRepo, id, comments[id]); err != nil {
 			errs = append(errs, fmt.Errorf("close work item #%s: %w", id, err))
 			continue
@@ -438,38 +456,67 @@ func closeReferencedWorkItemsADOWithComments(ctx context.Context, closer adoWork
 // mirrors closeReferencedIssue's idempotency: the status write is skipped when
 // the item is already in the closed state and already carries goobers/status:done
 // (ADO maps the Completed state category to State=="closed" and surfaces the
-// status tag as a visible label), and the comment is not re-posted if present.
+// status tag as a visible label). A successful close also retires the claim
+// and ready markers so an ADO auto-transition to Done cannot leave the item
+// looking selectable or owned after merge. The comment is not re-posted if
+// present.
 func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, id, comment string) error {
 	item, err := closer.GetWorkItem(ctx, backlogRepo, id)
 	if err != nil {
 		return err
 	}
 	statusLabel := "goobers/status:" + string(providers.WorkItemStatusDone)
-	if !strings.EqualFold(item.State, "closed") || !hasAnyLabel(item.Labels, []string{statusLabel}) {
-		if _, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
+	if !strings.EqualFold(item.State, "closed") || !hasExclusiveStatusLabel(item.Labels, statusLabel) {
+		updated, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
 			Repository: backlogRepo,
 			ID:         id,
 			Status:     providers.WorkItemStatusDone,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		item = updated
 	}
 
 	comments, err := closer.ListComments(ctx, backlogRepo, id)
 	if err != nil {
 		return err
 	}
+	commentPresent := false
 	for _, existing := range comments {
 		if strings.HasPrefix(existing.Body, strings.SplitN(comment, "\n", 2)[0]) {
-			return nil
+			commentPresent = true
+			break
 		}
 	}
+	removeLabels := []string{providers.LabelClaimed, providers.LabelReady}
+	if commentPresent && !hasAnyLabel(item.Labels, removeLabels) {
+		return nil
+	}
+	if commentPresent {
+		comment = ""
+	}
 	_, err = closer.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: backlogRepo,
-		ID:         id,
-		Comment:    comment,
+		Repository:   backlogRepo,
+		ID:           id,
+		Comment:      comment,
+		RemoveLabels: removeLabels,
 	})
 	return err
+}
+
+func hasExclusiveStatusLabel(labels []string, want string) bool {
+	found := false
+	for _, label := range labels {
+		if !strings.HasPrefix(label, "goobers/status:") {
+			continue
+		}
+		if label != want {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func performPostMerge(ctx context.Context, provider, issuesProvider remediationProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
@@ -559,6 +606,56 @@ func requestPostMergeReTick(ctx context.Context, root string, freed int, stdout,
 		workflowName, freed)
 }
 
+type unparkSweep struct {
+	label        string
+	removeLabels []string
+	addLabels    []string
+	listError    func(string, error) error
+	check        func(context.Context, remediationProvider, providers.RepositoryRef, providers.PullRequestSummary) (bool, error)
+	checkError   func(int, error) error
+	updateError  func(int, error) error
+}
+
+func unparkMatchingPRs(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, sweep unparkSweep) ([]int, []error) {
+	if base == "" {
+		return nil, nil
+	}
+	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
+	})
+	if err != nil {
+		return nil, []error{sweep.listError(base, err)}
+	}
+	return unparkMatchingPRsFrom(ctx, provider, repo, mergedNumber, others, sweep)
+}
+
+func unparkMatchingPRsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, sweep unparkSweep) (unparked []int, errs []error) {
+	for _, pr := range others {
+		if pr.Number == mergedNumber || !hasAnyLabel(pr.Labels, []string{sweep.label}) {
+			continue
+		}
+		stillBlocked, err := sweep.check(ctx, provider, repo, pr)
+		if err != nil {
+			errs = append(errs, sweep.checkError(pr.Number, err))
+			continue
+		}
+		if stillBlocked {
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repo,
+			ID:           strconv.Itoa(pr.Number),
+			RemoveLabels: append([]string(nil), sweep.removeLabels...),
+			AddLabels:    append([]string(nil), sweep.addLabels...),
+		}); err != nil {
+			errs = append(errs, sweep.updateError(pr.Number, err))
+			continue
+		}
+		unparked = append(unparked, pr.Number)
+	}
+	return unparked, errs
+}
+
 // unparkSelfHealedEscalations removes goobers:merge-escalated from any open PR
 // that has self-healed since it was parked (#992/#836) — its own head/base SHA
 // has moved past the escalation snapshot, so escalationStillBlocks now returns
@@ -570,59 +667,32 @@ func requestPostMergeReTick(ctx context.Context, root string, freed int, stdout,
 // dead-end whose SHA has not moved (escalationStillBlocks fail-closed) keeps
 // the label and its human handoff. Mirrors unparkResolvedSiblings' shape and
 // best-effort error posture.
-func unparkSelfHealedEscalations(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
-	if base == "" {
-		return nil, nil
-	}
-	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
-	})
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-escalated unpark: %w", base, err))
-		return nil, errs
-	}
-	return unparkSelfHealedEscalationsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+func unparkSelfHealedEscalations(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, _ io.Writer) ([]int, []error) {
+	return unparkMatchingPRs(ctx, provider, repo, mergedNumber, base, selfHealedEscalationSweep())
 }
 
-func unparkSelfHealedEscalationsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
-	for _, pr := range others {
-		if pr.Number == mergedNumber {
-			continue
-		}
-		if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
-			continue
-		}
-		stillBlocked, berr := escalationStillBlocks(ctx, provider, repo, pr)
-		if berr != nil {
-			errs = append(errs, fmt.Errorf("check merge-escalated state for pr #%d during unpark: %w", pr.Number, berr))
-			continue
-		}
-		if stillBlocked {
-			continue
-		}
-		// One mutation, both halves. escalate() removes needsRemediationLabel
-		// when it parks the PR, so lifting the park without restoring it
-		// leaves the PR in NEITHER lane: remediationPriorityFor returns none
-		// (no label, CI green) and pr-select skips a still-demoted PR whose
-		// head never advances -- because nothing remediates it. #4109 caught
-		// #3891 and #3900 in exactly that state for a day and a half.
-		//
-		// record-merge-refusal already sets the contract for this handoff: it
-		// applies {mergeDemotedLabel, needsRemediationLabel} together so the
-		// demoted lander has a path to move its head. A self-healed escalation
-		// is the same handoff.
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repo,
-			ID:           strconv.Itoa(pr.Number),
-			RemoveLabels: []string{remediationEscalatedLabel},
-			AddLabels:    []string{needsRemediationLabel},
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", remediationEscalatedLabel, pr.Number, err))
-			continue
-		}
-		unparked = append(unparked, pr.Number)
+func unparkSelfHealedEscalationsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, _ io.Writer) ([]int, []error) {
+	return unparkMatchingPRsFrom(ctx, provider, repo, mergedNumber, others, selfHealedEscalationSweep())
+}
+
+func selfHealedEscalationSweep() unparkSweep {
+	return unparkSweep{
+		label:        remediationEscalatedLabel,
+		removeLabels: []string{remediationEscalatedLabel},
+		// escalate() removes needsRemediationLabel when it parks the PR, so
+		// lifting the park must hand the PR back to the remediation lane.
+		addLabels: []string{needsRemediationLabel},
+		listError: func(base string, err error) error {
+			return fmt.Errorf("list open pull requests targeting %s for merge-escalated unpark: %w", base, err)
+		},
+		check: escalationStillBlocks,
+		checkError: func(number int, err error) error {
+			return fmt.Errorf("check merge-escalated state for pr #%d during unpark: %w", number, err)
+		},
+		updateError: func(number int, err error) error {
+			return fmt.Errorf("clear %s from pr #%d: %w", remediationEscalatedLabel, number, err)
+		},
 	}
-	return unparked, errs
 }
 
 // unparkSelfHealedDemotions removes goobers:merge-demoted from any open PR whose
@@ -633,45 +703,29 @@ func unparkSelfHealedEscalationsFrom(ctx context.Context, provider remediationPr
 // a natural sweep point, exactly as it is for merge-escalated. A PR still stuck
 // at the same head keeps the label. Mirrors unparkSelfHealedEscalations' shape
 // and best-effort error posture.
-func unparkSelfHealedDemotions(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (healed []int, errs []error) {
-	if base == "" {
-		return nil, nil
-	}
-	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
-	})
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err))
-		return nil, errs
-	}
-	return unparkSelfHealedDemotionsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+func unparkSelfHealedDemotions(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, _ io.Writer) ([]int, []error) {
+	return unparkMatchingPRs(ctx, provider, repo, mergedNumber, base, selfHealedDemotionSweep())
 }
 
-func unparkSelfHealedDemotionsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (healed []int, errs []error) {
-	for _, pr := range others {
-		if pr.Number == mergedNumber {
-			continue
-		}
-		if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {
-			continue
-		}
-		stillDemoted, derr := demotionStillHolds(ctx, provider, repo, pr)
-		if derr != nil {
-			errs = append(errs, fmt.Errorf("check merge-demoted state for pr #%d during unpark: %w", pr.Number, derr))
-			continue
-		}
-		if stillDemoted {
-			continue
-		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{mergeDemotedLabel},
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", mergeDemotedLabel, pr.Number, err))
-			continue
-		}
-		healed = append(healed, pr.Number)
+func unparkSelfHealedDemotionsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, _ io.Writer) ([]int, []error) {
+	return unparkMatchingPRsFrom(ctx, provider, repo, mergedNumber, others, selfHealedDemotionSweep())
+}
+
+func selfHealedDemotionSweep() unparkSweep {
+	return unparkSweep{
+		label:        mergeDemotedLabel,
+		removeLabels: []string{mergeDemotedLabel},
+		listError: func(base string, err error) error {
+			return fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err)
+		},
+		check: demotionStillHolds,
+		checkError: func(number int, err error) error {
+			return fmt.Errorf("check merge-demoted state for pr #%d during unpark: %w", number, err)
+		},
+		updateError: func(number int, err error) error {
+			return fmt.Errorf("clear %s from pr #%d: %w", mergeDemotedLabel, number, err)
+		},
 	}
-	return healed, errs
 }
 
 // unparkResolvedSiblings clears goobers:blocked-on-sibling from every open
@@ -684,45 +738,29 @@ func unparkSelfHealedDemotionsFrom(ctx context.Context, provider remediationProv
 // blockers is left parked. Best-effort per PR, mirroring fanOutNeedsRemediation:
 // a single failure is a warning, never fatal to the merge that already
 // succeeded or to the other siblings.
-func unparkResolvedSiblings(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
-	if base == "" {
-		return nil, nil
-	}
-	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
-	})
-	if err != nil {
-		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for blocked-on-sibling unpark: %w", base, err))
-		return nil, errs
-	}
-	return unparkResolvedSiblingsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+func unparkResolvedSiblings(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, _ io.Writer) ([]int, []error) {
+	return unparkMatchingPRs(ctx, provider, repo, mergedNumber, base, resolvedSiblingSweep())
 }
 
-func unparkResolvedSiblingsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
-	for _, pr := range others {
-		if pr.Number == mergedNumber {
-			continue
-		}
-		if !hasAnyLabel(pr.Labels, []string{blockedOnSiblingLabel}) {
-			continue
-		}
-		stillBlocked, berr := blockedOnSiblingStillBlocks(ctx, provider, repo, pr)
-		if berr != nil {
-			errs = append(errs, fmt.Errorf("check blocked-on-sibling state for pr #%d during unpark: %w", pr.Number, berr))
-			continue
-		}
-		if stillBlocked {
-			continue
-		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{blockedOnSiblingLabel},
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", blockedOnSiblingLabel, pr.Number, err))
-			continue
-		}
-		unparked = append(unparked, pr.Number)
+func unparkResolvedSiblingsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, _ io.Writer) ([]int, []error) {
+	return unparkMatchingPRsFrom(ctx, provider, repo, mergedNumber, others, resolvedSiblingSweep())
+}
+
+func resolvedSiblingSweep() unparkSweep {
+	return unparkSweep{
+		label:        blockedOnSiblingLabel,
+		removeLabels: []string{blockedOnSiblingLabel},
+		listError: func(base string, err error) error {
+			return fmt.Errorf("list open pull requests targeting %s for blocked-on-sibling unpark: %w", base, err)
+		},
+		check: blockedOnSiblingStillBlocks,
+		checkError: func(number int, err error) error {
+			return fmt.Errorf("check blocked-on-sibling state for pr #%d during unpark: %w", number, err)
+		},
+		updateError: func(number int, err error) error {
+			return fmt.Errorf("clear %s from pr #%d: %w", blockedOnSiblingLabel, number, err)
+		},
 	}
-	return unparked, errs
 }
 
 // parkedPRRetirementLabels are the park labels a bot PR can get stuck behind

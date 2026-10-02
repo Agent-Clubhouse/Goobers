@@ -19,7 +19,9 @@ Finish the single-repository path before adding another gaggle.
 `goobers init --guided` follows the
 same convention: it loads the canonical work-nomination, backlog-curation, and
 implementation modules from
-`config-examples/gaggles/acme-web`, then adapts repository identity, branch,
+`config-examples/gaggles/acme-web` (on Azure DevOps it offers merge-review
+instead of work-nomination, whose `file-issues` stage files GitHub issues
+only; guided merge-review is Azure DevOps-only), then adapts repository identity, branch,
 issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
 simplified `quickstart@v1` tutorial workflow.
@@ -188,9 +190,15 @@ For noninteractive scaffolding, select the provider explicitly:
 goobers init --template=standard --provider=ado --ci-command='["dotnet","test"]' --required-capabilities=dotnet@8 ./ado-instance
 ```
 
-This creates ADO repository and Azure Boards project placeholders, with a
-`GOOBERS_ADO_TOKEN` PAT reference, without reading a token or starting a run.
-Connect the real organization, project and repository before running:
+This creates ADO repository and Azure Boards project placeholders with
+`azure-cli` authentication, the `implementation`, `backlog-curation` and
+`merge-review` workflows, and Azure Boards curator instructions, without
+reading a token or starting a run. Pass `--repo=organization/project/repository`
+to write the real coordinates directly, and `--repo-auth-kind` to choose
+`workload-identity`, `managed-identity` or `pat` (see
+[what `init` produces](../../examples/ado-onboarding/README.md#what-init-produces)).
+For PAT onboarding, connect the real organization, project and repository
+before running:
 
 ```sh
 # Set GOOBERS_ADO_TOKEN securely in your environment; pass its name, not its value.
@@ -556,19 +564,20 @@ and a workflow whose labels match nothing claims nothing without an error —
 check `gh label list --repo <owner>/<name>` and set the trust label from
 section 5 before the first cycle.
 
-### Current single-repo residue
+### Per-gaggle repository scoping
 
-Three built-in behaviors still resolve through the first `repos` entry
-regardless of gaggle. Account for them when a second repository shares the
-instance:
+The daemon's background behaviors follow each gaggle's own `project`
+repository and that repository's own `repos` entry and credential:
 
-- The open-PR poll behind `readiness.maxOpenPRs` counts the first repository's
-  open PRs only, so the cap throttles every gaggle by that one count.
-- Terminal branch-delete cleanup targets the first repository only; branches
-  left by terminal runs against another repository are not deleted.
+- The open-PR poll behind `readiness.maxOpenPRs` runs once per repository, so
+  each gaggle's cap counts its own repository's open PRs.
+- Terminal branch-delete cleanup deletes a run's branch in its gaggle's
+  project repository, with that repository's credential.
 - The backlog counter that sizes scheduled work queries the gaggle's own
-  repository but resolves its credential from the first `repos` entry; a
-  second repository readable only by a different token can fail to count.
+  repository and resolves that repository's credential.
+
+A gaggle with no `project` still falls back to the first `repos` entry, as a
+single-repository instance always has.
 
 ### Worked example: a documentation gaggle for the same repository
 

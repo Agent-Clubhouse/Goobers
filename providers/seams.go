@@ -22,6 +22,15 @@ type TokenSource interface {
 	Token(ctx context.Context) (string, error)
 }
 
+// RefreshableTokenSource is a TokenSource whose value can be rejected and
+// re-resolved (Goobers#6120): a stage's delivered credential backed by its
+// credential-refresh grant. A provider that receives HTTP 401 calls
+// Invalidate and retries the request once; the next Token re-resolves.
+type RefreshableTokenSource interface {
+	TokenSource
+	Invalidate()
+}
+
 // MutationRecorder records "external ref touched" facts (ARCHITECTURE.md §4) so a
 // run journal can make every provider-side mutation traceable. The provider does
 // not know the journal's on-disk shape; it reports the logical mutation and the
@@ -70,6 +79,10 @@ const (
 	RateLimitOutcomeRetry     RateLimitOutcome = "retry"
 	RateLimitOutcomeExhausted RateLimitOutcome = "exhausted"
 	RateLimitOutcomeCanceled  RateLimitOutcome = "canceled"
+	// RateLimitOutcomeDelayed marks a diagnostic-only event: the provider
+	// reported it already delayed this (successful) request itself, so no
+	// retry decision was made here (ADO's X-RateLimit-Delay, ADO-N40).
+	RateLimitOutcomeDelayed RateLimitOutcome = "delayed"
 )
 
 // FieldDigest is the before/after content digest of a single mutated field. Empty
@@ -94,24 +107,30 @@ type ExternalRef struct {
 	Operation         string                 `json:"operation"`     // create|update|label|milestone|close|comment|claim|review|merge|delete
 	Fields            map[string]FieldDigest `json:"fields,omitempty"`
 	RunID             string                 `json:"runId,omitempty"`         // set for claim mutations
-	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or conflict for claim attempts
+	Outcome           string                 `json:"outcome,omitempty"`       // success, failure, or contention for claim attempts
 	ErrorCode         string                 `json:"errorCode,omitempty"`     // stable classification; never raw provider error text
-	ProviderRunID     string                 `json:"providerRunId,omitempty"` // observed owner for a ledger/provider mismatch
+	ProviderRunID     string                 `json:"providerRunId,omitempty"` // provider owner on claim contention or ledger mismatch
 }
 
 // RateLimitEvent describes a single rate-limit backoff decision.
 type RateLimitEvent struct {
-	Provider   ProviderKind     `json:"provider"`
-	Scope      string           `json:"scope"`
-	Delay      time.Duration    `json:"delay"`
-	Outcome    RateLimitOutcome `json:"outcome"`
-	Endpoint   string           `json:"-"`
-	Status     int              `json:"status"`
-	Remaining  int              `json:"remaining"`
-	Reset      time.Time        `json:"reset,omitempty"`
-	RetryAfter time.Duration    `json:"retryAfter,omitempty"`
-	Attempt    int              `json:"attempt"`
-	Secondary  bool             `json:"secondary"` // GitHub secondary (abuse) rate limit
+	Provider  ProviderKind     `json:"provider"`
+	Scope     string           `json:"scope"`
+	Delay     time.Duration    `json:"delay"`
+	Outcome   RateLimitOutcome `json:"outcome"`
+	Endpoint  string           `json:"-"`
+	Status    int              `json:"status"`
+	Remaining int              `json:"remaining"`
+	// RemainingKnown is true only when the provider's remaining-quota header
+	// was present and parsed. Remaining is meaningless when this is false —
+	// an absent header must never be read as a genuine "0 remaining"
+	// (ADO-N40) — and json's zero-value default (false, omitted) already
+	// matches "unknown" for any event built without setting it.
+	RemainingKnown bool          `json:"remainingKnown,omitempty"`
+	Reset          time.Time     `json:"reset,omitempty"`
+	RetryAfter     time.Duration `json:"retryAfter,omitempty"`
+	Attempt        int           `json:"attempt"`
+	Secondary      bool          `json:"secondary"` // GitHub secondary (abuse) rate limit
 	// RetryAfterRaw/RemainingRaw/ResetRaw are the UNPARSED header string
 	// values (e.g. "1", "0", "1784210000"), preserved alongside the parsed
 	// Duration/int/time.Time fields above so a give-up RateLimitError's

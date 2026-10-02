@@ -101,6 +101,7 @@ const testOnlyExports = {
     "replayChapterKind",
   ],
   "src/runDetailData.ts": [
+    "humanize",
     "loadRunDetail",
     "isVerdictArtifact",
   ],

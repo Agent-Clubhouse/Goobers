@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -275,6 +277,240 @@ func TestADORepositoryTokenSourceRetriesAFailedConstruction(t *testing.T) {
 	}
 }
 
+// adoTestFailingAzureRunner answers `az account get-access-token` the way a
+// failed CLI does: combined output plus a nonzero exit.
+type adoTestFailingAzureRunner struct{ out string }
+
+func (r adoTestFailingAzureRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	return []byte(r.out), &exec.ExitError{}
+}
+
+// TestADORepositoryTokenSourceCarriesAzureCLIFailureClassification pins the
+// stage-env credential path: an expired az login and an offline host each
+// reach the token-ref error and its journal cause chain as a fixed
+// classification and code, never as Azure CLI output.
+func TestADORepositoryTokenSourceCarriesAzureCLIFailureClassification(t *testing.T) {
+	const canary = "az-output-canary-0123456789"
+	for _, tc := range []struct {
+		name, out, detail, code string
+	}{
+		{
+			name:   "expired login",
+			out:    "ERROR: AADSTS700082: The refresh token has expired due to inactivity. Trace ID: " + canary,
+			detail: `credentials: token ref "ado-repo": azure CLI get-access-token: Azure CLI sign-in expired or requires interaction`,
+			code:   "azure_cli_sign_in_required",
+		},
+		{
+			name:   "offline host",
+			out:    "HTTPSConnectionPool(host='" + canary + "'): Max retries exceeded (Failed to establish a new connection: [Errno 8] nodename nor servname provided)",
+			detail: `credentials: token ref "ado-repo": azure CLI get-access-token: Azure CLI could not reach the network`,
+			code:   "azure_cli_network_unreachable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubADOCredentialSource(t, func(repo instance.RepoRef, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+				return adoauth.Source(repo, adoTestFailingAzureRunner{out: tc.out}, stores)
+			})
+			mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthAzureCLI}, instance.TokenRef{}), nil, nil)
+			if err != nil {
+				t.Fatalf("newADORepositoryTokenSource: %v", err)
+			}
+			resolver, err := credentials.NewResolverWithExpiring(nil, nil, nil, map[string]credentials.ExpiringResolveFunc{"ado-repo": mint})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolver.Resolve(context.Background(), "ado-repo")
+			if err == nil || !strings.HasPrefix(err.Error(), tc.detail) {
+				t.Fatalf("error = %v, want prefix %q", err, tc.detail)
+			}
+			detail := journal.ErrorDetailFor("credential_resolve_failed", err)
+			encoded, marshalErr := json.Marshal(detail)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if !strings.Contains(string(encoded), `"code":"`+tc.code+`"`) {
+				t.Fatalf("journal error detail lacks cause code %q: %s", tc.code, encoded)
+			}
+			for _, leak := range []string{canary, "AADSTS", "Errno", "HTTPSConnectionPool", "Max retries"} {
+				if strings.Contains(string(encoded), leak) {
+					t.Fatalf("journal error detail echoed Azure CLI output %q: %s", leak, encoded)
+				}
+			}
+		})
+	}
+}
+
+// TestADORepositoryTokenSourceRefreshesBelowTheDeliveryFloor pins #5905: an
+// Entra token with less than credentials.MinDeliveredLifetime left is fetched
+// again from a rebuilt source (the Azure SDK credential keeps its own cache)
+// before the daemon delivers it, and the fresh value is registered with the
+// scrubber. A rebuilt source that can only return the same short-lived token
+// still delivers it, with its expiry, instead of failing the stage.
+func TestADORepositoryTokenSourceRefreshesBelowTheDeliveryFloor(t *testing.T) {
+	short := time.Now().Add(credentials.MinDeliveredLifetime / 2)
+	fresh := time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		name       string
+		rebuilt    providers.ADOCredential
+		wantToken  string
+		wantExpiry time.Time
+	}{
+		{
+			name:       "rebuilt source mints a fresh token",
+			rebuilt:    providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "entra-fresh-token-0123456789", ExpiresAt: fresh},
+			wantToken:  "entra-fresh-token-0123456789",
+			wantExpiry: fresh,
+		},
+		{
+			name:       "rebuilt source returns the same short-lived token",
+			rebuilt:    providers.ADOCredential{Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short},
+			wantToken:  "entra-short-token-0123456789",
+			wantExpiry: short,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builds := 0
+			stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+				builds++
+				if builds == 1 {
+					return adoTestIdentitySource{credential: providers.ADOCredential{
+						Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short,
+					}}, nil
+				}
+				return adoTestIdentitySource{credential: tc.rebuilt}, nil
+			})
+			registrar := &escTestRegistrar{}
+			mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), registrar, nil)
+			if err != nil {
+				t.Fatalf("newADORepositoryTokenSource: %v", err)
+			}
+			token, expiresAt, err := mint(context.Background())
+			if err != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			if token != tc.wantToken || !expiresAt.Equal(tc.wantExpiry) {
+				t.Fatalf("mint = (%q, %v), want (%q, %v)", token, expiresAt, tc.wantToken, tc.wantExpiry)
+			}
+			if builds != 2 {
+				t.Fatalf("source built %d times, want one rebuild below the delivery floor", builds)
+			}
+			if !registeredStrings(registrar)[tc.wantToken] {
+				t.Fatal("the delivered token was not registered with the scrubber")
+			}
+		})
+	}
+}
+
+// adoTestFailingSource is a rebuilt identity source whose token fetch fails,
+// as it does during a brief Entra, IMDS or az outage.
+type adoTestFailingSource struct{}
+
+func (adoTestFailingSource) Credential(context.Context) (providers.ADOCredential, error) {
+	return providers.ADOCredential{}, errors.New("transient identity outage")
+}
+
+// TestADORepositoryTokenSourceKeepsTheHeldTokenWhenARefreshFails pins that a
+// rebuilt source replaces the kept one only once it has produced a
+// credential: while rebuilt sources fail, every resolve still delivers the
+// held, still-valid token instead of failing, and the first rebuilt source
+// that succeeds is adopted.
+func TestADORepositoryTokenSourceKeepsTheHeldTokenWhenARefreshFails(t *testing.T) {
+	held := time.Now().Add(10 * time.Minute)
+	fresh := time.Now().Add(time.Hour)
+	builds := 0
+	outage := true
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		builds++
+		switch {
+		case builds == 1:
+			return adoTestIdentitySource{credential: providers.ADOCredential{
+				Kind: providers.ADOCredentialKindBearer, Secret: "entra-held-token-0123456789", ExpiresAt: held,
+			}}, nil
+		case outage:
+			return adoTestFailingSource{}, nil
+		default:
+			return adoTestIdentitySource{credential: providers.ADOCredential{
+				Kind: providers.ADOCredentialKindBearer, Secret: "entra-fresh-token-0123456789", ExpiresAt: fresh,
+			}}, nil
+		}
+	})
+	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	if err != nil {
+		t.Fatalf("newADORepositoryTokenSource: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		token, expiresAt, err := mint(context.Background())
+		if err != nil {
+			t.Fatalf("resolve %d during the outage: %v", i, err)
+		}
+		if token != "entra-held-token-0123456789" || !expiresAt.Equal(held) {
+			t.Fatalf("resolve %d = (%q, %v), want the held token", i, token, expiresAt)
+		}
+	}
+	outage = false
+	for i := 0; i < 2; i++ {
+		token, expiresAt, err := mint(context.Background())
+		if err != nil || token != "entra-fresh-token-0123456789" || !expiresAt.Equal(fresh) {
+			t.Fatalf("resolve %d after the outage = (%q, %v, %v), want the fresh token", i, token, expiresAt, err)
+		}
+	}
+	if builds != 5 {
+		t.Fatalf("source built %d times, want 5 (one build, three failed refreshes, one adopted refresh)", builds)
+	}
+}
+
+// TestADORepositoryTokenSourceDoesNotRepeatAnUnhelpfulRefresh pins that when
+// a rebuilt source hands back the same short-lived token (the Azure CLI's own
+// token cache), later resolves of that token do not rebuild the source and
+// fetch again: one refresh per held token, not one per resolve.
+func TestADORepositoryTokenSourceDoesNotRepeatAnUnhelpfulRefresh(t *testing.T) {
+	short := time.Now().Add(credentials.MinDeliveredLifetime / 2)
+	builds := 0
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		builds++
+		return adoTestIdentitySource{credential: providers.ADOCredential{
+			Kind: providers.ADOCredentialKindBearer, Secret: "entra-short-token-0123456789", ExpiresAt: short,
+		}}, nil
+	})
+	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	if err != nil {
+		t.Fatalf("newADORepositoryTokenSource: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		token, expiresAt, err := mint(context.Background())
+		if err != nil || token != "entra-short-token-0123456789" || !expiresAt.Equal(short) {
+			t.Fatalf("resolve %d = (%q, %v, %v)", i, token, expiresAt, err)
+		}
+	}
+	if builds != 2 {
+		t.Fatalf("source built %d times, want 2 (one build, one refresh)", builds)
+	}
+}
+
+// TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor pins the
+// other side: a cached token with enough life left is reused, not rebuilt.
+func TestADORepositoryTokenSourceKeepsATokenAboveTheDeliveryFloor(t *testing.T) {
+	builds := 0
+	stubADOCredentialSource(t, func(instance.RepoRef, credentials.StoreResolver) (providers.ADOCredentialSource, error) {
+		builds++
+		return adoTestIdentitySource{credential: providers.ADOCredential{
+			Kind: providers.ADOCredentialKindBearer, Secret: "entra-long-token-0123456789", ExpiresAt: time.Now().Add(time.Hour),
+		}}, nil
+	})
+	mint, err := newADORepositoryTokenSource(adoTestRepo(&instance.RepoAuthConfig{Kind: instance.ADOAuthWorkloadIdentity}, instance.TokenRef{}), nil, nil)
+	if err != nil {
+		t.Fatalf("newADORepositoryTokenSource: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := mint(context.Background()); err != nil {
+			t.Fatalf("mint %d: %v", i, err)
+		}
+	}
+	if builds != 1 {
+		t.Fatalf("source built %d times, want 1", builds)
+	}
+}
+
 // TestADOBasicHeaderIsRedactedFromJournalWrites is the scrubber half of
 // ADO-N17: a PAT's Basic Authorization value does not contain the PAT, so it
 // is redacted only because the daemon registered that form at mint time.
@@ -431,6 +667,27 @@ func TestStageCredentialEnvStampsTheADOSchemeWithTheCredentials(t *testing.T) {
 	}
 	if env := stageCredentialEnv(nil, adoauth.SchemeBearer); len(env) != 0 {
 		t.Fatalf("stage credential env with no credentials = %q, want nothing", env)
+	}
+}
+
+// TestStageCredentialEnvDeliversTheStatedExpiry pins #5905 for stage pods: a
+// credential the plane stated an expiry for is delivered with it, and one
+// without an expiry gets no expiry variable.
+func TestStageCredentialEnvDeliversTheStatedExpiry(t *testing.T) {
+	expiresAt := time.Date(2026, 9, 28, 13, 4, 5, 0, time.FixedZone("example", 3600))
+	creds := []dispatcher.MintedCredential{
+		{Capability: "repo:push", Value: "entra-pod-token-0123456789", ExpiresAt: &expiresAt},
+		{Capability: "github:issues:read", Value: "entra-pod-token-9876543210"},
+	}
+	got := strings.Join(stageCredentialEnv(creds, adoauth.SchemeBearer), "\n")
+	want := strings.Join([]string{
+		executor.CredentialEnvVar("repo:push") + "=entra-pod-token-0123456789",
+		executor.CredentialExpiryEnvVar("repo:push") + "=2026-09-28T12:04:05Z",
+		executor.CredentialEnvVar("github:issues:read") + "=entra-pod-token-9876543210",
+		executor.RepoAuthSchemeEnvVar + "=bearer",
+	}, "\n")
+	if got != want {
+		t.Fatalf("stage credential env = %q, want %q", got, want)
 	}
 }
 

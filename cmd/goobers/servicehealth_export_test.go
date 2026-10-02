@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,11 +50,28 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 	setup := &schedulerSetup{Config: cfg, SharedRegistry: journal.NewRegistryScrubber(), InstanceLog: log}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := startServiceHealth(ctx, t.TempDir(), &daemonIdentity{StartedAt: time.Now()}, setup, nil)
+	root := t.TempDir()
+	journalID, rootID := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	for name, id := range map[string]string{"instance-id": journalID, instance.RootIdentityFileName: rootID} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(id+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := startServiceHealth(ctx, root, &daemonIdentity{StartedAt: time.Now()}, setup, nil)
 	select {
 	case req := <-collector.requests:
 		if !strings.Contains(req.String(), "goobers.service.health") {
 			t.Fatalf("wrong export: %s", req)
+		}
+		if len(req.ResourceLogs) != 1 || req.ResourceLogs[0].Resource == nil {
+			t.Fatal("diagnostic resource missing")
+		}
+		attrs := map[string]string{}
+		for _, attr := range req.ResourceLogs[0].Resource.Attributes {
+			attrs[attr.Key] = attr.Value.GetStringValue()
+		}
+		if attrs["goobers.instance.id"] != journalID || attrs["goobers.root.id"] != rootID {
+			t.Fatalf("diagnostics cannot join journal/root identities: %v", attrs)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no startup export through production wiring")
@@ -72,11 +91,17 @@ func TestServiceHealthExportProductionWiring(t *testing.T) {
 }
 func TestServiceHealthExportWhitelist(t *testing.T) {
 	record := serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{
-		"instanceId": "known", "prompt": "private prompt", "rawConfig": "private config",
+		"instanceId": "known", "machineName": "workstation-7", "accountName": "alice", "prompt": "private prompt", "rawConfig": "private config",
 		"recoveryInventory": map[string]any{"state": "healthy", "used": 1, "inventoryRoot": "private path", "error": "private raw error"},
-	}})
+	}}, false)
 	if len(record.Attributes) != 3 || record.Attributes["instanceId"] != "known" || record.Attributes["recoveryInventory.used"] != 1 {
 		t.Fatalf("unexpected public fields: %+v", record.Attributes)
+	}
+	diagnostic := serviceHealthDiagnosticRecord(journal.Event{Time: time.Now(), Runner: map[string]any{
+		"instanceId": "known", "machineName": "workstation-7", "accountName": "alice",
+	}}, true)
+	if diagnostic.Attributes["machineName"] != "workstation-7" || diagnostic.Attributes["accountName"] != "alice" {
+		t.Fatalf("diagnostic consent did not include host identity: %+v", diagnostic.Attributes)
 	}
 }
 func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
@@ -84,9 +109,33 @@ func TestServiceHealthDisabledExportDoesNotResolveSecrets(t *testing.T) {
 	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{Diagnostics: &instance.DiagnosticsConfig{OTLP: &instance.OTLPConfig{
 		Endpoint: "disabled.invalid:4317", ExportEnabled: &disabled, Headers: map[string]instance.TokenRef{"authorization": {File: "/nonexistent/diagnostic-secret"}},
 	}}}}
-	exporter, err := buildDiagnosticExporterWithStores(context.Background(), &schedulerSetup{Config: cfg}, nil)
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), t.TempDir(), &schedulerSetup{Config: cfg}, nil)
 	if err != nil || exporter != nil {
 		t.Fatalf("disabled export resolved credentials: %v %v", exporter, err)
+	}
+}
+
+func TestServiceHealthUsesUnifiedAzureMonitorDestination(t *testing.T) {
+	const connectionString = "InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/"
+	t.Setenv("SERVICE_HEALTH_AZURE_MONITOR", connectionString)
+	registry := journal.NewRegistryScrubber()
+	cfg := &instance.Config{Telemetry: instance.TelemetryConfig{AzureMonitor: &instance.AzureMonitorConfig{
+		ConnectionString: instance.TokenRef{Env: "SERVICE_HEALTH_AZURE_MONITOR"},
+	}}}
+	exporter, err := buildDiagnosticExporterWithStores(context.Background(), t.TempDir(), &schedulerSetup{Config: cfg, SharedRegistry: registry}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exporter == nil {
+		t.Fatal("unified Azure Monitor destination did not enable diagnostics")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := exporter.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(registry.Scrub([]byte(connectionString))); strings.Contains(got, connectionString) {
+		t.Fatalf("connection string not registered with diagnostic scrubber: %q", got)
 	}
 }
 
@@ -169,7 +218,7 @@ func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
 	sample := func(context.Context, time.Time) []telemetry.DiagnosticRecord {
 		return []telemetry.DiagnosticRecord{rootRecord, gaggleRecord}
 	}
-	if err := emitFleetHealth(context.Background(), nil, exporter, []fleetHealthSample{sample}, rootRecord.Time); err != nil {
+	if err := emitFleetHealth(context.Background(), t.TempDir(), nil, exporter, []fleetHealthSample{sample}, rootRecord.Time); err != nil {
 		t.Fatal(err)
 	}
 	if rootRecord.Attributes["diagnosticsDroppedRecords"] != int64(1) {
@@ -199,7 +248,7 @@ func TestFleetExportReportsDroppedRecordsBeforeShutdown(t *testing.T) {
 		t.Fatal("no heartbeat delivered")
 	}
 	disabled := telemetry.DiagnosticRecord{Time: rootRecord.Time, Name: rootRecord.Name, Attributes: map[string]any{"gaggleId": ""}}
-	if err := emitFleetHealth(context.Background(), nil, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
+	if err := emitFleetHealth(context.Background(), t.TempDir(), nil, nil, []fleetHealthSample{func(context.Context, time.Time) []telemetry.DiagnosticRecord {
 		return []telemetry.DiagnosticRecord{disabled}
 	}}, rootRecord.Time); err != nil {
 		t.Fatal(err)

@@ -2,23 +2,28 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
-// adoRepoRefForStage resolves the instance ADO RepoRef a provider-chain stage
-// operates against, matching the scheduler-routed repository (owner/project/
-// name) against the instance config. A single-ADO-repo instance falls back to
-// its only repo. The returned RepoRef carries the auth block (azure-cli/PAT/
-// workload/managed identity) the credential source needs — the routed env only
-// carries the addressing tuple, not the auth configuration.
-func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.RepoRef, error) {
+// adoRepoRefForConfig resolves the instance ADO RepoRef matching the routed
+// repository (owner/project/name) in the instance config. A single-ADO-repo
+// instance falls back to its only repo. The returned RepoRef carries the auth
+// block (azure-cli/PAT/workload/managed identity) a configured credential
+// source needs. Only processes that are not stages read it (see
+// newConfiguredADOProvider); a stage authenticates with the credential the
+// daemon delivered for its declared capability instead.
+func adoRepoRefForConfig(root string, routed providers.RepositoryRef) (instance.RepoRef, error) {
 	l := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
@@ -48,36 +53,85 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 	return instance.RepoRef{}, fmt.Errorf("no ADO repo %s/%s/%s configured in %s", routed.Owner, routed.Project, routed.Name, l.ConfigFile())
 }
 
-// newADOProviderForStage builds the ADO provider a provider-chain stage talks
-// to using its configured authentication source.
-var newADOProviderForStage = buildADOProviderForStage
+// newConfiguredADOProvider builds an ADO provider from the repository's
+// configured authentication in instance.yaml. It serves the processes that
+// are not stages and hold the instance config: the daemon (the runner's
+// escalation comments) and operator commands that opt in with
+// withStageProviderConfiguredADOAuth (goobers run, goobers status). A stage
+// never uses it, so a stage on Azure DevOps authenticates only with what its
+// declared capabilities delivered (docs/design/ado-parity-dsl-2-0.md §3.1).
+var newConfiguredADOProvider = buildConfiguredADOProvider
 
-func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-	repo, err := adoRepoRefForStage(root, routed)
+func buildConfiguredADOProvider(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForConfig(root, routed)
 	if err != nil {
 		return nil, err
 	}
 	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
-// open-pr receives PAT credentials through its provider:pr:write capability;
-// the configured PAT environment variable is intentionally absent from the
-// stage's default-deny environment.
-var newADOProviderForOpenPR = buildADOProviderForOpenPR
+// newADOProviderForStage builds the ADO provider a stage talks to from
+// credential, the value the daemon delivered for the capability the stage
+// declared (stageADOCredentialSource). It reads no instance config, so it
+// works the same in a stage pod, which has none. A package var so tests point
+// the provider at a fake server and observe which credential it was given.
+var newADOProviderForStage = buildADOProviderForStage
 
-func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
-	repo, err := adoRepoRefForStage(root, routed)
+func buildADOProviderForStage(routed providers.RepositoryRef, credential providers.ADOCredentialSource) (*providers.ADOProvider, error) {
+	if credential == nil {
+		return nil, fmt.Errorf("ADO stage provider for %s/%s/%s has no credential", routed.Owner, routed.Project, routed.Name)
+	}
+	telemetryOpt := providers.WithADORateLimitObserver(
+		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+	)
+	return providers.NewADOProvider(routed.Owner, routed.Project, "", providers.WithADOCredentialSource(credential), telemetryOpt), nil
+}
+
+// stageADOCredentialSource turns the token delivered for cap
+// (GOOBERS_CRED_<cap>) into an Azure DevOps credential, in the authorization
+// scheme the daemon stated beside it (executor.RepoAuthSchemeEnvVar). The
+// scheme is never guessed from the token. A token with no scheme is sent as
+// Basic: that is the historical personal-access-token behaviour a standalone
+// invocation (GOOBERS_CRED_<cap> set by hand) relies on.
+//
+// The expiry the daemon delivered beside the token
+// (GOOBERS_CREDENTIAL_EXPIRES_<cap>, #5905) lets a 401 say whether the token
+// expired or was revoked. A missing or unreadable expiry is ignored: it only
+// sharpens that error.
+func stageADOCredentialSource(cap capability.Capability, token string) (providers.ADOCredentialSource, error) {
+	kind, err := stageADOCredentialKind()
 	if err != nil {
 		return nil, err
 	}
-	kind := instance.ADOAuthPAT
-	if repo.Auth != nil {
-		kind = repo.Auth.Kind
+	if refreshing := stageRefreshingToken(cap, token); refreshing != nil {
+		// The stage holds a credential-refresh grant (Goobers#6120): the
+		// provider's 401 path re-resolves this value once, and it is
+		// refreshed ahead of its stated expiry.
+		return providers.NewADORefreshingDeliveredCredentialSource(kind, string(cap), refreshing)
 	}
-	if kind == instance.ADOAuthPAT {
-		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ProviderPRWrite))}
+	expiresAt, _ := capability.ParseCredentialExpiry(os.Getenv(capability.CredentialExpiryEnvVar(string(cap))))
+	return providers.NewADODeliveredCredentialSourceWithExpiry(kind, token, string(cap), expiresAt)
+}
+
+func stageADOCredentialKind() (string, error) {
+	return adoCredentialKindForScheme(os.Getenv(executor.RepoAuthSchemeEnvVar))
+}
+
+// adoCredentialKindForScheme maps the authorization scheme the daemon stated
+// for an Azure DevOps repository credential (GOOBERS_REPO_AUTH_SCHEME for a
+// stage, the credential plane's repoAuthScheme for a pod checkout) to the
+// credential kind that sends it: "basic", or no stated scheme, is a PAT and
+// "bearer" a Microsoft Entra token.
+func adoCredentialKindForScheme(scheme string) (string, error) {
+	scheme = strings.TrimSpace(scheme)
+	switch strings.ToLower(scheme) {
+	case "", adoauth.SchemeBasic:
+		return providers.ADOCredentialKindPAT, nil
+	case adoauth.SchemeBearer:
+		return providers.ADOCredentialKindBearer, nil
+	default:
+		return "", fmt.Errorf("%s=%q is not a supported Azure DevOps authorization scheme (want %q or %q)", executor.RepoAuthSchemeEnvVar, scheme, adoauth.SchemeBasic, adoauth.SchemeBearer)
 	}
-	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)
@@ -104,9 +158,47 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 	}
 	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
 	if err != nil || report == nil || set == nil {
+		if project := strings.TrimSpace(os.Getenv(stageBacklogProjectEnvVar)); project != "" {
+			ref := routed
+			ref.Project = project
+			return ref
+		}
+		warnStageGaggleConfigUnavailable("the backlog project override", gaggle, err)
 		return routed
 	}
 	return applyBacklogProject(set, gaggle, routed)
+}
+
+// stageBacklogProjectEnvVar names the ADO backlog project for a stage that
+// cannot read its gaggle's instance config (a Goobernetes or brokered stage
+// pod). A workflow declares it in the stage's run.env; it is consulted only
+// when the config is unavailable, so a readable config always wins.
+const stageBacklogProjectEnvVar = "GOOBERS_BACKLOG_PROJECT"
+
+// stageGaggleConfigWarnings is where warnStageGaggleConfigUnavailable writes;
+// a var so tests can capture it.
+var stageGaggleConfigWarnings io.Writer = os.Stderr
+
+// stageGaggleConfigWarned remembers the settings already warned about, so a
+// stage that resolves the same setting many times warns once.
+var stageGaggleConfigWarned sync.Map
+
+// warnStageGaggleConfigUnavailable warns, once per process and setting, that
+// a stage names a gaggle (GOOBERS_GAGGLE) whose instance config it cannot
+// read, so setting silently falls back to its default. This is the case in a
+// brokered or Goobernetes stage pod, which carries no instance config: a
+// stricter backlog.doneStates, or a separate backlog project, is not applied
+// there.
+func warnStageGaggleConfigUnavailable(setting, gaggle string, err error) {
+	if _, warned := stageGaggleConfigWarned.LoadOrStore(setting, struct{}{}); warned {
+		return
+	}
+	reason := "no instance config here"
+	if err != nil {
+		reason = err.Error()
+	}
+	pf(stageGaggleConfigWarnings, "warning: gaggle %q config cannot be read in this stage (%s); %s is not applied and its default is used\n",
+		gaggle, reason, setting)
 }
 
 // backlogRepoRefForGaggle is the daemon-side counterpart of
@@ -132,11 +224,20 @@ func backlogRepoRefForGaggle(l instance.Layout, routed providers.RepositoryRef) 
 	return applyBacklogProject(set, gaggle, routed)
 }
 
-// applyBacklogProject overrides only the project tier of routed with the named
-// gaggle's ADO backlog project. Organization, name, and credentials stay the
-// routed code repo's (the ADO provider is org-scoped and the backlog lives
-// under the same organization and auth). Returns routed unchanged when the
-// gaggle is absent, its backlog is not ADO, or no backlog project is declared.
+// applyBacklogProject resolves the ref the named gaggle's backlog role
+// addresses, given the routed code repository.
+//
+// For an ADO backlog on an ADO project it overrides only the project tier of
+// routed with the backlog project. Organization, name, and credentials stay
+// the routed code repo's (the ADO provider is org-scoped and the backlog lives
+// under the same organization and auth).
+//
+// For a GitHub or Gitea backlog on an ADO project (topology (b),
+// docs/design/ado-parity-dsl-2-0.md §7.2) it returns the backlog provider's
+// own ref (backlogProviderRef), so backlog work opens that provider.
+//
+// It returns routed unchanged when the gaggle is absent, the backlog project
+// is undeclared, or the topology is not one this release routes by role.
 func applyBacklogProject(set *instance.ConfigSet, gaggle string, routed providers.RepositoryRef) providers.RepositoryRef {
 	for i := range set.Gaggles {
 		g := &set.Gaggles[i]
@@ -144,7 +245,17 @@ func applyBacklogProject(set *instance.ConfigSet, gaggle string, routed provider
 			continue
 		}
 		backlog := g.Spec.Backlog
-		if backlog.Provider != apiv1.ProviderADO || backlog.Project == "" {
+		if backlog.Project == "" {
+			return routed
+		}
+		if crossProviderBacklog(apiv1.Provider(routed.Provider), backlog.Provider) {
+			ref, err := backlogProviderRef(g.Name, g.Spec.Project, backlog)
+			if err != nil {
+				return routed
+			}
+			return ref
+		}
+		if backlog.Provider != apiv1.ProviderADO {
 			return routed
 		}
 		ref := routed
@@ -152,4 +263,110 @@ func applyBacklogProject(set *instance.ConfigSet, gaggle string, routed provider
 		return ref
 	}
 	return routed
+}
+
+// crossProviderBacklog reports whether a gaggle whose code lives on project
+// keeps its backlog on backlog, a different provider, in a topology that is
+// routed by role: a GitHub or Gitea backlog for Azure DevOps code (topology
+// (b), docs/design/ado-parity-dsl-2-0.md §7.2). Issue work then opens the
+// backlog provider and pull-request work the project provider. Every other
+// combination keeps the single routed provider it always used.
+func crossProviderBacklog(project, backlog apiv1.Provider) bool {
+	if project != apiv1.ProviderADO {
+		return false
+	}
+	return backlog == apiv1.ProviderGitHub || backlog == apiv1.ProviderGitea
+}
+
+// backlogProviderRef builds the RepositoryRef of a gaggle's backlog provider
+// from its spec: owner/name from backlog.project on GitHub and Gitea, the
+// backlog project on Azure DevOps, and backlog.baseUrl as the service URL.
+func backlogProviderRef(gaggle string, project apiv1.RepoRef, backlog apiv1.BacklogRef) (providers.RepositoryRef, error) {
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(backlog.Provider),
+		Owner:    project.Owner,
+		Project:  project.Project,
+		Name:     project.Name,
+		URL:      backlog.BaseURL,
+	}
+	switch repo.Provider {
+	case providers.ProviderGitHub, providers.ProviderGitea:
+		owner, name, ok := strings.Cut(backlog.Project, "/")
+		if !ok || owner == "" || name == "" {
+			return providers.RepositoryRef{}, fmt.Errorf(
+				"gaggle %q backlog project %q must be owner/name",
+				gaggle,
+				backlog.Project,
+			)
+		}
+		// The project tier is Azure DevOps addressing; a GitHub or Gitea
+		// repository has none.
+		repo.Owner, repo.Project, repo.Name = owner, "", name
+	case providers.ProviderADO:
+		repo.Project = backlog.Project
+	}
+	return repo, nil
+}
+
+// backlogProviderRepo is the repository a stage opens its backlog provider
+// for. A backlog on the routed provider (GitHub, or the ADO project split)
+// keeps opening routed exactly as before and only addresses backlog in its
+// work-item calls; a backlog on another provider (topology (b)) opens that
+// provider.
+func backlogProviderRepo(routed, backlog providers.RepositoryRef) providers.RepositoryRef {
+	if backlogOnOtherProvider(routed, backlog) {
+		return backlog
+	}
+	return routed
+}
+
+// backlogOnOtherProvider reports whether backlog work leaves the routed
+// provider: topology (b), a GitHub or Gitea backlog for Azure DevOps code
+// (crossProviderBacklog).
+func backlogOnOtherProvider(routed, backlog providers.RepositoryRef) bool {
+	return crossProviderBacklog(apiv1.Provider(routed.Provider), apiv1.Provider(backlog.Provider))
+}
+
+// applyGaggleDoneStates sets the ADO provider's predecessor done states from
+// the stage's gaggle backlog.doneStates (ADO-N32). It resolves the gaggle the
+// same way backlogRepoRefForStage does. When the gaggle, its config or the
+// setting cannot be resolved (for example in a stage pod, which has no
+// instance config), the provider keeps its default: the Resolved, Completed
+// and Removed categories. When a gaggle is named but its config cannot be
+// read, the stage warns on stderr rather than falling back silently.
+func applyGaggleDoneStates(root string, provider *providers.ADOProvider) {
+	gaggle := os.Getenv(executor.GaggleEnvVar)
+	if gaggle == "" {
+		return
+	}
+	set, report, err := instance.LoadConfigDir(layoutFor(root).ConfigDir())
+	if err != nil || report == nil || set == nil {
+		warnStageGaggleConfigUnavailable("backlog.doneStates", gaggle, err)
+		return
+	}
+	if states, ok := gaggleADODoneStates(set, gaggle); ok {
+		providers.WithADODoneStates(states)(provider)
+	}
+}
+
+// gaggleADODoneStates converts the named gaggle's backlog.doneStates into the
+// provider form. It reports false when the gaggle is absent, its backlog is
+// not ADO, or it declares no doneStates.
+func gaggleADODoneStates(set *instance.ConfigSet, gaggle string) (providers.ADODoneStates, bool) {
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		if g.Name != gaggle {
+			continue
+		}
+		backlog := g.Spec.Backlog
+		if backlog.Provider != apiv1.ProviderADO || backlog.DoneStates == nil {
+			return providers.ADODoneStates{}, false
+		}
+		states := providers.ADODoneStates{ByType: backlog.DoneStates.ByType}
+		for _, category := range backlog.DoneStates.Categories {
+			states.Categories = append(states.Categories, string(category))
+		}
+		return states, true
+	}
+	return providers.ADODoneStates{}, false
 }

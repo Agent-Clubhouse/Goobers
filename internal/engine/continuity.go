@@ -35,7 +35,10 @@ import (
 // a pod only base..HEAD when HEAD moved — so the refusal fires exactly when
 // the last stage that really advanced the branch is one the consumer did not
 // declare (the "unclassified committer" arm), and never for a stage whose
-// branch moved only because syncBase merged the base in.
+// branch moved only because syncBase merged the base in. A writable stage
+// that ran and committed nothing leaves a pass-through entry carrying its
+// predecessor's bytes (recordPublication), so a declared producer that
+// EXECUTED counts as the static half counts it even when it did not publish.
 //
 // Everything here is plain workflow state derived from the pinned spec and
 // recorded activity results — deterministic under replay (architecture D8).
@@ -60,6 +63,10 @@ type continuityEntry struct {
 	Base    string
 	Tip     string
 	Branch  string
+	// PassThrough marks the entry a writable stage left when it succeeded
+	// WITHOUT committing (#3767): it carries its predecessor's bytes, not a
+	// bundle of its own. See recordPublication and selectDelta.
+	PassThrough bool
 }
 
 // deltaPublication is what one stage dispatch reports back to the walk: the
@@ -113,19 +120,37 @@ const RepoHandoffUndeclaredErrorCode = "repo_handoff_undeclared"
 // Zero-declaration invariance: a run that never rebinds has "" on every entry
 // and on every consumer, so the filter keeps the whole record and the two arms
 // below decide exactly as they did before this parameter existed.
+//
+// PASS-THROUGH ENTRIES (#3767) are filtered next. The nil arm drops them all
+// (it is last-writer over bytes, and a pass-through adds none), so it selects
+// exactly the entry it selected before they existed. The declared arm keeps a
+// pass-through only when its stage is declared: a declared producer that
+// executed without committing is the "most recent listed producer that
+// executed" (dsl-3.0.md §4), which is how the static pass models it — a
+// producer is a must-define (repofrom.go), so a consumer after it cannot
+// legally declare the producer before it. An undeclared pass-through is a
+// writable stage the consumer does not continue from (typically a
+// non-producer whose pod reported its branch unchanged); it carries no
+// commits of its own, so it can neither be refused nor selected. This never
+// launders an undeclared committer: the pass-through's stage was itself
+// selected through this function before it ran, so the bytes it carries
+// already passed its own repoFrom check.
 func selectDelta(record []continuityEntry, stage string, repoFrom []string, branch string) (continuityEntry, error) {
 	record = entriesOnBranch(record, branch)
+	declared := make(map[string]bool, len(repoFrom)+1)
+	if len(repoFrom) > 0 {
+		for _, p := range repoFrom {
+			declared[p] = true
+		}
+		declared[stage] = true
+	}
+	record = withoutUndeclaredPassThrough(record, declared)
 	if len(record) == 0 {
 		return continuityEntry{}, nil
 	}
 	if len(repoFrom) == 0 {
 		return record[len(record)-1], nil
 	}
-	declared := make(map[string]bool, len(repoFrom)+1)
-	for _, p := range repoFrom {
-		declared[p] = true
-	}
-	declared[stage] = true
 	latest := record[len(record)-1]
 	if !declared[latest.Stage] {
 		return continuityEntry{}, fmt.Errorf(
@@ -161,6 +186,27 @@ func entriesOnBranch(record []continuityEntry, branch string) []continuityEntry 
 	for _, e := range record {
 		if e.Branch == branch {
 			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
+// withoutUndeclaredPassThrough drops the pass-through entries whose stage is
+// not in declared, preserving order; with an empty declared set (the nil
+// repoFrom arm) it drops every pass-through. Like entriesOnBranch it returns
+// the record itself when nothing is dropped — every record with no
+// pass-through entry.
+func withoutUndeclaredPassThrough(record []continuityEntry, declared map[string]bool) []continuityEntry {
+	kept := record
+	for i := range record {
+		if record[i].PassThrough && !declared[record[i].Stage] {
+			kept = make([]continuityEntry, 0, len(record))
+			for _, e := range record {
+				if !e.PassThrough || declared[e.Stage] {
+					kept = append(kept, e)
+				}
+			}
+			break
 		}
 	}
 	return kept
@@ -227,7 +273,19 @@ func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntr
 
 // recordPublication appends a stage's publication to the record and journals
 // it; a writable stage that reported its branch unchanged is journaled as
-// such, so the absence of an entry is a recorded fact rather than a silence.
+// such, so the absence of a bundle is a recorded fact rather than a silence.
+//
+// An unchanged stage also appends a PASS-THROUGH entry (#3767) carrying the
+// bytes of the latest entry on its branch — the head it was handed and left
+// as it found it. Without it the runtime counted only producers that
+// PUBLISHED, while WF022's static half (repofrom.go) counts every producer
+// that EXECUTED: a declared producer that ran and committed nothing left an
+// earlier producer as the latest entry, which its consumers cannot legally
+// declare (a dead entry statically), so the run was refused with no workflow
+// able to satisfy both halves (prod run 806ccaa2, pr-remediation: rebase-pr
+// committed, implement ran unchanged, local-ci refused). With no earlier
+// entry on the branch there is nothing to pass through and nothing is
+// appended.
 // branch is the run's workspace-branch binding as it stood while t ran — the
 // walk rebinds only AFTER the stage returns, so the value threaded into the
 // dispatch is the one the workspace was cut on, and recording any later
@@ -242,6 +300,13 @@ func recordPublication(ctx workflow.Context, t apiv1.Task, pub deltaPublication,
 	}
 	if pub.Unchanged {
 		rec.workspaceDelta(ctx, t.Name, "", pub.Attempt, journal.WorkspaceDelta{Action: journal.WorkspaceDeltaUnchanged, Producer: t.Name, ProducerAttempt: pub.Attempt, Branch: branch})
+		if onBranch := entriesOnBranch(record, branch); len(onBranch) > 0 {
+			prior := onBranch[len(onBranch)-1]
+			return append(record, continuityEntry{
+				Stage: t.Name, Attempt: pub.Attempt, Digest: prior.Digest, Base: prior.Base, Tip: prior.Tip,
+				Branch: branch, PassThrough: true,
+			})
+		}
 	}
 	return record
 }
@@ -255,6 +320,6 @@ func (r *runJournal) workspaceDelta(ctx workflow.Context, stage, gate string, at
 func (r *runJournal) repoHandoffRefused(ctx workflow.Context, stage string, err error) {
 	r.append(ctx, journal.Event{
 		Type: journal.EventError, Stage: stage,
-		Error: &journal.ErrorDetail{Code: RepoHandoffUndeclaredErrorCode, Message: err.Error()},
+		Error: journal.ErrorDetailFor(RepoHandoffUndeclaredErrorCode, err),
 	})
 }

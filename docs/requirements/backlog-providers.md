@@ -98,7 +98,9 @@ same abstraction, whose shape is unchanged.
     labels, `stale` and `tracking`), and, on the backlog selection scan, the
     trust label, `requireLabels`, `excludeLabels` and the labels a
     `labelPredicate` names. So a tag first written as, say, `GOOBERS:READY` or
-    `Needs-Design` matches those. Any other label keeps ADO's casing and is
+    `Needs-Design` matches those. The same fold applies where one item is re-read
+    and re-checked on its own: a continuation's eligibility re-check and the
+    decomposition parent's trust label. Any other label keeps ADO's casing and is
     compared exactly, as before. The claim label is compared ignoring case, and
     adding a label already present in another casing is a no-op.
   - *ADO ready-label timing:* a label's add/remove history (for example when
@@ -107,7 +109,25 @@ same abstraction, whose shape is unchanged.
     `$top`/`$skip`): each update that changes `System.Tags` is diffed old against
     new, matching the label ignoring case, and timed by that update's
     `System.ChangedDate`. A work item whose history reaches ADO's 10,000-revision
-    cap fails closed rather than returning a truncated history (`ADO-N21`).
+    cap, or whose tag change carries no `System.ChangedDate`, fails closed rather
+    than returning a truncated history (`ADO-N21`). The claim stage then releases
+    and skips that one item, with a warning, and goes on to the next; it does not
+    fail the whole stage.
+  - *ADO blockers:* a work item's predecessors
+    (`System.LinkTypes.Dependency-Reverse` links) block it until each is in a
+    done state, and the ADO provider declares `backlog.blockers`. By default the
+    Resolved, Completed and Removed state categories are done, so a Resolved Bug
+    (its code has landed) no longer blocks. A gaggle can set
+    `backlog.doneStates.categories`, and `backlog.doneStates.byType` state names
+    that take precedence for one work item type. Names are trimmed of surrounding
+    whitespace, and `byType` keys that differ only in case are merged. The
+    setting governs only predecessor blocking; Goobers' own close always drives
+    an item to the Completed category. A stage that cannot read its gaggle's
+    instance config (a brokered or Goobernetes stage pod) warns on stderr that
+    `doneStates` and the backlog project are not applied there and uses the
+    defaults. A predecessor whose state cannot
+    be read still blocks. GitHub and Gitea accept `doneStates` and ignore it
+    (`ADO-N32`).
   - *ADO partial label add:* ADO adds one PR label per request. When some labels
     in a multi-label add fail, the ones that applied are kept (not rolled back)
     and the error names each label that failed.

@@ -6,6 +6,8 @@ import type {
   TriggerStatusResponse,
   CancelRunRequest,
   CancelRunResult,
+  OperatorMessageSubmitRequest,
+  OperatorMessageSubmitResponse,
   QueueEligibilityView,
   Health,
   Instance,
@@ -41,6 +43,8 @@ export interface GoWireFixtures {
   triggerStatus: TriggerStatusResponse;
   cancelRequest: CancelRunRequest;
   cancelResult: CancelRunResult;
+  operatorMessageRequest: OperatorMessageSubmitRequest;
+  operatorMessageResponse: OperatorMessageSubmitResponse;
   queueEligibility: QueueEligibilityView;
   health: Health;
   instance: Instance;
@@ -95,6 +99,34 @@ export const goWireFixtures = {
   },
   "cancelResult": {
     "code": "cancellation_requested"
+  },
+  "operatorMessageRequest": {
+    "gaggle": "goobers",
+    "targetAddress": "terminal:operator",
+    "purpose": "approval-required",
+    "content": {
+      "text": "Please review the run."
+    },
+    "deliveryMode": "terminal"
+  },
+  "operatorMessageResponse": {
+    "accepted": true,
+    "record": {
+      "request": {
+        "schema": "goobers.dev/operator-message/request/v1",
+        "requestId": "message-1",
+        "idempotencyKey": "key-1",
+        "targetAddress": "terminal:operator",
+        "principalRef": "user:operator",
+        "requestedAt": "2026-07-18T12:34:56Z",
+        "purpose": "approval-required",
+        "content": {
+          "text": "Please review the run."
+        },
+        "deliveryMode": "terminal"
+      },
+      "state": "accepted"
+    }
   },
   "queueEligibility": {
     "gaggle": "goobers",
@@ -647,6 +679,22 @@ export const goWireFixtures = {
         "retryCount": 2,
         "policyRetryCount": 1,
         "infraRetryCount": 1,
+        "lineage": {
+          "source": {
+            "id": "run-122",
+            "phase": "failed"
+          },
+          "continuations": [
+            {
+              "id": "run-124",
+              "phase": "running"
+            }
+          ],
+          "resumeTarget": "implement",
+          "workspaceBranch": "goobers/implementation/run-122",
+          "workspaceBranchSha": "abc123",
+          "historicalRepassCount": 2
+        },
         "noWork": false,
         "operator": {
           "issue": {
@@ -723,6 +771,22 @@ export const goWireFixtures = {
     "retryCount": 2,
     "policyRetryCount": 1,
     "infraRetryCount": 1,
+    "lineage": {
+      "source": {
+        "id": "run-122",
+        "phase": "failed"
+      },
+      "continuations": [
+        {
+          "id": "run-124",
+          "phase": "running"
+        }
+      ],
+      "resumeTarget": "implement",
+      "workspaceBranch": "goobers/implementation/run-122",
+      "workspaceBranchSha": "abc123",
+      "historicalRepassCount": 2
+    },
     "noWork": false,
     "operator": {
       "issue": {
@@ -855,7 +919,16 @@ export const goWireFixtures = {
         },
         "error": {
           "code": "review_failed",
-          "message": "review requested changes"
+          "message": "review requested changes",
+          "causes": [
+            {
+              "message": "review gate failed"
+            },
+            {
+              "code": "review_rejected",
+              "message": "review requested changes"
+            }
+          ]
         },
         "redaction": {
           "target": "artifacts/result.json",
@@ -1069,6 +1142,9 @@ export const goWireFixtures = {
         "runs": [
           {
             "runId": "run-123",
+            "gaggle": "goobers",
+            "workflow": "implement",
+            "status": "completed",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 3,
             "measuredAttempts": 3,
@@ -1138,6 +1214,8 @@ export const goWireFixtures = {
         "runs": [
           {
             "runId": "run-124",
+            "gaggle": "goobers",
+            "workflow": "review",
             "startedAt": "2026-07-18T12:32:56Z",
             "usageAttempts": 2,
             "measuredAttempts": 2,

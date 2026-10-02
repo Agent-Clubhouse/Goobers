@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -54,6 +55,30 @@ type Config struct {
 	OTLPEndpoint   string
 	OTLPInsecure   bool
 	OTLPHeaders    map[string]string
+	// AzureMonitorConnectionString enables direct, customer-owned Application
+	// Insights trace export alongside local journal and optional OTLP export.
+	AzureMonitorConnectionString string
+	// AzureMonitorHTTPClient is injectable for transport tests. Production
+	// callers leave it nil and use the standard HTTP client.
+	AzureMonitorHTTPClient *http.Client
+	// AzureMonitorTraces and AzureMonitorJournalLogs independently select the
+	// direct destination's signal set. They do not alter explicit OTLP routing.
+	AzureMonitorTraces      bool
+	AzureMonitorJournalLogs bool
+	// AzureMonitorHostIdentity permits hostname context tags. It must only be
+	// set by an explicit diagnostic collection profile.
+	AzureMonitorHostIdentity bool
+	// AzureMonitorReplayRoot enables the bounded disk-backed replay spool.
+	// Age and bytes must be positive when the root is set.
+	AzureMonitorReplayRoot     string
+	AzureMonitorReplayMaxAge   time.Duration
+	AzureMonitorReplayMaxBytes int64
+	// AzureMonitorReplayStart, when non-nil, delays only background replay
+	// until the caller closes the channel (for example, after daemon readiness).
+	// Accounting, durable admission, and bounded shutdown remain active. Each
+	// caller owns its signal; closing an exporter never releases another one.
+	// Nil preserves immediate replay for one-shot commands and other callers.
+	AzureMonitorReplayStart <-chan struct{}
 	// JournalLogs enables live export of committed journal events as OTLP Logs.
 	// It has no effect without ExporterOTLP and an explicit endpoint.
 	JournalLogs bool
@@ -120,6 +145,7 @@ type Client struct {
 	tracer             trace.Tracer
 	scrubber           journal.Scrubber
 	journalLogs        *journalLogPipeline
+	journalCatchup     *journalCatchup
 	unregisterJournal  func()
 }
 
@@ -184,6 +210,78 @@ func (c *Client) StorageHealthSampled(tier string, freeBytes uint64, tierChanged
 	if tierChanged {
 		c.instruments.storageHealthChanges.Add(ctx, 1, apimetric.WithAttributes(attribute.String(MetricAttrStorageTier, tier)))
 	}
+}
+
+// QueueSaturationSample is one scheduler-visible queue lane snapshot. QueueKind
+// must be a closed, bounded value such as "schedule", "backlog", or "refill".
+// OldestEnqueuedAt is the canonical enqueue/readiness time for the oldest item
+// represented by Depth; zero means no age source is available. Empty queues
+// still record age 0, but non-empty queues without a source omit age instead
+// of guessing.
+type QueueSaturationSample struct {
+	QueueKind        string
+	OperatingSystem  string
+	Depth            int
+	OldestEnqueuedAt time.Time
+	ObservedAt       time.Time
+}
+
+// WorkerAvailabilitySample is a scheduler capacity snapshot. Emit it only when
+// the scheduler has a reliable configured-capacity source; zero is a valid value.
+type WorkerAvailabilitySample struct {
+	OperatingSystem string
+	Available       int
+}
+
+// RecordSchedulerQueueSaturation publishes queue depth, oldest queue age, and
+// worker availability gauges. Nil clients and telemetry-disabled clients are
+// no-ops, preserving optional, non-blocking export semantics.
+func (c *Client) RecordSchedulerQueueSaturation(ctx context.Context, queues []QueueSaturationSample, workers *WorkerAvailabilitySample) {
+	if c == nil || c.instruments == nil {
+		return
+	}
+	for _, queue := range queues {
+		depth := queue.Depth
+		if depth < 0 {
+			depth = 0
+		}
+		attrs := queueSaturationAttrs(queue.QueueKind, queue.OperatingSystem)
+		c.instruments.queueDepth.Record(ctx, int64(depth), c.instruments.attributeSet(attrs...))
+		if depth > 0 && queue.OldestEnqueuedAt.IsZero() {
+			continue
+		}
+		ageSeconds := int64(0)
+		if depth > 0 {
+			observedAt := queue.ObservedAt
+			if observedAt.IsZero() {
+				observedAt = time.Now()
+			}
+			if age := observedAt.Sub(queue.OldestEnqueuedAt); age > 0 {
+				ageSeconds = int64(age.Seconds())
+			}
+		}
+		c.instruments.queueOldestAge.Record(ctx, ageSeconds, c.instruments.attributeSet(attrs...))
+	}
+	if workers == nil {
+		return
+	}
+	available := workers.Available
+	if available < 0 {
+		available = 0
+	}
+	c.instruments.workersAvailable.Record(ctx, int64(available),
+		c.instruments.attributeSet(queueSaturationAttrs("", workers.OperatingSystem)...))
+}
+
+func queueSaturationAttrs(queueKind, operatingSystem string) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 2)
+	if queueKind != "" {
+		attrs = append(attrs, attribute.String(MetricAttrQueueKind, queueKind))
+	}
+	if operatingSystem != "" {
+		attrs = append(attrs, attribute.String(MetricAttrOS, operatingSystem))
+	}
+	return attrs
 }
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
@@ -430,6 +528,9 @@ func (c *Client) Flush(ctx context.Context) error {
 		_ = c.meterProvider.ForceFlush(ctx)
 	}
 	if c.journalLogs != nil {
+		if c.journalCatchup != nil {
+			_ = c.journalCatchup.flush(ctx)
+		}
 		// Like metrics, journal Logs are remote-only and best-effort. The
 		// pipeline reports failures independently of the journal writer.
 		_ = c.journalLogs.flush(ctx)
@@ -457,6 +558,9 @@ func (c *Client) FlushLocal(ctx context.Context) error {
 func (c *Client) Shutdown(ctx context.Context) error {
 	if c.unregisterJournal != nil {
 		c.unregisterJournal()
+	}
+	if c.journalCatchup != nil {
+		c.journalCatchup.shutdown(ctx)
 	}
 	var errs []error
 	if c.tracerProvider != nil {
@@ -495,6 +599,26 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		exporters = append(exporters, cfg.SpanExporter)
 	}
 	if cfg.Exporter == "" && len(exporters) != 0 {
+		if cfg.AzureMonitorConnectionString == "" || !cfg.AzureMonitorTraces {
+			return exporters, nil
+		}
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
+		if err != nil {
+			return exporters, err
+		}
+		return append(exporters, azure), nil
+	}
+	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
+		if err != nil {
+			return nil, err
+		}
+		return append(exporters, azure), nil
+	}
+	if cfg.Exporter == "" && cfg.AzureMonitorConnectionString != "" {
+		// A health/journal profile intentionally has no remote span exporter.
+		// Do not fall through to the developer stdout default merely because the
+		// same destination is used by diagnostics or journal logs.
 		return exporters, nil
 	}
 
@@ -548,7 +672,15 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	default:
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
-	return append(exporters, exporter), nil
+	exporters = append(exporters, exporter)
+	if cfg.AzureMonitorConnectionString != "" && cfg.AzureMonitorTraces {
+		azure, err := newAzureMonitorSpanExporter(cfg.AzureMonitorConnectionString, cfg.AzureMonitorHTTPClient, cfg.AzureMonitorHostIdentity, cfg.azureReplayConfig("traces"))
+		if err != nil {
+			return exporters, err
+		}
+		exporters = append(exporters, azure)
+	}
+	return exporters, nil
 }
 
 // buildOTLPTLSConfig assembles the OTLP exporter's client TLS config: with

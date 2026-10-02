@@ -21,7 +21,9 @@ name: macOS nightly
 # workflow with a schedule) opens an alarm after consecutive red nights.
 #
 # workflow_dispatch runs the dispatched ref, or a pull request's merge ref when
-# `pr` is given, to check a macOS-sensitive change before it merges.
+# `pr` is given, to check a macOS-sensitive change before it merges. Manual
+# dispatch also runs the short real-daemon telemetry fixture; the scheduled
+# nightly path retains its existing duration and scope.
 
 on:
   schedule:
@@ -125,6 +127,19 @@ jobs:
       - name: Require native Seatbelt sandbox confinement (macOS)
         if: ${{ !cancelled() }}
         run: make sandbox-check
+
+      # This builds the actual daemon/driver and checks local journal replay on
+      # a native Mac. The synthetic demo stages have no provider connection or
+      # credentials; this is a short platform smoke, not the 30-minute/24-hour
+      # macOS performance gate.
+      - name: Telemetry real-daemon integration (manual macOS validation)
+        if: ${{ github.event_name == 'workflow_dispatch' && !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          uname -a
+          go version
+          test "${GOOBERS_DISABLE_FSYNC+x}" != x
+          go test -tags=integration ./test/telemetryload -count=1 -timeout=8m -v
 
       - name: Upload test timing
         if: ${{ !cancelled() }}

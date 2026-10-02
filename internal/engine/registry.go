@@ -174,8 +174,10 @@ type StartSpec struct {
 	// since #1901: a starter that leaves them empty dispatches a
 	// backlog-query stage with no partition at all, which on a shared backlog
 	// claims the sibling instance's goobers:local items (#3873).
-	BacklogQueryAssignedTo    string
-	BacklogQueryRequireLabels string
+	BacklogQueryAssignedTo     string
+	BacklogQueryRequireLabels  string
+	BacklogQueryBacklogLabels  string
+	BacklogQueryLabelPredicate string
 	// GooberDigest is the content digest of the goober kit this run's stages
 	// must execute (localscheduler.WorkflowEntry.GooberDigest — what
 	// gooberDigestStarter stamps onto a runner-driven run's StartRequest).
@@ -201,6 +203,10 @@ type StartSpec struct {
 	// decide the same way on replay as it did live, and a config edit between
 	// the two would otherwise change the command sequence and wedge the run.
 	HITL *HITLPolicy
+	// RoleRoutedBacklogProvider is the gaggle's backlog provider when topology
+	// (b) routes its backlog to another provider than RepoRef's; empty
+	// otherwise. See RunInput.RoleRoutedBacklogProvider.
+	RoleRoutedBacklogProvider apiv1.Provider
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -274,7 +280,11 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 		ConfigGeneration:       s.ConfigGeneration,
 		HITL:                   s.HITL,
 
-		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
-		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
+		RoleRoutedBacklogProvider: s.RoleRoutedBacklogProvider,
+
+		BacklogQueryAssignedTo:     s.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels:  s.BacklogQueryRequireLabels,
+		BacklogQueryBacklogLabels:  s.BacklogQueryBacklogLabels,
+		BacklogQueryLabelPredicate: s.BacklogQueryLabelPredicate,
 	}, nil
 }

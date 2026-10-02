@@ -31,6 +31,40 @@ func openTestDB(t *testing.T, dir string) *DB {
 	return db
 }
 
+func TestContinuationRunsFiltersAndGroupsDirectChildren(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	for _, row := range []struct {
+		runID, triggerKind, triggerRef, status string
+	}{
+		{"continuation-b", "manual", "source-a", "failed"},
+		{"continuation-a", "manual", "source-a", "completed"},
+		{"ordinary-manual", "manual", "operator", "completed"},
+		{"item-run", "item", "source-a", "completed"},
+		{"continuation-c", "manual", "source-b", "running"},
+	} {
+		if _, err := db.sql.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, trigger_kind, trigger_ref, status, started_at)
+			VALUES (?, 'implement', 1, 'test', ?, ?, ?, ?)`,
+			row.runID, row.triggerKind, row.triggerRef, row.status, formatTime(fixtureStart)); err != nil {
+			t.Fatalf("insert run %q: %v", row.runID, err)
+		}
+	}
+
+	got, err := db.ContinuationRuns(context.Background(), []string{"source-a", "source-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if children := got["source-a"]; len(children) != 2 ||
+		children[0].RunID != "continuation-a" || children[0].Status != "completed" ||
+		children[1].RunID != "continuation-b" || children[1].Status != "failed" {
+		t.Fatalf("source-a continuations = %#v", children)
+	}
+	if children := got["source-b"]; len(children) != 1 ||
+		children[0].RunID != "continuation-c" || children[0].Status != "running" {
+		t.Fatalf("source-b continuations = %#v", children)
+	}
+}
+
 // TestIngestRunMatchesJournalEvents is #22's headline acceptance criterion:
 // after a fixture run, rollup rows match the journal events exactly.
 func TestIngestRunMatchesJournalEvents(t *testing.T) {
@@ -372,6 +406,55 @@ func TestInlineStageFinishedErrorSurfacesInRunErrors(t *testing.T) {
 	}
 	if len(stats.Stages) != 1 || stats.Stages[0].FailedAttempts != len(errs) {
 		t.Fatalf("stats.Stages[0].FailedAttempts = %+v, want it to equal len(errs)=%d", stats.Stages, len(errs))
+	}
+}
+
+func TestRunErrorsPreserveStructuredCauses(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := fixtureRunID
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), minimalRunYAML(runID, fixtureStart))
+	leaf := `a rebound branch requires C:\repo:work and https://example.test/a:b`
+	message := `runner: prepare gate "review": create read-only workspace: ` + leaf
+	errorJSON, err := json.Marshal(journal.ErrorDetail{
+		Code:    "run_failed",
+		Message: message,
+		Causes: []journal.ErrorCause{
+			{Message: `runner: prepare gate "review"`},
+			{Message: "create read-only workspace"},
+			{Code: "infra_workspace_failed", Class: "infra", Message: leaf},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := strings.Join([]string{
+		eventLine(1, fixtureStart, `"type":"run.started"`),
+		eventLine(2, fixtureStart.Add(time.Second), `"type":"error","error":`+string(errorJSON)),
+		eventLine(3, fixtureStart.Add(2*time.Second), `"type":"run.finished","status":"failed"`),
+	}, "\n") + "\n"
+	mustWriteFile(t, filepath.Join(dir, fileEvents), events)
+
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	errs, err := db.RunErrors(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("RunErrors: %v", err)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("RunErrors = %#v, want one error", errs)
+	}
+	got := errs[0].Causes
+	if len(got) != 3 {
+		t.Fatalf("causes = %#v, want 3", got)
+	}
+	if got[0].Message != `runner: prepare gate "review"` || got[1].Message != "create read-only workspace" ||
+		got[2].Message != leaf || got[2].Code != "infra_workspace_failed" || got[2].Class != "infra" {
+		t.Fatalf("causes = %#v", got)
 	}
 }
 

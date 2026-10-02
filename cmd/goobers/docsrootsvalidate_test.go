@@ -70,6 +70,27 @@ func TestValidateAcceptsExistingDocsRoots(t *testing.T) {
 	}
 }
 
+func TestValidateChecksDocsRootsInGitHubFork(t *testing.T) {
+	unsetRunContext(t)
+	root := demoWithDocsRoots(t, []string{"docs", "MISSING.md"})
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitT(t, root, "remote", "set-url", "origin", "https://github.com/fork-owner/your-repo.git")
+	runGitT(t, root, "remote", "add", "upstream", "https://github.com/your-org/your-repo.git")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (missing docs root in fork checkout); stdout = %q stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `declared docs root "MISSING.md" does not exist`) {
+		t.Fatalf("stdout = %q, want missing docs-root error", stdout)
+	}
+	if strings.Contains(stdout, "WARNING DOCS003") {
+		t.Fatalf("stdout = %q, fork checkout must not produce repository-mismatch warnings", stdout)
+	}
+}
+
 // TestValidateRejectsMissingDocsRoot: a declared root that does not exist in the
 // repository fails validation with a clear message (#1016).
 func TestValidateRejectsMissingDocsRoot(t *testing.T) {
@@ -122,6 +143,20 @@ func TestValidateWarnsDocsRootsWhenTreeIsNotTargetRepository(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "DSLVERSION") {
 		t.Fatalf("stdout = %q, want the DSLVERSION summary to render past the warning", stdout)
+	}
+}
+
+func TestValidateWarnsDocsRootsForSameNamedUnrelatedGitHubRepository(t *testing.T) {
+	unsetRunContext(t)
+	root := demoWithDocsRoots(t, []string{"MISSING.md"})
+	runGitT(t, root, "remote", "set-url", "origin", "https://github.com/independent-owner/your-repo.git")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (advisory warning); stdout = %q stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `WARNING DOCS003 Workflow/default-implement: declared docs root "MISSING.md" not verified: config tree is not the target repository your-org/your-repo`) {
+		t.Fatalf("stdout = %q, want a DOCS003 warning for the same-named unrelated repository", stdout)
 	}
 }
 
@@ -206,6 +241,29 @@ func TestRemoteURLNamesRepositoryADOForms(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := remoteURLNamesRepository(tc.remote, tc.owner, tc.repo); got != tc.want {
 				t.Errorf("remoteURLNamesRepository(%q, %q, %q) = %v, want %v", tc.remote, tc.owner, tc.repo, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRemotesNameRepositoryGitHubForks(t *testing.T) {
+	tests := []struct {
+		name    string
+		remotes []string
+		want    bool
+	}{
+		{"canonical", []string{"https://github.com/your-org/your-repo.git"}, true},
+		{"https fork with upstream", []string{"https://github.com/fork-owner/your-repo.git", "https://github.com/your-org/your-repo.git"}, true},
+		{"ssh fork with upstream", []string{"git@github.com:fork-owner/your-repo.git", "git@github.com:your-org/your-repo.git"}, true},
+		{"same-named unrelated GitHub repository", []string{"https://github.com/independent-owner/your-repo.git"}, false},
+		{"unrelated GitHub repository", []string{"https://github.com/fork-owner/unrelated.git"}, false},
+		{"same name on unrelated host", []string{"https://git.example.com/fork-owner/your-repo.git"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := remotesNameRepository(tc.remotes, "your-org", "your-repo")
+			if got != tc.want {
+				t.Fatalf("remotesNameRepository(%q) = %v, want %v", tc.remotes, got, tc.want)
 			}
 		})
 	}

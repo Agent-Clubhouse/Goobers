@@ -1,6 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { createRef, useState } from "react";
-import type { Ref } from "react";
+import { useState } from "react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RunEvent, WorkflowGraph } from "../api/types";
 import styles from "../styles.css?inline";
@@ -30,32 +29,29 @@ function Harness({
   graph,
   initial,
   terminal,
+  onInspect,
   onSeek,
-  selectedEventDetailsRef,
-  workflow,
 }: {
   events: RunEvent[];
   graph?: WorkflowGraph;
   initial: number;
   terminal: boolean;
+  onInspect?: (seq: number) => void;
   onSeek?: (seq: number) => void;
-  selectedEventDetailsRef?: Ref<HTMLElement>;
-  workflow?: string;
 }) {
   const [seq, setSeq] = useState(initial);
   return (
     <ReplayScrubber
       events={events}
       graph={graph}
+      onInspect={onInspect}
       onSeek={(next) => {
         onSeek?.(next);
         setSeq(next);
       }}
       runId="run-1"
       selectedSeq={seq}
-      selectedEventDetailsRef={selectedEventDetailsRef}
       terminal={terminal}
-      workflow={workflow}
     />
   );
 }
@@ -100,7 +96,7 @@ describe("replay scrubber", () => {
       vi.advanceTimersByTime(2_000);
     });
     expect(onSeek).toHaveBeenCalledWith(2);
-    expect(screen.getByText(/Raw event 2 of 2 · Sequence 2/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next raw event" })).toBeDisabled();
   });
 
   it("scrubs by compressed elapsed time and supports keyboard event stepping", () => {
@@ -185,8 +181,8 @@ describe("replay scrubber", () => {
     expect(chapter).toHaveAttribute("aria-current", "step");
   });
 
-  it("exposes selected event details as a programmatic focus target", () => {
-    const selectedEventDetailsRef = createRef<HTMLElement>();
+  it("opens selected chapter details through the inspection callback", () => {
+    const onInspect = vi.fn();
     render(
       <Harness
         events={[
@@ -195,18 +191,14 @@ describe("replay scrubber", () => {
           }),
         ]}
         initial={1}
-        selectedEventDetailsRef={selectedEventDetailsRef}
+        onInspect={onInspect}
         terminal
       />,
     );
 
-    const details = screen.getByRole("region", { name: "Selected replay event" });
-    expect(selectedEventDetailsRef.current).toBe(details);
-    expect(details).toHaveAttribute("tabindex", "-1");
-    selectedEventDetailsRef.current?.focus();
-    expect(details).toHaveFocus();
-    expect(within(details).getByText(/Sequence 1/)).toBeInTheDocument();
-    expect(within(details).getByText("Stage started")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Go to Workflow transition chapter/ }));
+    expect(onInspect).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole("region", { name: "Selected replay event" })).not.toBeInTheDocument();
   });
 
   it("labels chapters and stage segments with the run's own stage and goober (#2538)", () => {
@@ -231,7 +223,6 @@ describe("replay scrubber", () => {
         graph={graph}
         initial={1}
         terminal
-        workflow="implementation"
       />,
     );
 
@@ -240,11 +231,6 @@ describe("replay scrubber", () => {
         name: /Go to Workflow transition chapter at event 1: .*implement · builder-goober\./,
       }),
     ).toBeInTheDocument();
-
-    const scope = screen.getByRole("group", { name: "Workflow, stage kind, and goober" });
-    expect(within(scope).getByText("implementation")).toBeInTheDocument();
-    expect(within(scope).getByText("implement")).toBeInTheDocument();
-    expect(within(scope).getByText("builder-goober")).toBeInTheDocument();
 
     expect(
       screen.getByRole("note", { name: "Stage implement, owned by builder-goober" }),
@@ -546,7 +532,7 @@ describe("replay scrubber", () => {
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(screen.getByText(/Sequence 2/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next raw event" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
   });
 });
