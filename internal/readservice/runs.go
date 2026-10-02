@@ -1327,12 +1327,7 @@ func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAt
 	}
 }
 
-// telemetryStageAttempts returns rollup-ingested stage attempts (each
-// carrying its indexed requested model, when present) for runID. A missing
-// telemetry database is a valid empty result, matching RunSpans' contract:
-// model provenance is informational and must never make StageAttempts fail.
-func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
-	empty := []rollup.StageAttempt{}
+func withTelemetryDB[T any](s *Local, empty []T, read func(*rollup.DB) ([]T, error)) ([]T, error) {
 	db := s.sources.Telemetry
 	if db == nil {
 		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
@@ -1348,7 +1343,25 @@ func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rol
 		}
 		defer func() { _ = db.Close() }()
 	}
-	return db.StageAttempts(ctx, runID)
+	result, err := read(db)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return empty, nil
+	}
+	return result, nil
+}
+
+// telemetryStageAttempts returns rollup-ingested stage attempts (each
+// carrying its indexed requested model, when present) for runID. A missing
+// telemetry database is a valid empty result, matching RunSpans' contract:
+// model provenance is informational and must never make StageAttempts fail.
+func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
+	empty := []rollup.StageAttempt{}
+	return withTelemetryDB(s, empty, func(db *rollup.DB) ([]rollup.StageAttempt, error) {
+		return db.StageAttempts(ctx, runID)
+	})
 }
 
 // RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
@@ -1520,32 +1533,16 @@ func (s *Local) RunSpans(ctx context.Context, runID string) ([]rollup.SpanSummar
 		return nil, err
 	}
 	empty := []rollup.SpanSummary{}
-	db := s.sources.Telemetry
-	if db == nil {
-		if _, err := os.Stat(s.sources.Layout.TelemetryDB()); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return empty, nil
-			}
-			return nil, err
-		}
-		var err error
-		db, err = rollup.Open(s.sources.Layout.TelemetryDB())
+	return withTelemetryDB(s, empty, func(db *rollup.DB) ([]rollup.SpanSummary, error) {
+		spans, err := db.Spans(ctx, runID)
 		if err != nil {
 			return nil, err
 		}
-		defer func() { _ = db.Close() }()
-	}
-	spans, err := db.Spans(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if spans == nil {
-		return empty, nil
-	}
-	return spans, nil
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return spans, nil
+	})
 }
 
 // RunEscalation returns the gate-specific values required by the legacy trace
