@@ -82,15 +82,6 @@ func noWorkStreakKey(repo providers.RepositoryRef, itemID string) string {
 	return string(repo.Provider) + "/" + repo.Owner + "/" + repo.Name + "#" + itemID
 }
 
-func decodeNoWorkStreakRecord(value stateclient.Value, key string) (noWorkStreakRecord, error) {
-	record, _, err := decodeKeyedStateRecord(value, key, noWorkStreakRecordSpec)
-	return record, err
-}
-
-func encodeNoWorkStreakRecord(key string, record noWorkStreakRecord) ([]byte, error) {
-	return encodeKeyedStateRecord(key, record, noWorkStreakRecordSpec)
-}
-
 // updateNoWorkStreakRecord is the record's read-modify-write: one lock
 // acquisition on the file backend, one compare-and-swap on the plane. fn
 // returns write=false to leave the key untouched, and MUST be safe to run more

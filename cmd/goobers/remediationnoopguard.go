@@ -140,17 +140,6 @@ func normalizeRemediationCauses(raw string) string {
 	return strings.Join(parts, ",")
 }
 
-// decodeRemediationNoopRecord reads one PR's record out of a scheduler-state
-// value. An absent key is the zero record — the overwhelmingly common
-// first-run state — but a value that is present and unreadable is an ERROR,
-// never a zero record: "unreadable" must not be indistinguishable from "no
-// prior no-op", or the guard fails open on corruption exactly as it did in a
-// pod.
-func decodeRemediationNoopRecord(value stateclient.Value, key string) (remediationNoopRecord, error) {
-	record, _, err := decodeKeyedStateRecord(value, key, remediationNoopRecordSpec)
-	return record, err
-}
-
 func encodeRemediationNoopRecord(key string, record remediationNoopRecord) ([]byte, error) {
 	return encodeKeyedStateRecord(key, record, remediationNoopRecordSpec)
 }

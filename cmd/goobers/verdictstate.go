@@ -62,10 +62,6 @@ func decodeVerdictRecord(value stateclient.Value, key string) (apiv1.Verdict, bo
 	return decodeKeyedStateRecord(value, key, verdictRecordSpec)
 }
 
-func encodeVerdictRecord(key string, verdict apiv1.Verdict) ([]byte, error) {
-	return encodeKeyedStateRecord(key, verdict, verdictRecordSpec)
-}
-
 // updateVerdictRecord is the record's read-modify-write: one lock acquisition
 // on the file backend, one compare-and-swap on the plane. fn returns
 // write=false to leave the key untouched, and MUST be safe to run more than

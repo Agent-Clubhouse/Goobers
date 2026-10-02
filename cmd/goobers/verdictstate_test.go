@@ -187,7 +187,11 @@ func TestVerdictStateMalformedLegacyMarkerDoesNotMigrate(t *testing.T) {
 // state helper's integrity posture: a document whose embedded key does not
 // match the key it was read at is a decode error, never silently accepted.
 func TestVerdictStateDecodeRejectsForeignKeyedRecord(t *testing.T) {
-	data, err := encodeVerdictRecord("github|host|~|acme|web|~#1", apiv1.Verdict{Decision: apiv1.VerdictPass})
+	data, err := encodeKeyedStateRecord(
+		"github|host|~|acme|web|~#1",
+		apiv1.Verdict{Decision: apiv1.VerdictPass},
+		verdictRecordSpec,
+	)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

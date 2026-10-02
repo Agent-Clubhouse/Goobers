@@ -68,10 +68,6 @@ func decodeFailureStreakRecord(value stateclient.Value, key string) (failureStre
 	return record, err
 }
 
-func encodeFailureStreakRecord(key string, record failureStreakRecord) ([]byte, error) {
-	return encodeKeyedStateRecord(key, record, failureStreakRecordSpec)
-}
-
 // updateFailureStreakRecord is the record's read-modify-write: one lock
 // acquisition on the file backend, one compare-and-swap on the plane. fn
 // returns write=false to leave the key untouched, and MUST be safe to run more

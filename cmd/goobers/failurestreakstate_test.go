@@ -200,7 +200,11 @@ func TestFailureStreakRestartDurability(t *testing.T) {
 // state helper's integrity posture: a document whose embedded key does not
 // match the key it was read at is a decode error, never silently accepted.
 func TestFailureStreakDecodeRejectsForeignKeyedRecord(t *testing.T) {
-	data, err := encodeFailureStreakRecord("github/acme/web#1", failureStreakRecord{Count: 5})
+	data, err := encodeKeyedStateRecord(
+		"github/acme/web#1",
+		failureStreakRecord{Count: 5},
+		failureStreakRecordSpec,
+	)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
