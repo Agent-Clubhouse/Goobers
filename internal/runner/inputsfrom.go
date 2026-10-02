@@ -409,6 +409,29 @@ func producedIntegrity(
 	return apiv1.WeakestIntegrity(grades...)
 }
 
+// StageResultIntegrity is the grade a stage's ResultEnvelope finishes with: the
+// weaker of the grade its executor stamped on the envelope itself and the grade
+// producedIntegrity derived from what the stage was admitted with (#2979).
+//
+// An executor that knows its own output is less trustworthy than its inputs —
+// external-telemetry returns third-party data, so it stamps IntegrityUnapproved —
+// must not have that grade replaced by the input-derived one, or a deterministic
+// stage with no graded input would hand its unapproved outputs downstream as
+// trusted. Taking the weaker of the two, rather than letting the executor's grade
+// win outright, means an executor stamp can only ever LOWER a grade: an
+// executor that read unapproved input cannot launder it upward by stamping a
+// stronger grade (TBH-4). An executor that stamps nothing keeps producedIntegrity
+// exactly as before, and an unknown stamp yields the zero grade, which
+// downstream admission refuses (fail closed).
+//
+// Exported for the Temporal engine, which must grade a stage on the same rule.
+func StageResultIntegrity(executorGrade, produced apiv1.Integrity) apiv1.Integrity {
+	if executorGrade == "" {
+		return produced
+	}
+	return apiv1.WeakestIntegrity(executorGrade, produced)
+}
+
 // --- shared with the Temporal engine (#624 shared-constant pattern) ---------
 //
 // Plan item E2 (#3874) ports stage-qualified inputsFrom resolution to the
