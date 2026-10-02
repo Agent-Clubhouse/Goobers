@@ -630,9 +630,12 @@ func prSelectBranchOccupancies(ctx context.Context, root string, repo providers.
 	if err != nil {
 		return nil, err
 	}
-	set, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
 		return nil, err
+	}
+	if report == nil {
+		return nil, errors.New("load config directory: validation report is nil")
 	}
 
 	gaggleName := strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
