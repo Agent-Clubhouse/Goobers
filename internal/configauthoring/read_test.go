@@ -12,7 +12,7 @@ import (
 
 func TestLocalReaderListsAndReadsSafeDocuments(t *testing.T) {
 	root := testSource(t)
-	reader, err := NewLocalReader(root, true)
+	reader, err := NewReader(root, apicontract.ConfigSourceLocal, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestLocalReaderListsAndReadsSafeDocuments(t *testing.T) {
 
 func TestLocalReaderRevisionAndETagFollowContent(t *testing.T) {
 	root := testSource(t)
-	reader, err := NewLocalReader(root, true)
+	reader, err := NewReader(root, apicontract.ConfigSourceLocal, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestLocalReaderRevisionAndETagFollowContent(t *testing.T) {
 
 func TestLocalReaderRejectsUnsafeDocuments(t *testing.T) {
 	root := testSource(t)
-	reader, err := NewLocalReader(root, true)
+	reader, err := NewReader(root, apicontract.ConfigSourceLocal, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestLocalReaderRejectsSensitiveDirectories(t *testing.T) {
 	for _, logicalPath := range sensitivePaths {
 		writeTestFile(t, root, logicalPath, "sensitive\n")
 	}
-	reader, err := NewLocalReader(root, true)
+	reader, err := NewReader(root, apicontract.ConfigSourceLocal, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestLocalReaderRejectsSensitiveDirectories(t *testing.T) {
 }
 
 func TestLocalReaderAdvertisesReadOnlySource(t *testing.T) {
-	reader, err := NewLocalReader(testSource(t), false)
+	reader, err := NewReader(testSource(t), apicontract.ConfigSourceLocal, false)
 	if err != nil {
 		t.Fatal(err)
 	}

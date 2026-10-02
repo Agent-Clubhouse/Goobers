@@ -49,11 +49,6 @@ type LocalReader struct {
 	loader   *configsync.Loader
 }
 
-// NewLocalReader constructs a local source adapter.
-func NewLocalReader(root string, writable bool) (*LocalReader, error) {
-	return NewReader(root, apicontract.ConfigSourceLocal, writable)
-}
-
 // NewReader constructs an adapter over a resolved source snapshot.
 func NewReader(root string, kind apicontract.ConfigSourceKind, writable bool) (*LocalReader, error) {
 	if strings.TrimSpace(root) == "" {
