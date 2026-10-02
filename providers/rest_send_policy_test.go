@@ -59,6 +59,34 @@ func TestGiteaRateLimitExhaustionReturnsFinalResponse(t *testing.T) {
 	_ = resp.Body.Close()
 }
 
+func TestADORateLimitExhaustionReturnsFinalResponse(t *testing.T) {
+	body := &trackingResponseBody{Reader: strings.NewReader("rate limited")}
+	client := newProviderHTTPClient(time.Second)
+	client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body:       body,
+		}, nil
+	})
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) { p.Client = client },
+		WithADOMaxRateLimitRetries(0),
+	)
+
+	resp, err := provider.send(context.Background(), http.MethodGet, "https://ado.example/x", nil, "")
+	if err != nil {
+		t.Fatalf("send() error = %v, want final response", err)
+	}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("send() response = %#v, want final 429 response", resp)
+	}
+	if body.closed {
+		t.Fatal("exhausted 429 body was closed before being returned to the caller")
+	}
+	_ = resp.Body.Close()
+}
+
 func TestGitHubRateLimitExhaustionReturnsTypedError(t *testing.T) {
 	body := &trackingResponseBody{Reader: strings.NewReader("rate limited")}
 	observer := &bodyStateObserver{body: body}

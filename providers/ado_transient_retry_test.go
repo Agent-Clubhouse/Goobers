@@ -57,6 +57,36 @@ func TestADOSendRetriesTransportErrorOnIdempotentMethod(t *testing.T) {
 	}
 }
 
+func TestADOSendRetriesTransportErrorOnReadOnlyPost(t *testing.T) {
+	attempts := 0
+	client := newProviderHTTPClient(time.Second)
+	client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errTransientTestNetwork
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	provider := NewADOProvider("org", "project", "ado-secret", func(p *ADOProvider) {
+		p.Client = client
+		p.sleep = func(context.Context, time.Duration) error { return nil }
+	})
+	endpoint := "https://ado.example/org/project/_apis/wit/workitemsbatch?api-version=7.1"
+	resp, err := provider.send(context.Background(), http.MethodPost, endpoint, map[string]any{"ids": []int{42}}, "")
+	if err != nil {
+		t.Fatalf("send() error = %v, want a successful retry", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestADOSendDoesNotRetryTransportErrorOnPost(t *testing.T) {
 	var mu sync.Mutex
 	attempts := 0
