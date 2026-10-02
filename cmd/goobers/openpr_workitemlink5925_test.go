@@ -295,3 +295,65 @@ func TestOpenPullRequestWithADOLinkNotesTextOnlyLink(t *testing.T) {
 		})
 	}
 }
+
+type reviewRecordingProvider struct {
+	got providers.ReviewRequest
+	err error
+}
+
+func (p *reviewRecordingProvider) RequestReview(_ context.Context, req providers.ReviewRequest) error {
+	p.got = req
+	return p.err
+}
+
+func TestParseReviewers(t *testing.T) {
+	got := parseReviewers(" @Alice, bob\nalice,,carol ")
+	want := []string{"Alice", "bob", "carol"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("parseReviewers = %v, want %v", got, want)
+	}
+	if parseReviewers("") != nil {
+		t.Fatal("empty input must yield no reviewers")
+	}
+}
+
+func TestRequestOpenPRReviewers(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "o", Name: "r"}
+	pr := providers.PullRequestResult{ID: "7", Number: 7}
+	var stderr strings.Builder
+
+	if got := requestOpenPRReviewers(context.Background(), &reviewRecordingProvider{}, repo, pr, nil, &stderr); got != nil {
+		t.Fatalf("no reviewers must be a no-op, got %v", got)
+	}
+
+	ok := &reviewRecordingProvider{}
+	got := requestOpenPRReviewers(context.Background(), ok, repo, pr, []string{"a", "b"}, &stderr)
+	if got["reviewersRequested"] != "a,b" || ok.got.PullID != "7" || len(ok.got.Reviewers) != 2 {
+		t.Fatalf("success: extras=%v req=%+v", got, ok.got)
+	}
+
+	fail := &reviewRecordingProvider{err: errors.New("author cannot review")}
+	got = requestOpenPRReviewers(context.Background(), fail, repo, pr, []string{"a"}, &stderr)
+	if got["reviewersRequestError"] != "author cannot review" || got["reviewersRequested"] != "" {
+		t.Fatalf("failure must be recorded not raised: %v", got)
+	}
+	if !strings.Contains(stderr.String(), "warning: could not request review") {
+		t.Fatalf("missing warning: %q", stderr.String())
+	}
+
+	got = requestOpenPRReviewers(context.Background(), struct{}{}, repo, pr, []string{"a"}, &stderr)
+	if got["reviewersRequestError"] == "" {
+		t.Fatalf("unsupported provider must be recorded: %v", got)
+	}
+}
+
+func TestWriteOpenPRResultIncludesReviewerExtras(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "r.json")
+	if err := writeOpenPRResult(f, true, 7, "u", map[string]string{"reviewersRequested": "a"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(f)
+	if !strings.Contains(string(data), `"reviewersRequested":"a"`) || !strings.Contains(string(data), `"opened":"true"`) {
+		t.Fatalf("result = %s", data)
+	}
+}
