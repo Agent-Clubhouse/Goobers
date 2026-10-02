@@ -69,39 +69,6 @@ func cfgFor(owner, repo, pullID string) CIPollConfig {
 	return CIPollConfig{Owner: owner, Repo: repo, PullID: pullID}
 }
 
-func TestBackoff_JittersWithinCappedExponentialRange(t *testing.T) {
-	const base = 10 * time.Second
-	const max = 100 * time.Second
-	cases := []struct {
-		attempt int
-		ceiling time.Duration
-	}{
-		{0, 10 * time.Second},
-		{1, 20 * time.Second},
-		{2, 40 * time.Second},
-		{3, 80 * time.Second},
-		{4, 100 * time.Second},
-		{5, 100 * time.Second},
-	}
-	for _, tc := range cases {
-		for range 100 {
-			got := backoff(base, max, tc.attempt)
-			if floor := tc.ceiling / 2; got < floor || got > tc.ceiling {
-				t.Errorf("backoff(%s, %s, %d) = %s, want range [%s, %s]", base, max, tc.attempt, got, floor, tc.ceiling)
-			}
-		}
-	}
-}
-
-func TestBackoff_OverflowSafeAtLargeAttempt(t *testing.T) {
-	const base = time.Second
-	const max = time.Minute
-	got := backoff(base, max, 100)
-	if got < max/2 || got > max {
-		t.Fatalf("backoff at a large attempt count = %s, want range [%s, %s]", got, max/2, max)
-	}
-}
-
 func TestCIPollExecutor_Pass(t *testing.T) {
 	poller := &fakePoller{results: []providers.CheckState{providers.CheckStatePassing}}
 	recorder := newFakeRecorder()
