@@ -14,7 +14,7 @@ name: CI
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
-# dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
+# dedicated jobs: cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
 #   windows-smoke
 #
@@ -172,6 +172,29 @@ jobs:
 
       - name: Run preflight
         run: go run ./test/ci group preflight
+
+  # Explicit base revision preserves justification checks after a re-pin is committed.
+  cmdgoobers-growth:
+    name: cmd/goobers growth ratchet
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enforce cmd/goobers growth ratchet
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD' }}
+        run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF"
 
   # Unreachable-production-code report. Ran once, on this one runner — not
   # because the analysis is platform-independent (#4434: a symbol reachable
@@ -1638,12 +1661,13 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Verify required gates
         env:
+          CMDGOOBERS_GROWTH_RESULT: ${{ needs.cmdgoobers-growth.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
@@ -1678,6 +1702,7 @@ jobs:
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
+          check "cmd/goobers growth ratchet"         "$CMDGOOBERS_GROWTH_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
@@ -1937,6 +1962,23 @@ jobs:
         # won), or a fork PR's read-only token cannot cancel.
         run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
 
+  cancel-on-cmdgoobers-growth-failure:
+    name: cancel run on failure (cmdgoobers-growth)
+    needs: [cmdgoobers-growth]
+    if: ${{ !cancelled() && needs.cmdgoobers-growth.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   cancel-on-deadcode-failure:
     name: cancel run on failure (deadcode)
     needs: [deadcode]
@@ -2060,7 +2102,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2070,6 +2112,7 @@ jobs:
       - name: File or update critical main failure
         if: >-
           ${{
+            needs.cmdgoobers-growth.result == 'failure' ||
             needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
             needs.deploy-reference.result == 'failure' ||
@@ -2130,6 +2173,7 @@ jobs:
       - name: Close resolved main failure
         if: >-
           ${{
+            needs.cmdgoobers-growth.result == 'success' &&
             needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&
             needs.deploy-reference.result == 'success' &&
