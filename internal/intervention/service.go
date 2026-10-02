@@ -63,7 +63,7 @@ type ClaimStore interface {
 	History(runID string, fallbackProvider apiv1.Provider) ([]localscheduler.ClaimEntry, error)
 	// Reclaim re-acquires claims for the run under the claims lock. When it
 	// cannot, holder names the run that now holds them.
-	Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflow string) (acquired bool, holder string, err error)
+	Reclaim(claims []localscheduler.ClaimEntry, gaggle, runID, workflowName string) (acquired bool, holder string, err error)
 	// Release releases every claim the run owns.
 	Release(runID string) error
 }
@@ -78,7 +78,8 @@ type Config struct {
 	PinnedExecution func(context.Context, journal.RunIdentity) (Execution, error)
 	// LocateRun finds the one retained run directory for runID across the
 	// declared gaggles (and the legacy root when includeLegacy is set). gaggle
-	// is empty for a legacy run.
+	// is empty for a legacy run. Its error is returned to the API client
+	// as-is, so it should be an *httpapi.InterventionError.
 	LocateRun func(gaggles []string, runID string, includeLegacy bool) (dir, gaggle string, err error)
 	// Claims is the claim ledger.
 	Claims ClaimStore

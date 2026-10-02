@@ -662,3 +662,35 @@ func TestEngineHITLInterventionPrefersScopedRunOverLegacyProjection(t *testing.T
 		t.Fatalf("terminal generation = %d, want scoped journal generation 1", intent.ExpectedTerminalGeneration)
 	}
 }
+
+// TestRunInterventionResolvesLiveOwnerThroughDaemonRegistry is the wiring
+// half of TestRunInterventionResolvePrefersLiveOwnerAcrossReload: after a
+// reload swaps the daemon registry's runner, a run still tracked by its live
+// owner resumes under that owner. Resolving the reloaded runner instead would
+// fail TrackCompatible with run_owner_changed.
+func TestRunInterventionResolvesLiveOwnerThroughDaemonRegistry(t *testing.T) {
+	machine := interventionTestMachine(t, apiv1.EvaluatorHuman)
+	fixture := newInterventionWiringFixture(t, machine, "run-live-owner", []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Gate: "review"},
+		{Type: journal.EventGatePaused, Gate: "review"},
+	}, interventionDeterministic{}, nil)
+	snapshot := fixture.definitions.Snapshot()
+	original := snapshot.runners["example"]
+	snapshot.runners = map[string]*runner.Runner{"example": {}}
+	fixture.definitions.Replace(snapshot)
+	fixture.runnerRegistry.Replace(snapshot.runners)
+	untrack := fixture.runnerRegistry.Track("run-live-owner", "", original)
+	defer untrack()
+
+	result, err := fixture.service.Approve(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-live-owner", Stage: "review", Actor: "approver", Decision: "pass",
+	})
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("result = %+v, want completed under the live owner", result)
+	}
+}
