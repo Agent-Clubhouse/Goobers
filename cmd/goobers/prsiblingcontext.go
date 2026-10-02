@@ -196,23 +196,13 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("gather-sibling-context", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-sibling-context")
 	noCache := fs.Bool("no-cache", false, "bypass the sibling-context cache (debug/remediation escape hatch)")
 	noVerdictCache := fs.Bool("no-verdict-cache", false, "skip the verdict-cache lookup, always forcing a fresh review (debug/remediation escape hatch)")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageFlagCommand(fs, args, "gather-sibling-context", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
-
-	repo, err := providerRepo(root)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	root, repo := env.root, env.repo
 	if repo.Provider == providers.ProviderADO {
 		adapter, err := newADOGatherSiblingContextAdapter(root, repo)
 		if err != nil {

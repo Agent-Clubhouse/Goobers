@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -43,16 +42,11 @@ const gatherCIFailuresHelp = "Usage: goobers gather-ci-failures [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
-	fs := newCLIFlagSet("gather-ci-failures", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = helpUsage(stderr, "gather-ci-failures")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	root, ok := providerStageRootArg(fs)
+	env, ok, exitCode := parseProviderStageCommandRoot(args, "gather-ci-failures", stderr)
 	if !ok {
-		return 2
+		return exitCode
 	}
+	root := env.root
 	runID, _, err := providerRunContext()
 	if err != nil {
 		return failProviderStage(stderr, "resolve run context", err, remediationBriefResultFile)
@@ -72,10 +66,11 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	repo, err := providerRepo(root)
+	env, err = loadProviderStageEnv(root)
 	if err != nil {
 		return failProviderStage(stderr, "resolve repository", err, remediationBriefResultFile)
 	}
+	repo := env.repo
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	failures, step, err := gatherCIFailureDetails(ctx, root, repo, brief)
