@@ -82,7 +82,7 @@ execution. Two runners implement the same contract:
 > compiled state machine as a Temporal workflow, `internal/workerhost` runs the
 > workers, and `internal/dispatcher` dispatches agentic stages to ephemeral
 > Kubernetes pods. The prescriptive part that remains is the operator/GitOps
-> config-delivery path in §10 and the full mode-3 description owned by #4240.
+> config-delivery path in §10 and the full mode-3 description owned by #6352.
 
 - The same compiled state machine hosted as a Temporal workflow; stages become
   activities dispatched to distributed workers; agentic stages run in ephemeral
@@ -552,8 +552,8 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   priority single-winner election (`SCH-010` full form, `SCH-011`), dead-letter /
   unrouted-item surfacing (`SCH-012`), and an item priority field (`SCH-030`).
   None of these have runtime consumers.
-- At tier 3, cron triggers become Temporal Schedules and claiming coordinates across
-  distributed workers — same declared semantics, different substrate.
+- At tier 3, `internal/localscheduler` remains the trigger source. It starts
+  engine runs whose stage execution is distributed across workers.
 
 ## 8. Telemetry (two stores, unchanged doctrine)
 
@@ -610,7 +610,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
 | Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Journal projection on a single-writer RWO instance volume; fleet-wide content-addressed artifacts on RWX/blob storage |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
-| Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
+| Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **`internal/localscheduler`**, starting Temporal engine runs |
 | Config delivery | Automatically watched local `config/` (`--watch-config=false` opts out); or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
 | Run telemetry store | Journal spans + SQLite | **ADX** via OTLP |
 | Secrets | Env/file, Keychain, and `store` refs into a declared Azure Key Vault (usable at tiers 1-2 already) | **Azure Key Vault** as the primary tier-3 secret backend |
@@ -688,7 +688,7 @@ Still prescriptive: reviving the operator + ArgoCD/GitOps config-delivery path
 (`internal/operator`, `cmd/operator`, `cmd/config-sync`, `infra/`, still
 quarantined per §11) and the remaining Azure substrate drop-ins (ADX exporter,
 Entra) per §10. The authoritative current-state description of cloud execution
-is owned by [#4240](https://github.com/Agent-Clubhouse/Goobers/issues/4240).
+is owned by [#6352](https://github.com/Agent-Clubhouse/Goobers/issues/6352).
 
 ## 13. Relationship to the requirement specs
 

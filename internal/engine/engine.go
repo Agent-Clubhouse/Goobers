@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -235,80 +234,19 @@ const temporalHumanGateUnsupported = "engine: human gates require occurrence-bou
 // local runner journals its own, so the projected runs/<id>/ record is
 // indistinguishable from a local run's on the conformance surface.
 func Run(ctx workflow.Context, in RunInput) (RunResult, error) {
-	return run(ctx, in, nil)
+	return run(ctx, in)
 }
 
-// ClaimScheduled converts a Schedule action into an exactly-once run start.
-// Temporal forbids WorkflowIDReusePolicy on Schedule actions, so the action
-// workflow claims the fire with a child ID whose reuse policy rejects duplicates.
-func ClaimScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
-	claimID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-		WorkflowID:            scheduledRunWorkflowID(claimID),
-		TaskQueue:             workflow.GetInfo(ctx).TaskQueueName,
-		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 1,
-		},
-	})
-	in.RunID = claimID
-	var result RunResult
-	err := workflow.ExecuteChildWorkflow(childCtx, RunScheduled, in).Get(childCtx, &result)
-	if temporal.IsWorkflowExecutionAlreadyStartedError(err) {
-		return RunResult{}, nil
-	}
-	return result, err
-}
-
-// scheduledRunWorkflowIDSuffix distinguishes a scheduled run's child workflow
-// id from its Schedule action claim id. The claim liveness probe
-// (liveness.go) inverts this mapping, so both sides share the constant.
-const scheduledRunWorkflowIDSuffix = "-run"
-
-func scheduledRunWorkflowID(claimID string) string {
-	return claimID + scheduledRunWorkflowIDSuffix
-}
-
-// RunScheduled binds a timestamped schedule claim to the run and records the
-// nominal fire in the scheduler-journal projection.
-func RunScheduled(ctx workflow.Context, in RunInput) (RunResult, error) {
-	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	claimID := in.RunID
-	if claimID == "" {
-		claimID = workflowID
-	}
-	fireTime, err := scheduledFireTime(in.TriggerRef, claimID)
-	if err != nil {
-		return RunResult{}, err
-	}
-	// Temporal's claim ID carries an RFC3339 timestamp (and therefore colons).
-	// Hash it into the same portable trace/run ID shape every other starter uses.
-	in.RunID = RunID(claimID)
-	in.TriggerKind = string(journal.TriggerSchedule)
-	return run(ctx, in, &fireTime)
-}
-
-func scheduledFireTime(scheduleID, workflowID string) (time.Time, error) {
-	// Temporal Schedules append "-"+nominal.UTC().Format(time.RFC3339) to the
-	// configured action ID and reject reuse of the resulting workflow ID.
-	prefix := scheduleID + "-"
-	if scheduleID == "" || !strings.HasPrefix(workflowID, prefix) {
-		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q does not encode schedule %q", workflowID, scheduleID)
-	}
-	fireTime, err := time.Parse(time.RFC3339, strings.TrimPrefix(workflowID, prefix))
-	if err != nil {
-		return time.Time{}, fmt.Errorf("engine: scheduled workflow ID %q has invalid fire time: %w", workflowID, err)
-	}
-	return fireTime, nil
-}
-
-func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, error) {
+func run(ctx workflow.Context, in RunInput) (RunResult, error) {
 	in.Item = normalizeItemIntegrity(in.Item)
 	m, err := wf.Compile(
 		wf.Definition{Name: in.WorkflowName, Version: in.Version, DSLVersion: in.DSLVersion, Spec: in.Spec},
 		wf.WithPreviewFeatures(in.previewFeaturesEnabled()),
 	)
 	if err != nil {
+		return RunResult{}, err
+	}
+	if err := refuseRemoteUsage(in.WorkflowName, in.Spec, in.Placements); err != nil {
 		return RunResult{}, err
 	}
 	for _, g := range in.Spec.Gates {
@@ -331,9 +269,6 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runStarted(ctx)
-	if scheduledAt != nil {
-		rec.triggerFiredAt(*scheduledAt, in)
-	}
 	rec.recordRunBranchUpfront(ctx, in)
 
 	var res RunResult
@@ -354,7 +289,9 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// workflow.
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error(), err)
-			rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced)
+			if causeErr := rec.runFinished(ctx, journal.PhaseFailed, journal.RunDispositionProduced, ""); causeErr != nil {
+				return RunResult{}, errors.Join(err, causeErr)
+			}
 			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
 			return RunResult{}, terminalWorkflowFailure(err)
@@ -384,7 +321,10 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
-		rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced)
+		rec.terminalCause.Classification, rec.terminalCause.Code = journal.TerminalOperatorAbort, runner.RunCanceledErrorCode
+		if causeErr := rec.runFinished(abortCtx, journal.PhaseAborted, journal.RunDispositionProduced, ""); causeErr != nil {
+			return RunResult{}, errors.Join(err, causeErr)
+		}
 		hitl.noteTerminal()
 		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
@@ -409,7 +349,9 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	if res.NoWork {
 		disposition = journal.RunDispositionNoWork
 	}
-	rec.runFinished(ctx, phase, disposition)
+	if err := rec.runFinished(ctx, phase, disposition, res.FinalState); err != nil {
+		return RunResult{}, err
+	}
 	hitl.noteTerminal()
 	rec.emitTerminal(ctx)
 	return res, nil
@@ -925,6 +867,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 }
 
 func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, taskDispatches map[string]int, rec *runJournal) (apiv1.ResultEnvelope, error) {
+	t = namedPublicationTask(ctx, t)
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -1032,10 +975,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// commits it is handed can never disagree.
 		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 			var result stageActivityResult
-			attemptEnv := env
-			attemptEnv.Attempt = int32(attempt)
+			attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
-			result.Integrity = produced
+			result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 			return result, err
 		}, deltaOut)
 	}
@@ -1060,10 +1002,9 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	run.Workspace = t.EffectiveWorkspace()
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, _ journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
-		attemptEnv := env
-		attemptEnv.Attempt = int32(attempt)
+		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
-		result.Integrity = produced
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }

@@ -132,13 +132,6 @@ github.com/goobers/goobers/internal/worktree.setObjectCacheLockTimeoutForTest # 
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
 github.com/goobers/goobers/internal/configsync.AuthoritativeGeneration # Generation-barrier read side (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's authoritative-generation assertions.
 github.com/goobers/goobers/internal/configsync.GenerationSelector # Single-generation label selector (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's single-generation consistency assertions.
-github.com/goobers/goobers/internal/engine.NewRegistryWithPreviewFeatures # Test-only registry constructor that forces every registered definition preview-acknowledged, bypassing each definition's own annotation; production wiring uses NewRegistry since preview authorization is per-Workflow (#4220).
-github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
-github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
-github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal schedule reconciler constructor (#635) retained for quarantined tier 3, exercised by worker integration tests.
-github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
-github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
-github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
@@ -281,7 +274,6 @@ github.com/goobers/goobers/internal/e2e.ReadBundle # Bundle.Encode's round-trip 
 github.com/goobers/goobers/internal/creditgraph.Graph.Children # Credit-graph child accessor, part of the traversal contract retained for run-graph consumers (#4077).
 github.com/goobers/goobers/internal/creditgraph.Graph.Descendants # Credit-graph descendant enumeration, part of the traversal contract retained for run-graph consumers (#4077).
 github.com/goobers/goobers/internal/decomposition.FileTargetLeaser.Acquire # Simplest concrete TargetLeaser, retained as the generic exercise double for Publisher/Primitives contract tests; its one production caller (publish-batch) moved to cmd/goobers's claims-plane-backed leaser for pod execution support (#4340).
-github.com/goobers/goobers/internal/workflow.WithKnownExternalTelemetryConnectors # Public compile Option threaded through v_2_0/v_3_0 admission (#4341 PR 2); no production caller yet — the daemon-side wiring (compiledMachinesWithWarnings/compiledMachinesWithGooberDigests) is tracked separately as #4475 to keep this PR's blast radius to the pod-execution fix.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.stageCgroup.exceeded # Per-stage memory-bound cgroup reader (#4070): constructed only by the linux startBounded, dead on targets with no cgroups.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.exceeded # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.
 [darwin,windows] github.com/goobers/goobers/internal/platform/proc.rlimitBound.release # Per-stage memory-bound RLIMIT_AS arm (#4070): constructed only by the linux startBounded, dead on targets with no prlimit fallback.

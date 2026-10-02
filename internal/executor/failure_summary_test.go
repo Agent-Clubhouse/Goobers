@@ -7,6 +7,16 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+func TestDiagnosticTruncatedMatchesTheBound(t *testing.T) {
+	long := FailureDiagnostic(nil, []byte("x.go:1:2: "+strings.Repeat("finding ", 200)+"\n"))
+	if !DiagnosticTruncated(long) {
+		t.Fatalf("DiagnosticTruncated(%d-byte bounded window) = false, want true", len(long))
+	}
+	if DiagnosticTruncated("x_test.go:12: waiting for leader...") {
+		t.Fatal("a short diagnostic that merely ends in an ellipsis was reported truncated")
+	}
+}
+
 func TestCommandFailureDiagnosticPrefersLaterVitestFailureOverSidebarWarnings(t *testing.T) {
 	stderr := []byte(strings.Repeat("Warning: An update to Sidebar inside a test was not wrapped in act(...)\n", 12))
 	stdout := []byte(` Test Files  1 failed | 18 passed

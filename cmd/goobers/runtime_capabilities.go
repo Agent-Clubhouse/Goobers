@@ -585,6 +585,10 @@ func init() {
 				withSynopsis(synopsisByID["claims list"]).
 				withHelp("print current claim leases, optionally only expired leases", claimsListHelp).
 				withExamples("goobers claims list", "goobers claims list --stale"),
+			subcommand("claims active", "active", apicontract.ActionReadOnlyNavigation, runClaimsActive).
+				withSynopsis(synopsisByID["claims active"]).
+				withHelp("print what is actively claimed now: item, workflow, run, holder, and age", claimsActiveHelp).
+				withExamples("goobers claims active", "goobers claims active --json"),
 			subcommand("claims release", "release", apicontract.ActionMaintenance, runClaimsRelease).
 				withSynopsis(synopsisByID["claims release"]).
 				withHelp("force-release a claim through the live daemon or claims.lock", claimsReleaseHelp).

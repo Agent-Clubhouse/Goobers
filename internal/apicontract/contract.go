@@ -131,6 +131,12 @@ const (
 	// markers, so the plane's answer is "the daemon ran its own recovery",
 	// not "here is a lock you may take".
 	ClaimRecoverPath = V1Prefix + "/claims/recover"
+	// ClaimsActivePath is the operator's read of what this instance has
+	// claimed right now (#1488): item, workflow, run, holder and age for each
+	// unexpired lease. A GET over the read plane, unlike the POST claims-plane
+	// routes above, because it serves people and the portal rather than a
+	// claimant's select-then-acquire, and needs no claims lock.
+	ClaimsActivePath = V1Prefix + "/claims/active"
 	// ConfigDigestPath serves the daemon's current config-tree digest so a
 	// worker can tell, on its own, whether its tree has diverged from the
 	// daemon's (#4153). Deliberately its own narrow route rather than a field
@@ -329,6 +335,7 @@ const (
 	RouteClaimList         RouteID = "claimList"
 	RouteClaimVerify       RouteID = "claimVerify"
 	RouteClaimRecover      RouteID = "claimRecover"
+	RouteClaimsActive      RouteID = "claimsActive"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteTriggerStatus     RouteID = "triggerStatus"
 	RouteResolveEscalation RouteID = "resolveEscalation"
@@ -537,6 +544,9 @@ var v1Routes = []Route{
 	// claims/recover mutates the ledger (it releases leases), so it is pooled
 	// with the mutations rather than the reads.
 	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/active is an operator read of the same ledger, served unlocked
+	// from its atomically replaced file, so it is pooled with the reads.
+	{ID: RouteClaimsActive, Method: http.MethodGet, Path: ClaimsActivePath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerStatus, Method: http.MethodGet, Path: TriggerStatusPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},

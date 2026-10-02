@@ -37,6 +37,14 @@ const (
 	invalidDeclaredArtifactSet  = "invalid_declared_artifact_set"
 )
 
+// UncommittedChangesCode is the harness's typed failure for a stage that
+// declares modify-repository and reported success with its work left
+// uncommitted (#5182; internal/harness.ErrorCodeUncommittedChanges). It
+// retries on the stage's policy budget like a missing declared artifact: the
+// stage is sent back to commit its own work, instead of reaching the reviewer
+// gate as an empty diff that fails terminally.
+const UncommittedChangesCode = "UNCOMMITTED_CHANGES"
+
 // Runner-namespace keys carrying a dispatch failure's typed cause on its
 // error event. The journal's normative Error.Code stays executor_error for
 // every dispatch failure — that exact string is how three attempt-boundary
@@ -85,12 +93,14 @@ func codedStageFailure(code string, err error) error {
 // DeclaredArtifactRetryFailure converts agent-authored declared-artifact
 // contract failures back into a policy-class dispatch failure so a stage's
 // retry.maxAttempts budget covers transient omitted or malformed artifacts.
+// An UNCOMMITTED_CHANGES result (#5182) is the same kind of agent-side
+// completion-contract miss and takes the same retry path.
 func DeclaredArtifactRetryFailure(result apiv1.ResultEnvelope) error {
 	if result.Status != apiv1.ResultFailure || result.Error == nil || !result.Error.Retryable {
 		return nil
 	}
 	switch result.Error.Code {
-	case missingDeclaredArtifactCode, invalidDeclaredArtifactSet:
+	case missingDeclaredArtifactCode, invalidDeclaredArtifactSet, UncommittedChangesCode:
 	default:
 		return nil
 	}

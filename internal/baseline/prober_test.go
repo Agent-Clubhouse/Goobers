@@ -24,14 +24,14 @@ func TestCommandProberReportsAGreenBaseline(t *testing.T) {
 	checkout := &stubCheckout{dir: "/checkout"}
 	prober := &CommandProber{
 		Checkout: checkout,
-		Exec: func(_ context.Context, dir string, _, command []string) (string, bool, error) {
+		Exec: func(_ context.Context, dir string, _, command []string) (string, string, bool, error) {
 			if dir != "/checkout" {
 				t.Fatalf("dir = %q, want the materialized base checkout", dir)
 			}
 			if CommandKey(command) != CommandKey([]string{"make", "ci"}) {
 				t.Fatalf("command = %v, want the CI command under test", command)
 			}
-			return "ok", true, nil
+			return "ok", "", true, nil
 		},
 	}
 
@@ -51,8 +51,8 @@ func TestCommandProberReportsARedBaseline(t *testing.T) {
 	checkout := &stubCheckout{dir: "/checkout"}
 	prober := &CommandProber{
 		Checkout: checkout,
-		Exec: func(context.Context, string, []string, []string) (string, bool, error) {
-			return "--- FAIL: TestThing", false, nil
+		Exec: func(context.Context, string, []string, []string) (string, string, bool, error) {
+			return "--- FAIL: TestThing", "make: *** [ci] Error 1", false, nil
 		},
 	}
 
@@ -60,8 +60,8 @@ func TestCommandProberReportsARedBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	if result.Green || !strings.Contains(result.Output, "--- FAIL") {
-		t.Fatalf("result = %+v, want a red baseline carrying its failure output", result)
+	if result.Green || !strings.Contains(result.Output, "--- FAIL") || !strings.Contains(result.Stderr, "make: ***") {
+		t.Fatalf("result = %+v, want a red baseline carrying both failure streams separately", result)
 	}
 	if checkout.released != 1 {
 		t.Fatalf("released = %d, want the checkout released even for a red baseline", checkout.released)
@@ -82,8 +82,8 @@ func TestCommandProberSurfacesSetupFailures(t *testing.T) {
 	}
 	unrunnable := &CommandProber{
 		Checkout: &stubCheckout{dir: "/checkout"},
-		Exec: func(context.Context, string, []string, []string) (string, bool, error) {
-			return "", false, errors.New("executable not found")
+		Exec: func(context.Context, string, []string, []string) (string, string, bool, error) {
+			return "", "", false, errors.New("executable not found")
 		},
 	}
 	if _, err := unrunnable.Probe(context.Background(), ProbeTarget{Repo: "acme/web", BaseSHA: "sha"}, []string{"make"}); err == nil {
@@ -93,14 +93,14 @@ func TestCommandProberSurfacesSetupFailures(t *testing.T) {
 
 func TestBoundOutputKeepsTheTail(t *testing.T) {
 	head := strings.Repeat("noise\n", maxProbeOutput/6+100)
-	got := boundOutput(head + "--- FAIL: TestTail\n")
-	if len(got) > maxProbeOutput {
-		t.Fatalf("output length = %d, want it bounded to %d", len(got), maxProbeOutput)
+	got, cut := boundOutput(head + "--- FAIL: TestTail\n")
+	if len(got) > maxProbeOutput || !cut {
+		t.Fatalf("output length = %d cut = %v, want it bounded to %d and reported cut", len(got), cut, maxProbeOutput)
 	}
 	if !strings.Contains(got, "--- FAIL: TestTail") {
 		t.Fatal("bounded output dropped the trailing failure summary")
 	}
-	if short := "already small"; boundOutput(short) != short {
+	if short, cut := boundOutput("already small"); short != "already small" || cut {
 		t.Fatal("bounded output altered an already-small output")
 	}
 }

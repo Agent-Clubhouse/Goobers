@@ -16,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 const (
@@ -82,6 +83,7 @@ const claimsHelp = "Usage: goobers claims <command> [flags] [path]\n\n" +
 	"daemon. Operations delegate to `goobers up` when it is running.\n\n" +
 	"Commands:\n" +
 	"  list       print current claim leases\n" +
+	"  active     print what is actively claimed now\n" +
 	"  release    force-release one item by id\n"
 
 func runClaims(args []string, stdout, stderr io.Writer) int {
@@ -172,6 +174,69 @@ func runClaimsList(args []string, stdout, stderr io.Writer) int {
 			entry.Workflow,
 			entry.ClaimedAt.UTC().Format(time.RFC3339),
 			entry.ExpiresAt.UTC().Format(time.RFC3339),
+		)
+	}
+	return 0
+}
+
+const claimsActiveHelp = "Usage: goobers claims active [--json] [--gaggle=name] [--provider=name] [path]\n\n" +
+	"Print what this instance has actively claimed now: item, workflow, run,\n" +
+	"holder, and age, oldest first. Expired, released, and revoked leases are\n" +
+	"omitted (`goobers claims list --stale` shows expired ones). Holder is the owning instance\n" +
+	"for a shared-visibility claim, otherwise \"local\". The daemon API serves\n" +
+	"the same view at GET /api/v1/claims/active. Default path is \".\".\n"
+
+func runClaimsActive(args []string, stdout, stderr io.Writer) int {
+	fs := newCLIFlagSet("claims active", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOutput := fs.Bool("json", false, "emit active claims as JSON")
+	gaggle := fs.String("gaggle", "", "show only claims in this gaggle")
+	provider := fs.String("provider", "", "show only claims from this provider")
+	fs.Usage = helpUsage(stderr, "claims active")
+	root, ok := parseOptionalRoot(fs, args)
+	if !ok {
+		return 2
+	}
+
+	resp, err := runClaimAdmin(root, claimAdminRequest{
+		Operation: claimAdminOperationList,
+		Gaggle:    *gaggle,
+		Provider:  *provider,
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if resp.Error != "" {
+		pf(stderr, "error: %s\n", resp.Error)
+		return 2
+	}
+	now := time.Now().UTC()
+	view := readservice.ActiveClaimList{ObservedAt: now, Claims: readservice.ActiveClaimsFromEntries(resp.Entries, now)}
+
+	if *jsonOutput {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(view); err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+	if len(view.Claims) == 0 {
+		pln(stdout, "no active claims")
+		return 0
+	}
+	pln(stdout, "ITEM ID\tGAGGLE\tPROVIDER\tWORKFLOW\tRUN ID\tHOLDER\tAGE")
+	for _, claim := range view.Claims {
+		pf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			claim.ItemID,
+			claimScopeValue(claim.Gaggle),
+			claimScopeValue(claim.Provider),
+			claim.Workflow,
+			claim.RunID,
+			claim.Holder,
+			(time.Duration(claim.AgeSeconds) * time.Second).String(),
 		)
 	}
 	return 0

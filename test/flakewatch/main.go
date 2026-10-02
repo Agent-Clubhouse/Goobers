@@ -25,22 +25,28 @@ import (
 const (
 	reportSchema = "goobers.dev/stress/v1"
 	flakeLabel   = "ci:flake"
+	// goTestAnnotationPrefix titles the failure annotations test/testtiming
+	// prints for the unit tier (its annotationTitlePrefix). Those failures are
+	// fingerprinted from the job log, as before the annotations existed;
+	// moving the ledger onto structured results is a separate decision (#681).
+	goTestAnnotationPrefix = "go test: "
 )
 
 var (
-	testNamePattern = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
-	packagePattern  = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
-	fingerprintMark = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
-	ledgerPackage   = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
-	ledgerTest      = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
-	ledgerSignature = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
-	goTestRun       = regexp.MustCompile(`^=== (?:RUN|CONT)\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
-	goTestPause     = regexp.MustCompile(`^=== PAUSE\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
-	goTestFailure   = regexp.MustCompile(`^--- FAIL: (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)(?: \(|$)`)
-	goPackageFail   = regexp.MustCompile(`^FAIL\s+(github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?)\s`)
-	goPackageDone   = regexp.MustCompile(`^(?:ok|\?)\s+github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?\s`)
-	goTestTimeout   = regexp.MustCompile(`^panic: test timed out(?: after .*)?$`)
-	actionTimestamp = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.+-]+Z\s+`)
+	testNamePattern  = regexp.MustCompile(`\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)\b`)
+	packagePattern   = regexp.MustCompile(`(?:^|\s)(github\.com/goobers/goobers/[A-Za-z0-9_./-]+|\./[A-Za-z0-9_./-]+)`)
+	fingerprintMark  = regexp.MustCompile(`<!-- goobers-flake-fingerprint:([0-9a-f]{64}) -->`)
+	ledgerSuperseded = regexp.MustCompile(`(?m)^<!-- goobers-flake-superseded-by:(\d+) -->$`)
+	ledgerPackage    = regexp.MustCompile("(?m)^- \\*\\*Package:\\*\\* `([^`]+)`$")
+	ledgerTest       = regexp.MustCompile("(?m)^- \\*\\*Test:\\*\\* `([^`]+)`$")
+	ledgerSignature  = regexp.MustCompile("(?m)^- \\*\\*Normalized signature:\\*\\* `([^`]+)`$")
+	goTestRun        = regexp.MustCompile(`^=== (?:RUN|CONT)\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
+	goTestPause      = regexp.MustCompile(`^=== PAUSE\s+(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)$`)
+	goTestFailure    = regexp.MustCompile(`^--- FAIL: (Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)*)(?: \(|$)`)
+	goPackageFail    = regexp.MustCompile(`^FAIL\s+(github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?)\s`)
+	goPackageDone    = regexp.MustCompile(`^(?:ok|\?)\s+github\.com/goobers/goobers(?:/[A-Za-z0-9_./-]+)?\s`)
+	goTestTimeout    = regexp.MustCompile(`^panic: test timed out(?: after .*)?$`)
+	actionTimestamp  = regexp.MustCompile(`^\d{4}-\d\d-\d\dT[0-9:.+-]+Z\s+`)
 )
 
 type options struct {
@@ -57,7 +63,17 @@ type githubClient struct {
 	branch     string
 	token      string
 	http       *http.Client
+	// retryDelays bounds how often a GET answered with a 5xx is retried and
+	// how long to wait before each retry. Empty means no retries.
+	retryDelays []time.Duration
+	// sleep waits between retries; nil uses a context-aware timer. Tests
+	// inject it so retries never wait on wall-clock time.
+	sleep func(context.Context, time.Duration) error
 }
+
+// defaultRetryDelays is the bounded backoff for transient 5xx answers from
+// the GitHub API (#6350).
+var defaultRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
 
 type pullRequest struct {
 	Number  int    `json:"number"`
@@ -143,8 +159,12 @@ type failure struct {
 	LastSeenRun          string    `json:"last_seen_run"`
 	LastSeenAt           time.Time `json:"last_seen_at"`
 	Occurrences          int       `json:"occurrences"`
-	SourcePath           string    `json:"-"`
-	Occurrence           string    `json:"-"`
+	// SHA is the commit the scanned run built. The flake ledger groups a
+	// build break by it (#4230); this report spans many commits, so the
+	// report's own run SHA would not name the triggering one.
+	SHA        string `json:"sha,omitempty"`
+	SourcePath string `json:"-"`
+	Occurrence string `json:"-"`
 }
 
 type failuresReport struct {
@@ -157,14 +177,16 @@ type failuresReport struct {
 		StartedAt  time.Time `json:"started_at"`
 		FinishedAt time.Time `json:"finished_at"`
 	} `json:"run"`
-	Failures     []failure     `json:"failures"`
-	LogOmissions []logOmission `json:"log_omissions,omitempty"`
+	Failures        []failure        `json:"failures"`
+	LogOmissions    []logOmission    `json:"log_omissions,omitempty"`
+	SourceOmissions []sourceOmission `json:"source_omissions,omitempty"`
 }
 
 type scanResult struct {
 	KnownDispatched int
 	Novel           []failure
 	LogOmissions    []logOmission
+	SourceOmissions []sourceOmission
 }
 
 type failureScan struct {
@@ -179,6 +201,16 @@ type logOmission struct {
 	Reason  string `json:"reason"`
 }
 
+// sourceOmission records a failure source whose checks or jobs could not be
+// listed, so the scan skipped it instead of aborting.
+type sourceOmission struct {
+	SHA         string `json:"sha"`
+	RunID       int64  `json:"run_id,omitempty"`
+	PullRequest int    `json:"pull_request,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Reason      string `json:"reason"`
+}
+
 type httpStatusError struct {
 	Method   string
 	Endpoint string
@@ -188,6 +220,16 @@ type httpStatusError struct {
 
 func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("%s %s: status %d: %s", e.Method, e.Endpoint, e.Status, e.Message)
+}
+
+// serverErrorStatus reports the status of a 5xx answer, which GitHub uses for
+// transient outages, or 0 when err is anything else.
+func serverErrorStatus(err error) int {
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) && statusErr.Status >= 500 && statusErr.Status <= 599 {
+		return statusErr.Status
+	}
+	return 0
 }
 
 func main() {
@@ -211,11 +253,12 @@ func run(
 		return 2
 	}
 	client := &githubClient{
-		base:       strings.TrimRight(opts.apiURL, "/"),
-		repository: opts.repository,
-		branch:     opts.branch,
-		token:      token,
-		http:       httpClient,
+		base:        strings.TrimRight(opts.apiURL, "/"),
+		repository:  opts.repository,
+		branch:      opts.branch,
+		token:       token,
+		http:        httpClient,
+		retryDelays: defaultRetryDelays,
 	}
 	started := now().UTC()
 	result, err := scan(context.Background(), client, started.Add(-opts.lookback), started)
@@ -224,9 +267,10 @@ func run(
 		return 1
 	}
 	report := failuresReport{
-		SchemaVersion: reportSchema,
-		Failures:      result.Novel,
-		LogOmissions:  result.LogOmissions,
+		SchemaVersion:   reportSchema,
+		Failures:        result.Novel,
+		LogOmissions:    result.LogOmissions,
+		SourceOmissions: result.SourceOmissions,
 	}
 	report.Run.RunID = getenv("GITHUB_RUN_ID")
 	report.Run.RunAttempt = getenv("GITHUB_RUN_ATTEMPT")
@@ -240,10 +284,11 @@ func run(
 	}
 	_, _ = fmt.Fprintf(
 		stdout,
-		"flake watch: %d known dispatched, %d novel candidate(s), %d unavailable job log(s)\n",
+		"flake watch: %d known dispatched, %d novel candidate(s), %d unavailable job log(s), %d unavailable source(s)\n",
 		result.KnownDispatched,
 		len(result.Novel),
 		len(result.LogOmissions),
+		len(result.SourceOmissions),
 	)
 	return 0
 }
@@ -296,11 +341,25 @@ func scan(ctx context.Context, client *githubClient, since, observed time.Time) 
 	novelIndex := make(map[string]int)
 	for _, failureSource := range sources {
 		scanned, err := client.failures(ctx, failureSource, observed)
+		var unavailable *sourceUnavailableError
+		if errors.As(err, &unavailable) {
+			result.SourceOmissions = append(result.SourceOmissions, sourceOmission{
+				SHA:         failureSource.SHA,
+				RunID:       failureSource.RunID,
+				PullRequest: failureSource.PullRequest,
+				URL:         failureSource.URL,
+				Reason:      unavailable.Error(),
+			})
+			continue
+		}
 		if err != nil {
 			return result, fmt.Errorf("scan %s: %w", failureSource.SHA, err)
 		}
 		result.LogOmissions = append(result.LogOmissions, scanned.LogOmissions...)
 		for _, candidate := range scanned.Failures {
+			if candidate.SHA == "" {
+				candidate.SHA = failureSource.SHA
+			}
 			key := candidate.Occurrence
 			if key == "" {
 				key = candidate.Fingerprint + "\x00" + failureSource.URL
@@ -357,6 +416,13 @@ func (c *githubClient) ledger(ctx context.Context) ([]ledgerEntry, error) {
 			continue
 		}
 		entry := ledgerEntry{Issue: issue.Number, Fingerprint: fingerprint[1]}
+		// A per-package issue the ledger closed as a duplicate of a grouped
+		// build break (#4230) hands its known failure to the grouped issue.
+		if match := ledgerSuperseded.FindStringSubmatch(issue.Body); len(match) == 2 {
+			if grouped, err := strconv.Atoi(match[1]); err == nil {
+				entry.Issue = grouped
+			}
+		}
 		if match := ledgerPackage.FindStringSubmatch(issue.Body); len(match) == 2 {
 			entry.Package = match[1]
 		}
@@ -451,6 +517,9 @@ func (c *githubClient) pullFiles(ctx context.Context, number int) (map[string]bo
 
 func (c *githubClient) failures(ctx context.Context, source source, observed time.Time) (failureScan, error) {
 	checks, err := c.sourceChecks(ctx, source)
+	if status := serverErrorStatus(err); status != 0 {
+		return failureScan{}, &sourceUnavailableError{status: status, err: err}
+	}
 	if err != nil {
 		return failureScan{}, err
 	}
@@ -462,10 +531,18 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		annotations, err := getAll[annotation](ctx, c, "/repos/"+c.repository+"/check-runs/"+strconv.FormatInt(check.ID, 10)+"/annotations", url.Values{
 			"per_page": {"100"},
 		})
+		if status := serverErrorStatus(err); status != 0 {
+			return failureScan{}, &sourceUnavailableError{status: status, err: err}
+		}
 		if err != nil {
 			return failureScan{}, err
 		}
 		for _, annotation := range annotations {
+			if strings.HasPrefix(annotation.Title, goTestAnnotationPrefix) {
+				// The job log below carries the same failure; fingerprinting it
+				// from there keeps existing ledger entries matching.
+				continue
+			}
 			text := strings.TrimSpace(strings.Join([]string{
 				annotation.Title, annotation.Message, annotation.RawDetail,
 			}, "\n"))
@@ -501,12 +578,13 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 		log, err := c.jobLog(ctx, check.JobID)
 		if err != nil {
 			var statusErr *httpStatusError
-			if errors.As(err, &statusErr) && statusErr.Status == http.StatusNotFound {
+			if errors.As(err, &statusErr) &&
+				(statusErr.Status == http.StatusNotFound || serverErrorStatus(err) != 0) {
 				result.LogOmissions = append(result.LogOmissions, logOmission{
 					JobID:   check.JobID,
 					JobName: check.Name,
 					JobURL:  check.HTMLURL,
-					Reason:  "job log unavailable (HTTP 404)",
+					Reason:  fmt.Sprintf("job log unavailable (HTTP %d)", statusErr.Status),
 				})
 				continue
 			}
@@ -519,6 +597,19 @@ func (c *githubClient) failures(ctx context.Context, source source, observed tim
 	}
 	return result, nil
 }
+
+// sourceUnavailableError marks a source whose checks, jobs or annotations
+// kept answering 5xx after retries; scan records it and moves on.
+type sourceUnavailableError struct {
+	status int
+	err    error
+}
+
+func (e *sourceUnavailableError) Error() string {
+	return fmt.Sprintf("source unavailable (HTTP %d)", e.status)
+}
+
+func (e *sourceUnavailableError) Unwrap() error { return e.err }
 
 func ignoresFlakeSignals(conclusion string) bool {
 	switch conclusion {
@@ -855,37 +946,36 @@ func (c *githubClient) requestPage(
 	if len(query) != 0 {
 		target += "?" + query.Encode()
 	}
-	var body io.Reader
+	var payload []byte
 	if input != nil {
 		data, err := json.Marshal(input)
 		if err != nil {
 			return "", err
 		}
-		body = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, body)
-	if err != nil {
-		return "", err
+		payload = data
 	}
 	baseURL, err := url.Parse(c.base)
 	if err != nil {
 		return "", err
 	}
-	if req.URL.Scheme != baseURL.Scheme || req.URL.Host != baseURL.Host {
-		return "", fmt.Errorf("refuse pagination outside GitHub API origin: %s", req.URL.Redacted())
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(ctx, method, endpoint, func() (*http.Request, error) {
+		var body io.Reader
+		if payload != nil {
+			body = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target, body)
+		if err != nil {
+			return nil, err
+		}
+		if req.URL.Scheme != baseURL.Scheme || req.URL.Host != baseURL.Host {
+			return nil, fmt.Errorf("refuse pagination outside GitHub API origin: %s", req.URL.Redacted())
+		}
+		return req, nil
+	})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("%s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(message)))
-	}
 	if output == nil {
 		return nextLink(resp.Header.Get("Link")), nil
 	}
@@ -896,28 +986,71 @@ func (c *githubClient) requestPage(
 }
 
 func (c *githubClient) getBytes(ctx context.Context, endpoint string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := c.http.Do(req)
+	resp, err := c.do(ctx, http.MethodGet, endpoint, func() (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodGet, c.base+endpoint, nil)
+	})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	return io.ReadAll(resp.Body)
+}
+
+// do sends the request newRequest builds and returns a 2xx response, or an
+// *httpStatusError for any other status. A GET answered with a 5xx is retried
+// after each of c.retryDelays; other methods are never retried because
+// replaying them is not safe.
+func (c *githubClient) do(
+	ctx context.Context,
+	method, endpoint string,
+	newRequest func() (*http.Request, error),
+) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		req, err := newRequest()
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+			return resp, nil
+		}
 		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &httpStatusError{
-			Method:   http.MethodGet,
+		_ = resp.Body.Close()
+		statusErr := &httpStatusError{
+			Method:   method,
 			Endpoint: endpoint,
 			Status:   resp.StatusCode,
 			Message:  strings.TrimSpace(string(message)),
 		}
+		if method != http.MethodGet || serverErrorStatus(statusErr) == 0 || attempt >= len(c.retryDelays) {
+			return nil, statusErr
+		}
+		if err := c.wait(ctx, c.retryDelays[attempt]); err != nil {
+			// Not wrapped: an interrupted retry is not a transient 5xx and
+			// must not be recorded as an unavailable source.
+			return nil, fmt.Errorf("%s (retry interrupted): %w", statusErr.Error(), err)
+		}
 	}
-	return io.ReadAll(resp.Body)
+}
+
+func (c *githubClient) wait(ctx context.Context, delay time.Duration) error {
+	if c.sleep != nil {
+		return c.sleep(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func nextLink(header string) string {

@@ -62,6 +62,15 @@ Each workstream below names the gap it closes.
    real runner (fake harness) in CI — stubs never stand in for the composition root.
 4. **Green must compose.** The merge gate builds the PR against *current* main (merge
    queue), not against the PR's stale base.
+5. **A gate that inspected nothing must fail (#4291).** Every validation gate — reference
+   manifest tests, `goobers doctor --k8s` checks, deploy scripts — counts the objects it
+   examined (manifests, Deployments, NetworkPolicies, containers, probes, pins) and
+   refuses to pass when that count is zero, because an empty input set (a renamed
+   manifest, a drifted glob, an empty namespace) otherwise reads as coverage. The count is
+   part of the evidence: failure messages and passing details both report it ("checked N
+   …"), and a test of the gate asserts the count, not the exit status alone.
+   `cmd/goobers/deploy_reference_format_test.go`'s `checked == 0` guard and
+   `internal/k8spreflight`'s "checked 0" results are the reference shape.
 
 ## 3. Workstreams (issue map)
 

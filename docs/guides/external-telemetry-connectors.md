@@ -123,6 +123,11 @@ provider-neutral query fields:
   next: interpret-health
 ```
 
+`connector` must name a connector configured in `instance.yaml`.
+`goobers validate`, `goobers status`, and daemon startup reject a workflow that
+names any other connector, naming the task and the unknown connector, before
+any run reaches the stage.
+
 Exactly one of `query` or `queryRef` is required. `queryRef` is resolved inside
 the stage workspace with the same path and symlink containment checks used for
 other declared stage files; it is limited to 1 MiB. `parameters` is a JSON
@@ -247,7 +252,7 @@ importing Goobers internal packages.
 
 | Symptom/code | Action |
 |---|---|
-| `connector_not_found` | Match workflow `connector` to an `instance.yaml` connector name. |
+| `connector_not_found`, or `unknown external telemetry connector` at validate | Match workflow `connector` to an `instance.yaml` connector name. |
 | `no plugin registered` at startup | Link/register the declared `kind@version`, or correct it. |
 | Adapter config error at startup | Compare `config` with the factory's declared JSON schema. Unknown fields fail closed. |
 | `authentication_failed` | Check identity assignment, tenant/client ID, or the referenced env/file source. Do not put a token in YAML. |

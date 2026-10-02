@@ -1,6 +1,7 @@
 package baseline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,9 +9,12 @@ import (
 	"strings"
 )
 
-// maxProbeOutput bounds the failure evidence a probe keeps. The signature is
-// derived from the tail, where a test runner prints its failure summary.
-const maxProbeOutput = 16 << 10
+// maxProbeOutput bounds each stream a probe keeps. It is generous on purpose:
+// the run side derives its failure roster from its WHOLE output, so a probe
+// that kept less would see a smaller roster and never match (#4477). A stream
+// longer than this is kept by its tail and the result marked Truncated, which
+// makes the roster incomplete and the comparison fail open.
+const maxProbeOutput = 8 << 20
 
 // Checkout materializes a repository's target branch at a pinned commit in a
 // disposable directory. It is the repository seam CommandProber runs in; the
@@ -31,8 +35,11 @@ type CommandProber struct {
 	// Env is the environment the command runs with. Empty inherits the
 	// daemon's, matching how the local-ci stage itself runs.
 	Env []string
-	// Exec runs command in dir. Nil uses the default os/exec implementation.
-	Exec func(ctx context.Context, dir string, env, command []string) (output string, green bool, err error)
+	// Exec runs command in dir and returns its two streams separately — as the
+	// shell executor keeps them, so both halves of a comparison extract their
+	// diagnostic from the same shape. Nil uses the default os/exec
+	// implementation.
+	Exec func(ctx context.Context, dir string, env, command []string) (stdout, stderr string, green bool, err error)
 }
 
 // Probe implements Prober.
@@ -53,38 +60,45 @@ func (p *CommandProber) Probe(ctx context.Context, target ProbeTarget, command [
 	if run == nil {
 		run = execCommand
 	}
-	output, green, err := run(ctx, dir, p.Env, command)
+	stdout, stderr, green, err := run(ctx, dir, p.Env, command)
 	if err != nil {
 		return ProbeResult{}, fmt.Errorf("baseline: run %q at %s: %w", CommandKey(command), short(target.BaseSHA), err)
 	}
-	return ProbeResult{Green: green, Output: boundOutput(output)}, nil
+	stdout, cutOut := boundOutput(stdout)
+	stderr, cutErr := boundOutput(stderr)
+	return ProbeResult{Green: green, Output: stdout, Stderr: stderr, Truncated: cutOut || cutErr}, nil
 }
 
 // execCommand is the default runner: a non-zero exit is a measurement (the
 // baseline is red), not an error; only a command that could not be run at all
 // is an error, because that leaves the baseline unknown rather than red.
-func execCommand(ctx context.Context, dir string, env, command []string) (string, bool, error) {
+func execCommand(ctx context.Context, dir string, env, command []string) (string, string, bool, error) {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = dir
 	cmd.Env = env
-	output, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 	if err == nil {
-		return string(output), true, nil
+		return stdout.String(), stderr.String(), true, nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return string(output), false, nil
+		return stdout.String(), stderr.String(), false, nil
 	}
-	return "", false, err
+	return "", "", false, err
 }
 
-func boundOutput(output string) string {
+// boundOutput keeps at most maxProbeOutput bytes of output, from the tail, and
+// reports whether it cut anything.
+func boundOutput(output string) (string, bool) {
 	if len(output) <= maxProbeOutput {
-		return output
+		return output, false
 	}
 	trimmed := output[len(output)-maxProbeOutput:]
 	if index := strings.IndexByte(trimmed, '\n'); index >= 0 && index+1 < len(trimmed) {
 		trimmed = trimmed[index+1:]
 	}
-	return trimmed
+	return trimmed, true
 }

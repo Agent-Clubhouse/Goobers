@@ -4,6 +4,7 @@ import type {
   WorkItemDetail,
   WorkItemKind,
   WorkItemPage,
+  WorkItemSummary,
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import type { Navigate, Route } from "../routing";
@@ -127,7 +128,10 @@ function WorkItemListView({
       <header className="page-heading">
         <p className="page-kicker">External activity</p>
         <h1>Work Items</h1>
-        <p>Pull requests and issues that Goobers changed through a provider operation.</p>
+        <p>
+          Pull requests, issues, and work items that Goobers changed through a recorded
+          provider operation.
+        </p>
       </header>
       <div aria-label="Work item type" className="filter-bar">
         {([
@@ -172,7 +176,11 @@ function WorkItemListView({
       </div>
       <section className="content-section">
         {items.length === 0 ? (
-          <p className="inline-empty">No confirmed provider actions match this filter.</p>
+          <p className="inline-empty">
+            No confirmed provider actions match this filter. This page lists only
+            provider changes Goobers recorded; work created or changed outside a
+            recorded provider operation may still exist in the provider.
+          </p>
         ) : (
           <div className="data-table data-table-shell work-items-table">
             <div aria-hidden="true" className="data-header data-table-header work-item-grid">
@@ -180,10 +188,16 @@ function WorkItemListView({
             </div>
             {items.map((item) => (
               <button
-                aria-label={`Open ${item.kind === "pr" ? "PR" : "issue"} #${item.externalId} in ${item.repository}`}
+                aria-label={
+                  item.repository
+                    ? `Open ${workItemShortKind(item)} #${item.externalId} in ${item.repository}`
+                    : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
+                }
                 className="data-row work-item-grid"
-                key={`${item.provider}/${item.kind}/${item.externalId}`}
-                onClick={() => navigate({
+                disabled={!item.repository}
+                title={item.repository ? undefined : "No repository was recorded for this item, so it has no detail page."}
+                key={workItemRowKey(item)}
+                onClick={() => item.repository && navigate({
                   page: "work-items",
                   provider: item.provider,
                   repository: item.repository,
@@ -194,7 +208,10 @@ function WorkItemListView({
               >
                 <span className="work-item-identity">
                   <strong className="data-table-primary">{workItemLabel(item.repository, item.externalId)}</strong>
-                  <small className="data-table-meta">{item.provider} · {item.kind === "pr" ? "pull request" : "issue"}</small>
+                  <small className="data-table-meta">
+                    {item.provider} · {workItemKindLabel(item.provider, item.kind)}
+                    {!item.repository && " · repository unknown"}
+                  </small>
                 </span>
                 <span>
                   <strong>{humanizeOperation(item.lastOperation)}</strong>
@@ -270,7 +287,7 @@ function WorkItemDetailView({
         <span>{workItemLabel(repository, externalId)}</span>
       </nav>
       <header className="page-heading">
-        <p className="page-kicker">{provider} {kind === "pr" ? "pull request" : "issue"} activity</p>
+        <p className="page-kicker">{provider} {workItemKindLabel(provider, kind)} activity</p>
         <h1>{workItemLabel(repository, externalId)}</h1>
         <div className="work-item-summary">
           <span>
@@ -292,7 +309,7 @@ function WorkItemDetailView({
               target="_blank"
             >
               <Icon name="arrow" size={14} />
-              Open {kind === "pr" ? "pull request" : "issue"}
+              Open {workItemKindLabel(provider, kind)}
             </a>
           )}
           {item.relatedPullRequests.map((related) => (
@@ -306,7 +323,7 @@ function WorkItemDetailView({
                 kind: "pr",
                 id: related.externalId,
               })}
-              key={`${related.repository}/${related.externalId}`}
+              key={workItemRowKey(related)}
               rel={related.url ? "noreferrer" : undefined}
               target={related.url ? "_blank" : undefined}
             >
@@ -371,6 +388,25 @@ function WorkItemDetailView({
       </section>
     </>
   );
+}
+
+/** A row key that keeps every identity the read model partitions by, so equal
+ *  numeric ids in different providers, repositories, or projects (or with
+ *  different recorded URLs when the repository is unknown) never collide. */
+function workItemRowKey(
+  item: Pick<WorkItemSummary, "provider" | "repository" | "kind" | "externalId" | "url">,
+): string {
+  return JSON.stringify([item.provider, item.repository ?? "", item.kind, item.externalId, item.url ?? ""]);
+}
+
+/** Azure Boards tracks native work items, not GitHub-style issues. */
+function workItemKindLabel(provider: string, kind: WorkItemKind): string {
+  if (kind === "pr") return "pull request";
+  return provider.toLowerCase() === "ado" ? "work item" : "issue";
+}
+
+function workItemShortKind(item: Pick<WorkItemSummary, "provider" | "kind">): string {
+  return item.kind === "pr" ? "PR" : workItemKindLabel(item.provider, item.kind);
 }
 
 function workItemLabel(repository: string | undefined, externalId: string): string {

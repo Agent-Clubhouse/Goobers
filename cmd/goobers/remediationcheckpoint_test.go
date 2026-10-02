@@ -911,44 +911,68 @@ func TestDeclaredRemediationBudgetsReadWorkflowInputs(t *testing.T) {
 	}
 }
 
-// TestDeclaredRemediationBudgetsHumanCommentDefaultsWhenUndeclared covers the
-// backward-compat contract: an undeclared humanCommentBudget must fall back to
-// the default (not error, unlike the four legacy budgets), while a non-empty
-// invalid value is still a hard error.
-func TestDeclaredRemediationBudgetsHumanCommentDefaultsWhenUndeclared(t *testing.T) {
-	t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", "2")
-	t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
-	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
-	t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
+// remediationBudgetInputEnv maps each per-cause budget input to the
+// environment variable the provider-stage envelope sets for it.
+var remediationBudgetInputEnv = map[string]string{
+	"conflictBudget":       "GOOBERS_INPUT_CONFLICTBUDGET",
+	"substantiveBudget":    "GOOBERS_INPUT_SUBSTANTIVEBUDGET",
+	"failingCIBudget":      "GOOBERS_INPUT_FAILINGCIBUDGET",
+	"siblingOverlapBudget": "GOOBERS_INPUT_SIBLINGOVERLAPBUDGET",
+	"humanCommentBudget":   "GOOBERS_INPUT_HUMANCOMMENTBUDGET",
+}
 
-	t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", "")
+// TestDeclaredRemediationBudgetsDefaultEachUndeclaredCause pins the #2737
+// ruling: every per-cause budget is optional and falls back to
+// defaultRemediationCauseBudget when undeclared, independently of the others,
+// rather than failing the stage the first time that cause fires.
+func TestDeclaredRemediationBudgetsDefaultEachUndeclaredCause(t *testing.T) {
+	if defaultRemediationCauseBudget != 2 {
+		t.Fatalf("defaultRemediationCauseBudget = %d, want 2 (PO ruling on #2737)", defaultRemediationCauseBudget)
+	}
+	for _, env := range remediationBudgetInputEnv {
+		t.Setenv(env, "")
+	}
 	got, err := declaredRemediationBudgets(0)
 	if err != nil {
-		t.Fatalf("declaredRemediationBudgets with undeclared humanCommentBudget: %v", err)
+		t.Fatalf("declaredRemediationBudgets with no budgets declared: %v", err)
 	}
-	if got.HumanComment != defaultHumanCommentBudget {
-		t.Fatalf("HumanComment budget = %d, want default %d when undeclared", got.HumanComment, defaultHumanCommentBudget)
+	want := remediationBudgets{Conflict: 2, Substantive: 2, FailingCI: 2, SiblingOverlap: 2, HumanComment: 2}
+	if got != want {
+		t.Fatalf("budgets = %+v, want every cause defaulted %+v", got, want)
 	}
 
-	for _, raw := range []string{"not-a-number", "0", "-1"} {
-		t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", raw)
-		if _, err := declaredRemediationBudgets(0); err == nil {
-			t.Fatalf("declaredRemediationBudgets accepted invalid humanCommentBudget %q", raw)
-		}
+	// A declared budget still wins for its own cause; the rest default.
+	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "5")
+	got, err = declaredRemediationBudgets(0)
+	if err != nil {
+		t.Fatalf("declaredRemediationBudgets with one budget declared: %v", err)
+	}
+	want.FailingCI = 5
+	if got != want {
+		t.Fatalf("budgets = %+v, want %+v", got, want)
 	}
 }
 
-func TestDeclaredRemediationBudgetsRejectMissingOrInvalidInputs(t *testing.T) {
-	for _, raw := range []string{"", "not-a-number", "0", "-1"} {
-		t.Run(raw, func(t *testing.T) {
-			t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", raw)
-			t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
-			t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
-			t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
-			if _, err := declaredRemediationBudgets(0); err == nil {
-				t.Fatalf("declaredRemediationBudgets accepted conflictBudget %q", raw)
-			}
-		})
+// TestDeclaredRemediationBudgetsRejectInvalidInputs keeps a typo loud: a
+// non-empty value that is not a positive integer is a hard error for every
+// cause, never a silent fallback to the default.
+func TestDeclaredRemediationBudgetsRejectInvalidInputs(t *testing.T) {
+	for input, env := range remediationBudgetInputEnv {
+		for _, raw := range []string{"not-a-number", "0", "-1"} {
+			t.Run(input+"/"+raw, func(t *testing.T) {
+				for _, other := range remediationBudgetInputEnv {
+					t.Setenv(other, "2")
+				}
+				t.Setenv(env, raw)
+				_, err := declaredRemediationBudgets(0)
+				if err == nil {
+					t.Fatalf("declaredRemediationBudgets accepted %s %q", input, raw)
+				}
+				if !strings.Contains(err.Error(), input) {
+					t.Fatalf("error %q does not name input %q", err, input)
+				}
+			})
+		}
 	}
 }
 

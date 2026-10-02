@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // dispatchstage.go is the mode-3 engine cutover (#3588): the seam through
@@ -333,8 +334,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int, class journal.AttemptClass) (stageActivityResult, error) {
 		var result stageActivityResult
 		taskDispatches[t.Name]++
-		attemptEnv := env
-		attemptEnv.Attempt = int32(attempt)
+		attemptEnv := rec.taskAttemptEnvelope(env, t, attempt)
 		// OwningWorkflowID is read here, inside the workflow, because this
 		// walk's execution IS the attempt's driver: for a scheduled run that
 		// is claimID+"-run", which no id composed from the pod's labels or
@@ -350,7 +350,7 @@ func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *ru
 			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		}).Get(ctx, &result)
-		result.Integrity = produced
+		result.Integrity = runner.StageResultIntegrity(result.Integrity, produced)
 		return result, err
 	}, deltaOut)
 }
@@ -571,6 +571,7 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		RunsOnCapabilities: input.Placement.Capabilities,
 	}
 	stampDeterministicRun(&attempt, input.Run)
+	attempt.ArtifactPublication = input.Envelope.ArtifactPublication
 	// Declared credential capabilities travel as NAMES; the pod resolves them
 	// against the credential plane at stage start (DS9/DS10), so no secret
 	// rides the dispatch payload or the pod spec.

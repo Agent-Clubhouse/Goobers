@@ -342,7 +342,10 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"and preserved by default. --cleanup-spans-only-runs deletes them at\n" +
 	"startup after reporting each candidate.\n\n" +
 	"Startup validates the resolved instance config and refuses to run on\n" +
-	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n\n" +
+	"errors. --skip-preflight bypasses that refusal with a prominent warning.\n" +
+	"It does not skip the harness admission preflight: a workflow whose agentic\n" +
+	"stage needs a harness that fails its startup check is still refused, while\n" +
+	"other workflows keep running.\n\n" +
 	"A Git workflowSource continuously reconciles its tracked ref. Local Git\n" +
 	"ref changes wake the loop immediately; periodic fetch-and-compare polling\n" +
 	"is always active, and authenticated GitHub push deliveries wake it when\n" +
@@ -497,7 +500,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	l := instance.NewLayout(root)
 	pf(stdout, "startup: validating instance configuration\n")
-	if err := prepareManualRoot(l, stderr); err != nil {
+	if err := prepareDaemonStartupRoot(l, stderr); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -732,24 +735,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	defer engineClient.Close()
 	engineGuards := engineClient.Guards()
-	// #3877 (decision 005 D2): decision 005's "Temporal Schedules are never
-	// the trigger source" invariant, asserted before anything starts a run.
-	// A Schedule fire rewrites the run's id, which would make the bounded
-	// open-workflow inverse the NORMAL path for every re-attach and cancel
-	// rather than the exceptional one. A check that could not complete is a
-	// warning; a schedule that is actually there refuses the boot.
-	if scheduleErr, mayStart := checkEngineScheduleInvariant(ctx, engineClient, setup.InstanceLog); scheduleErr != nil {
-		if !mayStart {
-			return daemonStartupFailure(ctx, scheduleErr, func() {
-				pf(stderr, "error: %v\n", scheduleErr)
-			})
-		}
-		if daemonStartupWarning(ctx, scheduleErr, func() {
-			pf(stderr, "warning: %v\n", scheduleErr)
-		}) {
-			return 0
-		}
-	}
 	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
 	// verifies a live-authored journal against a re-projection, so a source
 	// given to one and not the other turns every adopted span into a false
@@ -968,7 +953,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	cancelPlane.engine = newDaemonEngineCancelService(l, setup.Interventions, engineClient, engineGuards, setup.InstanceLog)
 	claimPlane := newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)
 	claimPlane.shared = daemonSharedClaimResolver(l, setup.Config, setup.SharedRegistry, setup.SecretStores)
-	apiHandlerOpts = append(apiHandlerOpts, withDaemonRunJournalServices(l, setup.InstanceLog)...)
+	journalService := newDaemonRunJournalService(l, setup.InstanceLog)
+	withEngineOperatorMessageServices(journalService, liveJournals, engineClient, engineGuards)
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunJournalService(journalService), httpapi.WithOperatorMessageService(journalService))
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
@@ -2178,8 +2165,8 @@ func stalledSweepDependencies(setup *schedulerSetup, drainedDowntime []daemonDow
 		// the read model exactly as one that finishes under a live runner does.
 		// Without it the terminal append records no intake watermark and the
 		// projector never re-reads the run (#5278).
-		JournalAdvanced: telemetryingest.RunIntakeObserver(setup.Watermarks, setup.InstanceLog),
-		DrainedDowntime: drainedDowntime,
+		JournalAdvancedContext: telemetryingest.RunIntakeObserverContext(setup.Watermarks, setup.InstanceLog),
+		DrainedDowntime:        drainedDowntime,
 	}
 }
 
@@ -2369,8 +2356,22 @@ func stopReadServiceWorker(stop func() error, name string, stderr io.Writer) {
 	}
 }
 
+// daemonAPIAddressTempFile is the slice of *os.File publishDaemonAPIAddress
+// uses, so tests can inject write and close failures at the durability
+// boundary (#4575).
+type daemonAPIAddressTempFile interface {
+	io.WriteCloser
+	Name() string
+}
+
+// createDaemonAPIAddressTempFile is the temporary-file factory behind
+// publishDaemonAPIAddress; tests replace it to fail a write or close.
+var createDaemonAPIAddressTempFile = func(dir, pattern string) (daemonAPIAddressTempFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
 func publishDaemonAPIAddress(path, address string) error {
-	file, err := os.CreateTemp(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
+	file, err := createDaemonAPIAddressTempFile(filepath.Dir(path), "."+daemonAPIAddressFileName+"-*")
 	if err != nil {
 		return fmt.Errorf("create daemon API address file: %w", err)
 	}
@@ -2402,9 +2403,14 @@ func removeDaemonAPIAddress(path string) error {
 	return nil
 }
 
+// worktreeRunTerminal answers worktree.ReapOptions.IsRunTerminal. Every call
+// builds a fresh owner index, so callers call it once per Reap pass: the runs
+// directory is listed at most once per pass (#6359) and the next pass still
+// sees runs created since.
 func worktreeRunTerminal(runsDir string) func(string) (bool, error) {
+	owners := newRunOwnerIndex(runsDir)
 	return func(worktreeID string) (bool, error) {
-		phase, found, err := retainedWorktreePhase(runsDir, worktreeID, "")
+		phase, found, err := retainedWorktreePhase(owners, worktreeID, "")
 		return found && terminalRunPhase(phase), err
 	}
 }

@@ -14,7 +14,7 @@ name: CI
 #   unit       the -race unit suite, split into shards (Linux) — the long pole
 #   shipped    shipped-workflow contract suite on Linux and Windows
 #
-# dedicated jobs: darwin-build, deadcode, deploy-reference, integration,
+# dedicated jobs: cmdgoobers-growth, darwin-build, deadcode, deploy-reference, integration,
 #   linux-validation, sandbox, unit-linux-coverage, vulnerability-scan,
 #   windows-smoke
 #
@@ -68,12 +68,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    # No `edited`: a PR title/body edit changes no code, and re-running this
-    # workflow for it used to cancel the in-flight run on the same SHA
-    # (51 of 61 edit-triggered runs, Sep 2026). The only body-dependent check,
-    # design delivery against closingIssuesReferences, re-evaluates on edits
-    # in design-delivery.yml instead.
-    types: [opened, synchronize, reopened]
+    # `edited` is here ONLY for base-branch retargets (#6360): the merge ref
+    # changes, so the old-base result must not stand. A title/body edit
+    # (`edited` without `changes.base`) changes no code and must neither cancel
+    # nor shadow the in-flight run on the same SHA (#5491: 51 of 61 edit runs
+    # did, Sep 2026). Such a run therefore takes its own concurrency group,
+    # skips the two root jobs (preflight, unit) so every dependent skips, and
+    # renames required-ci so its skipped check cannot stand in for the pinned
+    # required `make ci` context. Design delivery re-evaluates body edits in
+    # design-delivery.yml. Pinned by TestCIRunsOnBaseRetargetNotMetadataEdits.
+    types: [opened, synchronize, reopened, edited]
   merge_group:
     branches: [main]
 
@@ -83,9 +87,10 @@ permissions:
   contents: read
   pull-requests: read
 
-# One in-flight run per ref; newer pushes cancel stale runs.
+# One in-flight run per ref; newer pushes (and base retargets) cancel stale
+# runs. A title/body-edit run is isolated so it cancels nothing.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'edited' && !github.event.changes.base) && format('-metadata-edit-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 env:
@@ -137,6 +142,7 @@ jobs:
   # short Linux job would let it win and pin a near-empty cache.
   preflight:
     name: preflight (lint · format · policy · vet · build)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -172,6 +178,30 @@ jobs:
 
       - name: Run preflight
         run: go run ./test/ci group preflight
+
+  # Compare each PR head with its merge-base; concurrent main growth is unrelated.
+  cmdgoobers-growth:
+    name: cmd/goobers growth ratchet
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enforce cmd/goobers growth ratchet
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'HEAD' }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || '' }}
+        run: go run ./test/cmdgoobersgrowth -base-ref "$BASE_REF" -head-ref "$HEAD_REF"
 
   # Unreachable-production-code report. Ran once, on this one runner — not
   # because the analysis is platform-independent (#4434: a symbol reachable
@@ -509,6 +539,7 @@ jobs:
   # latest reachable tag.
   unit:
     name: unit race shard ${{ matrix.shard }} (linux)
+    if: ${{ !(github.event.action == 'edited' && !github.event.changes.base) }}
     # Not gated on preflight: the shards are the long pole, and waiting for
     # preflight added its ~4.4 min to every run's wall clock. A preflight
     # failure cancels the run instead (cancel-on-preflight-failure).
@@ -652,6 +683,19 @@ jobs:
           path: test-timings/unit-race.part*.json
           if-no-files-found: warn
 
+      # Per-test JUnit results (one report per go test process) written by the
+      # same capture; failing tests are also annotated on the run summary.
+      # Observability only: the upload can never change the job's verdict.
+      # See docs/guides/ci-test-results.md (#681).
+      - name: Upload race shard test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-race-linux-${{ strategy.job-index }}
+          path: test-timings/unit-race.part*.junit.xml
+          if-no-files-found: warn
+
   # Linux runs the whole behavioural unit suite (no -race) separately from the
   # race shards so its coverage profile includes Linux-only files.
   unit-linux-coverage:
@@ -777,6 +821,16 @@ jobs:
         with:
           name: test-timings-${{ runner.os }}
           path: test-timings/unit-${{ runner.os }}.json
+          if-no-files-found: warn
+
+      # See the race shards' "Upload race shard test results" step (#681).
+      - name: Upload test results
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-${{ runner.os }}
+          path: test-timings/unit-${{ runner.os }}.junit.xml
           if-no-files-found: warn
 
   # Shipped-workflow contract suite. Linux runs it with -race and Windows runs
@@ -1469,7 +1523,7 @@ jobs:
         run: go test ./internal/executor
 
       - name: Windows credential files
-        run: go test ./internal/credentials
+        run: go test ./internal/credentials ./internal/fleet
 
       - name: Windows Azure CLI credential diagnostics
         env:
@@ -1616,8 +1670,8 @@ jobs:
         run: make vulncheck
 
   required-ci:
-    name: make ci (fmt-check · vet · build · test · lint)
-    if: ${{ always() && github.event_name != 'push' }}
+    name: ${{ (github.event.action == 'edited' && !github.event.changes.base) && 'make ci (skipped for a PR title/body edit)' || 'make ci (fmt-check · vet · build · test · lint)' }}
+    if: ${{ always() && github.event_name != 'push' && !(github.event.action == 'edited' && !github.event.changes.base) }}
     # unit-gate — the pre-parallelization `make ci` monolith — was retired once
     # every check it ran had a dedicated job; it duplicated the
     # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
@@ -1638,12 +1692,13 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - name: Verify required gates
         env:
+          CMDGOOBERS_GROWTH_RESULT: ${{ needs.cmdgoobers-growth.result }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           DEPLOY_REFERENCE_RESULT: ${{ needs.deploy-reference.result }}
@@ -1678,6 +1733,7 @@ jobs:
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
           check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
+          check "cmd/goobers growth ratchet"         "$CMDGOOBERS_GROWTH_RESULT"
           check "dead-code analysis"                 "$DEADCODE_RESULT"
           check "windows build/vet/runtime gate"     "$WINDOWS_RESULT"
           check "Go vulnerability scan"              "$VULNCHECK_RESULT"
@@ -1937,6 +1993,23 @@ jobs:
         # won), or a fork PR's read-only token cannot cancel.
         run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
 
+  cancel-on-cmdgoobers-growth-failure:
+    name: cancel run on failure (cmdgoobers-growth)
+    needs: [cmdgoobers-growth]
+    if: ${{ !cancelled() && needs.cmdgoobers-growth.result == 'failure' && github.event_name != 'push' && github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the rest of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        # Tolerated: the run may already be cancelling (another canceller
+        # won), or a fork PR's read-only token cannot cancel.
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY" || echo "::notice::run not cancelled (already cancelling, or read-only token)"
+
   cancel-on-deadcode-failure:
     name: cancel run on failure (deadcode)
     needs: [deadcode]
@@ -2060,7 +2133,7 @@ jobs:
   escalate-main-failure:
     name: escalate failed main validation
     if: ${{ always() && github.event_name == 'push' }}
-    needs: [preflight, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
+    needs: [preflight, cmdgoobers-growth, checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, shipped, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -2070,6 +2143,7 @@ jobs:
       - name: File or update critical main failure
         if: >-
           ${{
+            needs.cmdgoobers-growth.result == 'failure' ||
             needs.preflight.result == 'failure' ||
             needs.checks.result == 'failure' ||
             needs.deploy-reference.result == 'failure' ||
@@ -2130,6 +2204,7 @@ jobs:
       - name: Close resolved main failure
         if: >-
           ${{
+            needs.cmdgoobers-growth.result == 'success' &&
             needs.preflight.result == 'success' &&
             needs.checks.result == 'success' &&
             needs.deploy-reference.result == 'success' &&

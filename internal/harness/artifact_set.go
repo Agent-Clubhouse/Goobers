@@ -26,6 +26,14 @@ type PreparedArtifactRecorder interface {
 
 func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelope, reported []apiv1.ArtifactPointer) ([]apiv1.ArtifactPointer, error) {
 	value, manifestMode := env.Inputs[InputArtifactManifestFile]
+	if env.ArtifactPublication != nil {
+		if len(reported) != 0 {
+			return nil, &artifactset.PublicationError{Code: artifactset.InvalidPublicationCode}
+		}
+		if !manifestMode {
+			return nil, artifactset.MissingPublication(env.ArtifactPublication)
+		}
+	}
 	if !manifestMode {
 		pointer, err := e.liftArtifactFile(env)
 		if err != nil {
@@ -43,6 +51,9 @@ func (e *Executor) liftArtifacts(ctx context.Context, env apiv1.InvocationEnvelo
 	}
 	prepared, err := e.prepareArtifactSet(ctx, env, manifest)
 	if err != nil {
+		return nil, err
+	}
+	if err := prepared.Bind(env.ArtifactPublication, env.Attempt); err != nil {
 		return nil, err
 	}
 	return prepared.Publish(ctx, func(name, media string, data []byte) (apiv1.ArtifactPointer, error) {

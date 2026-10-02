@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -19,6 +20,10 @@ type sharedVisibilitySweep struct {
 	layout           instance.Layout
 	cursors          map[string]string
 	repositoryCursor string
+	// claimProvider builds the claim-store provider; nil means
+	// daemonSharedClaimProvider. Tests point it at a fake API because a
+	// validated instance.yaml cannot (a github repo takes no baseUrl, #6347).
+	claimProvider func(context.Context, *instance.Config, providers.RepositoryRef, terminalSecretRegistry, credentials.StoreResolver, capability.Capability) (*providers.GitHubProvider, error)
 }
 
 // This loop is independent of lease renewal and holds no claims lock. Even an
@@ -62,8 +67,12 @@ func (s *sharedVisibilitySweep) run(ctx context.Context) error {
 		return errors.Join(inventoryErr, err)
 	}
 	registry, _ := journal.DefaultScrubber()
+	claimProvider := s.claimProvider
+	if claimProvider == nil {
+		claimProvider = daemonSharedClaimProvider
+	}
 	err = s.reconcile(ctx, repos, func(ctx context.Context, repo providers.RepositoryRef, cursor string) (string, error) {
-		provider, err := daemonSharedClaimProvider(ctx, cfg, repo, registry, stores, capability.RepoPush)
+		provider, err := claimProvider(ctx, cfg, repo, registry, stores, capability.RepoPush)
 		if err != nil {
 			return cursor, err
 		}

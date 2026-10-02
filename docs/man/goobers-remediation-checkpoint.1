@@ -17,9 +17,9 @@ the active cause exhausts its DSL-declared budget, on a byte-identical
 repeat, or when every detected cause is external to the PR's own diff
 (sibling sequencing, or CI already red on the base branch), or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
-gather-pr-context's selectedNumber output), remediationCauses, and the
-five per-cause budget inputs (humanCommentBudget defaults to 2 when
-undeclared). --budget overrides every declared cause
+gather-pr-context's selectedNumber output) and remediationCauses. Each of
+the five per-cause budget inputs defaults to 2 when undeclared
+(goobers validate warns). --budget overrides every declared cause
 for standalone diagnostics. --escalation-outcome classifies a forced
 --escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.
 Escalations persist a machine-readable `escalationOutcome`

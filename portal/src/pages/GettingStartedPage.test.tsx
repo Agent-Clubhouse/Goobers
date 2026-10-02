@@ -705,6 +705,47 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText("acme")).toBeInTheDocument();
     expect(screen.getByText(/Only select repositories/)).toBeInTheDocument();
     expect(screen.getByText("gh auth login")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "PowerShell" })).toBeChecked();
+    expect(
+      screen.getByText('$env:GH_TOKEN = "<your token>"; goobers init --guided'),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Bash / zsh" }));
+    expect(screen.getByText("GH_TOKEN=<your token> goobers init --guided")).toBeInTheDocument();
+    expect(
+      screen.queryByText('$env:GH_TOKEN = "<your token>"; goobers init --guided'),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders POSIX shell commands by default on non-Windows hosts", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState({ platform: "darwin" }) }),
+          "/guided/actions/inspect-repository": () => ({
+            body: {
+              ...inspection,
+              auth: { kind: "github-cli", ready: false, needsLogin: true },
+            },
+          }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+
+    expect(
+      await screen.findByText("GH_TOKEN=<your token> goobers init --guided"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Bash / zsh" })).toBeChecked();
+
+    await user.click(screen.getByRole("radio", { name: "PowerShell" }));
+    expect(
+      screen.getByText('$env:GH_TOKEN = "<your token>"; goobers init --guided'),
+    ).toBeInTheDocument();
   });
 
   it("ends after checks with a customization prompt and server shutdown", async () => {

@@ -145,7 +145,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	// A fresh registrar/scrubber per resume, exactly like Start — a run's
 	// secrets have no business outliving one process's handling of it.
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q: %w", in.RunID, err)
 	}
@@ -189,7 +189,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
 	registrar, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: recover run %q for terminal resume: %w", in.RunID, err)
 	}
@@ -331,6 +331,12 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: read identity for run %q: %w", in.RunID, err)
 	}
+	ctx = withRunAttribution(ctx, id.Gaggle, id.Workflow, in.RunID)
+	// Terminal handlers read the active run's attempt context, which
+	// withActiveRun built before the attribution above existed. Rebase it now
+	// so a terminal reached while replaying (before the walk's own rebase
+	// below) is attributed too (#5178).
+	setStalledAttemptContext(ctx)
 	if res, done, terr := r.resumeTerminalPhase(rd, jr, in); done || terr != nil {
 		return res, terr
 	}
@@ -486,6 +492,37 @@ func (r *Runner) resumeTerminalPhase(rd *journal.Reader, jr *journal.Run, in Res
 	}
 	switch phase {
 	case journal.PhaseCompleted, journal.PhaseAborted, journal.PhaseEscalated, journal.PhaseFailed:
+		// A terminal gate is itself durable, but a crash may have preceded
+		// run.finished. Complete that record exactly once before reporting the
+		// recovered terminal. Existing (including legacy) terminals stay intact.
+		events, err := rd.Events()
+		if err != nil {
+			return Result{}, true, err
+		}
+		finished, finalState := false, ""
+		for i := len(events) - 1; i >= 0; i-- {
+			e := events[i]
+			if e.Type == journal.EventRunResumed || e.Type == journal.EventStageRerunRequested {
+				break
+			}
+			if e.Type == journal.EventRunFinished {
+				finished = true
+				break
+			}
+			if finalState == "" && (e.Type == journal.EventGateEvaluated || e.Type == journal.EventGateOverridden) {
+				finalState = e.Gate
+			}
+			if e.Type == journal.EventGateOverridden {
+				break
+			}
+		}
+		if !finished {
+			res, err := r.finish(in.RunID, jr, phase, finalState, 0)
+			if err == nil && in.HumanDecision != nil {
+				err = fmt.Errorf("runner: run %q is %s and no longer awaiting a human gate decision", in.RunID, phase)
+			}
+			return res, true, err
+		}
 		res := Result{Phase: phase}
 		if err := r.FinalizeTerminal(in.RunID, phase); err != nil {
 			return res, true, err
@@ -1276,11 +1313,15 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	if outcome, takenOver := r.claimOwnerTerminalization(runID); takenOver {
 		return outcome.result, outcome.err
 	}
+	cause := newTerminalCause(journal.PhaseFailed)
+	cause.Classification, cause.Code, cause.Message = journal.TerminalResumeRefused, code, msg
+	cause.CausalEventSeq = jr.Seq() + 1 // The refusal itself is the causal event.
 	terminal := journal.Event{
-		Type:        journal.EventRunFinished,
-		Status:      string(journal.PhaseFailed),
-		Disposition: journal.RunDispositionProduced,
-		Error:       &journal.ErrorDetail{Code: code, Message: msg},
+		TerminalCause: cause,
+		Type:          journal.EventRunFinished,
+		Status:        string(journal.PhaseFailed),
+		Disposition:   journal.RunDispositionProduced,
+		Error:         &journal.ErrorDetail{Code: code, Message: msg},
 	}
 	if err := jr.Append(terminal); err != nil {
 		return Result{}, fmt.Errorf("runner: %s (additionally failed to journal terminal refusal: %w)", msg, err)

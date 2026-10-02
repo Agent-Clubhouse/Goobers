@@ -282,6 +282,7 @@ func addCostReceipt(dst *providers.CostReceipt, src providers.CostReceipt) {
 	addFloatMeasure(&dst.CopilotPremiumRequests, src.CopilotPremiumRequests)
 	addInt64Measure(&dst.NanoAIU, src.NanoAIU)
 	addFloatMeasure(&dst.CostUSD, src.CostUSD)
+	dst.VendorEstimated = dst.VendorEstimated || src.VendorEstimated
 }
 
 func addInt64Measure(dst **int64, src *int64) {
@@ -395,18 +396,18 @@ func mergedPullRequestCommentAt(pullRef string, report postMergeCostReport, issu
 	if report.Total.NanoAIU == nil {
 		return comment
 	}
-	comment += "\n\n**Total Goobers cost for this PR:** " + formatNanoAIU(*report.Total.NanoAIU)
+	comment += "\n\n**Total Goobers cost for this PR:** " + formatPostMergeCost(*report.Total.NanoAIU, report.Total.VendorEstimated)
 	if issueID != "" {
-		comment += "\n**Cost attributed to this issue:** " + formatNanoAIU(report.IssueNanoAIU[issueID])
+		comment += "\n**Cost attributed to this issue:** " + formatPostMergeCost(report.IssueNanoAIU[issueID], report.Total.VendorEstimated)
 	}
-	return comment
+	return comment + postMergeCostDisclosures(report)
 }
 
 func renderPostMergeCostSummary(report postMergeCostReport) string {
 	if report.Total.NanoAIU == nil {
 		return ""
 	}
-	body := "Thanks for using Goobers. Your cost for this PR was **" + formatNanoAIU(*report.Total.NanoAIU) + "**."
+	body := "Thanks for using Goobers. Your cost for this PR was **" + formatPostMergeCost(*report.Total.NanoAIU, report.Total.VendorEstimated) + "**."
 	if len(report.ByWorkflow) > 0 {
 		workflows := make([]string, 0, len(report.ByWorkflow))
 		for workflow := range report.ByWorkflow {
@@ -417,11 +418,46 @@ func renderPostMergeCostSummary(report postMergeCostReport) string {
 		for _, workflow := range workflows {
 			receipt := report.ByWorkflow[workflow]
 			if receipt.NanoAIU != nil {
-				body += fmt.Sprintf("\n- `%s`: %s", workflow, formatNanoAIU(*receipt.NanoAIU))
+				body += fmt.Sprintf("\n- `%s`: %s", workflow, formatPostMergeCost(*receipt.NanoAIU, receipt.VendorEstimated))
 			}
 		}
 	}
-	return body + "\n\n" + postMergeCostSummaryMarker
+	return body + postMergeCostDisclosures(report) + "\n\n" + postMergeCostSummaryMarker
+}
+
+// postMergeCostCoverage counts the receipted runs whose cost is known. Every
+// run that did agent work publishes a receipt; one without a measured AIC
+// (its agents reported nothing, or tokens without a cost) makes the total a
+// lower bound. Runs with no agent work publish no receipt and cost nothing.
+func postMergeCostCoverage(report postMergeCostReport) (known, total int) {
+	for _, receipt := range report.Receipts {
+		if receipt.Attribution.Cost.NanoAIU != nil {
+			known++
+		}
+	}
+	return known, len(report.Receipts)
+}
+
+// postMergeCostDisclosures renders the epic #4383 disclosures (#6353): partial
+// run coverage, and the footnote for amounts that include a vendor-reported
+// estimate. It returns "" when the total is complete and fully billed.
+func postMergeCostDisclosures(report postMergeCostReport) string {
+	var out string
+	if known, total := postMergeCostCoverage(report); known < total {
+		out += fmt.Sprintf("\n\nCost known for %d of %d runs, so this total is a lower bound.", known, total)
+	}
+	if report.Total.VendorEstimated {
+		out += "\n\n\\* Includes Claude costs, which are vendor-reported estimates normalized to AIC for totals."
+	}
+	return out
+}
+
+// formatPostMergeCost is formatNanoAIU with the estimate footnote marker.
+func formatPostMergeCost(nanoAIU int64, estimated bool) string {
+	if estimated {
+		return formatNanoAIU(nanoAIU) + "\\*"
+	}
+	return formatNanoAIU(nanoAIU)
 }
 
 func formatNanoAIU(nanoAIU int64) string {

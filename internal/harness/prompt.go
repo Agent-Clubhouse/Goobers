@@ -134,10 +134,25 @@ func renderResponseCompletionContract(req RunRequest) string {
 		completionKind, schemaHint)
 }
 
+// uncommittedChangesRepairProblem opens the repair turn for #5182: the agent
+// finished and reported success but did not commit. The agent commits its own
+// work; the harness never commits on its behalf.
+func uncommittedChangesRepairProblem(validationErr error) string {
+	return fmt.Sprintf(
+		"Your previous turn reported success, but this stage must commit its changes and you left them "+
+			"uncommitted (%s). Review `git status` and `git diff`, then commit the changes that belong to "+
+			"this task to the current branch with `git commit` (do not push, and do not commit unrelated "+
+			"or scratch files).",
+		validationErr,
+	)
+}
+
 func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
 	problem := "Your previous turn ended without writing the mandatory completion file."
-	if errors.Is(validationErr, ErrInvalidCompletion) {
+	if errors.Is(validationErr, ErrUncommittedChanges) {
+		problem = uncommittedChangesRepairProblem(validationErr)
+	} else if errors.Is(validationErr, ErrInvalidCompletion) {
 		problem = fmt.Sprintf(
 			"Your previous turn wrote a completion file that failed schema validation: %s.",
 			validationErr,
@@ -157,7 +172,9 @@ func renderCompletionRepairPrompt(req RunRequest, validationErr error) string {
 func renderResponseCompletionRepairPrompt(req RunRequest, validationErr error) string {
 	completionKind, schemaHint := completionContract(req)
 	problem := "Your previous turn ended without returning the mandatory completion as valid JSON."
-	if errors.Is(validationErr, ErrInvalidCompletion) {
+	if errors.Is(validationErr, ErrUncommittedChanges) {
+		problem = uncommittedChangesRepairProblem(validationErr)
+	} else if errors.Is(validationErr, ErrInvalidCompletion) {
 		problem = fmt.Sprintf(
 			"Your previous turn returned a completion that failed schema validation: %s.",
 			validationErr,

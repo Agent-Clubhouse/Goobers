@@ -123,9 +123,6 @@ type JournalProjection struct {
 	// Ops are the journal writes in order. The first is always the run.started
 	// append; a projectable history ends with exactly one run.finished.
 	Ops []JournalOp `json:"ops"`
-	// SchedulerOps are instance-journal events decided by the same history.
-	// Scheduled runs carry one trigger.fired event; ordinary runs carry none.
-	SchedulerOps []JournalOp `json:"schedulerOps,omitempty"`
 }
 
 // runJournal accumulates the journal projection as the workflow walks. All
@@ -136,7 +133,9 @@ type JournalProjection struct {
 // (heartbeats, resume repairs, mutation sidecars) have no engine analogue and
 // are documented drift-ledger items where they matter.
 type runJournal struct {
-	proj JournalProjection
+	proj          JournalProjection
+	machine       *wf.Machine
+	terminalCause *journal.TerminalCause
 
 	usesRepo       bool
 	branchRecorded bool
@@ -205,6 +204,7 @@ func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 	}
 	runControls = effectiveControls.Overrides()
 	rec := &runJournal{
+		machine: m,
 		proj: JournalProjection{
 			Identity: journal.RunIdentity{
 				InstanceID:      in.InstanceID,
@@ -256,17 +256,6 @@ func (r *runJournal) append(ctx workflow.Context, ev journal.Event) {
 func (r *runJournal) appendAt(at time.Time, ev journal.Event) {
 	e := ev
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opAppend, Event: &e, Time: at})
-}
-
-func (r *runJournal) triggerFiredAt(at time.Time, in RunInput) {
-	ev := journal.Event{
-		Type:     journal.EventTriggerFired,
-		Workflow: in.WorkflowName,
-		Gaggle:   in.Gaggle,
-		RunID:    in.RunID,
-		Reason:   "scheduled",
-	}
-	r.proj.SchedulerOps = append(r.proj.SchedulerOps, JournalOp{Kind: opAppend, Event: &ev, Time: at})
 }
 
 func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {
@@ -347,7 +336,29 @@ func (r *runJournal) stageStarted(at time.Time, task apiv1.Task, attempt int, cl
 	if task.Type == apiv1.TaskAgentic {
 		event.Runner = map[string]any{"goober": task.Goober}
 	}
+	if len(task.ArtifactSlots) > 0 {
+		if event.Runner == nil {
+			event.Runner = map[string]any{}
+		}
+		event.Runner["artifactVisit"] = uint64(len(r.proj.Ops) + 1)
+	}
 	r.appendAt(at, event)
+}
+
+// artifactPublication reads the visit just recorded for this dispatch. The
+// projection ordinal is deterministic across workflow replay and retries.
+func (r *runJournal) artifactPublication(task apiv1.Task) *apiv1.ArtifactPublication {
+	if len(task.ArtifactSlots) == 0 {
+		return nil
+	}
+	for i := len(r.proj.Ops) - 1; i >= 0; i-- {
+		event := r.proj.Ops[i].Event
+		if event != nil && event.Type == journal.EventStageStarted && event.Stage == task.Name {
+			visit, _ := event.Runner["artifactVisit"].(uint64)
+			return &apiv1.ArtifactPublication{Stage: task.Name, Visit: visit, Slots: append([]apiv1.ArtifactSlot(nil), task.ArtifactSlots...)}
+		}
+	}
+	return nil
 }
 
 // placement journals one attempt's runner.placement provenance from what the
@@ -756,6 +767,7 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 		Error:  errorDetail,
 		Runner: detail,
 	})
+	r.failureTerminalCause(stage, code, message)
 }
 
 // runCanceledCause is the run_failed cause text for a cancelled run. The
@@ -772,8 +784,18 @@ func runCanceledCause(err error) string {
 
 // runFinished closes the projection with the terminal phase and authoritative
 // work disposition, mapped to the local runner's run.finished vocabulary.
-func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase, disposition string) {
-	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition})
+func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase, disposition string, finalState string) error {
+	var cause *journal.TerminalCause
+	if workflow.GetVersion(ctx, terminalCauseChange, workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		var err error
+		cause, err = r.buildTerminalCause(phase, finalState)
+		if err != nil {
+			return err
+		}
+	}
+	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase), Disposition: disposition, TerminalCause: cause})
+	r.terminalCause = nil
+	return nil
 }
 
 // PhaseForStatus maps the engine's RunResult status onto the local runner's
@@ -859,4 +881,10 @@ func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
 	return journal.Ref{
 		Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
 	}
+}
+
+func (r *runJournal) taskAttemptEnvelope(env apiv1.InvocationEnvelope, task apiv1.Task, attempt int) apiv1.InvocationEnvelope {
+	env.Attempt = int32(attempt)
+	env.ArtifactPublication = r.artifactPublication(task)
+	return env
 }

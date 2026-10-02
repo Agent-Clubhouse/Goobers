@@ -609,12 +609,5 @@ func traceTimelineText(value string) string {
 }
 
 func truncateTimelineText(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 3 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-3]) + "..."
+	return truncateRunes(value, width, "...", true)
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -68,6 +69,10 @@ type SchedulerStatus struct {
 	JournalHealth           *JournalHealthStatus
 	StorageHealth           *StorageHealthStatus
 	TelemetryExporterHealth *TelemetryExporterHealthStatus
+	// TelemetryIngest is scheduler-log ingest health from telemetry.db
+	// (#5562). Nil when no telemetry store is wired or there is nothing to
+	// report (never failed, nothing skipped).
+	TelemetryIngest *TelemetryIngestStatus
 	// ConfigReloadRejection is the newest config.reload.rejected since the
 	// last accepted reload or daemon start (#5596). Nil when none.
 	ConfigReloadRejection *ConfigReloadRejectionStatus
@@ -118,6 +123,35 @@ type StorageHealthStatus struct {
 	CriticalFloorSource string    `json:"criticalFloorSource,omitempty"`
 	MeasuredAt          time.Time `json:"measuredAt,omitempty"`
 	Error               string    `json:"error,omitempty"`
+}
+
+// TelemetryIngestStatus reports scheduler-log ingestion into telemetry.db
+// (#5562): a current failure streak, and corrupt log records skipped. It is
+// read from telemetry.db because the daemon's own report of an ingest failure
+// lands in the scheduler log that the failing ingest is not reading.
+type TelemetryIngestStatus struct {
+	FailingSince   *time.Time `json:"failingSince,omitempty"`
+	LastFailureAt  *time.Time `json:"lastFailureAt,omitempty"`
+	LastFailure    string     `json:"lastFailure,omitempty"`
+	SkippedRecords int64      `json:"skippedRecords,omitempty"`
+	LastSkipAt     *time.Time `json:"lastSkipAt,omitempty"`
+	LastSkip       string     `json:"lastSkip,omitempty"`
+}
+
+// telemetryIngestStatus is best-effort: status must still render when the
+// telemetry store cannot answer, so a read error reports nothing.
+func telemetryIngestStatus(ctx context.Context, store *rollup.DB) *TelemetryIngestStatus {
+	if store == nil {
+		return nil
+	}
+	health, err := store.SchedulerIngestHealth(ctx)
+	if err != nil || (health.FailingSince == nil && health.SkippedRecords == 0) {
+		return nil
+	}
+	return &TelemetryIngestStatus{
+		FailingSince: health.FailingSince, LastFailureAt: health.LastFailureAt, LastFailure: health.LastFailure,
+		SkippedRecords: health.SkippedRecords, LastSkipAt: health.LastSkipAt, LastSkip: health.LastSkip,
+	}
 }
 
 // TelemetryExporterHealthStatus exposes local, scrubbed telemetry exporter
@@ -663,6 +697,7 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		status.StorageHealth = storageHealthStatus(s.sources.StorageHealthStats())
 	}
 	status.TelemetryExporterHealth = telemetryExporterHealthStatus(s.sources.TelemetryExporterHealthStats)
+	status.TelemetryIngest = telemetryIngestStatus(ctx, s.sources.Telemetry)
 	for _, worker := range projected.workerDivergenceOrder {
 		status.WorkerConfigDivergence = append(status.WorkerConfigDivergence, projected.workerDivergence[worker])
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -256,6 +257,69 @@ func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
 	local := stageCostReceipt(root, runID)
 	if local == nil || local.NanoAIU == nil || *local.NanoAIU != nanoAIU || local.JournalSequence != got.Cost.JournalSequence {
 		t.Fatalf("disabling publication changed durable local accounting: %+v", local)
+	}
+}
+
+// TestRunCostIsVendorEstimate pins #6353's receipt provenance: only the run's
+// own claude-code usage with a reported cost marks the receipt an estimate.
+func TestRunCostIsVendorEstimate(t *testing.T) {
+	cost := 0.42
+	agent := func(runID, plugin string, costUSD *float64) journal.Event {
+		return journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			RunID: runID, Plugin: plugin, Usage: journal.AgentUsage{CostUSD: costUSD},
+		}}
+	}
+	for name, tc := range map[string]struct {
+		events []journal.Event
+		want   bool
+	}{
+		"claude cost":           {[]journal.Event{agent("run-1", harness.ClaudeAgentPlugin, &cost)}, true},
+		"claude tokens only":    {[]journal.Event{agent("run-1", harness.ClaudeAgentPlugin, nil)}, false},
+		"copilot billed cost":   {[]journal.Event{agent("run-1", "copilot", &cost)}, false},
+		"another run's claude":  {[]journal.Event{agent("run-2", harness.ClaudeAgentPlugin, &cost)}, false},
+		"mixed copilot+claude":  {[]journal.Event{agent("run-1", "copilot", &cost), agent("run-1", harness.ClaudeAgentPlugin, &cost)}, true},
+		"non-agent event (nil)": {[]journal.Event{{Type: journal.EventAgentLifecycle}}, false},
+	} {
+		if got := runCostIsVendorEstimate(tc.events, "run-1"); got != tc.want {
+			t.Errorf("%s: runCostIsVendorEstimate = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// TestStageCostReceiptDistinguishesUnmeasuredAgentWork pins #6353's coverage
+// signal: a run with no agent work publishes no receipt (it cost nothing), and
+// a run whose agent reported no usage publishes an empty one (cost unknown).
+func TestStageCostReceiptDistinguishesUnmeasuredAgentWork(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
+	newRun := func(runID string, events ...journal.Event) {
+		run, err := journal.Create(instance.NewLayout(root).RunsDir(), journal.RunIdentity{
+			RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "g",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual}, StartedAt: now,
+		}, nil)
+		if err != nil {
+			t.Fatalf("create run: %v", err)
+		}
+		for _, event := range events {
+			if err := run.Append(event); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+		}
+		if err := run.Close(); err != nil {
+			t.Fatalf("close run: %v", err)
+		}
+	}
+	newRun("run-deterministic")
+	newRun("run-unmeasured", journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "implementer", RunID: "run-unmeasured", Stage: "implement",
+		Attempt: 1, Lifecycle: journal.AgentCompleted, StartedAt: now, UpdatedAt: now,
+	}})
+	if got := stageCostReceipt(root, "run-deterministic"); got != nil {
+		t.Fatalf("deterministic run receipt = %+v, want none", got)
+	}
+	got := stageCostReceipt(root, "run-unmeasured")
+	if got == nil || got.NanoAIU != nil || got.JournalSequence == 0 {
+		t.Fatalf("unmeasured agent run receipt = %+v, want an empty receipt", got)
 	}
 }
 

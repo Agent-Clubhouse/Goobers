@@ -339,6 +339,9 @@ func (c *StorageHealthConfig) validate() error {
 }
 
 func (c RetentionConfig) validate() error {
+	if _, err := c.TerminalBranchMaxAgeDuration(); err != nil {
+		return err
+	}
 	if c.MaxRetainedWorktreeBytes < 0 {
 		return fmt.Errorf("retention.maxRetainedWorktreeBytes must not be negative")
 	}
@@ -517,6 +520,9 @@ func (r RepoRef) validateProvider(i int, stores map[string]bool, envPassthrough 
 func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []string) error {
 	if r.Project != "" {
 		return fmt.Errorf("repos[%d] (%s/%s): project is only valid for provider \"ado\"", i, r.Owner, r.Name)
+	}
+	if r.BaseURL != "" {
+		return fmt.Errorf("repos[%d] (%s/%s): %s", i, r.Owner, r.Name, apiv1.GitHubBaseURLUnsupported)
 	}
 	kind := GitHubAuthPAT
 	if r.Auth != nil {

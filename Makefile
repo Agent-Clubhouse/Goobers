@@ -201,6 +201,16 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
+## cmdgoobers-growth: Report cmd/goobers counts (CI enforces each PR delta).
+.PHONY: cmdgoobers-growth
+cmdgoobers-growth:
+	$(GO) run ./test/cmdgoobersgrowth
+
+## cmdgoobers-growth-update: Refresh the informational snapshot with explicit justification.
+.PHONY: cmdgoobers-growth-update
+cmdgoobers-growth-update:
+	$(GO) run ./test/cmdgoobersgrowth -update
+
 ## complexity: Enforce cyclomatic-complexity and body-length caps against the pinned baseline.
 .PHONY: complexity
 complexity:

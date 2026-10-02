@@ -21,7 +21,11 @@ func checkConfiguredRepositoryAccess(root, configDir, configFile string, cfg *in
 		return false
 	}
 	accessOK := checkADORepositoryAccess(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics)
-	return checkADOBacklogProjects(root, configDir, cfg, set, stores, stdout, diagnostics) && accessOK
+	// #2744: repos[] tokens reaching their own repos says nothing about the
+	// grants a run receives — a credentials: override replaces the repo
+	// default in every gaggle, so preflight it against each gaggle's repo.
+	overridesOK := checkGaggleCredentialOverrideAccess(root, configFile, cfg, set, stores, stdout, diagnostics)
+	return checkADOBacklogProjects(root, configDir, cfg, set, stores, stdout, diagnostics) && accessOK && overridesOK
 }
 
 func adoBacklogReachable(ctx context.Context, repo instance.RepoRef, project string, stores credentials.StoreResolver) error {

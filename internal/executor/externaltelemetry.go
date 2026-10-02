@@ -135,6 +135,7 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 			Status:    apiv1.ResultFailure,
 			Outputs:   outputs,
 			Artifacts: []apiv1.ArtifactPointer{pointer},
+			Integrity: apiv1.IntegrityUnapproved,
 			Summary:   fmt.Sprintf("external telemetry query failed: %s", code),
 			Error: &apiv1.ErrorInfo{
 				Code:      "external_telemetry_" + code,
@@ -146,10 +147,15 @@ func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEn
 	if artifact.Shape == externaltelemetry.ShapePoint && len(artifact.Rows) == 1 && len(artifact.Rows[0]) == 1 {
 		outputs[OutputTelemetryValue] = artifact.Rows[0][0]
 	}
+	// The outputs are connector-returned data, graded exactly like the
+	// artifact above. Stamped on the envelope too, so the runner keeps it
+	// rather than grading the stage by its (operator-authored) inputs alone
+	// and handing these outputs downstream as trusted (#2979).
 	return apiv1.ResultEnvelope{
 		Status:    apiv1.ResultSuccess,
 		Outputs:   outputs,
 		Artifacts: []apiv1.ArtifactPointer{pointer},
+		Integrity: apiv1.IntegrityUnapproved,
 		Summary:   fmt.Sprintf("external telemetry query completed with data state %s", artifact.State),
 	}, nil
 }

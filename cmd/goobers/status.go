@@ -41,7 +41,7 @@ const (
 	statusHighlight            = "\x1b[1m"
 	statusReset                = "\x1b[0m"
 	statusWatchRowFormat       = "%-14.14s  %-18.18s  %-8.8s  %-9.9s  %-20.20s"
-	statusFleetRowFormat       = "%-19.19s %-7.7s %-15.15s %-10.10s %s"
+	statusFleetSuccessWidth    = 10
 	statusSuccessRateWindow    = 10
 	statusNextFireScheduled    = "scheduled"
 	statusNextFireManual       = "manual"
@@ -193,6 +193,7 @@ func renderSchedulerStatusSignals(
 	text.WriteString(providerQuotaStatusLine(status, now))
 	text.WriteString(maintenanceStatusLine(status))
 	text.WriteString(telemetryRetentionStatusLine(status))
+	text.WriteString(telemetryIngestStatusLine(status, now))
 	text.WriteString(journalHealthStatusLine(status))
 	text.WriteString(storageHealthStatusLine(status))
 	text.WriteString(configReloadRejectionStatusLine(status))
@@ -524,8 +525,11 @@ type statusWorkflowSummary struct {
 	LastOutcomeAt     *time.Time                   `json:"lastOutcomeAt,omitempty"`
 	TerminalRuns      int                          `json:"terminalRuns"`
 	SuccessfulRuns    int                          `json:"successfulRuns"`
-	SuccessRate       *float64                     `json:"successRate"`
-	NextFire          statusNextFire               `json:"nextFire"`
+	// NoWorkRuns counts the SuccessfulRuns that completed without doing any
+	// work (#5553), so an idle lane is not mistaken for a productive one.
+	NoWorkRuns  int            `json:"noWorkRuns"`
+	SuccessRate *float64       `json:"successRate"`
+	NextFire    statusNextFire `json:"nextFire"`
 	// FailureStreak is non-nil only once the streak reaches
 	// statusFailureStreakThreshold (#4263) — most callers should treat a nil
 	// streak as "no alarm", not "no failures".
@@ -851,6 +855,9 @@ func buildStatusFleetSummary(
 		for _, run := range terminal {
 			if run.Phase == journal.PhaseCompleted {
 				workflowSummary.SuccessfulRuns++
+				if run.NoWork {
+					workflowSummary.NoWorkRuns++
+				}
 			}
 		}
 		if workflowSummary.TerminalRuns > 0 {
@@ -995,12 +1002,19 @@ func statusRunOutcomeTime(run runSummary) time.Time {
 
 func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now time.Time) {
 	pf(stdout, "Workflow summary (success rate over last %d terminal runs):\n", summary.SuccessRateWindow)
-	pf(stdout, statusFleetRowFormat+"\n", "WORKFLOW", "A/D/MAX", "LAST (AGO)", "SUCCESS", "NEXT")
 	nameCounts := make(map[string]int, len(summary.Workflows))
-	for _, workflow := range summary.Workflows {
+	successCells := make([]string, len(summary.Workflows))
+	// The SUCCESS cell widens only when a no-work count needs the room, so a
+	// board without no-work runs keeps its 80-column layout (#5553).
+	successWidth := statusFleetSuccessWidth
+	for i, workflow := range summary.Workflows {
 		nameCounts[workflow.Workflow]++
+		successCells[i] = statusSuccessText(workflow)
+		successWidth = max(successWidth, len(successCells[i]))
 	}
-	for _, workflow := range summary.Workflows {
+	rowFormat := statusFleetRowFormat(successWidth)
+	pf(stdout, rowFormat+"\n", "WORKFLOW", "A/D/MAX", "LAST (AGO)", "SUCCESS", "NEXT")
+	for i, workflow := range summary.Workflows {
 		name := workflow.Workflow
 		if nameCounts[name] > 1 {
 			name = workflow.Gaggle + "/" + name
@@ -1009,38 +1023,56 @@ func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now 
 		if workflow.LastOutcomeAt != nil {
 			last = fmt.Sprintf("%s %s", workflow.LastOutcome, formatSummaryAge(now, *workflow.LastOutcomeAt))
 		}
-		success := "-"
-		if workflow.SuccessRate != nil {
-			success = fmt.Sprintf("%d/%d %.0f%%", workflow.SuccessfulRuns, workflow.TerminalRuns, *workflow.SuccessRate*100)
-		}
 		next := workflow.NextFire.Kind
 		if workflow.NextFire.At != nil {
 			next = workflow.NextFire.At.Format(time.RFC3339)
 		}
-		pf(stdout, statusFleetRowFormat+"\n",
+		pf(stdout, rowFormat+"\n",
 			name,
 			statusConcurrencyText(workflow),
 			last,
-			success,
+			successCells[i],
 			next,
 		)
-		if workflow.AdmissionBlocked != "" {
-			pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
-		}
-		if workflow.Backprop.Enabled {
-			pf(stdout, "  %-19.19s backprop: enabled (%s)\n", name, workflow.Backprop.Version)
-		}
-		if streak := workflow.FailureStreak; streak != nil {
-			pf(stdout, "ALARM: %s has failed %d consecutive times (infra) since %s: %.80s\n",
-				name, streak.Length, streak.FirstFailedAt.UTC().Format(time.RFC3339), streak.FirstError)
-		}
-		if rate := workflow.FailureRate; rate != nil {
-			pf(stdout, "ALARM: %s failed %d/%d runs (%.0f%%) between %s and %s\n",
-				name, rate.FailureCount, rate.SampleSize, rate.Rate*100,
-				rate.WindowStart.UTC().Format(time.RFC3339), rate.WindowEnd.UTC().Format(time.RFC3339))
-		}
+		renderStatusFleetAnnotations(stdout, name, workflow)
 	}
 	pf(stdout, "\n")
+}
+
+func renderStatusFleetAnnotations(stdout io.Writer, name string, workflow statusWorkflowSummary) {
+	if workflow.AdmissionBlocked != "" {
+		pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
+	}
+	if workflow.Backprop.Enabled {
+		pf(stdout, "  %-19.19s backprop: enabled (%s)\n", name, workflow.Backprop.Version)
+	}
+	if streak := workflow.FailureStreak; streak != nil {
+		pf(stdout, "ALARM: %s has failed %d consecutive times (infra) since %s: %.80s\n",
+			name, streak.Length, streak.FirstFailedAt.UTC().Format(time.RFC3339), streak.FirstError)
+	}
+	if rate := workflow.FailureRate; rate != nil {
+		pf(stdout, "ALARM: %s failed %d/%d runs (%.0f%%) between %s and %s\n",
+			name, rate.FailureCount, rate.SampleSize, rate.Rate*100,
+			rate.WindowStart.UTC().Format(time.RFC3339), rate.WindowEnd.UTC().Format(time.RFC3339))
+	}
+}
+
+// statusSuccessText renders the SUCCESS cell. A lane whose successes include
+// no-work completions says so beside the count (#5553): ten idle ticks read
+// "10/10 100% (10 no-work)", not a bare 100%.
+func statusSuccessText(workflow statusWorkflowSummary) string {
+	if workflow.SuccessRate == nil {
+		return "-"
+	}
+	text := fmt.Sprintf("%d/%d %.0f%%", workflow.SuccessfulRuns, workflow.TerminalRuns, *workflow.SuccessRate*100)
+	if workflow.NoWorkRuns > 0 {
+		text += fmt.Sprintf(" (%d no-work)", workflow.NoWorkRuns)
+	}
+	return text
+}
+
+func statusFleetRowFormat(successWidth int) string {
+	return fmt.Sprintf("%%-19.19s %%-7.7s %%-15.15s %%-%d.%ds %%s", successWidth, successWidth)
 }
 
 func statusConcurrencyText(workflow statusWorkflowSummary) string {
@@ -1103,6 +1135,7 @@ func listStatusRuns(ctx context.Context, reads readservice.StatusReader, options
 			StartedAt:      run.StartedAt,
 			LastActivityAt: run.LastActivityAt,
 			Operator:       run.Operator,
+			NoWork:         run.NoWork,
 		}
 	}
 	return runs, nil
@@ -1115,7 +1148,7 @@ func statusFleetRuns(facts []readservice.StatusFleetFact) []runSummary {
 			runs = append(runs, runSummary{
 				RunID: terminal.ID, Workflow: terminal.Workflow, Gaggle: terminal.Gaggle,
 				Phase: terminal.Phase, StartedAt: terminal.StartedAt, LastActivityAt: terminal.LastActivityAt,
-				Operator: terminal.Operator,
+				Operator: terminal.Operator, NoWork: terminal.NoWork,
 			})
 		}
 		for i := 0; i < fact.ActiveRuns; i++ {
@@ -1198,7 +1231,7 @@ func statusCompiledHarnessWarnings(
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
 		configDir, set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		false, modelCredential,
+		false, modelCredential, knownExternalTelemetryConnectorNames(cfg),
 	)
 	if err != nil {
 		printValidationWarnings(stderr, cliWarnings)
@@ -1721,14 +1754,7 @@ func renderStatusReview(stdout io.Writer, review *readservice.OperatorReview) {
 }
 
 func truncateStatusCell(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width <= 3 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-3]) + "..."
+	return truncateRunes(value, width, "...", true)
 }
 
 func renderOlderRunsHint(stdout io.Writer, olderRuns int) {

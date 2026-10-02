@@ -50,7 +50,7 @@ func (s *daemonCancelService) cancelWithReceipt(ctx context.Context, input httpa
 	}
 	if !fresh {
 		if !receipt.Complete {
-			return httpapi.CancelRunResult{}, httpapi.NewInterventionError(http.StatusConflict, "cancel_outcome_unknown", "cancellation is in progress or its outcome is uncertain; retry the same key or inspect the run before requesting another cancellation", nil)
+			return httpapi.CancelRunResult{}, httpapi.NewInterventionError(http.StatusConflict, cancelOutcomeUnknownCode, "cancellation is in progress or its outcome is uncertain; retry the same key or inspect the run before requesting another cancellation", nil)
 		}
 		var result httpapi.CancelRunResult
 		if err := json.Unmarshal(receipt.Result, &result); err != nil {
@@ -77,5 +77,5 @@ func (s *daemonCancelService) cancelWithReceipt(ctx context.Context, input httpa
 }
 
 func cancelReceiptUnavailable(err error) error {
-	return httpapi.NewInterventionError(http.StatusServiceUnavailable, "cancel_receipt_unavailable", "cancellation outcome could not be acknowledged; retry the same key to reconcile", err)
+	return httpapi.NewInterventionError(http.StatusServiceUnavailable, cancelReceiptUnavailableCode, "cancellation outcome could not be acknowledged; retry the same key to reconcile", err)
 }

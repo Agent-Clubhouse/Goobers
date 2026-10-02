@@ -12,6 +12,13 @@ name: ADO Live Conformance
 # providers/capability_matrix.go's knownGaps registry and update it (there
 # is no automated coupling between this leg's result and the generated
 # matrix; CONF-2 (#2075) intentionally left that hand-maintained).
+#
+# Besides the smoke, the leg runs every TestIntegrationADOLive* test in
+# providers/ado_live_test.go: the #6111 sign-in redirect read as a 401 (needs
+# nothing extra), and the spec-fixture test (#6125 ancestry, #6191/#6194
+# acceptance criteria). That one needs vars.ADO_LIVE_SPEC_WORK_ITEM, printed
+# by `go run ./test/adolive provision -apply`; until it is set the test skips
+# and this job records a notice, so the leg stays green while unprovisioned.
 
 on:
   workflow_dispatch:
@@ -76,7 +83,16 @@ jobs:
           fi
           echo "GOOBERS_ADO_LIVE_REPO=$org/$ADO_PROJECT/$repo" >> "$GITHUB_ENV"
 
-      - name: Run live smoke test
+      - name: Note optional fixtures
+        env:
+          ADO_LIVE_SPEC_WORK_ITEM: ${{ vars.ADO_LIVE_SPEC_WORK_ITEM }}
+        run: |
+          if [ -z "$ADO_LIVE_SPEC_WORK_ITEM" ]; then
+            echo "::notice title=ADO spec fixture test skipped (not provisioned)::Set ADO_LIVE_SPEC_WORK_ITEM from \`go run ./test/adolive provision -apply\` to cover work-item ancestry and acceptance criteria live."
+          fi
+
+      - name: Run live read-only tests
         env:
           GOOBERS_ADO_LIVE_TOKEN: ${{ secrets.ADO_PAT }}
-        run: go test -tags=integration ./providers/... -run TestIntegrationADOLiveSmoke -v
+          GOOBERS_ADO_LIVE_SPEC_WORK_ITEM: ${{ vars.ADO_LIVE_SPEC_WORK_ITEM }}
+        run: go test -tags=integration ./providers/... -run '^TestIntegrationADOLive' -count=1 -v

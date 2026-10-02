@@ -85,3 +85,10 @@ func TestVerifyPrivate_FailsClosedOnMissingFile(t *testing.T) {
 		t.Errorf("VerifyPrivate(missing) error not wrapping ErrNotPrivate: %v", err)
 	}
 }
+
+func makeBroadlyReadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

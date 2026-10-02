@@ -267,6 +267,10 @@ spec:
       goal: Watch an enqueued PR until it merges, is evicted, times out, or is dequeued after opting out.
       run:
         command: ["goobers", "merge-queue-poll"]
+      # Task-level ceiling matching inputs.timeout below: without it the
+      # stage's envelope carries no duration limit and the engine falls back
+      # to its 1-hour activity timeout (#3288).
+      timeoutSeconds: 1800
       inputsFrom:
         pullNumber: selectedNumber
       inputs:

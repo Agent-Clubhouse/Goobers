@@ -1165,7 +1165,7 @@ func compileSchedulerMachinesWithProgress(
 	reportStartupProgress(startupProgress, "compiling workflow machines")
 	return compiledMachinesWithGooberDigestsAndWarnings(
 		l.ConfigDir(), set, goobers, instructions, harnessEnvironmentPolicy(cfg.Runner), cfg.Runner.HarnessCommand,
-		true, modelCredential,
+		true, modelCredential, knownExternalTelemetryConnectorNames(cfg),
 	)
 }
 
@@ -1428,7 +1428,7 @@ func buildRuntimeRunner(
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.BacklogQueryBacklogLabels = backlogLabelsDefault
 	runnerCfg.BacklogQueryLabelPredicate = backlogLabelPredicateDefault
-	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
+	runnerCfg.JournalAdvancedContext = telemetryingest.RunIntakeObserverContext(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, nil, err
