@@ -1326,18 +1326,15 @@ func TestBacklogQueryForwardCurationContinuesWhenAllCandidatesBlocked(t *testing
 	if code != 0 {
 		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "no work:") {
-		t.Fatalf("forward curation must not emit ResultNoWork before curate runs: stdout = %q", stdout)
-	}
 	for _, want := range []string{
 		"1 blocked candidate(s) skipped this cycle",
-		"continuing curation with empty claimed-items artifact",
+		"no work: no eligible item to claim",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
 	}
-	assertEmptyCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
+	assertNoWorkCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
 }
 
 // TestBacklogQueryEmptyBacklogHasNoBlockedOnlyAnnotation is #1907's trivial

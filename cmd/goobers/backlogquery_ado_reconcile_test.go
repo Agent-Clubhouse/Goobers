@@ -129,8 +129,8 @@ func TestADOBacklogReconcileIsNotApplicable(t *testing.T) {
 // same pass: backlog-curation's query-backlog stage (`--claim` with
 // curation: "true") reconciles metadata inline before scanning. On Azure
 // DevOps that inline pass is skipped, so the scan runs; an empty forward
-// curation backlog writes a continuation artifact rather than the BL-033
-// failure or terminal noWork.
+// curation backlog writes a normal no-work object rather than the BL-033
+// failure or an array-shaped result file.
 func TestADOCurationClaimSkipsMetadataReconcile(t *testing.T) {
 	provider, _ := newADOReconcileProvider(t)
 	var stdout, stderr bytes.Buffer
@@ -152,15 +152,15 @@ func TestADOCurationClaimSkipsMetadataReconcile(t *testing.T) {
 		t.Errorf("stderr = %q, want no BL-033 refusal", stderr.String())
 	}
 	result := readReconciliationResult(t, filepath.Join(workDir, "claimed-items.json"))
-	if _, ok := result[executor.OutputNoWork]; ok {
-		t.Errorf("claimed-items.json = %v, must not carry noWork because curate is downstream", result)
+	if result[executor.OutputNoWork] != true {
+		t.Errorf("claimed-items.json = %v, want noWork:true when no item is claimed for curation custody", result)
 	}
 	if result["claimed"] != false {
 		t.Errorf("claimed-items.json = %v, want claimed:false", result)
 	}
-	items, ok := result["claimed-items"].([]any)
-	if !ok || len(items) != 0 {
-		t.Errorf("claimed-items.json = %v, want empty claimed-items array", result)
+	reason, _ := result["noWorkReason"].(string)
+	if !strings.Contains(reason, "no eligible item to claim") {
+		t.Errorf("claimed-items.json = %v, want no-work reason", result)
 	}
 }
 

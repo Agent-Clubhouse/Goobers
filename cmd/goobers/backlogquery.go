@@ -374,8 +374,8 @@ func backlogPRExtrasAvailable(env backlogQueryEnv) bool {
 }
 
 func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaimTransaction func()) int {
-	root, repo := env.root, env.repo
-	ghIssueProvider, stderr := env.ghIssueProvider, env.stderr
+	repo := env.repo
+	stderr := env.stderr
 	claim := mode == backlogQueryModeClaim || mode == backlogQueryModeResweep
 	reconcile := mode == backlogQueryModeReconcile
 	readOnly := mode == backlogQueryModeReadOnly
@@ -386,6 +386,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	trustLabel := providerInput("trustLabel", "")
 	requireLabels := backlogQueryRequireLabels(env)
 	excludeLabels := splitLabelList(providerInput("excludeLabels", ""))
+	rawExcludeLabels := append([]string(nil), excludeLabels...)
 	labelExpression := providerInput("labelPredicate", "")
 	labelFilter, excludeLabels, err := compileBacklogLabelSelection(labelExpression, requireLabels, excludeLabels, providerInput("parkLabels", ""), providerInput("filterParkLabels", "true"))
 	if err != nil {
@@ -498,44 +499,12 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		}
 	}
 
-	var (
-		prProvider *providers.GitHubProvider
-		openIssues map[string]bool
-	)
-	// The open-PR eligibility backstop and closed-unmerged requeue read pull
-	// requests through the GitHub PR API, so they need both a github:pr:write
-	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
-	// included, gets exactly the pre-backstop label-only behavior.
-	//
-	// Built through the shared stage-provider seam so this second provider
-	// carries the same declared identity the issue provider above does
-	// (#3885/#3890 locally, #3914 in a pod) instead of being a second,
-	// identity-less GitHub client constructed beside it. A construction
-	// failure degrades exactly as an absent token does — to the pre-backstop
-	// label-only behavior — rather than becoming a new fatal path: reaching
-	// here means the issue provider already resolved to GitHub with a
-	// registered factory and an explicit token, so there is nothing left for
-	// the seam to refuse.
-	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
-		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-			withStageProviderCapability(capability.GitHubPRWrite),
-			withStageProviderToken(prToken),
-			withStageProviderCache(),
-		)
-	}
-	if prProvider != nil {
-		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
-		if err != nil {
-			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
-		}
-		if claim {
-			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo, openIssues); err != nil {
-				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
-			}
-		}
+	prProvider, openIssues, code := backlogPRExtras(ctx, env, repo, claim)
+	if code != 0 {
+		return code
 	}
 
-	scan, code := scanBacklogEligibility(ctx, env, backlogScanOptions{
+	scanOpts := backlogScanOptions{
 		trustLabel:        trustLabel,
 		requireLabels:     requireLabels,
 		excludeLabels:     excludeLabels,
@@ -549,7 +518,8 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		assignedTo:        assignedTo,
 		scanLimit:         scanLimit,
 		openIssues:        openIssues,
-	})
+	}
+	scan, code := scanBacklogEligibility(ctx, env, scanOpts)
 	if code != 0 {
 		return code
 	}
@@ -559,6 +529,13 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	observedRecords, remainingRecords := scan.observedRecords, scan.remainingRecords
 	verifiedSkips, observedSkips := scan.verifiedSkips, scan.observedSkips
 	forwardEligibleCount := len(eligible)
+	forwardCurationRun := curationRun && mode != backlogQueryModeResweep
+	fallbackScanOpts := scanOpts
+	fallbackScanOpts.excludeLabels = rawExcludeLabels
+	forwardFallback, code := scanForwardCurationFallback(ctx, env, forwardCurationRun, fallbackScanOpts, eligible)
+	if code != 0 {
+		return code
+	}
 
 	resweep, code := runBacklogResweep(ctx, env, backlogResweepOptions{
 		enabled:           resweepEnabled,
@@ -626,6 +603,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		for _, skip := range baselineSkips {
 			env.debugf("baseline park: %s", skip)
 		}
+		forwardFallback = filterForwardFallbackForClaim(env, forwardFallback, phases, listing, observedAt, runID, workflow)
 	}
 
 	// The claim transaction's blocked-record reconcile runs INSIDE the claims
@@ -665,12 +643,139 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		workflow:               workflow,
 		labelFilter:            labelFilter,
 		curationRun:            curationRun,
-		forwardCurationRun:     curationRun && mode != backlogQueryModeResweep,
+		forwardCurationRun:     forwardCurationRun,
+		forwardFallback:        forwardFallback,
 		stalenessPolicy:        stalenessPolicy,
 		observedAt:             observedAt,
 		curationModeByID:       curationModeByID,
 		beforeClaimTransaction: beforeClaimTransaction,
 	})
+}
+
+func backlogPRExtras(ctx context.Context, env backlogQueryEnv, repo providers.RepositoryRef, claim bool) (*providers.GitHubProvider, map[string]bool, int) {
+	// The open-PR eligibility backstop and closed-unmerged requeue read pull
+	// requests through the GitHub PR API, so they need both a github:pr:write
+	// token and GitHub code (backlogPRExtrasAvailable). ADO code, topology (b)
+	// included, gets exactly the pre-backstop label-only behavior.
+	var prProvider *providers.GitHubProvider
+	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && backlogPRExtrasAvailable(env) {
+		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](env.root, repo, false,
+			withStageProviderCapability(capability.GitHubPRWrite),
+			withStageProviderToken(prToken),
+			withStageProviderCache(),
+		)
+	}
+	if prProvider == nil {
+		return nil, nil, 0
+	}
+	openIssues, err := openPRIssueNumbers(ctx, prProvider, repo)
+	if err != nil {
+		return nil, nil, failProviderStage(env.stderr, "list open pull requests", err, "claimed-item.json")
+	}
+	if claim {
+		if err := reconcileClosedUnmergedInReview(ctx, env.ghIssueProvider, prProvider, repo, openIssues); err != nil {
+			return nil, nil, failProviderStage(env.stderr, "reconcile closed pull requests", err, "claimed-item.json")
+		}
+	}
+	return prProvider, openIssues, 0
+}
+
+type forwardCurationFallback struct {
+	eligible         []providers.WorkItem
+	observedRecords  map[string]blockedRecord
+	remainingRecords map[string]blockedRecord
+	verifiedSkips    map[string]blockedEligibilitySkip
+	observedSkips    []blockedEligibilitySkip
+}
+
+func scanForwardCurationFallback(ctx context.Context, env backlogQueryEnv, enabled bool, opts backlogScanOptions, primaryEligible []providers.WorkItem) (*forwardCurationFallback, int) {
+	if !enabled || providerInput("filterParkLabels", "true") != "true" || providerInput("parkLabels", "") == "" {
+		return nil, 0
+	}
+	labelFilter, excludeLabels, err := compileBacklogLabelSelection(
+		opts.labelExpression, opts.requireLabels, opts.excludeLabels, providerInput("parkLabels", ""), "false",
+	)
+	if err != nil {
+		pf(env.stderr, "error: %v\n", err)
+		return nil, 1
+	}
+	opts.labelFilter = labelFilter
+	opts.excludeLabels = excludeLabels
+	scan, code := scanBacklogEligibility(ctx, env, backlogScanOptions{
+		trustLabel:        opts.trustLabel,
+		requireLabels:     opts.requireLabels,
+		excludeLabels:     opts.excludeLabels,
+		labelExpression:   opts.labelExpression,
+		fieldExpression:   opts.fieldExpression,
+		labelFilter:       opts.labelFilter,
+		fieldFilter:       opts.fieldFilter,
+		fieldOrder:        opts.fieldOrder,
+		selectionPriority: opts.selectionPriority,
+		respectAssignee:   opts.respectAssignee,
+		assignedTo:        opts.assignedTo,
+		scanLimit:         opts.scanLimit,
+		openIssues:        opts.openIssues,
+	})
+	if code != 0 {
+		return nil, code
+	}
+	eligible := excludeAlreadySelectedWorkItems(scan.eligible, primaryEligible)
+	if len(eligible) == 0 {
+		return nil, 0
+	}
+	return &forwardCurationFallback{
+		eligible:         eligible,
+		observedRecords:  scan.observedRecords,
+		remainingRecords: scan.remainingRecords,
+		verifiedSkips:    scan.verifiedSkips,
+		observedSkips:    scan.observedSkips,
+	}, 0
+}
+
+func filterForwardFallbackForClaim(
+	env backlogQueryEnv,
+	fallback *forwardCurationFallback,
+	phases journalclient.CrossRun,
+	listing claimsclient.Listing,
+	observedAt time.Time,
+	runID string,
+	workflow string,
+) *forwardCurationFallback {
+	if fallback == nil {
+		return nil
+	}
+	fallback.eligible = deprioritizeRepeatedFailures(env.layout, phases, listing, fallback.eligible, observedAt, env, runID, workflow)
+	var warnings []string
+	var skips []string
+	fallback.eligible, skips, warnings = filterBaselineParkedItems(env.layout, env.repo, fallback.eligible)
+	for _, warning := range warnings {
+		pf(env.stderr, "warning: %s\n", warning)
+	}
+	for _, skip := range skips {
+		env.debugf("baseline park: %s", skip)
+	}
+	if len(fallback.eligible) == 0 {
+		return nil
+	}
+	return fallback
+}
+
+func excludeAlreadySelectedWorkItems(candidates, selected []providers.WorkItem) []providers.WorkItem {
+	if len(candidates) == 0 || len(selected) == 0 {
+		return candidates
+	}
+	seen := make(map[string]struct{}, len(selected))
+	for _, item := range selected {
+		seen[item.ID] = struct{}{}
+	}
+	out := candidates[:0]
+	for _, item := range candidates {
+		if _, ok := seen[item.ID]; ok {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func deprioritizeRepeatedFailures(
@@ -780,30 +885,15 @@ type backlogClaimOptions struct {
 	labelFilter            *labelpredicate.Predicate
 	curationRun            bool
 	forwardCurationRun     bool
+	forwardFallback        *forwardCurationFallback
 	stalenessPolicy        backlogStalenessPolicy
 	observedAt             time.Time
 	curationModeByID       map[string]string
 	beforeClaimTransaction func()
 }
 
-func writeEmptyForwardCurationResult(env backlogQueryEnv, reason string) int {
-	data, err := json.Marshal(map[string]interface{}{
-		"claimed":         false,
-		"claimed-items":   []curationClaimedItem{},
-		"continuationFor": reason,
-	})
-	if err != nil {
-		pf(env.stderr, "error: marshal empty curation claim artifact: %v\n", err)
-		return 1
-	}
-	resultFile := providerInput("resultFile", "claimed-item.json")
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(env.stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
-	}
-	writeClaimedBacklogSummary(env.stdout, nil, nil)
-	pf(env.stdout, "continuing curation with empty claimed-items artifact: %s\n", reason)
-	return 0
+func (opts backlogClaimOptions) hasForwardFallback() bool {
+	return opts.forwardCurationRun && opts.forwardFallback != nil && len(opts.forwardFallback.eligible) > 0
 }
 
 func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlogClaimOptions) int {
@@ -819,7 +909,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	persistResweepState := opts.persistResweepState
 	eligible = reorderContestedBacklogItems(ctx, env, opts.prProvider, eligible, opts.forwardEligibleCount)
 
-	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
+	if len(eligible) == 0 && len(readOnlyResweep) == 0 && !opts.hasForwardFallback() {
 		_, _, err := reconcileBlockedEligibilityLocked(
 			ctx,
 			opts.state,
@@ -840,9 +930,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		if err := persistResweepState(ctx); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
-		}
-		if opts.forwardCurationRun {
-			return writeEmptyForwardCurationResult(env, "no eligible item to claim")
 		}
 		return writeNoWorkResult(stdout, stderr, "no eligible item to claim")
 	}
@@ -923,6 +1010,15 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		return code
 	}
 	eligible, observedSkips, claimed := session.eligible, session.observedSkips, session.claimed
+	if len(claimed) == 0 && len(readOnlyResweep) == 0 && opts.hasForwardFallback() {
+		session.useForwardFallback(opts.forwardFallback)
+		malformed, fallbackCode := session.collect(ctx, labelFilter)
+		malformedReadyItems += malformed
+		if fallbackCode != 0 {
+			return fallbackCode
+		}
+		eligible, observedSkips, claimed = session.eligible, session.observedSkips, session.claimed
+	}
 	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
 		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
@@ -955,9 +1051,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 				pf(stderr, "warning: journal blocked-only completion summary: %v\n", jerr)
 			}
 		}
-		if opts.forwardCurationRun {
-			return writeEmptyForwardCurationResult(env, reason)
-		}
 		return writeNoWorkResult(stdout, stderr, reason)
 	}
 	// Every eligible item is already claimed by another run — a routine no-work
@@ -974,9 +1067,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 				pf(stderr, "error: %v\n", err)
 				return 1
 			}
-			if opts.forwardCurationRun {
-				return writeEmptyForwardCurationResult(env, "no well-formed eligible item could be claimed")
-			}
 			return writeNoWorkResult(stdout, stderr, "no well-formed eligible item could be claimed")
 		}
 		if err := persistResweepState(ctx); err != nil {
@@ -986,9 +1076,6 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		reason := "every eligible item is already claimed by another run"
 		if len(session.refusals) > 0 {
 			reason = claimRefusalReason(session.refusals)
-		}
-		if opts.forwardCurationRun {
-			return writeEmptyForwardCurationResult(env, reason)
 		}
 		return writeNoWorkResult(stdout, stderr, reason)
 	}
@@ -1257,6 +1344,18 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 		}
 	}
 	return malformedReadyItems, 0
+}
+
+func (session *backlogClaimSession) useForwardFallback(fallback *forwardCurationFallback) {
+	session.env.debugf("forward curation primary claim set was empty; trying %d parked fallback candidate(s)", len(fallback.eligible))
+	session.eligible = fallback.eligible
+	session.observedRecords = fallback.observedRecords
+	session.remainingRecords = fallback.remainingRecords
+	session.verifiedSkips = fallback.verifiedSkips
+	session.observedSkips = fallback.observedSkips
+	session.nextClaimIndex = 0
+	session.claimSetPrepared = false
+	session.driftBackoffChecked = false
 }
 
 // annotateNewReadyClaims stamps the ready time on each claim acquired from

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestBacklogQueryClaimsBatchUpToMaxItems is #236's batch regression: with M>1
@@ -71,13 +72,17 @@ func TestBacklogQueryClaimsBatchUpToMaxItems(t *testing.T) {
 	}
 }
 
-func TestForwardCurationEmptyClaimContinuesWithEmptyArtifact(t *testing.T) {
+func TestForwardCurationEmptyPrimaryClaimUsesClaimedParkedFallback(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Parked but owned fallback", "goobers:approved", providers.LabelNeedsHuman)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "curation-run")
 	t.Setenv("GOOBERS_WORKFLOW", "backlog-curation")
 	t.Setenv("GOOBERS_INPUT_CURATION", "true")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_EXCLUDELABELS", providers.LabelReady)
+	t.Setenv("GOOBERS_INPUT_PARKLABELS", providers.LabelNeedsHuman)
+	t.Setenv("GOOBERS_INPUT_FILTERPARKLABELS", "true")
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", "20")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", "claimed-items.json")
 
@@ -89,26 +94,39 @@ func TestForwardCurationEmptyClaimContinuesWithEmptyArtifact(t *testing.T) {
 		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	if strings.Contains(stdout, "no work:") {
-		t.Fatalf("forward curation must not emit ResultNoWork before curate runs: stdout = %q", stdout)
+		t.Fatalf("forward curation fallback must claim custody before curate runs: stdout = %q stderr = %q", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "continuing curation with empty claimed-items artifact") {
-		t.Fatalf("stdout = %q, want explicit empty-artifact continuation", stdout)
+	if !strings.Contains(stdout, "claimed 7: Parked but owned fallback") {
+		t.Fatalf("stdout = %q, want claimed fallback item 7", stdout)
 	}
 
 	data, err := os.ReadFile(filepath.Join(workDir, "claimed-items.json"))
 	if err != nil {
 		t.Fatalf("read claimed-items.json: %v", err)
 	}
-	var result map[string]interface{}
+	var result []map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("claimed-items.json is not a JSON object: %v", err)
+		t.Fatalf("claimed-items.json is not a JSON array: %v", err)
 	}
-	items, ok := result["claimed-items"].([]interface{})
-	if !ok || len(items) != 0 {
-		t.Fatalf("claimed-items.json = %v, want empty claimed-items array", result)
+	if len(result) != 1 || result[0]["id"] != "7" {
+		t.Fatalf("claimed-items.json = %v, want only item 7", result)
 	}
 	if strings.Contains(string(data), "noWork") {
-		t.Fatalf("claimed-items.json = %s, must not carry noWork because the curator is downstream", data)
+		t.Fatalf("claimed-items.json = %s, must not carry noWork after claiming fallback custody", data)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	entry, held := ledger.Lookup("7")
+	if !held || entry.RunID != "curation-run" {
+		t.Fatalf("ledger claim = %+v, held=%v; want curation-run custody for item 7", entry, held)
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[7].labels...)
+	server.mu.Unlock()
+	if !hasAnyLabel(labels, []string{providers.LabelClaimed}) {
+		t.Fatalf("labels after fallback claim = %v, want provider claim marker", labels)
 	}
 }
 

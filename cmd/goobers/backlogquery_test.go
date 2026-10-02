@@ -1232,13 +1232,10 @@ func TestBacklogQueryCurationExcludesReadyItem(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "no work:") {
-		t.Fatalf("stdout = %q, forward curation must continue instead of returning no-work", stdout)
+	if !strings.Contains(stdout, "no work: no eligible item to claim") {
+		t.Fatalf("stdout = %q, want no-work for already-ready-only curation batch", stdout)
 	}
-	if !strings.Contains(stdout, "continuing curation with empty claimed-items artifact") {
-		t.Fatalf("stdout = %q, want empty-artifact continuation", stdout)
-	}
-	assertEmptyCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
+	assertNoWorkCurationResultFile(t, filepath.Join(workDir, "claimed-items.json"))
 	if _, err := os.Stat(filepath.Join(root, "scheduler", "claims.json")); err == nil {
 		t.Fatal("curation should not claim an already-ready item")
 	}
@@ -1314,7 +1311,7 @@ func assertNoWorkResultFile(t *testing.T, workDir string) {
 	}
 }
 
-func assertEmptyCurationResultFile(t *testing.T, path string) {
+func assertNoWorkCurationResultFile(t *testing.T, path string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1322,17 +1319,17 @@ func assertEmptyCurationResultFile(t *testing.T, path string) {
 	}
 	var got map[string]interface{}
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal %s as curation continuation object: %v", filepath.Base(path), err)
-	}
-	items, ok := got["claimed-items"].([]interface{})
-	if !ok || len(items) != 0 {
-		t.Fatalf("%s = %v, want empty claimed-items array", filepath.Base(path), got)
+		t.Fatalf("unmarshal %s as curation no-work object: %v", filepath.Base(path), err)
 	}
 	if got["claimed"] != false {
 		t.Fatalf("%s = %v, want claimed:false", filepath.Base(path), got)
 	}
-	if _, ok := got[executor.OutputNoWork]; ok {
-		t.Fatalf("%s = %v, must not carry noWork because the curator is downstream", filepath.Base(path), got)
+	if got[executor.OutputNoWork] != true {
+		t.Fatalf("%s = %v, want noWork:true when no item is claimed for curation custody", filepath.Base(path), got)
+	}
+	reason, _ := got["noWorkReason"].(string)
+	if strings.TrimSpace(reason) == "" {
+		t.Fatalf("%s = %v, want noWorkReason", filepath.Base(path), got)
 	}
 }
 
