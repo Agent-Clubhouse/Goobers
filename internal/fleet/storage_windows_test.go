@@ -62,7 +62,11 @@ func TestDPAPIProtectUnprotectRoundTrip(t *testing.T) {
 			if !bytes.Equal(plaintext, original) {
 				t.Fatal("protect mutated its input")
 			}
-			if len(ciphertext) <= len(plaintext) || bytes.Contains(ciphertext, plaintext) {
+			// The containment check only means something for inputs long
+			// enough not to collide with the DPAPI blob header (whose
+			// version and provider GUID contain e.g. 0x01).
+			if len(ciphertext) <= len(plaintext) ||
+				(len(plaintext) >= 8 && bytes.Contains(ciphertext, plaintext)) {
 				t.Fatalf("protect returned %d bytes that do not look encrypted", len(ciphertext))
 			}
 			got, err := unprotect(ciphertext)
