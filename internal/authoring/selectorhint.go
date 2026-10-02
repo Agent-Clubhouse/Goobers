@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/textsuggest"
 )
 
 // maxReportedCandidates bounds how many valid names an unknown-selector error
@@ -146,7 +148,7 @@ func nearestName(name string, candidates []string) string {
 	folded := strings.ToLower(name)
 	best, bestDistance := "", 0
 	for _, candidate := range candidates {
-		distance := editDistance(folded, strings.ToLower(candidate))
+		distance := textsuggest.Distance(folded, strings.ToLower(candidate))
 		if distance > nearMissThreshold(folded) {
 			continue
 		}
@@ -169,26 +171,6 @@ func nearMissThreshold(name string) int {
 	default:
 		return 3
 	}
-}
-
-func editDistance(a, b string) int {
-	previous := make([]int, len(b)+1)
-	current := make([]int, len(b)+1)
-	for j := range previous {
-		previous[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		current[0] = i
-		for j := 1; j <= len(b); j++ {
-			substitution := previous[j-1]
-			if a[i-1] != b[j-1] {
-				substitution++
-			}
-			current[j] = min(min(previous[j]+1, current[j-1]+1), substitution)
-		}
-		previous, current = current, previous
-	}
-	return previous[len(b)]
 }
 
 // propertyNames lists every field name reachable at node, including through

@@ -28,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/textsuggest"
 	"github.com/goobers/goobers/internal/workflowsafety"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -817,7 +818,7 @@ func suggestConfiguredRepo(repo apiv1.RepoRef, configured []instance.RepoRef) (i
 		if repo.Provider != "" && candidate.Provider != string(repo.Provider) {
 			continue
 		}
-		distance := repositoryEditDistance(wanted, strings.ToLower(candidate.Owner+"/"+candidate.Name))
+		distance := textsuggest.Distance(wanted, strings.ToLower(candidate.Owner+"/"+candidate.Name))
 		if bestDistance == -1 || distance < bestDistance {
 			bestDistance = distance
 			best = candidate
@@ -827,26 +828,6 @@ func suggestConfiguredRepo(repo apiv1.RepoRef, configured []instance.RepoRef) (i
 		return instance.RepoRef{}, false
 	}
 	return best, true
-}
-
-func repositoryEditDistance(a, b string) int {
-	previous := make([]int, len(b)+1)
-	for i := range previous {
-		previous[i] = i
-	}
-	for i := 1; i <= len(a); i++ {
-		current := make([]int, len(b)+1)
-		current[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 0
-			if a[i-1] != b[j-1] {
-				cost = 1
-			}
-			current[j] = min(current[j-1]+1, previous[j]+1, previous[j-1]+cost)
-		}
-		previous = current
-	}
-	return previous[len(b)]
 }
 
 func apiRepoName(repo apiv1.RepoRef) string {
