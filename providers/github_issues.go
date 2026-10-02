@@ -525,51 +525,10 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 }
 
 func (p *GitHubProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return ClaimResult{}, err
-	}
-	if req.ID == "" {
-		return ClaimResult{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	// Fast path: if a claim breadcrumb already exists, do not add another. Recognize
-	// the existing winner (which may be us on an idempotent re-claim).
-	if winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID); err != nil {
-		return ClaimResult{}, err
-	} else if ok {
-		if winner == req.RunID {
-			if err := p.restoreOwnedClaimLabel(ctx, req.Repository, req.ID, label); err != nil {
-				return ClaimResult{}, err
-			}
-		}
-		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
-	}
-
-	// No existing claim: stake ours with a breadcrumb comment, then re-read to settle
-	// the race deterministically by minimum comment id.
-	if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
-		return ClaimResult{}, err
-	}
-	winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if !ok {
-		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
-	}
-	if winner == req.RunID {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
-			return ClaimResult{}, err
-		}
-	}
-	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
+	return claimRESTWorkItem(ctx, p, ProviderGitHub, p.BaseURL, p.attribution, req, claimRESTWorkItemHooks{
+		restoreOwnedClaimLabel: p.restoreOwnedClaimLabel,
+		waitForClaimLabel:      p.waitForClaimLabel,
+	})
 }
 
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its label
@@ -719,35 +678,6 @@ const (
 	claimLabelConvergenceBase    = 100 * time.Millisecond
 	claimLabelConvergenceMaxWait = time.Second
 )
-
-// finishClaim loads the final item, records the claim mutation, and reports whether
-// runID is the recognized winner.
-func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner, label string) (ClaimResult, error) {
-	item, err := p.GetWorkItem(ctx, repo, id)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	claimed := winner == runID
-	if claimed && !item.HasLabel(label) {
-		item, err = p.waitForClaimLabel(ctx, repo, id, runID, label)
-		if err != nil {
-			return ClaimResult{}, err
-		}
-	}
-	providerRunID := ""
-	if !claimed {
-		providerRunID = winner
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider: ProviderGitHub, Ref: issueRef(repo, id), URL: item.URL,
-		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
-		RunID: runID, ProviderRunID: providerRunID,
-		Fields: map[string]FieldDigest{
-			"claim": {After: digestString("run=" + winner)},
-		},
-	})
-	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
-}
 
 func (p *GitHubProvider) waitForClaimLabel(ctx context.Context, repo RepositoryRef, id, runID, label string) (WorkItem, error) {
 	deadline := p.now().Add(claimLabelConvergenceWindow)

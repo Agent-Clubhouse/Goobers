@@ -168,6 +168,40 @@ func TestRepoFromDeadEntriesFailWF022(t *testing.T) {
 	}
 }
 
+func TestRepoReadonlyAgenticGateAfterProducerFailsWF022(t *testing.T) {
+	spec := gatedSpec()
+	spec.Gates[0].Agentic.Workspace = apiv1.WorkspaceRepoReadOnly
+
+	_, err := compileAcknowledged(Definition{Name: "readonly-reviewer", Version: 1, Spec: spec})
+	if err == nil ||
+		!strings.Contains(err.Error(), `gate "review" uses agentic.workspace: repo-readonly after producer(s) "implement"`) ||
+		!strings.Contains(err.Error(), "would review the wrong tree") {
+		t.Fatalf("Compile error = %v, want repo-readonly gate rejection naming the reaching producer", err)
+	}
+}
+
+func TestRepoReadonlyAgenticGateBeforeProducerCompiles(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "review",
+		Gates: []apiv1.Gate{{
+			Name:      "review",
+			Evaluator: apiv1.EvaluatorAgentic,
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceRepoReadOnly},
+			Branches: map[string]string{
+				"pass":          TerminalComplete,
+				"fail":          TargetAbort,
+				"needs-changes": TargetAbort,
+			},
+		}},
+	}
+
+	if _, err := compileAcknowledged(Definition{Name: "readonly-reviewer-base", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("repo-readonly gate with no reaching producer must compile: %v", err)
+	}
+}
+
 // TestProducerClassification pins the dsl-3.0.md §4 commit reading: agentic
 // non-readonly stages and the ref-advancing builtins produce; publish-only
 // builtins and plain deterministic stages do not; commitsRepo opts a

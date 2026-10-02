@@ -207,6 +207,7 @@ type issueMock struct {
 	children       []map[string]interface{}
 	now            func() time.Time
 	hideLabelUntil map[string]time.Time
+	labelAdds      int
 }
 
 func newIssueMock() *issueMock {
@@ -261,6 +262,7 @@ func (m *issueMock) handler(t *testing.T) http.Handler {
 			Labels []string `json:"labels"`
 		}
 		decodeJSON(t, r, &body)
+		m.labelAdds++
 		m.labels = uniqueStrings(append(m.labels, body.Labels...))
 		writeJSON(t, w, labelObjects(m.labels))
 	})
@@ -996,6 +998,30 @@ func TestGitHubClaimSingleWinnerUnderConcurrency(t *testing.T) {
 	if !winner.Item.HasLabel(LabelClaimed) {
 		t.Fatalf("claimed label not applied to winner: %#v", winner.Item.Labels)
 	}
+	if m.labelAdds != 1 {
+		t.Fatalf("claim label additions = %d, want winner only", m.labelAdds)
+	}
+}
+
+func TestGitHubClaimWorkItemRequiresIDAndRunID(t *testing.T) {
+	m := newIssueMock()
+	p, repo := newIssueProvider(t, m)
+	tests := []struct {
+		name string
+		req  ClaimWorkItemRequest
+		want error
+	}{
+		{name: "missing id", req: ClaimWorkItemRequest{Repository: repo, RunID: "run-A"}, want: errIssueIDRequired},
+		{name: "missing run id", req: ClaimWorkItemRequest{Repository: repo, ID: "7"}, want: fmt.Errorf("run id is required to claim an item")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := p.ClaimWorkItem(context.Background(), tc.req)
+			if err == nil || err.Error() != tc.want.Error() {
+				t.Fatalf("ClaimWorkItem() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
@@ -1015,6 +1041,11 @@ func TestGitHubClaimIdempotentAndAlreadyClaimed(t *testing.T) {
 	}
 	if len(m.comments) != before {
 		t.Fatalf("idempotent re-claim posted extra comment: %d -> %d", before, len(m.comments))
+	}
+	m.labels = []string{"route/backend"}
+	restored, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"})
+	if err != nil || !restored.Claimed || !restored.Item.HasLabel(LabelClaimed) {
+		t.Fatalf("re-claim with stripped label = %+v, %v", restored, err)
 	}
 	// A different run loses and does not post a breadcrumb (fast path).
 	other, err := p.ClaimWorkItem(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-B"})

@@ -427,45 +427,10 @@ func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 }
 
 func (p *GiteaProvider) claimWorkItem(ctx context.Context, req ClaimWorkItemRequest) (ClaimResult, error) {
-	if err := p.ready(); err != nil {
-		return ClaimResult{}, err
-	}
-	if err := requireOwnerRepo(req.Repository); err != nil {
-		return ClaimResult{}, err
-	}
-	if req.ID == "" {
-		return ClaimResult{}, errIssueIDRequired
-	}
-	if req.RunID == "" {
-		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
-	}
-	label := req.ClaimLabel
-	if label == "" {
-		label = LabelClaimed
-	}
-
-	if winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID); err != nil {
-		return ClaimResult{}, err
-	} else if ok {
-		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
-	}
-
-	if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
-		return ClaimResult{}, err
-	}
-	winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if !ok {
-		winner = req.RunID
-	}
-	if winner == req.RunID {
-		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
-			return ClaimResult{}, err
-		}
-	}
-	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
+	return claimRESTWorkItem(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req, claimRESTWorkItemHooks{
+		ready:                   p.ready,
+		missingBreadcrumbWinner: func(runID string) string { return runID },
+	})
 }
 
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its
@@ -483,29 +448,6 @@ func (p *GiteaProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 		return WorkItem{}, err
 	}
 	return releaseRESTWorkItemClaim(ctx, p, ProviderGitea, p.BaseURL, p.attribution, req)
-}
-
-// finishClaim loads the final item, records the claim mutation, and reports
-// whether runID is the recognized winner.
-func (p *GiteaProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner string) (ClaimResult, error) {
-	item, err := p.GetWorkItem(ctx, repo, id)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	claimed := winner == runID
-	providerRunID := ""
-	if !claimed {
-		providerRunID = winner
-	}
-	p.recordExternalRef(ctx, ExternalRef{
-		Provider: ProviderGitea, Ref: issueRef(repo, id), URL: item.URL,
-		Operation: "claim", Outcome: claimAttemptOutcome(claimed),
-		RunID: runID, ProviderRunID: providerRunID,
-		Fields: map[string]FieldDigest{
-			"claim": {After: digestString("run=" + winner)},
-		},
-	})
-	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
 }
 
 // HasOpenWorkItemBlocker reports whether a Gitea issue has a native dependency
