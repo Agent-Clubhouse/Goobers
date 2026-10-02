@@ -565,24 +565,6 @@ func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir stri
 	lock.Lock()
 	defer lock.Unlock()
 
-	if opts.IsRunTerminal != nil {
-		terminal, err := opts.IsRunTerminal(manager.Root, branch.runID)
-		if err != nil {
-			return false, err
-		}
-		if !terminal {
-			return false, nil
-		}
-	}
-	if opts.IsBranchProtected != nil {
-		protected, err := opts.IsBranchProtected(manager.Root, branch.name)
-		if err != nil {
-			return false, err
-		}
-		if protected {
-			return false, nil
-		}
-	}
 	if opts.CanPruneBranch != nil {
 		allowed, err := opts.CanPruneBranch(manager.Root, branch.runID, branch.name)
 		if err != nil || !allowed {
@@ -612,6 +594,26 @@ func commitMergedBranch(ctx context.Context, manager *Manager, key, repoDir stri
 	}
 	if currentBranches[branch.name] != branch.tip || rule == RetentionRuleMergedBranch && currentBranches[base.name] != base.tip {
 		return false, nil
+	}
+	// Provider calls may outlive a resume or park transition. Re-read local
+	// owner and sibling protections immediately before deleting the ref.
+	if opts.IsRunTerminal != nil {
+		terminal, err := opts.IsRunTerminal(manager.Root, branch.runID)
+		if err != nil {
+			return false, err
+		}
+		if !terminal {
+			return false, nil
+		}
+	}
+	if opts.IsBranchProtected != nil {
+		protected, err := opts.IsBranchProtected(manager.Root, branch.name)
+		if err != nil {
+			return false, err
+		}
+		if protected {
+			return false, nil
+		}
 	}
 	if err := runCleanupGit(ctx, repoDir, "branch delete", "branch", "-D", "--", branch.name); err != nil {
 		return false, err
