@@ -150,6 +150,92 @@ func TestPostMergePublishesSummaryAndIssueAllocationFromReceipts(t *testing.T) {
 	}
 }
 
+// TestPostMergeCostCommentsDisclosePartialCoverage is #6353's coverage half:
+// a run that left a trusted attribution marker but no measured cost makes the
+// total a lower bound, and both the PR summary and the issue close-out say so.
+func TestPostMergeCostCommentsDisclosePartialCoverage(t *testing.T) {
+	prReader := staticCostCommentReader{"77": {
+		costComment(t, "goobers", "implementation", "run-impl", 20, 8_000_000_000),
+		{Author: "goobers", Body: attributionBodyForTest(t, "merge-review", "run-review", nil)},
+	}}
+	report, err := collectPostMergeCostReport(
+		context.Background(), prReader, staticCostCommentReader{},
+		providers.RepositoryRef{}, providers.RepositoryRef{}, "77", []string{"42"}, "goobers", "goobers",
+	)
+	if err != nil {
+		t.Fatalf("collectPostMergeCostReport: %v", err)
+	}
+	if known, total := postMergeCostCoverage(report); known != 1 || total != 2 {
+		t.Fatalf("coverage = %d of %d, want 1 of 2", known, total)
+	}
+	const want = "Cost known for 1 of 2 runs, so this total is a lower bound."
+	for name, body := range map[string]string{
+		"summary":   renderPostMergeCostSummary(report),
+		"close-out": mergedPullRequestComment("77", report, "42"),
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("%s %q does not disclose partial coverage %q", name, body, want)
+		}
+		if strings.Contains(body, "estimate") {
+			t.Fatalf("%s %q labels an AI-credit-only total as an estimate", name, body)
+		}
+	}
+}
+
+// TestPostMergeCostCommentsLabelVendorEstimates is #6353's estimate half: a
+// Claude-sourced receipt is footnoted as a vendor-reported estimate wherever
+// its amount appears, and full coverage adds no lower-bound disclosure.
+func TestPostMergeCostCommentsLabelVendorEstimates(t *testing.T) {
+	billed := int64(8_000_000_000)
+	estimated := int64(2_000_000_000)
+	prReader := staticCostCommentReader{"77": {
+		{Author: "goobers", Body: attributionBodyForTest(t, "implementation", "run-impl", &providers.CostReceipt{JournalSequence: 1, NanoAIU: &billed})},
+		{Author: "goobers", Body: attributionBodyForTest(t, "merge-review", "run-review", &providers.CostReceipt{JournalSequence: 1, NanoAIU: &estimated, VendorEstimated: true})},
+	}}
+	report, err := collectPostMergeCostReport(
+		context.Background(), prReader, staticCostCommentReader{},
+		providers.RepositoryRef{}, providers.RepositoryRef{}, "77", []string{"42"}, "goobers", "goobers",
+	)
+	if err != nil {
+		t.Fatalf("collectPostMergeCostReport: %v", err)
+	}
+	const footnote = `\* Includes Claude costs, which are vendor-reported estimates normalized to AIC for totals.`
+	summary := renderPostMergeCostSummary(report)
+	for _, want := range []string{
+		`Your cost for this PR was **10.00 AIC\***.`,
+		"- `implementation`: 8.00 AIC\n",
+		"- `merge-review`: 2.00 AIC\\*",
+		footnote,
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q does not contain %q", summary, want)
+		}
+	}
+	closeOut := mergedPullRequestComment("77", report, "42")
+	for _, want := range []string{`**Total Goobers cost for this PR:** 10.00 AIC\*`, footnote} {
+		if !strings.Contains(closeOut, want) {
+			t.Fatalf("close-out %q does not contain %q", closeOut, want)
+		}
+	}
+	for name, body := range map[string]string{"summary": summary, "close-out": closeOut} {
+		if strings.Contains(body, "lower bound") {
+			t.Fatalf("%s %q discloses partial coverage for a complete total", name, body)
+		}
+	}
+}
+
+func attributionBodyForTest(t *testing.T, workflow, runID string, cost *providers.CostReceipt) string {
+	t.Helper()
+	data, err := json.Marshal(providers.Attribution{
+		Schema: 1, Goobers: true, Gaggle: "test", Workflow: workflow,
+		Task: "task", Goober: "goober", Run: runID, Action: "comment", Cost: cost,
+	})
+	if err != nil {
+		t.Fatalf("marshal attribution: %v", err)
+	}
+	return providers.AttributionMarkerPrefix + base64.StdEncoding.EncodeToString(data) + " -->"
+}
+
 func costComment(t *testing.T, author, workflow, runID string, sequence uint64, nanoAIU int64) providers.Comment {
 	t.Helper()
 	attribution := providers.Attribution{

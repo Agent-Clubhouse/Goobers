@@ -12,6 +12,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -256,6 +257,32 @@ func TestStageAttributionIncludesCurrentRunCostReceipt(t *testing.T) {
 	local := stageCostReceipt(root, runID)
 	if local == nil || local.NanoAIU == nil || *local.NanoAIU != nanoAIU || local.JournalSequence != got.Cost.JournalSequence {
 		t.Fatalf("disabling publication changed durable local accounting: %+v", local)
+	}
+}
+
+// TestRunCostIsVendorEstimate pins #6353's receipt provenance: only the run's
+// own claude-code usage with a reported cost marks the receipt an estimate.
+func TestRunCostIsVendorEstimate(t *testing.T) {
+	cost := 0.42
+	agent := func(runID, plugin string, costUSD *float64) journal.Event {
+		return journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+			RunID: runID, Plugin: plugin, Usage: journal.AgentUsage{CostUSD: costUSD},
+		}}
+	}
+	for name, tc := range map[string]struct {
+		events []journal.Event
+		want   bool
+	}{
+		"claude cost":           {[]journal.Event{agent("run-1", harness.ClaudeAgentPlugin, &cost)}, true},
+		"claude tokens only":    {[]journal.Event{agent("run-1", harness.ClaudeAgentPlugin, nil)}, false},
+		"copilot billed cost":   {[]journal.Event{agent("run-1", "copilot", &cost)}, false},
+		"another run's claude":  {[]journal.Event{agent("run-2", harness.ClaudeAgentPlugin, &cost)}, false},
+		"mixed copilot+claude":  {[]journal.Event{agent("run-1", "copilot", &cost), agent("run-1", harness.ClaudeAgentPlugin, &cost)}, true},
+		"non-agent event (nil)": {[]journal.Event{{Type: journal.EventAgentLifecycle}}, false},
+	} {
+		if got := runCostIsVendorEstimate(tc.events, "run-1"); got != tc.want {
+			t.Errorf("%s: runCostIsVendorEstimate = %v, want %v", name, got, tc.want)
+		}
 	}
 }
 

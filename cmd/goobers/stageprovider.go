@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -312,7 +313,22 @@ func stageCostReceipt(root, runID string) *providers.CostReceipt {
 		ReasoningTokens:  usage.ReasoningTokens,
 		NanoAIU:          usage.NanoAIU,
 		CostUSD:          usage.CostUSD,
+		VendorEstimated:  runCostIsVendorEstimate(events, runID),
 	}
+}
+
+// runCostIsVendorEstimate reports whether any of the run's agent usage carries
+// a cost the vendor itself labels an estimate: the claude-code harness reports
+// total_cost_usd, which Anthropic disclaims as an estimate (#6353).
+func runCostIsVendorEstimate(events []journal.Event, runID string) bool {
+	for _, event := range events {
+		agent := event.Agent
+		if event.Type == journal.EventAgentLifecycle && agent != nil && agent.RunID == runID &&
+			agent.Plugin == harness.ClaudeAgentPlugin && agent.Usage.CostUSD != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func newProviderForStageAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {
