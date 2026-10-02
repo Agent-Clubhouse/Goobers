@@ -81,7 +81,13 @@ jobs:
       - name: Check NextPlannedRelease covers this release
         env:
           GOOBERS_RELEASE_TAG: ${{ github.ref_name }}
-        run: go test -count=1 -run '^TestReleaseTagWithinNextPlannedRelease$' ./internal/supportmatrix
+        run: |
+          set -euo pipefail
+          output="$(go test -count=1 -v -run '^TestReleaseTagWithinNextPlannedRelease$' ./internal/supportmatrix)"
+          printf '%s\n' "$output"
+          # A renamed or deleted test would match nothing and exit 0; require
+          # that the check actually ran and passed.
+          grep -q -- '--- PASS: TestReleaseTagWithinNextPlannedRelease' <<<"$output"
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
