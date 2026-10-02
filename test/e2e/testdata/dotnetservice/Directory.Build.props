@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <!--
+      #4615: CI pre-restores this fixture's exact-version packages into the
+      global packages folder, so the gaggle run's own `dotnet test` restore
+      resolves locally. NuGetAudit would still fetch vulnerability metadata
+      from the package source on every restore; this is a test fixture, not a
+      shipped dependency set, so it opts out to keep the restore network-free.
+    -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>

@@ -107,10 +107,13 @@ func TestReleaseAuthorizationPrecedesBuildAndPublication(t *testing.T) {
 		t.Error("build and publication must enforce the same source authorization")
 	}
 	for name, want := range map[string][]string{
-		"sign-macos": {"build"}, "sign-windows": {"sign-macos"},
-		"native-smoke": {"sign-windows"}, "verify-and-publish": {"sign-windows", "native-smoke", "native-linux-images", "native-windows-image", "validate-release"},
-		"validate-release":    {"sign-windows", "native-smoke", "native-linux-images", "native-windows-image"},
-		"native-linux-images": {"build", "sign-windows"}, "native-windows-image": {"build", "sign-windows"},
+		// #5413: the signers run in parallel, assemble joins them, and
+		// signing-independent gates start right after build. Publication
+		// still requires every gate.
+		"sign-macos": {"build"}, "sign-windows": {"build"}, "assemble": {"build", "sign-macos", "sign-windows"},
+		"native-smoke": {"assemble"}, "verify-and-publish": {"assemble", "native-smoke", "native-linux-images", "native-windows-image", "validate-release"},
+		"validate-release":    {"build"},
+		"native-linux-images": {"build"}, "native-windows-image": {"build", "assemble"},
 	} {
 		job := workflow.Jobs[name]
 		var got []string
