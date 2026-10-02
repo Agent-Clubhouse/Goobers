@@ -24,7 +24,7 @@ var acquisitionCommands = map[string]*regexp.Regexp{
 	"browser-system-packages": regexp.MustCompile(`\bplaywright\s+(?:install-deps\b|install\b[^\n]*--with-deps)`),
 	"apt-packages":            regexp.MustCompile(`\bapt-get\b`),
 	"chocolatey-packages":     regexp.MustCompile(`\bchoco\s+install\b`),
-	"python-packages":         regexp.MustCompile(`\bpip[3]?\s+install\b`),
+	"python-packages":         regexp.MustCompile(`\bpip[3]?\s+(?:install|download)\b`),
 	"maven-packages":          regexp.MustCompile(`\bmvn\b`),
 	"nuget-packages":          regexp.MustCompile(`\bdotnet\s+(?:restore|build|test)\b`),
 	"envtest-binaries":        regexp.MustCompile(`(?:\bsetup-envtest|\$\(SETUP_ENVTEST\))\s+use\b`),

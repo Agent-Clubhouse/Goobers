@@ -851,6 +851,19 @@ jobs:
           java-version: "21"
           cache: maven
 
+      # #4615: the .NET and Python reference-gaggle legs. The gaggles declare
+      # dotnet@9 and python@3.12; these pins are what lets their tier rows in
+      # docs/guides/stack-support.md claim "Shipped, CI-green".
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       - name: Download modules
         timeout-minutes: 12
         # Explicit bash: the Windows runner defaults to PowerShell, which
@@ -957,6 +970,95 @@ jobs:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           key: ${{ steps.declared-apt-key.outputs.key }}
 
+      # #4615: the .NET and Python legs get the same cache-first,
+      # network-fallback treatment #3322 gave the apt set and the Maven
+      # repository. Each fixture's packages are acquired HERE, in a bounded and
+      # retried step, so the test's own `dotnet test` / `python3 -m pytest`
+      # resolves from local disk instead of opening an unbounded fetch inside
+      # the integration tier. `dependency-cache-warm` writes both entries on
+      # main under the same keys, which is what makes them readable from every
+      # pull request.
+      - name: Restore .NET fixture NuGet packages
+        id: dotnet-fixture-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          # Exact key only, as with the apt archives: a prefix match would hand
+          # the leg a package set resolved for different project files.
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+
+      - name: Provision .NET fixture packages
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
+        run: |
+          set -euo pipefail
+          # Restore a scratch copy so no obj/ output lands in the checked-in
+          # fixture. On a cache hit every exact-version package is already in
+          # the global packages folder and NuGet makes no request; the fixture
+          # run's implicit restore is then the same no-op.
+          warm="$RUNNER_TEMP/dotnet-fixture-restore"
+          rm -rf "$warm" && cp -R test/e2e/testdata/dotnetservice "$warm"
+          for attempt in 1 2 3; do
+            if timeout --signal=TERM --kill-after=10s 120s dotnet restore "$warm/DotnetService.sln"; then
+              exit 0
+            fi
+            echo "::warning::.NET fixture restore attempt ${attempt}/3 failed or hung; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::.NET fixture restore failed after 3 bounded attempts"
+          exit 1
+
+      - name: Save .NET fixture NuGet packages
+        if: ${{ success() && steps.dotnet-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+
+      - name: Restore Python fixture wheelhouse
+        id: python-fixture-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
+
+      - name: Provision Python fixture pytest
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels="$RUNNER_TEMP/python-fixture-wheelhouse"
+          reqs=test/e2e/testdata/pythonservice-ci-requirements.txt
+          # Cache hit: install the pinned set with no index at all. A miss (or a
+          # wheelhouse that no longer satisfies the pins) falls back to a
+          # bounded, retried download from PyPI, then installs offline from it.
+          if [ -d "$wheels" ] && python3 -m pip install --no-index --find-links "$wheels" -r "$reqs"; then
+            echo "pytest installed from the cached wheelhouse (no network)"
+            exit 0
+          fi
+          rm -rf "$wheels" && mkdir -p "$wheels"
+          for attempt in 1 2 3; do
+            if timeout --signal=TERM --kill-after=10s 120s \
+                 python3 -m pip download --timeout 20 --retries 3 --dest "$wheels" -r "$reqs"; then
+              python3 -m pip install --no-index --find-links "$wheels" -r "$reqs"
+              exit 0
+            fi
+            echo "::warning::pytest wheel download attempt ${attempt}/3 failed or hung; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::pytest wheel download failed after 3 bounded attempts"
+          exit 1
+
+      - name: Save Python fixture wheelhouse
+        if: ${{ success() && steps.python-fixture-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
+
       # Absorbed from the deleted `envtest` job. internal/operator is ALREADY in
       # this job's package set and TestIntegrationEnvtestReconcile already runs
       # here — it just reported `--- SKIP` because testdep.RequireEnv found
@@ -1016,12 +1118,21 @@ jobs:
       - name: Run strict integration tier
         env:
           GOOBERS_JAVA_E2E: "1"
+          GOOBERS_DOTNET_E2E: "1"
+          GOOBERS_PYTHON_E2E: "1"
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
         shell: bash
         run: |
           set -euo pipefail
           make test-integration-strict 2>&1 | tee integration-tier.log
           grep -q -- '--- PASS: TestIntegrationDispatchCancellationWaitsForPodCleanup' integration-tier.log
           grep -q -- '--- PASS: TestIntegrationCaptureSnapshotPreservesWorktreeAndIndex' integration-tier.log
+          # #4615: the .NET and Python rows in docs/guides/stack-support.md claim
+          # "Shipped, CI-green" on the strength of these two legs, so a SKIP
+          # must be red here rather than a quiet pass that keeps the label.
+          grep -q -- '--- PASS: TestIntegrationDotnetServiceGaggleRunsLocalCIGreen' integration-tier.log
+          grep -q -- '--- PASS: TestIntegrationPythonServiceGaggleRunsPytestGreen' integration-tier.log
           # Assert the envtest reconcile actually EXECUTED. It is the only test
           # in CI that stands up a real API server, and the only thing that
           # caught #3168 (both shipped CRDs rejected: uniqueItems forbidden and
@@ -1155,6 +1266,79 @@ jobs:
           # marker ages out — a partially warmed repository that poisons the
           # consumers instead of helping them.
           find ~/.m2/repository -name '*.lastUpdated' -delete 2>/dev/null || true
+
+      # #4615: the default-branch writer for the .NET NuGet and Python wheel
+      # entries the `integration` job restores. Keys must stay byte-identical
+      # to the consumer's, or this warms entries nothing reads. `!cancelled()`
+      # keeps a failed Maven warm above from skipping these independent ones.
+      - name: Set up .NET
+        if: ${{ !cancelled() }}
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Set up Python
+        if: ${{ !cancelled() }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Restore .NET fixture NuGet packages
+        id: dotnet-fixture-cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+
+      - name: Warm .NET fixture NuGet packages
+        id: dotnet-fixture-warm
+        if: ${{ !cancelled() && steps.dotnet-fixture-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 8
+        shell: bash
+        env:
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_NOLOGO: "1"
+        run: |
+          set -euo pipefail
+          warm="$RUNNER_TEMP/dotnet-fixture-restore"
+          rm -rf "$warm" && cp -R test/e2e/testdata/dotnetservice "$warm"
+          timeout --signal=TERM --kill-after=10s 300s dotnet restore "$warm/DotnetService.sln"
+
+      - name: Save .NET fixture NuGet packages
+        if: ${{ !cancelled() && steps.dotnet-fixture-warm.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-fixture-nuget-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('test/e2e/testdata/dotnetservice/**/*.csproj') }}
+
+      - name: Restore Python fixture wheelhouse
+        id: python-fixture-cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
+
+      - name: Warm Python fixture wheelhouse
+        id: python-fixture-warm
+        if: ${{ !cancelled() && steps.python-fixture-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheels="$RUNNER_TEMP/python-fixture-wheelhouse"
+          rm -rf "$wheels" && mkdir -p "$wheels"
+          timeout --signal=TERM --kill-after=10s 300s \
+            python3 -m pip download --timeout 20 --retries 3 --dest "$wheels" \
+            -r test/e2e/testdata/pythonservice-ci-requirements.txt
+
+      - name: Save Python fixture wheelhouse
+        if: ${{ !cancelled() && steps.python-fixture-warm.outcome == 'success' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/python-fixture-wheelhouse
+          key: python-fixture-wheels-v1-${{ runner.os }}-${{ runner.arch }}-py3.12-${{ hashFiles('test/e2e/testdata/pythonservice-ci-requirements.txt') }}
 
   # Default-branch writer of the race build cache the `unit` shards restore.
   # setup-go's cache cannot serve them: it is saved once per go.sum by the first
