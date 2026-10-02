@@ -124,7 +124,10 @@ func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *run
 				if t.Limits != nil {
 					limits = *t.Limits
 				}
-				usageBudget.Apply(limits, usage.Metrics, usage.Reported, &res, &err)
+				// Worker-loss timeouts may hide an attempt that already spent
+				// budget. Require usage in that case even though the activity
+				// could not report it; pre-execution failures remain retryable.
+				usageBudget.Apply(limits, usage.Metrics, usage.Reported || isWorkerLossTimeout(err), &res, &err)
 			}
 			if err == nil {
 				if rejection := unsupportedRevisionResult(res, t.Type); rejection != nil {

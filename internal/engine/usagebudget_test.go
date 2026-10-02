@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -16,7 +17,67 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
+
+func TestAgenticUsageBudgetUnavailableAfterTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		firstErr  error
+		wantCalls int
+	}{
+		{"start-to-close fails closed", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil), 1},
+		{"heartbeat fails closed", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_HEARTBEAT, nil), 1},
+		{"schedule-to-start retries", temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START, nil), 2},
+		{"provisioning retries", classifySeamError(invoke.InfrastructureFailure(errors.New("workspace unavailable"))), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var suite testsuite.WorkflowTestSuite
+			env := temporaltest.NewWorkflowEnvironment(&suite)
+			var calls int
+			var rec runJournal
+			env.ExecuteWorkflow(func(ctx workflow.Context) (apiv1.ResultEnvelope, error) {
+				task := agenticRetrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
+				task.Limits = &apiv1.Limits{MaxTokens: 10, MaxCostUSD: 1}
+				return dispatchWithRetry(ctx, RunInput{}, task, &rec, nil, func(workflow.Context, int, journal.AttemptClass) (stageActivityResult, error) {
+					calls++
+					if calls == 1 {
+						return stageActivityResult{}, tc.firstErr
+					}
+					return stageActivityResult{
+						ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+						Usage:          &AttemptUsage{Reported: true, Metrics: usageMetrics(5, 0.5)},
+					}, nil
+				}, nil)
+			})
+			if err := env.GetWorkflowError(); err != nil {
+				t.Fatal(err)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("dispatches=%d want=%d", calls, tc.wantCalls)
+			}
+			var result apiv1.ResultEnvelope
+			if err := env.GetWorkflowResult(&result); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantCalls == 2 {
+				if result.Status != apiv1.ResultSuccess {
+					t.Fatalf("safe retry result=%+v", result)
+				}
+				return
+			}
+			if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != runner.BudgetExceededErrorCode || result.Error.Retryable {
+				t.Fatalf("worker-loss result=%+v", result)
+			}
+			for _, op := range rec.proj.Ops {
+				if op.Event != nil && op.Event.Type == journal.EventStageFinished && op.Event.Attempt == 1 && op.Event.Error != nil && op.Event.Error.Code == runner.BudgetExceededErrorCode {
+					return
+				}
+			}
+			t.Fatal("worker loss did not journal the terminal budget failure")
+		})
+	}
+}
 
 func TestAgenticUsageBudgets(t *testing.T) {
 	for _, tc := range []struct {
