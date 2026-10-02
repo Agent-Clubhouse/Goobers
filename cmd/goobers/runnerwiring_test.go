@@ -1995,6 +1995,32 @@ func TestGitHubRepoForGaggle(t *testing.T) {
 	}
 }
 
+func TestGiteaRepoForGaggle(t *testing.T) {
+	want := instance.RepoRef{
+		Provider: "gitea",
+		Owner:    "acme",
+		Name:     "web",
+		Token:    instance.TokenRef{Env: "ACME_WEB_TOKEN"},
+	}
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "gitea", Owner: "acme", Name: "other"},
+		want,
+	}}
+	got, ok := giteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitea, Owner: "acme", Name: "web"})
+	if !ok || got.Owner != want.Owner || got.Name != want.Name || got.Token.Env != want.Token.Env {
+		t.Fatalf("giteaRepoForGaggle() = %#v, %v", got, ok)
+	}
+
+	single := &instance.Config{Repos: []instance.RepoRef{want}}
+	if got, ok := giteaRepoForGaggle(single, apiv1.RepoRef{}); !ok || got.Name != want.Name {
+		t.Fatalf("giteaRepoForGaggle(single-repo fallback) = %#v, %v", got, ok)
+	}
+
+	if got, ok := giteaRepoForGaggle(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}); ok {
+		t.Fatalf("giteaRepoForGaggle(github project) = %#v, want no match", got)
+	}
+}
+
 // --- #667: authenticated GitHub mirror clone/fetch ---
 
 func TestGitHubWorktreeGitEnvironmentNoTokenIsNoOp(t *testing.T) {
