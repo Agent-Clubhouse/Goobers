@@ -124,19 +124,12 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
     { name: "390px", width: 390, height: 844 },
     { name: "430px", width: 430, height: 844 },
     { name: "landscape", width: 844, height: 390 },
-    { name: "200% zoom reflow", width: 390, height: 422, deviceScaleFactor: 2 },
+    { name: "200% zoom reflow", width: 195, height: 422 },
     { name: "desktop", width: 1280, height: 800 },
   ];
 
   for (const layout of layouts) {
     await page.setViewportSize({ width: layout.width, height: layout.height });
-    const session = await page.context().newCDPSession(page);
-    await session.send("Emulation.setDeviceMetricsOverride", {
-      width: layout.width,
-      height: layout.height,
-      deviceScaleFactor: layout.deviceScaleFactor ?? 1,
-      mobile: false,
-    });
 
     await page.goto("/#/insight");
     const insightHeading = page.getByRole("heading", { name: "Insight", exact: true });
@@ -190,7 +183,6 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
       expect((await summary.boundingBox())!.y).toBeLessThan(layout.height);
     }
 
-    await session.detach();
   }
 });
 

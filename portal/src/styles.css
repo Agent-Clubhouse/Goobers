@@ -9030,6 +9030,10 @@ code,
 }
 
 @media (max-width: 480px) {
+  body {
+    min-width: 0;
+  }
+
   .topbar-divider,
   .topbar-instance-context {
     display: none;
