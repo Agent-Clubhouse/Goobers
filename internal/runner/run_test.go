@@ -7288,7 +7288,6 @@ func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 	t.Run("validation failure remains the correction", func(t *testing.T) {
 		run := newRunnerTestJournal(t, "repass-cause-validation-failure")
 		for _, event := range []journal.Event{
-			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
 			{
 				Type: journal.EventStageFinished, Stage: "pre-review-validation", Status: string(apiv1.ResultFailure),
 				Error: &journal.ErrorDetail{Code: "invalid_findings", Message: "finding response 2 is missing"},

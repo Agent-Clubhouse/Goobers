@@ -4764,7 +4764,7 @@ func PriorRepassCause(
 		if event.Type != journal.EventGateEvaluated || event.Verdict == gate.OutcomePass {
 			continue
 		}
-		if event.Target != subjectStage && (windowStart < 0 || i <= windowStart) {
+		if event.Target != subjectStage && windowStart >= 0 && i <= windowStart {
 			continue
 		}
 		cause := &gate.RepassCause{Kind: "gate", Gate: event.Gate, Outcome: event.Verdict}
