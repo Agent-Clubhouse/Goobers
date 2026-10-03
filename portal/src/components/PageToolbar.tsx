@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -53,7 +54,15 @@ export function PageToolbar({
   const id = useId();
   const panel = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
   const historyKey = `page-filter-sheet:${id}`;
+
+  useLayoutEffect(() => {
+    if (wasOpen.current && !open) {
+      trigger.current?.focus();
+    }
+    wasOpen.current = open;
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -63,7 +72,6 @@ export function PageToolbar({
     const dismiss = () => {
       setOpen(false);
       setDraftError(undefined);
-      requestAnimationFrame(() => trigger.current?.focus());
     };
     window.addEventListener("popstate", dismiss, { once: true });
     return () => {
@@ -88,7 +96,6 @@ export function PageToolbar({
       return;
     }
     setOpen(false);
-    requestAnimationFrame(() => trigger.current?.focus());
   };
   const apply = () => {
     const error = onApplyFilters();
@@ -99,7 +106,6 @@ export function PageToolbar({
     const { pageFilterSheet: _sheet, ...state } = window.history.state ?? {};
     window.history.replaceState(state, "", window.location.href);
     setOpen(false);
-    requestAnimationFrame(() => trigger.current?.focus());
   };
   const containFocus = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
