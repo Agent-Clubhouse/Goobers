@@ -37,6 +37,7 @@ type WorkItemSummary struct {
 	Kind          string    `json:"kind"`
 	ExternalID    string    `json:"externalId"`
 	URL           string    `json:"url,omitempty"`
+	Outcome       string    `json:"outcome,omitempty"`
 	ActionCount   int       `json:"actionCount"`
 	LastOperation string    `json:"lastOperation"`
 	LastActionAt  time.Time `json:"lastActionAt"`
@@ -53,6 +54,7 @@ type WorkItemDetail struct {
 	Kind                string            `json:"kind"`
 	ExternalID          string            `json:"externalId"`
 	URL                 string            `json:"url,omitempty"`
+	Outcome             string            `json:"outcome,omitempty"`
 	Cost                *WorkItemCost     `json:"cost,omitempty"`
 	RelatedPullRequests []RelatedWorkItem `json:"relatedPullRequests"`
 	Actions             []WorkItemAction  `json:"actions"`
@@ -120,7 +122,7 @@ func (s *Telemetry) WorkItems(ctx context.Context, options WorkItemListOptions) 
 	for _, item := range items {
 		result.Items = append(result.Items, WorkItemSummary{
 			Provider: item.Provider, Repository: item.Repository, Kind: item.Kind, ExternalID: item.ExternalID,
-			URL: item.URL, ActionCount: item.ActionCount, LastOperation: item.LastOperation,
+			URL: item.URL, Outcome: item.Outcome, ActionCount: item.ActionCount, LastOperation: item.LastOperation,
 			LastActionAt: item.LastActionAt, LastRunID: item.LastRunID, Gaggle: item.Gaggle,
 			Workflow: item.Workflow, RunStatus: item.RunStatus,
 		})
@@ -156,7 +158,8 @@ func (s *Telemetry) WorkItem(
 	}
 	result := WorkItemDetail{
 		Provider: provider, Repository: repository, Kind: kind, ExternalID: externalID,
-		URL: actions[0].URL, Actions: make([]WorkItemAction, 0, len(actions)), Truncated: truncated,
+		URL: actions[0].URL, Outcome: actions[0].Outcome,
+		Actions: make([]WorkItemAction, 0, len(actions)), Truncated: truncated,
 		RelatedPullRequests: []RelatedWorkItem{},
 	}
 	for _, action := range actions {

@@ -2073,6 +2073,26 @@ summary:focus-visible {
   grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.2fr) minmax(150px, 1fr) 60px 18px;
 }
 
+.work-item-row-done {
+  border-left: 3px solid var(--success);
+}
+
+.work-item-row-done:hover {
+  background: var(--success-soft);
+}
+
+.work-item-outcome-done {
+  color: var(--success);
+}
+
+.work-item-outcome-in-progress {
+  color: var(--active);
+}
+
+.work-item-outcome-bad-terminal {
+  color: var(--danger);
+}
+
 /* A row whose repository was never recorded has no detail page to open. */
 .work-item-grid:disabled {
   cursor: default;

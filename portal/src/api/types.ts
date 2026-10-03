@@ -1799,6 +1799,7 @@ export interface PortalConfig {
 }
 
 export type WorkItemKind = "pr" | "issue";
+export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 
 export interface WorkItemListOptions {
   provider?: string;
@@ -1812,6 +1813,7 @@ export interface WorkItemSummary {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   actionCount: number;
   lastOperation: string;
   lastActionAt: string;
@@ -1843,6 +1845,7 @@ export interface WorkItemDetail {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   cost?: WorkItemCost;
   relatedPullRequests: RelatedWorkItem[];
   actions: WorkItemAction[];
