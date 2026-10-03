@@ -1613,13 +1613,11 @@ async function loadOverviewRunGroups(
     resolvePhaseRuns(result, OVERVIEW_RUN_PHASES[index], previousRuns),
   );
   const stalled = running.filter((run) => run.stale);
+  const urgentAttention = sortRunsByActivity([...stalled, ...escalated]);
   const incomplete = incompletePhases(settled, OVERVIEW_RUN_PHASES);
   return {
     active: sortRuns(running.filter((run) => !run.stale)),
-    attention: sortRunsByActivity([...stalled, ...escalated, ...failed]).slice(
-      0,
-      ATTENTION_RUN_LIMIT,
-    ),
+    attention: [...urgentAttention, ...sortRunsByActivity(failed)].slice(0, ATTENTION_RUN_LIMIT),
     recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
     ...(incomplete ? { incomplete } : {}),
   };

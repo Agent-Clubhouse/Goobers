@@ -231,7 +231,21 @@ describe("operational overview", () => {
 
   it("separates action-required attention from muted FYI failures with visible severity", async () => {
     const user = userEvent.setup();
-    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failed) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    failed.operator = {
+      issue: { number: "6487", title: "Realistic failed run" },
+      liveness: "finished",
+      trajectory: "failed",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      latestError: { code: "harness.crash", message: "result envelope missing" },
+      review: { verdict: "needs-changes", rationale: "A prior review did not pass." },
+      potentialBlockers: ["Harness exited before producing a result envelope."],
+    };
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
     const attentionSection = attentionHeading.closest("section");
@@ -241,7 +255,7 @@ describe("operational overview", () => {
 
     const actionRequired = within(attentionSection).getByText("Action required").closest("div");
     const fyiFailures = within(attentionSection).getByText("FYI failures").closest("div");
-    if (!actionRequired || !fyiFailures) {
+    if (!actionRequired || !fyiFailures?.parentElement) {
       throw new Error("Attention severity sections were not rendered.");
     }
     expect(
@@ -249,6 +263,7 @@ describe("operational overview", () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(within(attentionSection).getAllByText("Blocked")[0]).toBeVisible();
     expect(within(attentionSection).getAllByText("Warning")[0]).toBeVisible();
+    expect(within(fyiFailures.parentElement).getByText("#6487 Realistic failed run")).toBeVisible();
     expect(fyiFailures.parentElement).toHaveClass("attention-severity-section-fyi");
 
     await expandAttentionRuns(user, attentionSection);

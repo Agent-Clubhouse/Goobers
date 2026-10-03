@@ -1148,13 +1148,7 @@ function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): st
 
 function attentionSeverity(run: RunSummary): AttentionSeverity {
   const trajectory = run.operator?.trajectory.toLowerCase() ?? "";
-  if (
-    run.phase === "escalated" ||
-    (run.operator?.potentialBlockers.length ?? 0) > 0 ||
-    ["blocked", "needs-human", "needs human", "parked"].some((value) =>
-      trajectory.includes(value),
-    )
-  ) {
+  if (run.phase === "escalated") {
     return "blocked";
   }
   const liveness = run.operator?.liveness.toLowerCase() ?? "";
@@ -1164,6 +1158,18 @@ function attentionSeverity(run: RunSummary): AttentionSeverity {
     ["stalled", "wedged"].some((value) => trajectory.includes(value))
   ) {
     return "stalled";
+  }
+  if (
+    [
+      "blocked",
+      "needs-human",
+      "needs human",
+      "needs-remediation",
+      "blocked-on-sibling",
+      "parked",
+    ].some((value) => trajectory.includes(value))
+  ) {
+    return "blocked";
   }
   return "warning";
 }

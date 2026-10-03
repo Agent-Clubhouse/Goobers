@@ -519,6 +519,40 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     vi.useRealTimers();
   });
 
+  it("keeps blocked and stalled runs ahead of newer warnings when attention is capped", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const baseTime = NOW - 60_000;
+    const failures = Array.from({ length: 20 }, (_, index) =>
+      attentionRun(
+        `01JZWARNING${String(index).padStart(2, "0")}`,
+        "failed",
+        new Date(baseTime - index * 1_000).toISOString(),
+      ),
+    );
+    const escalation = attentionRun(
+      "01JZBLOCKED",
+      "escalated",
+      new Date(baseTime - 30_000).toISOString(),
+    );
+    const stalled: RunSummary = {
+      ...attentionRun("01JZSTALLED", "failed", new Date(baseTime - 40_000).toISOString()),
+      phase: "running",
+      terminal: false,
+      stale: true,
+      finishedAt: undefined,
+    };
+    fixtures.runs = { runs: [...failures, escalation, stalled] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toHaveLength(20);
+    expect(overview.groups.attention.slice(0, 2).map((run) => run.id)).toEqual([
+      "01JZBLOCKED",
+      "01JZSTALLED",
+    ]);
+    expect(overview.groups.attention.map((run) => run.id)).not.toContain("01JZWARNING18");
+  });
+
   it("keeps a run whose last activity is just under the 24h boundary", async () => {
     const fixtures = emptyDaemonFixtures();
     const justUnder = new Date(NOW - (24 * 60 * 60 * 1000 - 1)).toISOString();
