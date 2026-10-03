@@ -157,12 +157,17 @@ func TestIntegrationRecoveryCleanupEvictsLandedEntryUnderFullInventory(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = newRun.Close() }()
 	workspace, err := manager.Create(ctx, worktree.CreateOptions{RepoURL: source, RunID: newRunID + "-stage", OwnerRunID: newRunID, BaseRef: "main", Branch: "goobers/implementation/" + newRunID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace.Path, "new.txt"), []byte("new work"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newRun.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := newRun.Close(); err != nil {
 		t.Fatal(err)
 	}
 

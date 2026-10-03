@@ -104,7 +104,7 @@ func TestRecoveryCleanupRunningNoWorkTargetWithoutHEAD(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "empty"},
-		{name: "untracked", dirty: true, wantErr: true},
+		{name: "untracked", dirty: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			layout := instance.NewLayout(initDemo(t))
@@ -148,6 +148,54 @@ func TestRecoveryCleanupRunningNoWorkTargetWithoutHEAD(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecoveryCleanupRunningDirtyStageDoesNotRetainCurrentWorktree(t *testing.T) {
+	testdep.Require(t, "git")
+
+	layout := instance.NewLayout(initDemo(t))
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := createRecoveryCleanupSource(t)
+	if err := os.WriteFile(filepath.Join(repository, "stage-output.txt"), []byte("ordinary stage output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workcopies := t.TempDir()
+	manager, err := worktree.NewManager(workcopies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "cleanup-dirty-running-stage"
+	startedAt := time.Now().UTC().Add(-time.Hour)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{
+		Schema: journal.RunSchema, RunID: runID, Workflow: "implementation",
+		WorkflowVersion: 1, Gaggle: "example", StartedAt: startedAt,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	key := (providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "owner", Name: "repo"}).CanonicalKey()
+	target := worktree.CleanupTarget{
+		Path: repository, WorktreeID: runID + "-stage", OwnerRunID: runID,
+		BaseRef: "refs/heads/main", CreatedAt: startedAt,
+	}
+	if err := recoveryCleanupCurrentTarget(context.Background(), layout, cfg, workcopies, journal.NewRegistryScrubber(), manager, key, target); err != nil {
+		t.Fatalf("running dirty stage cleanup retained current worktree: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(layout.Root, "recovery"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("running dirty stage cleanup created %d recovery entries, want none", len(entries))
+	}
+	assertNoRecoveryHandoffEvent(t, layout, runID)
 }
 
 func TestRecoveryCleanupTerminalRepositorylessTarget(t *testing.T) {

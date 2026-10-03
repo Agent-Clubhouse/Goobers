@@ -88,6 +88,10 @@ type CreateOptions struct {
 	// tree. Empty (the default) is a full checkout — byte-identical to Create
 	// without this field.
 	Sparse []string
+	// RetainOnCleanup marks source-preservation workspaces whose non-terminal
+	// cleanup must publish recovery before the workspace can be reset or
+	// released. Ordinary per-stage worktrees leave this false.
+	RetainOnCleanup bool
 }
 
 // BaseSyncConflictError identifies a genuine content conflict while merging a
@@ -287,6 +291,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		Directory:        directory,
 		BaseRef:          cleanupBaseRef,
 		Branch:           opts.Branch,
+		RetainOnCleanup:  opts.RetainOnCleanup,
 		Writer:           m.writerIdentity,
 		PID:              pid,
 		PIDStartedAt:     startedAt,
