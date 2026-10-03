@@ -951,55 +951,55 @@ func (c RunnerConfig) validateTimeouts() error {
 	return err
 }
 
+type harnessArgRule struct {
+	purpose          string
+	argument         string
+	requireSessionID bool
+}
+
 func (c RunnerConfig) validateHarnessSessionArgs() error {
-	for name, args := range c.HarnessSessionArgs {
+	return c.validateHarnessArgs("harnessSessionArgs", c.HarnessSessionArgs, harnessArgRule{
+		purpose:          "launcher session arguments",
+		argument:         "session",
+		requireSessionID: true,
+	})
+}
+
+func (c RunnerConfig) validateHarnessPreflightArgs() error {
+	return c.validateHarnessArgs("harnessPreflightArgs", c.HarnessPreflightArgs, harnessArgRule{
+		purpose:  "preflight arguments",
+		argument: "preflight",
+	})
+}
+
+func (c RunnerConfig) validateHarnessArgs(field string, argsByHarness map[string][]string, rule harnessArgRule) error {
+	for name, args := range argsByHarness {
 		if !knownHarnessName(name) {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
+			return fmt.Errorf("runner.%s[%q]: unknown harness (known: %s)", field, name, strings.Join(knownHarnessNames(), ", "))
 		}
 		if name != "copilot" {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: only the copilot harness supports launcher session arguments", name)
+			return fmt.Errorf("runner.%s[%q]: only the copilot harness supports %s", field, name, rule.purpose)
 		}
 		if _, ok := c.HarnessCommand[name]; !ok {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: requires runner.harnessCommand[%q]", name, name)
+			return fmt.Errorf("runner.%s[%q]: requires runner.harnessCommand[%q]", field, name, name)
 		}
 		if len(args) == 0 || len(args) > 16 {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: must contain 1 to 16 arguments", name)
+			return fmt.Errorf("runner.%s[%q]: must contain 1 to 16 arguments", field, name)
 		}
 		foundSessionID := false
 		for i, arg := range args {
 			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
-				return fmt.Errorf("runner.harnessSessionArgs[%q][%d]: invalid session argument", name, i)
+				return fmt.Errorf("runner.%s[%q][%d]: invalid %s argument", field, name, i, rule.argument)
 			}
-			foundSessionID = foundSessionID || strings.Contains(arg, "{sessionId}")
-			if strings.ContainsAny(strings.ReplaceAll(arg, "{sessionId}", ""), "{}") {
-				return fmt.Errorf("runner.harnessSessionArgs[%q][%d]: only {sessionId} is supported", name, i)
+			if rule.requireSessionID {
+				foundSessionID = foundSessionID || strings.Contains(arg, "{sessionId}")
+				if strings.ContainsAny(strings.ReplaceAll(arg, "{sessionId}", ""), "{}") {
+					return fmt.Errorf("runner.%s[%q][%d]: only {sessionId} is supported", field, name, i)
+				}
 			}
 		}
-		if !foundSessionID {
-			return fmt.Errorf("runner.harnessSessionArgs[%q]: at least one argument must contain {sessionId}", name)
-		}
-	}
-	return nil
-}
-
-func (c RunnerConfig) validateHarnessPreflightArgs() error {
-	for name, args := range c.HarnessPreflightArgs {
-		if !knownHarnessName(name) {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: unknown harness (known: %s)", name, strings.Join(knownHarnessNames(), ", "))
-		}
-		if name != "copilot" {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: only the copilot harness supports preflight arguments", name)
-		}
-		if _, ok := c.HarnessCommand[name]; !ok {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: requires runner.harnessCommand[%q]", name, name)
-		}
-		if len(args) == 0 || len(args) > 16 {
-			return fmt.Errorf("runner.harnessPreflightArgs[%q]: must contain 1 to 16 arguments", name)
-		}
-		for i, arg := range args {
-			if arg == "" || len(arg) > 1024 || strings.ContainsRune(arg, 0) {
-				return fmt.Errorf("runner.harnessPreflightArgs[%q][%d]: invalid preflight argument", name, i)
-			}
+		if rule.requireSessionID && !foundSessionID {
+			return fmt.Errorf("runner.%s[%q]: at least one argument must contain {sessionId}", field, name)
 		}
 	}
 	return nil
