@@ -742,6 +742,32 @@ export function insightUsageForScope(stats, scope) {
     return (stats.usage || []).find((item) => item.scope === scope.kind && isInInsightScope(scope, item));
 }
 
+// Remove these wire fallbacks after the v0.5 compatibility window closes (#6687).
+export function normalizeLegacyInsightCosts(stats) {
+    const normalize = (item) => ({
+        ...item,
+        costAIC: item.costAIC ?? (item.costUSD === undefined ? undefined : item.costUSD * 100),
+        p50CostAIC: item.p50CostAIC ?? (item.p50CostUSD === undefined ? undefined : item.p50CostUSD * 100),
+        p95CostAIC: item.p95CostAIC ?? (item.p95CostUSD === undefined ? undefined : item.p95CostUSD * 100),
+        retryWasteCostAIC: item.retryWasteCostAIC ??
+            (item.retryWasteCostUSD === undefined ? undefined : item.retryWasteCostUSD * 100),
+    });
+    return {
+        ...stats,
+        stages: (stats.stages || []).map(normalize),
+        usage: (stats.usage || []).map(normalize),
+        models: (stats.models || []).map(normalize),
+        trend: stats.trend?.map((bucket) => ({
+            ...bucket,
+            usage: (bucket.usage || []).map(normalize),
+        })),
+        trendPrevious: stats.trendPrevious && {
+            ...stats.trendPrevious,
+            usage: (stats.trendPrevious.usage || []).map(normalize),
+        },
+    };
+}
+
 function insightFormatRate(value) {
     return value === undefined ? "Unmeasured" : (value * 100).toFixed(1) + "%";
 }
@@ -1029,6 +1055,7 @@ export function renderInsightPanel(stats, scope, windowValue) {
     if (!stats) {
         return '<p class="inline-empty">No telemetry loaded yet.</p>';
     }
+    stats = normalizeLegacyInsightCosts(stats);
     const outcomeHtml = renderInsightOutcomeSection(stats, scope);
     const curationHtml = renderInsightCurationSection(stats, scope);
     const creditHtml = renderInsightCreditSection(stats, scope);
@@ -4598,6 +4625,7 @@ export function renderHtml(instanceId, themePreference = "system", persistedFilt
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const renderInsightCreditSection = ${renderInsightCreditSection.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
+  const normalizeLegacyInsightCosts = ${normalizeLegacyInsightCosts.toString()};
   const renderInsightUsageSection = ${renderInsightUsageSection.toString()
         .replaceAll("escapeAssociationHtml", "escapeHtml")};
   const insightCurrentTrendBuckets = ${insightCurrentTrendBuckets.toString()};

@@ -1670,10 +1670,16 @@ export interface TelemetryStageStats {
   costSamples: number;
   p50CostAIC?: number;
   p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  retryWasteCostUSD?: number;
   // How many of totalAttempts belong to a run that hung and was later
   // aborted (the watchdog's max-duration expiry), excluded from
   // avg/min/maxDurationMs and from p50/p95DurationMs — disclosed rather than
@@ -1698,9 +1704,17 @@ export interface TelemetryUsageStats {
   costAIC?: number;
   p50CostAIC?: number;
   p95CostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  costUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p50CostUSD?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  p95CostUSD?: number;
   retryWasteAttempts: number;
   retryWasteTokens?: number;
   retryWasteCostAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  retryWasteCostUSD?: number;
 }
 
 export interface TelemetryModelStats {
@@ -1714,6 +1728,8 @@ export interface TelemetryModelStats {
   copilotPremiumRequests?: number;
   costSamples: number;
   costAIC?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to AIC by the HTTP client. */
+  costUSD?: number;
 }
 
 export interface TelemetryErrorSignaturesOptions extends TelemetryStatsOptions {
@@ -1854,6 +1870,8 @@ export interface WorkItemDetail {
 
 export interface WorkItemCost {
   nanoAIU?: number;
+  /** Legacy v0.5 daemon compatibility; normalized to nano-AIU by the HTTP client. */
+  costUSD?: number;
   totalRuns: number;
   measuredRuns: number;
   totalAttempts: number;
