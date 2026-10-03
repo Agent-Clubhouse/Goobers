@@ -536,14 +536,12 @@ test("keeps overview instance detail entry links at least 44 by 44 pixels", asyn
   }
 });
 
-test("does not mark unrelated history after a modified detail-link click", async ({ page }) => {
+test("does not mark unrelated history after a canceled detail-link click", async ({ page }) => {
   await page.goto("/#/overview");
   const origin = page.getByRole("link", { name: "View recovery metadata" });
   await origin.evaluate((link) => {
     link.addEventListener("click", (event) => event.preventDefault(), { once: true });
-    link.dispatchEvent(
-      new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
-    );
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   await expect(page).toHaveURL(/#\/overview$/);
 

@@ -42,11 +42,13 @@ describe("transcript rendering", () => {
     expect(screen.queryByText(/ok\tgithub.com\/goobers/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show result" }));
     expect(screen.getByText(/ok\s+github\.com\/goobers\/goobers\/widget/)).toBeInTheDocument();
-    expect(
-      screen.getByRole("region", {
-        name: "Tool result; scroll horizontally for full content",
-      }),
-    ).toBeInTheDocument();
+    const scrollRegion = screen.getByRole("region", {
+      name: "Tool result; scroll horizontally for full content",
+    });
+    expect(scrollRegion.tagName).toBe("PRE");
+    expect(scrollRegion).toHaveClass("transcript-code", "code-block");
+    scrollRegion.focus();
+    expect(scrollRegion).toHaveFocus();
   });
 
   // Usage and the concluding message are the two most-wanted points and the

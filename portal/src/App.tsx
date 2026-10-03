@@ -243,10 +243,10 @@ function Portal({
       }
     };
     window.addEventListener("hashchange", onHashChange);
-    document.addEventListener("click", rememberLinkedRoute, { capture: true });
+    document.addEventListener("click", rememberLinkedRoute);
     return () => {
       window.removeEventListener("hashchange", onHashChange);
-      document.removeEventListener("click", rememberLinkedRoute, { capture: true });
+      document.removeEventListener("click", rememberLinkedRoute);
     };
   }, []);
 

@@ -768,16 +768,18 @@ function ScrollableCode({
   label: string;
 }) {
   return (
-    <div
-      aria-label={`${label}; scroll horizontally for full content`}
-      className="local-scroll-region"
-      role="region"
-      tabIndex={0}
-    >
+    <div className="local-scroll-region">
       <span aria-hidden="true" className="local-scroll-affordance">
         Scroll horizontally for full content
       </span>
-      <pre className={`${className} code-block`}>{children}</pre>
+      <pre
+        aria-label={`${label}; scroll horizontally for full content`}
+        className={`${className} code-block`}
+        role="region"
+        tabIndex={0}
+      >
+        {children}
+      </pre>
     </div>
   );
 }
