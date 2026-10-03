@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -320,12 +321,15 @@ func TestMutationRoutesValidateRequestsAndSurfaceRefusals(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name string
-		body string
-		code string
+		name        string
+		body        string
+		code        string
+		wantMessage string
 	}{
-		{name: "missing body", body: "", code: "invalid_request"},
-		{name: "unknown field", body: `{"actor":"local","unknown":true}`, code: "invalid_request"},
+		{name: "missing body", body: "", code: "invalid_request", wantMessage: "JSON request body is required"},
+		{name: "unknown field", body: `{"actor":"local","unknown":true}`, code: "invalid_request", wantMessage: "invalid JSON request body"},
+		{name: "trailing JSON", body: `{"actor":"local"}{"actor":"other"}`, code: "invalid_request", wantMessage: "request body must contain one JSON object"},
+		{name: "malformed JSON", body: `{"actor":`, code: "invalid_request", wantMessage: "invalid JSON request body"},
 		{name: "missing actor", body: `{"decision":"pass"}`, code: "actor_required"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -340,6 +344,9 @@ func TestMutationRoutesValidateRequestsAndSurfaceRefusals(t *testing.T) {
 			}
 			if envelope.Error.Code != test.code {
 				t.Fatalf("error = %+v", envelope.Error)
+			}
+			if !strings.Contains(envelope.Error.Message, test.wantMessage) {
+				t.Fatalf("message = %q, want to contain %q", envelope.Error.Message, test.wantMessage)
 			}
 		})
 	}
