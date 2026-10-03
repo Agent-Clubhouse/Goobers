@@ -23,6 +23,45 @@ type keyedStateRecordSpec[T any] struct {
 	stateKey    func(string) string
 }
 
+func readJSONState[T any](
+	ctx context.Context,
+	store stateclient.Store,
+	key string,
+	decode func(stateclient.Value) (T, error),
+) (T, error) {
+	value, err := store.Get(ctx, key)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return decode(value)
+}
+
+func updateJSONState[T any](
+	ctx context.Context,
+	store stateclient.Store,
+	key, operation string,
+	decode func(stateclient.Value) (T, error),
+	encode func(T) ([]byte, error),
+	mutate func(T) (T, bool, error),
+) error {
+	return store.Update(ctx, key, operation, func(value stateclient.Value) ([]byte, bool, error) {
+		current, err := decode(value)
+		if err != nil {
+			return nil, false, err
+		}
+		next, write, err := mutate(current)
+		if err != nil || !write {
+			return nil, false, err
+		}
+		data, err := encode(next)
+		if err != nil {
+			return nil, false, err
+		}
+		return data, true, nil
+	})
+}
+
 func decodeKeyedStateRecord[T any](
 	value stateclient.Value,
 	key string,

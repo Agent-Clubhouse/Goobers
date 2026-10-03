@@ -3160,11 +3160,7 @@ func backlogScanCursorKey(
 }
 
 func readBacklogScanCursor(ctx context.Context, store stateclient.Store, key string) (backlogScanCursor, error) {
-	value, err := store.Get(ctx, key)
-	if err != nil {
-		return backlogScanCursor{}, err
-	}
-	return decodeBacklogScanCursor(value)
+	return readJSONState(ctx, store, key, decodeBacklogScanCursor)
 }
 
 // decodeBacklogScanCursor is loadBacklogScanCursor over a scheduler-state
@@ -3198,21 +3194,23 @@ func advanceBacklogScanCursor(
 	key string,
 	observed, next backlogScanCursor,
 ) error {
-	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeBacklogScanCursor(value)
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogScanCursor,
+		decodeBacklogScanCursor,
+		func(cursor backlogScanCursor) ([]byte, error) {
+			data, err := json.Marshal(cursor)
 			if err != nil {
-				return nil, false, err
+				return nil, fmt.Errorf("marshal backlog scan cursor: %w", err)
 			}
+			return data, nil
+		},
+		func(current backlogScanCursor) (backlogScanCursor, bool, error) {
 			if current != observed {
-				return nil, false, nil
+				return current, false, nil
 			}
-			data, err := json.Marshal(next)
-			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog scan cursor: %w", err)
-			}
-			return data, true, nil
-		})
+			return next, true, nil
+		},
+	)
 }
 
 // backlogScanWindow describes what one listBacklogScanWindow call actually

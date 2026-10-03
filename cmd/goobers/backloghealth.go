@@ -503,8 +503,9 @@ func persistBacklogHealthLedger(
 		merged    []providers.WorkItemLabelTransition
 		highWater int64
 	)
-	err := store.Update(ctx, key, stateLockOperationBacklogHealthCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
+	err := updateJSONState(
+		ctx, store, key, stateLockOperationBacklogHealthCursor,
+		func(value stateclient.Value) (backlogHealthCursor, error) {
 			ledger, mark := base.Transitions, base.HighWaterEventID
 			if replace {
 				ledger, mark = nil, 0
@@ -515,12 +516,19 @@ func persistBacklogHealthLedger(
 					mark = current.HighWaterEventID
 				}
 			}
-			merged = mergeLabelTransitions(ledger, fresh)
-			highWater = mark
+			return backlogHealthCursor{
+				HighWaterEventID: mark,
+				Transitions:      ledger,
+			}, nil
+		},
+		encodeBacklogHealthCursor,
+		func(current backlogHealthCursor) (backlogHealthCursor, bool, error) {
+			merged = mergeLabelTransitions(current.Transitions, fresh)
+			highWater = current.HighWaterEventID
 			if highEventID > highWater {
 				highWater = highEventID
 			}
-			data, err := encodeBacklogHealthCursor(backlogHealthCursor{
+			return backlogHealthCursor{
 				Schema:           backlogHealthCursorSchema,
 				Gaggle:           gaggle,
 				Provider:         string(repo.Provider),
@@ -529,12 +537,9 @@ func persistBacklogHealthLedger(
 				HighWaterEventID: highWater,
 				ScannedAt:        time.Now().UTC(),
 				Transitions:      merged,
-			})
-			if err != nil {
-				return nil, false, err
-			}
-			return data, true, nil
-		})
+			}, true, nil
+		},
+	)
 	if err != nil {
 		return nil, 0, err
 	}
