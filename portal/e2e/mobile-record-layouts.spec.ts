@@ -142,6 +142,8 @@ test("reveals records when a mounted desktop page changes to a compact viewport"
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(workflowGroup).toHaveAttribute("aria-expanded", "false");
+});
+
 const routes = [
   {
     path: "/#/runs",
