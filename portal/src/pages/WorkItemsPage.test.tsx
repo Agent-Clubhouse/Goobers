@@ -139,10 +139,12 @@ describe("WorkItemsPage", () => {
   });
 
   it("filters work items by outcome", async () => {
-    render(
+    const navigate = vi.fn();
+    const daemonClient = client();
+    const view = render(
       <WorkItemsPage
-        client={client()}
-        navigate={vi.fn()}
+        client={daemonClient}
+        navigate={navigate}
         route={{ page: "work-items" }}
         standalone={false}
       />,
@@ -154,9 +156,28 @@ describe("WorkItemsPage", () => {
       "in-progress",
     );
 
+    expect(navigate).toHaveBeenCalledWith({
+      page: "work-items",
+      kind: undefined,
+      gaggle: undefined,
+      outcome: "in-progress",
+      query: undefined,
+    });
+
+    view.rerender(
+      <WorkItemsPage
+        client={daemonClient}
+        navigate={navigate}
+        route={{ page: "work-items", outcome: "in-progress" }}
+        standalone={false}
+      />,
+    );
+
     expect(screen.queryByRole("button", { name: /Open PR #42 in acme\/app/i }))
       .not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Open issue #77 in acme\/service/i }))
+    expect(await screen.findByRole("button", { name: /Open issue #77 in acme\/service/i }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Status: In progress filter" }))
       .toBeInTheDocument();
   });
 
@@ -190,11 +211,16 @@ describe("WorkItemsPage", () => {
     expect(navigate).not.toHaveBeenCalled();
 
     await user.selectOptions(gaggle, "tools");
+    await user.selectOptions(
+      within(dialog).getByRole("combobox", { name: "Draft work item status filter" }),
+      "in-progress",
+    );
     await user.click(within(dialog).getByRole("button", { name: "Apply filters" }));
     expect(navigate).toHaveBeenCalledWith({
       page: "work-items",
       kind: "issue",
       gaggle: "tools",
+      outcome: "in-progress",
       query: undefined,
     });
   });
@@ -204,6 +230,7 @@ describe("WorkItemsPage", () => {
       provider: "github",
       repository: "acme/service",
       kind: "issue" as const,
+      outcome: "in-progress" as const,
       actionCount: 1,
       lastOperation: "comment",
       lastActionAt: "2026-09-01T12:00:00Z",
@@ -213,6 +240,7 @@ describe("WorkItemsPage", () => {
       provider: "github",
       repository: "acme/app",
       kind: "pr" as const,
+      outcome: "done" as const,
       externalId: "boundary",
       actionCount: 1,
       lastOperation: "merge",

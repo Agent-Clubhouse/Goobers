@@ -15,6 +15,7 @@ export type Route =
       page: "work-items";
       kind?: "pr" | "issue";
       gaggle?: string;
+      outcome?: "done" | "in-progress" | "bad-terminal";
       query?: string;
       provider?: string;
       repository?: string;
@@ -117,10 +118,16 @@ export function parseRoute(hash = window.location.hash): Route {
       };
     }
     const filterKind = optionalQuery(search, "kind");
+    const filterOutcome = optionalQuery(search, "outcome");
     return {
       page: "work-items",
       kind: filterKind === "pr" || filterKind === "issue" ? filterKind : undefined,
       gaggle: optionalQuery(search, "gaggle"),
+      outcome: filterOutcome === "done" ||
+        filterOutcome === "in-progress" ||
+        filterOutcome === "bad-terminal"
+        ? filterOutcome
+        : undefined,
       query: optionalQuery(search, "q"),
     };
   }
@@ -204,6 +211,7 @@ export function routeHash(route: Route): string {
     const search = new URLSearchParams();
     writeQuery(search, "kind", route.kind);
     writeQuery(search, "gaggle", route.gaggle);
+    writeQuery(search, "outcome", route.outcome);
     writeQuery(search, "q", route.query);
     return `#/work-items${search.size > 0 ? `?${search.toString()}` : ""}`;
   }
