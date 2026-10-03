@@ -225,7 +225,7 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)
 	const runID = "delegated-queued-final-failed"
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	finalPublished := make(chan error, 1)
@@ -255,10 +255,30 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 		<-codeDone
 		t.Fatal(err)
 	}
-	if err := journal.WriteFileAtomic(filepath.Join(l.SchedulerDir(), pendingTriggersDir, requestID+ackSuffix), ackData, 0o644); err != nil {
+	ackPath := filepath.Join(l.SchedulerDir(), pendingTriggersDir, requestID+ackSuffix)
+	if err := journal.WriteFileAtomic(ackPath, ackData, 0o644); err != nil {
 		cancel()
 		<-codeDone
 		t.Fatal(err)
+	}
+	// Advance the fake clock only after the initial poll consumes the queued acknowledgment.
+	for {
+		_, err := os.Stat(ackPath)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			cancel()
+			<-codeDone
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-codeDone
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
 	}
 
 	hookMu.Lock()
