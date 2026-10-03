@@ -170,20 +170,20 @@ interface PortalHistoryState {
   portalRestore?: RouteRestoreState;
 }
 
-function rememberCurrentRoutePosition(): void {
+function rememberCurrentRoutePosition(focusKey?: string): void {
   const scrollPane = document.querySelector<HTMLElement>(".portal-main");
   if (!scrollPane) {
     return;
   }
   const active = document.activeElement;
-  const focusKey =
-    active instanceof HTMLElement ? active.dataset.focusRestore : undefined;
+  const restoreFocusKey =
+    focusKey ?? (active instanceof HTMLElement ? active.dataset.focusRestore : undefined);
   const state = (window.history.state ?? {}) as PortalHistoryState;
   window.history.replaceState(
     {
       ...state,
       portalRestore: {
-        focusKey,
+        focusKey: restoreFocusKey,
         scrollTop: scrollPane.scrollTop,
       },
     } satisfies PortalHistoryState,
@@ -226,7 +226,7 @@ function Portal({
       const target = event.target;
       const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
       if (link?.hash.startsWith("#/") && link.hash !== window.location.hash) {
-        rememberCurrentRoutePosition();
+        rememberCurrentRoutePosition(link.dataset.focusRestore);
         linkedRoutePending.current = true;
       }
     };

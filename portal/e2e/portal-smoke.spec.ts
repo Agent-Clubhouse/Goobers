@@ -259,6 +259,33 @@ test("drills from an error occurrence and restores its phone focus and scroll", 
     .toBe(scrollTop);
 });
 
+test("contains event sheet keyboard focus and restores its invoking event", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/run/${smokeRunId}`);
+  await page.getByRole("tab", { name: "Journal" }).click();
+  const event = page.getByRole("button", { name: /^Select sequence 3:/ });
+  await event.click();
+
+  const dialog = page.getByRole("dialog", { name: "Event detail" });
+  const controls = dialog.locator(
+    "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled)",
+  );
+  const first = controls.first();
+  const last = controls.last();
+  await expect(dialog).toBeFocused();
+
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(first).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Escape");
+
+  await expect(dialog).toHaveCount(0);
+  await expect(event).toBeFocused();
+});
+
 test("uses Runs as the safe Back fallback for a directly opened run deep link", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/run/${smokeRunId}`);
@@ -269,12 +296,13 @@ test("uses Runs as the safe Back fallback for a directly opened run deep link", 
   await expect(page).toHaveURL(/#\/runs$/);
 });
 
-test("restores the originating run row and list scroll after browser back", async ({ page }) => {
+test("restores an unfocused pointer-activated run row and list scroll after browser back", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/runs?status=all");
 
   const row = page.getByRole("link", { name: `Open run ${smokeRunId}` });
-  await row.focus();
   await page.locator(".portal-main").evaluate((element) => {
     const spacer = document.createElement("div");
     spacer.dataset.testScrollSpacer = "true";
@@ -284,7 +312,10 @@ test("restores the originating run row and list scroll after browser back", asyn
   });
   const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
   expect(scrollTop).toBeGreaterThan(0);
-  await row.evaluate((element) => (element as HTMLAnchorElement).click());
+  await row.evaluate((element) => {
+    element.addEventListener("mousedown", (event) => event.preventDefault(), { once: true });
+  });
+  await row.click();
   await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
   await expect
     .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
