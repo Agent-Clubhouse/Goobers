@@ -598,19 +598,14 @@ function InstanceSummaryPanel({
             </span>
             {configurationWarningCount > 0 && (
               <span className="daemon-summary-notices">
-                <button
+                <a
                   className="instance-warning-link"
-                  onClick={() =>
-                    document.getElementById("instance-configuration-warnings")?.scrollIntoView({
-                      behavior: "smooth",
-                      block: "start",
-                    })
-                  }
-                  type="button"
+                  data-focus-restore="instance-configuration-warnings"
+                  href={routeHash({ page: "instance-detail", detail: "warnings" })}
                 >
                   {configurationWarningCount} configuration{" "}
                   {configurationWarningCount === 1 ? "warning" : "warnings"}
-                </button>
+                </a>
               </span>
             )}
           </span>
@@ -690,8 +685,8 @@ function InstanceSummaryPanel({
 /**
  * Recovery-snapshot inventory occupancy (#5343).
  *
- * This is on Overview rather than on a recovery page because of what a full
- * inventory actually does: worktree cleanup cannot complete without a durable
+ * This remains summarized on Overview because of what a full inventory does:
+ * worktree cleanup cannot complete without a durable
  * recovery handoff, an uncleaned worktree cannot be reused, and stages then
  * fail at `create worktree` - so the runs that break are unrelated to whatever
  * filled the inventory, and the only symptom an operator sees today is a
@@ -770,6 +765,13 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           target="_blank"
         >
           Recovery capacity and operator actions
+        </a>
+        <a
+          className="instance-warning-link"
+          data-focus-restore="instance-recovery-detail"
+          href={routeHash({ page: "instance-detail", detail: "recovery" })}
+        >
+          View recovery metadata
         </a>
       </div>
     </div>
@@ -867,6 +869,13 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
         {maintenance.lastProgressAt && state === "running" && (
           <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago</span>
         )}
+        <a
+          className="instance-warning-link"
+          data-focus-restore="instance-retention-detail"
+          href={routeHash({ page: "instance-detail", detail: "retention" })}
+        >
+          View retention details
+        </a>
       </div>
     </div>
   );

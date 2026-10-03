@@ -134,6 +134,7 @@ function ErrorGroupCard({ group }: { group: ErrorGroup }) {
         <a
           aria-label={`Open latest run ${item.runId} for error ${code}`}
           className="telemetry-error-latest"
+          data-focus-restore={`error-${group.id}`}
           href={routeHash({ page: "run", id: item.runId })}
         >
           {latestContent}
@@ -178,6 +179,7 @@ function ErrorOccurrence({ item }: { item: TelemetryError }) {
   return item.runId ? (
     <a
       aria-label={`Open run ${item.runId} occurrence from ${item.occurredAt}`}
+      data-focus-restore={`error-occurrence-${item.runId}-${item.occurredAt}`}
       href={routeHash({ page: "run", id: item.runId })}
     >
       {content}

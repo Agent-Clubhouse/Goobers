@@ -263,7 +263,11 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
   }`;
 
   return (
-    <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
+    <DataRow
+      focusRestoreKey={`run-${run.id}`}
+      href={routeHash({ page: "run", id: run.id })}
+      label={`Open run ${run.id}`}
+    >
       <span className="row-primary">
         <span className="row-title" title={identity}>
           {workItem ? (
