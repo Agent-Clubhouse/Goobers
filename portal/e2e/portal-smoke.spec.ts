@@ -12,6 +12,7 @@ interface RouteCase {
 // union gains a page that has no browser-level smoke coverage here (#4225).
 const ROUTES: Record<Route["page"], RouteCase> = {
   overview: { path: "/#/overview", heading: "Active runs" },
+  "instance-detail": { path: "/#/instance/recovery", heading: "Recovery metadata" },
   workflows: { path: "/#/workflows", heading: "Workflows" },
   goobers: { path: "/#/goobers", heading: "Goobers" },
   gaggle: { path: "/#/gaggle/core", heading: "Core product" },
