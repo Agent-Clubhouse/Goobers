@@ -292,5 +292,3 @@ github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired unti
 github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
-github.com/goobers/goobers/internal/handoffcheck.Compile # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
-github.com/goobers/goobers/internal/handoffcheck.Schema.Check # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).

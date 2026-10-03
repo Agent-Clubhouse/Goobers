@@ -274,21 +274,10 @@ func ReadOverflow(ctx context.Context, root string) ([]InventoryEntry, []Unreada
 }
 
 func overflowNames(root string, before os.FileInfo) ([]string, error) {
-	file, err := os.Open(root)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	after, err := file.Stat()
-	if err != nil || !os.SameFile(before, after) {
-		return nil, fmt.Errorf("recovery overflow root changed while opening")
-	}
-	names, err := file.Readdirnames(MaxInventoryEntries + 1)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	slices.Sort(names)
-	return names, nil
+	return listStableNames(root, before, listNamesOptions{
+		readLimit:        MaxInventoryEntries + 1,
+		changedRootError: "recovery overflow root changed while opening",
+	})
 }
 
 func readOverflowEntry(root, name string) (InventoryEntry, error) {

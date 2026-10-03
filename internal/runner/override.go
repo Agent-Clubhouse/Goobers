@@ -123,26 +123,27 @@ func (r *Runner) OverrideGate(ctx context.Context, in OverrideGateInput) (Result
 }
 
 func isCurrentTerminalGate(events []journal.Event, gate string, phase journal.RunPhase) bool {
-	for i := len(events) - 1; i >= 0; i-- {
-		switch events[i].Type {
-		case journal.EventGateEvaluated:
-			if events[i].Gate != gate {
-				return false
-			}
-			switch phase {
-			case journal.PhaseCompleted:
-				return events[i].Target == workflow.TerminalComplete ||
-					events[i].Target == journal.TargetComplete
-			case journal.PhaseAborted:
-				return events[i].Target == workflow.TargetAbort
-			case journal.PhaseEscalated:
-				return events[i].Target == workflow.TargetEscalate || events[i].Escalated
-			default:
-				return false
-			}
-		case journal.EventRunResumed, journal.EventGateOverridden, journal.EventStageRerunRequested:
+	event, ok := journal.LastEvent(events, func(event journal.Event) bool {
+		switch event.Type {
+		case journal.EventGateEvaluated, journal.EventRunResumed,
+			journal.EventGateOverridden, journal.EventStageRerunRequested:
+			return true
+		default:
 			return false
 		}
+	})
+	if !ok || event.Type != journal.EventGateEvaluated || event.Gate != gate {
+		return false
 	}
-	return false
+	switch phase {
+	case journal.PhaseCompleted:
+		return event.Target == workflow.TerminalComplete ||
+			event.Target == journal.TargetComplete
+	case journal.PhaseAborted:
+		return event.Target == workflow.TargetAbort
+	case journal.PhaseEscalated:
+		return event.Target == workflow.TargetEscalate || event.Escalated
+	default:
+		return false
+	}
 }

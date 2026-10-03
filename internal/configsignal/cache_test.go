@@ -26,6 +26,8 @@ func TestCacheTracksInputsWithoutReadingUnchangedContent(t *testing.T) {
 	for _, path := range paths {
 		write(path, "before")
 	}
+	// Metadata only vouches for inputs that have settled (see SettleDelay).
+	time.Sleep(2 * SettleDelay)
 	var cache Cache
 	calls := 0
 	now := time.Now()
@@ -78,11 +80,35 @@ func TestCacheTracksInputsWithoutReadingUnchangedContent(t *testing.T) {
 	}
 }
 
+// Kernels stamp mtime and ctime from a coarse clock (4ms on ext4), so a
+// directory changed twice within one tick shows identical metadata. Polling
+// straight after each change must still observe every one of them.
+func TestCacheSeesChangesWithinOneTimestampTick(t *testing.T) {
+	root := t.TempDir()
+	var cache Cache
+	calls := 0
+	now := time.Now()
+	hash := func(func(string)) (string, error) { calls++; return fmt.Sprint(calls), nil }
+	for i := 0; i < 300; i++ {
+		before := calls
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprint(i)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cache.Digest(now, []string{root}, hash); err != nil {
+			t.Fatal(err)
+		}
+		if calls != before+1 {
+			t.Fatalf("edit %d went unnoticed", i)
+		}
+	}
+}
+
 func TestCacheAuditsAliasedMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "input")
 	if err := os.WriteFile(path, []byte("before"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(2 * SettleDelay)
 	var cache Cache
 	now := time.Now()
 	hash := func(observe func(string)) (string, error) {
@@ -115,6 +141,7 @@ func TestCacheDetectsRestoredMtime(t *testing.T) {
 	if err := os.WriteFile(path, []byte("before"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(2 * SettleDelay)
 	var cache Cache
 	hash := func(observe func(string)) (string, error) {
 		observe(path)

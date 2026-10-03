@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -662,6 +663,96 @@ func TestExpireRunAbortsLiveRunDespiteActivity(t *testing.T) {
 	if len(events) < 2 || events[len(events)-2].Error == nil ||
 		events[len(events)-2].Error.Code != RunDurationExceededErrorCode {
 		t.Fatalf("terminal events = %+v, want duration-exceeded + run.finished(aborted)", events)
+	}
+}
+
+func TestActiveRunInterruptsPreserveTerminalizationTimeouts(t *testing.T) {
+	tests := []struct {
+		name       string
+		actionPast string
+		call       func(*Runner, string, time.Time) (Result, bool, error)
+	}{
+		{
+			name:       "cancel",
+			actionPast: "cancelled",
+			call: func(r *Runner, runID string, now time.Time) (Result, bool, error) {
+				return r.CancelRun(runID, now)
+			},
+		},
+		{
+			name:       "interrupt",
+			actionPast: "interrupted",
+			call: func(r *Runner, runID string, now time.Time) (Result, bool, error) {
+				return r.InterruptStage(runID, "implement", "operator@example", now)
+			},
+		},
+		{
+			name:       "expiration",
+			actionPast: "expired",
+			call: func(r *Runner, runID string, now time.Time) (Result, bool, error) {
+				return r.ExpireRun(runID, now, now.Add(-2*time.Hour), time.Hour)
+			},
+		},
+	}
+	claims := []struct {
+		name               string
+		ownerTerminalizing bool
+		takenOver          bool
+	}{
+		{name: "owner terminalizing", ownerTerminalizing: true},
+		{name: "already claimed", takenOver: true},
+	}
+
+	for _, tt := range tests {
+		for _, claim := range claims {
+			t.Run(tt.name+"/"+claim.name, func(t *testing.T) {
+				now := time.Date(2026, 10, 2, 20, 0, 0, 0, time.UTC)
+				runID := tt.name + "-timeout"
+				runsDir := filepath.Join(t.TempDir(), "runs")
+
+				run, err := journal.Create(runsDir, journal.RunIdentity{
+					RunID: runID, Workflow: "implementation", WorkflowVersion: 1, Gaggle: "example",
+					Trigger: journal.Trigger{Kind: journal.TriggerManual},
+				}, nil, journal.WithClock(func() time.Time { return now.Add(-2 * time.Hour) }))
+				if err != nil {
+					t.Fatal(err)
+				}
+				run.SetMachineState("implement")
+				if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1}); err != nil {
+					t.Fatal(err)
+				}
+				attemptCtx, cancel := context.WithCancelCause(context.Background())
+				active := &activeRun{
+					attemptCtx:         attemptCtx,
+					cancel:             cancel,
+					done:               make(chan struct{}),
+					ownerDone:          make(chan struct{}),
+					takeoverDone:       make(chan struct{}),
+					journal:            run,
+					ownerTerminalizing: claim.ownerTerminalizing,
+					takenOver:          claim.takenOver,
+				}
+				r := &Runner{
+					cfg:                  Config{RunsDir: runsDir},
+					stalledCancelGrace:   time.Millisecond,
+					stalledTerminalGrace: time.Millisecond,
+					active:               activeRunSet{runs: map[string]*activeRun{runID: active}},
+				}
+				t.Cleanup(func() {
+					cancel(nil)
+					_ = run.Close()
+				})
+
+				result, succeeded, err := tt.call(r, runID, now)
+				wantErr := fmt.Sprintf("runner: %s run %q did not finish terminalization within 2ms", tt.actionPast, runID)
+				if err == nil || err.Error() != wantErr {
+					t.Fatalf("error = %v, want %q", err, wantErr)
+				}
+				if succeeded || result != (Result{}) {
+					t.Fatalf("result = %+v, succeeded = %v, want zero result and false", result, succeeded)
+				}
+			})
+		}
 	}
 }
 

@@ -685,6 +685,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/retryutil",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/runcontrol",
       "coverage": "none",
       "category": "not-selected",
@@ -947,6 +953,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/workflowgraph",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral workflow graph traversal has no Windows-specific seam; runs on the Linux unit shards only."
     },
     {
       "package": "internal/workflowsafety",
