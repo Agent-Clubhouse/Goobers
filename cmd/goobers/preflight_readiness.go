@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
@@ -105,11 +106,11 @@ func runtimePreflightReadiness(ctx context.Context, cfg *instance.Config, gaggle
 	for _, stage := range stages {
 		keys := append([]string(nil), stage.CredentialCapabilities...)
 		for _, key := range mcpconfig.BYOCredentialKeys(goobers[stage.Goober].MCPServers) {
-			if !containsString(keys, key) {
+			if !slices.Contains(keys, key) {
 				keys = append(keys, key)
 			}
 		}
-		if stage.Harness != "" && !containsString(keys, "agent:model") {
+		if stage.Harness != "" && !slices.Contains(keys, "agent:model") {
 			keys = append(keys, "agent:model")
 		}
 		stageGrants := grants

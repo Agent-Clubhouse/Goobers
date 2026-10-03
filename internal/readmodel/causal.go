@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -452,7 +453,7 @@ func loadNodeParents(ctx context.Context, tx *sql.Tx, runs []*causalRunFact, sco
 			continue
 		}
 		parent := parentKind + ":" + parentName
-		if !contains(fact.parents, parent) {
+		if !slices.Contains(fact.parents, parent) {
 			fact.parents = append(fact.parents, parent)
 			sort.Strings(fact.parents)
 			run.nodes[nodeKey] = fact
@@ -462,15 +463,6 @@ func loadNodeParents(ctx context.Context, tx *sql.Tx, runs []*causalRunFact, sco
 		return fmt.Errorf("readmodel: causal parent projection rows: %w", err)
 	}
 	return nil
-}
-
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }
 
 // buildCausalDAG constructs the workflow DAG using the declared workflow graph

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func NewTelemetryQueryExecutor(host *externaltelemetry.Host, recorder ArtifactRe
 // Run executes one external telemetry query.
 func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	required := string(capability.TelemetryRead)
-	if !containsString(env.Capabilities, required) {
+	if !slices.Contains(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindExternalTelemetry, required)
 	}
 	connectorName, err := telemetryStringInput(env, InputTelemetryConnector)
