@@ -393,6 +393,7 @@ const responses = new Map([
           kind: "pr",
           externalId: "4800",
           url: "https://github.com/Agent-Clubhouse/Goobers/pull/4800",
+          outcome: "in-progress",
           actionCount: 2,
           lastOperation: "comment",
           lastActionAt: "2026-09-10T08:02:00Z",
