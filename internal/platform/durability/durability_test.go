@@ -214,26 +214,20 @@ func TestWriteFileAtomicShortWriteCleansUp(t *testing.T) {
 	}
 }
 
-func TestWriteFileAtomicPublishRaceAndDirectorySyncControl(t *testing.T) {
+func TestWriteFileAtomicPublishRaceCheck(t *testing.T) {
 	file := &stubAtomicFile{name: "temporary"}
 	raceChecked := false
-	syncCalled := false
 	err := WriteFileAtomic("destination", []byte("data"), 0o600,
 		WithPublishRaceCheck(func(path string) error {
 			raceChecked = path == "destination"
 			return nil
 		}),
-		WithoutDirectorySync(),
 		func(config *atomicWriteConfig) {
 			config.createTemp = func(_, _ string) (atomicFile, error) {
 				return file, nil
 			}
 			config.remove = func(string) error { return nil }
 			config.replace = func(_, _ string) error { return errors.New("lost race") }
-			config.syncDir = func(string) error {
-				syncCalled = true
-				return nil
-			}
 		},
 	)
 	if err != nil {
@@ -241,9 +235,6 @@ func TestWriteFileAtomicPublishRaceAndDirectorySyncControl(t *testing.T) {
 	}
 	if !raceChecked {
 		t.Fatal("publish race was not checked")
-	}
-	if syncCalled {
-		t.Fatal("directory was synced despite WithoutDirectorySync")
 	}
 }
 

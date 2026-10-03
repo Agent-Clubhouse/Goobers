@@ -40,7 +40,6 @@ type atomicFile interface {
 
 type atomicWriteConfig struct {
 	tempPattern      string
-	syncDirectory    bool
 	publishRaceCheck func(string) error
 	createTemp       func(string, string) (atomicFile, error)
 	remove           func(string) error
@@ -59,13 +58,6 @@ func WithTempPattern(pattern string) Option {
 	}
 }
 
-// WithoutDirectorySync skips syncing the destination directory after publish.
-func WithoutDirectorySync() Option {
-	return func(config *atomicWriteConfig) {
-		config.syncDirectory = false
-	}
-}
-
 // WithPublishRaceCheck publishes without replacing an existing target and
 // treats a lost race as successful when check verifies the target.
 func WithPublishRaceCheck(check func(path string) error) Option {
@@ -79,8 +71,7 @@ func WithPublishRaceCheck(check func(path string) error) Option {
 // replaces path after the file contents have been flushed.
 func WriteFileAtomic(path string, data []byte, mode fs.FileMode, opts ...Option) error {
 	config := atomicWriteConfig{
-		tempPattern:   "." + filepath.Base(path) + ".tmp-*",
-		syncDirectory: true,
+		tempPattern: "." + filepath.Base(path) + ".tmp-*",
 		createTemp: func(directory, pattern string) (atomicFile, error) {
 			return os.CreateTemp(directory, pattern)
 		},
@@ -124,10 +115,8 @@ func WriteFileAtomic(path string, data []byte, mode fs.FileMode, opts ...Option)
 		}
 		return atomicWriteError(AtomicWriteReplace, err)
 	}
-	if config.syncDirectory {
-		if err := config.syncDir(directory); err != nil {
-			return atomicWriteError(AtomicWriteSyncDir, err)
-		}
+	if err := config.syncDir(directory); err != nil {
+		return atomicWriteError(AtomicWriteSyncDir, err)
 	}
 	return nil
 }
