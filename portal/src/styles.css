@@ -9718,6 +9718,38 @@ code,
     }
 }
 
+@media (max-width: 960px) {
+  .overview-page > .page-heading {
+    order: 0;
+  }
+
+  .overview-notices {
+    order: 1;
+  }
+
+  .overview-page > .attention-section {
+    margin-bottom: 20px;
+    order: 2;
+  }
+
+  .overview-activity {
+    order: 3;
+  }
+
+  .overview-activity > .content-section:first-child,
+  .overview-activity > .empty-state {
+    margin-top: 0;
+  }
+
+  .overview-page > .instance-summary-card {
+    order: 4;
+  }
+
+  .overview-configuration {
+    order: 5;
+  }
+}
+
 @media (max-width: 480px) {
   .instance-detail-page {
     min-height: 100%;
@@ -9827,36 +9859,6 @@ code,
   .page-content {
     padding-left: 12px;
     padding-right: 12px;
-  }
-
-  .overview-page > .page-heading {
-    order: 0;
-  }
-
-  .overview-notices {
-    order: 1;
-  }
-
-  .overview-page > .attention-section {
-    margin-bottom: 20px;
-    order: 2;
-  }
-
-  .overview-activity {
-    order: 3;
-  }
-
-  .overview-activity > .content-section:first-child,
-  .overview-activity > .empty-state {
-    margin-top: 0;
-  }
-
-  .overview-page > .instance-summary-card {
-    order: 4;
-  }
-
-  .overview-configuration {
-    order: 5;
   }
 
   .overview-diagnostics-content .instance-summary-row {
