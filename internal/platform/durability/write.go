@@ -66,11 +66,12 @@ func WithoutDirectorySync() Option {
 	}
 }
 
-// WithPublishRaceCheck treats a failed publish as successful when check
-// verifies that another writer has already published an acceptable target.
+// WithPublishRaceCheck publishes without replacing an existing target and
+// treats a lost race as successful when check verifies the target.
 func WithPublishRaceCheck(check func(path string) error) Option {
 	return func(config *atomicWriteConfig) {
 		config.publishRaceCheck = check
+		config.replace = os.Link
 	}
 }
 

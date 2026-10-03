@@ -247,6 +247,28 @@ func TestWriteFileAtomicPublishRaceAndDirectorySyncControl(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicPublishRaceDoesNotReplaceExistingDestination(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "write-once")
+	if err := os.WriteFile(path, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("second"), 0o600,
+		WithPublishRaceCheck(func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		})); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first" {
+		t.Fatalf("content = %q, want first publication preserved", got)
+	}
+}
+
 func TestMoveRenamesDirectory(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "legacy")

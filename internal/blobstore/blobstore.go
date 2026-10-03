@@ -168,21 +168,31 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	repairCorrupt := false
 	if _, err := d.Get(ctx, digest); err == nil {
 		return nil
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
+	switch _, err := os.Stat(path); {
+	case err == nil:
+		repairCorrupt = true
+	case errors.Is(err, fs.ErrNotExist):
+	default:
+		return fmt.Errorf("blobstore: stat %s: %w", digest, err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("blobstore: create %s: %w", dir, err)
 	}
-	if err := durability.WriteFileAtomic(path, data, 0o600,
-		durability.WithTempPattern(".put-*"),
-		durability.WithPublishRaceCheck(func(string) error {
+	options := []durability.Option{durability.WithTempPattern(".put-*")}
+	if !repairCorrupt {
+		options = append(options, durability.WithPublishRaceCheck(func(string) error {
 			_, err := d.Get(ctx, digest)
 			return err
-		})); err != nil {
+		}))
+	}
+	if err := durability.WriteFileAtomic(path, data, 0o600, options...); err != nil {
 		var writeErr *durability.AtomicWriteError
 		if errors.As(err, &writeErr) {
 			switch writeErr.Operation {
