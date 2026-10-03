@@ -268,6 +268,16 @@ const responses = new Map([
         policySource: "instance-config",
         observedAt: "2026-09-09T19:15:00Z",
       },
+      telemetryRetention: {
+        enabled: true,
+        window: "30d",
+        maxRuns: 900,
+        firstEnable: "2026-09-01T00:00:00Z",
+        enforceAt: "2026-09-08T00:00:00Z",
+        lastPassAt: "2026-09-09T19:14:00Z",
+        lastPassMode: "dry-run",
+        candidateCount: 17,
+      },
       warnings: [
         {
           code: "E2E001",

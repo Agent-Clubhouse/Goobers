@@ -525,6 +525,7 @@ summary:focus-visible {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: scroll;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -8185,6 +8186,95 @@ code,
   justify-content: flex-end;
 }
 
+.instance-detail-page {
+  margin: 0 auto;
+  max-width: 920px;
+  min-width: 0;
+  width: 100%;
+}
+
+.instance-detail-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.instance-detail-header h1 {
+  margin: 2px 0 0;
+}
+
+.instance-detail-back {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.instance-detail-back svg {
+  transform: rotate(180deg);
+}
+
+.instance-detail-guidance {
+  color: var(--muted-strong);
+  overflow-wrap: anywhere;
+}
+
+.instance-detail-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  min-width: 0;
+  padding: 20px;
+}
+
+.instance-detail-status {
+  font-size: var(--font-ui);
+  font-weight: 700;
+  margin: 0 0 20px;
+  overflow-wrap: anywhere;
+}
+
+.instance-detail-status-warning,
+.instance-detail-status-exhausted,
+.instance-detail-status-unavailable {
+  color: var(--accent-ink);
+}
+
+.instance-detail-fields {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.instance-detail-fields > div {
+  min-width: 0;
+}
+
+.instance-detail-fields dt {
+  color: var(--muted);
+  font-size: var(--font-label);
+  text-transform: uppercase;
+}
+
+.instance-detail-fields dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.instance-detail-actions {
+  border-top: 1px solid var(--line);
+  margin-top: 24px;
+  padding-top: 20px;
+}
+
+.instance-detail-actions h2 {
+  font-size: var(--font-ui);
+  margin: 0 0 8px;
+}
+
 .artifact-load-state {
   color: var(--muted);
   display: grid;
@@ -9007,6 +9097,25 @@ code,
 }
 
 @media (max-width: 480px) {
+  .instance-detail-page {
+    min-height: 100%;
+  }
+
+  .instance-detail-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .instance-detail-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .instance-detail-card {
+    border-radius: 0;
+    margin-inline: -16px;
+  }
+
   .event-detail-backdrop {
     align-items: stretch;
     justify-items: stretch;

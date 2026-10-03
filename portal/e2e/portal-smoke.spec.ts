@@ -314,24 +314,124 @@ test("keeps the run event sheet usable at 200 percent page zoom", async ({ page 
     .toBeLessThanOrEqual(1);
 });
 
-test("keeps mobile diagnostics, recovery metadata, warnings, and action errors explicit", async ({
-  page,
-}) => {
+for (const viewport of [
+  { width: 320, height: 800 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+  { width: 667, height: 375 },
+]) {
+  test(`keeps instance detail routes usable at ${viewport.width}x${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    for (const [path, heading] of [
+      ["recovery", "Recovery metadata"],
+      ["retention", "Telemetry retention"],
+      ["warnings", "Configuration warnings"],
+    ] as const) {
+      await page.goto(`/#/instance/${path}`);
+      await expect(page.getByRole("heading", { name: heading }).first()).toBeVisible();
+      const back = page.getByRole("button", { name: "Back to overview" });
+      const box = await back.boundingBox();
+      expect(box?.width).toBeGreaterThanOrEqual(44);
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+        .toBeLessThanOrEqual(1);
+    }
+  });
+}
+
+test("shows loading and empty states on instance detail routes", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/#/overview");
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.recoveryInventory;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.fulfill({ response, json: body });
+  });
 
-  await expect(page.getByText("Recovery inventory")).toBeVisible();
-  await expect(page.getByText("Retention sweep")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Configuration warnings" })).toBeVisible();
-  await expect(page.getByText(/portal is read-only/i)).toBeVisible();
-  await expect
-    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
-    .toBeLessThanOrEqual(1);
+  const navigation = page.goto("/#/instance/recovery");
+  await expect(page.getByRole("heading", { name: "Loading recovery metadata" })).toBeVisible();
+  await navigation;
+  await expect(page.getByRole("heading", { name: "No recovery metadata reported" })).toBeVisible();
+});
 
+for (const failure of [
+  { name: "permission", status: 403, heading: "Access denied" },
+  { name: "unavailable", status: 503, heading: "Couldn't load Goobers data" },
+] as const) {
+  test(`shows an explicit ${failure.name} state on detail routes`, async ({ page }) => {
+    await page.route("**/api/v1/instance", (route) =>
+      route.fulfill({
+        body: JSON.stringify({ code: "fixture_error", message: failure.name }),
+        contentType: "application/json",
+        status: failure.status,
+      }),
+    );
+    await page.goto("/#/instance/recovery");
+    await expect(page.getByRole("heading", { name: failure.heading })).toBeVisible();
+  });
+}
+
+test("shows an older-daemon state on detail routes", async ({ page }) => {
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.apiVersion = "v0";
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/#/instance/retention");
+  await expect(page.getByRole("heading", { name: "Daemon update required" })).toBeVisible();
+});
+
+test("keeps diagnostics and supported action failures explicit on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/run/${smokeRunId}?tab=diagnostics`);
   await expect(page.locator("aside.run-inspector")).toBeVisible();
   await page.getByRole("button", { name: "Reveal run files" }).click();
   await expect(page.getByRole("alert")).toContainText(/not found|could not|failed|malformed/i);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+});
+
+test("restores the originating instance summary focus and scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+  const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.focus();
+  await page.locator(".portal-main").evaluate((element) => {
+    const spacer = document.createElement("div");
+    spacer.style.height = "600px";
+    element.append(spacer);
+    element.scrollTop = 140;
+  });
+  const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+
+  await origin.click();
+  await expect(page.getByRole("heading", { name: "Recovery metadata" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to overview" }).click();
+
+  await expect(page.getByRole("heading", { name: /healthy|attention/i }).first()).toBeVisible();
+  await expect(origin).toBeFocused();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(scrollTop);
+});
+
+test("keeps instance details usable on desktop and at 200 percent zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/#/instance/retention");
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  await expect(page.getByRole("button", { name: "Back to overview" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
 });
 
 test("loads the Gaggle page from fixture daemon data", async ({ page }) => {

@@ -28,6 +28,7 @@ import { GoobersPage } from "./pages/GoobersPage";
 import { CostPage } from "./pages/CostPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
+import { InstanceDetailPage } from "./pages/InstanceDetailPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
@@ -256,7 +257,7 @@ function Portal({
           `[data-focus-restore="${CSS.escape(restore.focusKey)}"]`,
         )
       : null;
-    (focusTarget ?? document.getElementById("main-content"))?.focus();
+    (focusTarget ?? document.getElementById("main-content"))?.focus({ preventScroll: true });
   }, [scrollKey]);
 
   useEffect(() => {
@@ -353,7 +354,10 @@ function Portal({
 
   let warningSource: ConfigurationWarningSource = { kind: "none" };
   let warningFixtures = noWarnings;
-  if (route.page === "overview") {
+  if (
+    route.page === "overview" ||
+    (route.page === "instance-detail" && route.detail === "warnings")
+  ) {
     warningSource = { kind: "instance" };
     warningFixtures = instanceWarnings;
   } else if (route.page === "workflow" && route.gaggle) {
@@ -388,6 +392,15 @@ function Portal({
             <OverviewPage
               client={client}
               configurationWarnings={configurationWarnings}
+              standalone={standalone}
+            />
+          )}
+          {route.page === "instance-detail" && (
+            <InstanceDetailPage
+              client={client}
+              configurationWarnings={configurationWarnings}
+              detail={route.detail}
+              navigate={navigate}
               standalone={standalone}
             />
           )}

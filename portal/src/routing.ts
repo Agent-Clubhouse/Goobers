@@ -3,6 +3,7 @@ import { hasScopeFilters, type ScopeFilters } from "./scope";
 
 export type Route =
   | { page: "overview" }
+  | { page: "instance-detail"; detail: InstanceDetailKind }
   | { page: "workflows" }
   | { page: "goobers"; gaggle?: string }
   | { page: "gaggle"; id: string }
@@ -34,6 +35,7 @@ export type Route =
 // they're for, without three parallel field-by-field type declarations.
 export type RunStatusFilter = "active" | "attention" | "complete" | "all";
 export type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal";
+export type InstanceDetailKind = "recovery" | "retention" | "warnings";
 
 export interface RunRouteFilters extends ScopeFilters {
   status?: RunStatusFilter;
@@ -82,6 +84,12 @@ export function parseRoute(hash = window.location.hash): Route {
     return tab || seq !== undefined || node || event
       ? { page: "run", id, tab, seq, node, event }
       : { page: "run", id };
+  }
+  if (
+    area === "instance" &&
+    (id === "recovery" || id === "retention" || id === "warnings")
+  ) {
+    return { page: "instance-detail", detail: id };
   }
   if (area === "work-items") {
     // #/work-items/<provider>/<repository segments…>/<kind>/<id>. The repository
@@ -156,6 +164,9 @@ export function parseRoute(hash = window.location.hash): Route {
 }
 
 export function routeHash(route: Route): string {
+  if (route.page === "instance-detail") {
+    return `#/instance/${route.detail}`;
+  }
   if (route.page === "gaggle") {
     return `#/gaggle/${encodeURIComponent(route.id)}`;
   }
@@ -225,6 +236,9 @@ export function routeHash(route: Route): string {
 }
 
 export function activeArea(route: Route): PrimaryArea {
+  if (route.page === "instance-detail") {
+    return "overview";
+  }
   if (route.page === "gaggle" || route.page === "workflow") {
     return "workflows";
   }
