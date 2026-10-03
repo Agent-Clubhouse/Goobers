@@ -3,10 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
-
-	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // withAutoGoobersIOClaude marks req eligible for the goobers-io MCP server
@@ -46,29 +43,12 @@ func withAutoGoobersIOClaude(req RunRequest, selfBin string) RunRequest {
 // tool sub-allowlist; its process-wide --tools/--allowedTools flags admit
 // the exact names instead.
 func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error) {
-	if selfBin == "" || !autoGoobersIOEligible(req) {
-		return "", nil
-	}
-	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
-	artifactManifestFile, _ := req.Envelope.Inputs[InputArtifactManifestFile].(string)
-	cfg := mcpio.Config{
-		Workspace:            req.Workspace,
-		ArtifactFile:         artifactFile,
-		ArtifactManifestFile: artifactManifestFile,
-		ReceiptFile:          goobersIOReceiptFile(),
-		Inputs:               req.ContextPaths,
-		RunID:                req.Envelope.RunID,
-		WorkflowID:           req.Envelope.WorkflowID,
-		TaskID:               req.Envelope.TaskID,
-		Gaggle:               req.Envelope.Gaggle,
-	}
-	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
-	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
+	runtime, ok, err := prepareGoobersIOMCPRuntime(req, selfBin)
 	if err != nil {
-		return "", fmt.Errorf("write goobers-io config: %w", err)
+		return "", err
 	}
-	if err := mcpio.ResetInputInspectionReceipts(req.Workspace, cfg.ReceiptFile); err != nil {
-		return "", fmt.Errorf("reset goobers-io input inspection receipts: %w", err)
+	if !ok {
+		return "", nil
 	}
 
 	server := struct {
@@ -77,8 +57,8 @@ func goobersIOClaudeMCPConfigArg(req RunRequest, selfBin string) (string, error)
 		Args    []string `json:"args"`
 	}{
 		Type:    "stdio",
-		Command: selfBin,
-		Args:    []string{"mcp-io", "--config", configPath},
+		Command: runtime.Command,
+		Args:    runtime.Args,
 	}
 	data, err := json.Marshal(map[string]interface{}{
 		"mcpServers": map[string]interface{}{goobersIOServerName: server},

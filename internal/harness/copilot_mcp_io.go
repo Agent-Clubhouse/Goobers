@@ -117,29 +117,12 @@ func withAutoGoobersIO(req RunRequest, selfBin string) RunRequest {
 // (review finding on #2408; see #2413 for the other harness call sites with
 // the same gap, not fixed here since they predate this code).
 func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, error) {
-	if selfBin == "" || !autoGoobersIOEligible(req) {
-		return "", nil
-	}
-	artifactFile, _ := req.Envelope.Inputs[InputArtifactFile].(string)
-	artifactManifestFile, _ := req.Envelope.Inputs[InputArtifactManifestFile].(string)
-	cfg := mcpio.Config{
-		Workspace:            req.Workspace,
-		ArtifactFile:         artifactFile,
-		ArtifactManifestFile: artifactManifestFile,
-		ReceiptFile:          goobersIOReceiptFile(),
-		Inputs:               req.ContextPaths,
-		RunID:                req.Envelope.RunID,
-		WorkflowID:           req.Envelope.WorkflowID,
-		TaskID:               req.Envelope.TaskID,
-		Gaggle:               req.Envelope.Gaggle,
-	}
-	configRel := filepath.Join(filepath.FromSlash(goobersIORuntimeSubdir), mcpio.ConfigFileName)
-	configPath, err := mcpio.WriteConfig(req.Workspace, configRel, cfg)
+	runtime, ok, err := prepareGoobersIOMCPRuntime(req, selfBin)
 	if err != nil {
-		return "", fmt.Errorf("write goobers-io config: %w", err)
+		return "", err
 	}
-	if err := mcpio.ResetInputInspectionReceipts(req.Workspace, cfg.ReceiptFile); err != nil {
-		return "", fmt.Errorf("reset goobers-io input inspection receipts: %w", err)
+	if !ok {
+		return "", nil
 	}
 
 	server := struct {
@@ -149,9 +132,9 @@ func goobersIOAdditionalMCPConfigArg(req RunRequest, selfBin string) (string, er
 		Tools   []string `json:"tools"`
 	}{
 		Type:    "local",
-		Command: selfBin,
-		Args:    []string{"mcp-io", "--config", configPath},
-		Tools:   append([]string(nil), goobersIOTools...),
+		Command: runtime.Command,
+		Args:    runtime.Args,
+		Tools:   runtime.Tools,
 	}
 	registration := map[string]interface{}{
 		"mcpServers": map[string]interface{}{goobersIOServerName: server},
