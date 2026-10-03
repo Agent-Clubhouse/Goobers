@@ -142,4 +142,113 @@ test("reveals records when a mounted desktop page changes to a compact viewport"
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(workflowGroup).toHaveAttribute("aria-expanded", "false");
+const routes = [
+  {
+    path: "/#/runs",
+    heading: "Runs",
+    record: (page: Page) => page.getByRole("link", { name: /^Open run / }).first(),
+  },
+  {
+    path: "/#/work-items",
+    heading: "Work Items",
+    record: (page: Page) => page.getByRole("button", { name: /^Open PR / }).first(),
+  },
+] as const;
+
+const viewports = [
+  { name: "320px phone", width: 320, height: 844 },
+  { name: "390px phone", width: 390, height: 844 },
+  { name: "430px phone", width: 430, height: 932 },
+  { name: "phone landscape", width: 844, height: 390 },
+  { name: "200% zoom equivalent", width: 390, height: 422 },
+] as const;
+
+for (const viewport of viewports) {
+  test(`keeps Runs and Work Items usable at ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+
+    for (const route of routes) {
+      await page.goto(route.path);
+
+      await expect(page.getByRole("heading", { name: route.heading, exact: true })).toBeVisible();
+      const record = route.record(page);
+      await expect(record).toBeVisible();
+      const box = await record.boundingBox();
+      expect(box, `${route.heading} record should have geometry`).not.toBeNull();
+      if (viewport.height >= 844) {
+        expect(box!.y).toBeLessThan(viewport.height);
+      }
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+        .toBeLessThanOrEqual(1);
+    }
+  });
+}
+
+test("shows semantic mobile context and preserves deep links and browser Back", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.goto("/#/runs");
+  const run = page.getByRole("link", { name: /^Open run / }).first();
+  await expect(run.locator(".status-badge")).toBeVisible();
+  await expect(run.locator(".run-current-stage")).toBeVisible();
+  await run.click();
+  await expect(page).toHaveURL(/#\/run\//);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
+
+  await page.goto("/#/work-items");
+  const workItem = page.getByRole("button", { name: /^Open PR / }).first();
+  await expect(workItem.locator(".work-item-status")).toContainText("Running");
+  await expect(workItem.locator(".work-item-mobile-context")).toContainText(
+    "core / implementation",
+  );
+  await workItem.click();
+  await expect(page).toHaveURL(/#\/work-items\/github\/Agent-Clubhouse\/Goobers\/pr\/4800$/);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Work Items", exact: true })).toBeVisible();
+});
+
+test("renders a bounded large Work Items dataset without losing the first record", async ({
+  page,
+}) => {
+  const items = Array.from({ length: 200 }, (_, index) => ({
+    provider: "github",
+    repository: `organization/repository-with-a-long-name-${index}`,
+    kind: "issue",
+    externalId: `${10_000 + index}`,
+    actionCount: index + 1,
+    lastOperation: "comment",
+    lastActionAt: "2026-09-10T08:02:00Z",
+    lastRunId: `run-${index}`,
+    gaggle: "core",
+    workflow: "implementation",
+    runStatus: index === 0 ? "running" : "completed",
+  }));
+  await page.route("**/api/v1/work-items?**", (route) =>
+    route.fulfill({ json: { items, hasMore: true } }));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/work-items");
+
+  const first = page.getByRole("button", {
+    name: "Open issue #10000 in organization/repository-with-a-long-name-0",
+  });
+  await expect(first).toBeVisible();
+  await expect(first.locator(".work-item-status")).toContainText("Running");
+  await expect(page.getByText("Showing the 200 most recently actioned work items.")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+});
+
+test("retains desktop record columns", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  await page.goto("/#/runs");
+  await expect(page.locator(".all-runs-grid.data-table-header")).toBeVisible();
+  await expect(page.locator(".all-runs-grid.data-table-header")).toContainText("Duration");
+
+  await page.goto("/#/work-items");
+  await expect(page.locator(".work-item-grid.data-table-header")).toBeVisible();
+  await expect(page.locator(".work-item-grid.data-table-header")).toContainText("Actions");
+  await expect(page.locator(".work-item-mobile-context").first()).toBeHidden();
 });

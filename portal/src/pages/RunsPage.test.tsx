@@ -116,7 +116,13 @@ describe("runs history page", () => {
 
     const row = await screen.findByRole("link", { name: "Open run 01JZ441DAEMONAPI" });
     expect(row).toHaveTextContent("#3088 · Operator status progress");
-    expect(within(row).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
+    expect(row.querySelector(".row-subtitle")).toHaveAttribute(
+      "title",
+      expect.stringContaining("01JZ441DAEMONAPI"),
+    );
+    expect(row.querySelector(".run-current-stage")).toHaveAccessibleName(
+      "Current stage: review",
+    );
   });
 
   it("hides no-work runs by default and reveals them via the toggle (#2188)", async () => {
