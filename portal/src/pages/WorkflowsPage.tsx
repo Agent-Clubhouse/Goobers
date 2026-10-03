@@ -14,7 +14,7 @@ import { CopyCommand } from "../ui/CopyCommand";
 import { Icon } from "../ui/Icon";
 import { DataList } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
-import { compactRecordLayoutDefault } from "../ui/compactRecordLayout";
+import { useCompactRecordDisclosure } from "../ui/compactRecordLayout";
 import { manualRunCommand } from "../manualRunCommand";
 
 export function WorkflowsPage({
@@ -116,7 +116,7 @@ function GaggleSection({
   const { gaggle } = inventory;
   const headingId = `gaggle-${gaggle.name}`;
   const contentId = `${headingId}-inventory`;
-  const [expanded, setExpanded] = useState(compactRecordLayoutDefault);
+  const [expanded, setExpanded] = useCompactRecordDisclosure();
   const gaggleIdentity = `${gaggle.name} · ${gaggle.project.owner}/${gaggle.project.name}`;
 
   return (

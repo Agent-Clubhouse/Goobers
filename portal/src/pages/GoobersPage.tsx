@@ -4,7 +4,7 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { type OperationalSnapshot, useOperationalSnapshot } from "../operationalData";
 import { routeHash } from "../routing";
-import { compactRecordLayoutDefault } from "../ui/compactRecordLayout";
+import { useCompactRecordDisclosure } from "../ui/compactRecordLayout";
 import { Icon } from "../ui/Icon";
 
 export function GoobersPage({
@@ -122,7 +122,7 @@ function GooberGroup({
 }: {
   inventory: OperationalSnapshot["inventories"][number];
 }) {
-  const [expanded, setExpanded] = useState(compactRecordLayoutDefault);
+  const [expanded, setExpanded] = useCompactRecordDisclosure();
   const contentId = `goober-group-${inventory.gaggle.name}`;
 
   return (

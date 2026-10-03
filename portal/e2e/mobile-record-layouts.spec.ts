@@ -37,6 +37,11 @@ for (const viewport of compactViewports) {
     await expect(workflow.getByTitle("core/implementation")).toBeVisible();
     await expect(workflow.getByRole("link", { name: "Details" })).toBeVisible();
     await expectTouchTarget(workflow.getByRole("link", { name: "Details" }));
+    const scopeActions = page.locator(".scope-pivot-link:visible");
+    expect(await scopeActions.count()).toBeGreaterThan(0);
+    for (const action of await scopeActions.all()) {
+      await expectTouchTarget(action);
+    }
     const workflowBox = await workflow.getByText("Implementation", { exact: true }).boundingBox();
     expect(workflowBox).not.toBeNull();
     expect(workflowBox!.y).toBeLessThan(viewport.height);
@@ -117,4 +122,24 @@ test("preserves the desktop record disclosures and detail navigation", async ({ 
   await gooberGroup.click();
   await expect(page.getByRole("button", { name: /Core implementer/ })).toBeVisible();
   await expectNoDocumentOverflow(page);
+});
+
+test("reveals records when a mounted desktop page changes to a compact viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/#/workflows");
+
+  const workflowGroup = page.getByRole("button", { name: /Core product/ });
+  await expect(workflowGroup).toHaveAttribute("aria-expanded", "false");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(workflowGroup).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByText("Implementation", { exact: true })).toBeVisible();
+
+  await workflowGroup.click();
+  await expect(workflowGroup).toHaveAttribute("aria-expanded", "false");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(workflowGroup).toHaveAttribute("aria-expanded", "false");
 });
