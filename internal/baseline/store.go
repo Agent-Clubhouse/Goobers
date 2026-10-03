@@ -2,12 +2,15 @@ package baseline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 // Observation is one measurement of a CI command against a repository's target
@@ -269,27 +272,21 @@ func (s *Store) persistLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("baseline: create store directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".tmp*")
-	if err != nil {
-		return fmt.Errorf("baseline: create store temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("baseline: write store: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("baseline: sync store: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("baseline: close store: %w", err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		_ = os.Remove(tmpName)
+	if err := durability.WriteFileAtomic(s.path, data, 0o600,
+		durability.WithTempPattern(filepath.Base(s.path)+".tmp*")); err != nil {
+		var writeErr *durability.AtomicWriteError
+		if errors.As(err, &writeErr) {
+			switch writeErr.Operation {
+			case durability.AtomicWriteCreateTemp:
+				return fmt.Errorf("baseline: create store temp file: %w", err)
+			case durability.AtomicWriteWrite:
+				return fmt.Errorf("baseline: write store: %w", err)
+			case durability.AtomicWriteSync:
+				return fmt.Errorf("baseline: sync store: %w", err)
+			case durability.AtomicWriteClose:
+				return fmt.Errorf("baseline: close store: %w", err)
+			}
+		}
 		return fmt.Errorf("baseline: replace store: %w", err)
 	}
 	return nil

@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 const (
@@ -202,39 +203,26 @@ func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
 		if err != nil {
 			return fmt.Errorf("prepare mirror destination %q: %w", rel, err)
 		}
-		tmp, err := os.CreateTemp(parent, ".outbox-*")
-		if err != nil {
-			return fmt.Errorf("create mirror temporary file: %w", err)
-		}
-		tmpName := tmp.Name()
-		err = tmp.Chmod(0o644)
-		if err == nil {
-			_, err = tmp.Write(data)
-		}
-		closeErr := tmp.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			dest := filepath.Join(parent, filepath.Base(rel))
-			if info, statErr := os.Lstat(dest); statErr == nil {
-				if info.IsDir() {
-					err = fmt.Errorf("destination is a directory")
-				}
-				if _, resolveErr := apiv1.ResolveContainedPath(root, rel); resolveErr != nil {
-					err = resolveErr
-				} else if err == nil {
-					err = os.Remove(dest)
-				}
-			} else if !errors.Is(statErr, fs.ErrNotExist) {
-				err = statErr
+		dest := filepath.Join(parent, filepath.Base(rel))
+		if info, statErr := os.Lstat(dest); statErr == nil {
+			if info.IsDir() {
+				err = fmt.Errorf("destination is a directory")
 			}
-			if err == nil {
-				err = os.Rename(tmpName, dest)
+			if _, resolveErr := apiv1.ResolveContainedPath(root, rel); resolveErr != nil {
+				err = resolveErr
 			}
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			err = statErr
+		}
+		if err == nil {
+			err = durability.WriteFileAtomic(dest, data, 0o644,
+				durability.WithTempPattern(".outbox-*"))
 		}
 		if err != nil {
-			_ = os.Remove(tmpName)
+			var writeErr *durability.AtomicWriteError
+			if errors.As(err, &writeErr) && writeErr.Operation == durability.AtomicWriteCreateTemp {
+				return fmt.Errorf("create mirror temporary file: %w", err)
+			}
 			return fmt.Errorf("write mirror destination %q: %w", rel, err)
 		}
 	}

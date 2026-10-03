@@ -177,34 +177,28 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("blobstore: create %s: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(dir, ".put-*")
-	if err != nil {
-		return fmt.Errorf("blobstore: stage %s: %w", digest, err)
-	}
-	staged := tmp.Name()
-	defer func() { _ = os.Remove(staged) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("blobstore: write %s: %w", digest, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("blobstore: sync %s: %w", digest, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("blobstore: close %s: %w", digest, err)
-	}
-	if err := durability.ReplaceFile(staged, path); err != nil {
-		// A concurrent Put of the same digest already landed. Same bytes, so
-		// this is success, not a conflict — and treating it as one is what
-		// keeps the store lock-free.
-		if _, getErr := d.Get(ctx, digest); getErr == nil {
-			return nil
+	if err := durability.WriteFileAtomic(path, data, 0o600,
+		durability.WithTempPattern(".put-*"),
+		durability.WithPublishRaceCheck(func(string) error {
+			_, err := d.Get(ctx, digest)
+			return err
+		})); err != nil {
+		var writeErr *durability.AtomicWriteError
+		if errors.As(err, &writeErr) {
+			switch writeErr.Operation {
+			case durability.AtomicWriteCreateTemp:
+				return fmt.Errorf("blobstore: stage %s: %w", digest, err)
+			case durability.AtomicWriteWrite:
+				return fmt.Errorf("blobstore: write %s: %w", digest, err)
+			case durability.AtomicWriteSync:
+				return fmt.Errorf("blobstore: sync %s: %w", digest, err)
+			case durability.AtomicWriteClose:
+				return fmt.Errorf("blobstore: close %s: %w", digest, err)
+			case durability.AtomicWriteSyncDir:
+				return fmt.Errorf("blobstore: sync directory for %s: %w", digest, err)
+			}
 		}
 		return fmt.Errorf("blobstore: publish %s: %w", digest, err)
-	}
-	if err := durability.SyncDir(dir); err != nil {
-		return fmt.Errorf("blobstore: sync directory for %s: %w", digest, err)
 	}
 	return nil
 }

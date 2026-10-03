@@ -904,32 +904,26 @@ func (r *Repository) writeFile(relative string, data []byte, mode fs.FileMode) e
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(parent, "."+filepath.Base(fullPath)+"-*")
-	if err != nil {
-		return fmt.Errorf("create temporary file for %s: %w", relative, err)
-	}
-	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }()
-	if err := temp.Chmod(mode); err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("set temporary file mode for %s: %w", relative, err)
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("write temporary file for %s: %w", relative, err)
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("sync temporary file for %s: %w", relative, err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("close temporary file for %s: %w", relative, err)
-	}
-	if err := durability.ReplaceFile(tempPath, fullPath); err != nil {
+	if err := durability.WriteFileAtomic(fullPath, data, mode,
+		durability.WithTempPattern("."+filepath.Base(fullPath)+"-*")); err != nil {
+		var writeErr *durability.AtomicWriteError
+		if errors.As(err, &writeErr) {
+			switch writeErr.Operation {
+			case durability.AtomicWriteCreateTemp:
+				return fmt.Errorf("create temporary file for %s: %w", relative, err)
+			case durability.AtomicWriteChmod:
+				return fmt.Errorf("set temporary file mode for %s: %w", relative, err)
+			case durability.AtomicWriteWrite:
+				return fmt.Errorf("write temporary file for %s: %w", relative, err)
+			case durability.AtomicWriteSync:
+				return fmt.Errorf("sync temporary file for %s: %w", relative, err)
+			case durability.AtomicWriteClose:
+				return fmt.Errorf("close temporary file for %s: %w", relative, err)
+			case durability.AtomicWriteSyncDir:
+				return fmt.Errorf("sync parent directory for %s: %w", relative, err)
+			}
+		}
 		return fmt.Errorf("write agent toolkit path %s: %w", relative, err)
-	}
-	if err := durability.SyncDir(parent); err != nil {
-		return fmt.Errorf("sync parent directory for %s: %w", relative, err)
 	}
 	return nil
 }
