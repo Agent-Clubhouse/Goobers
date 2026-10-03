@@ -473,11 +473,17 @@ function validTimestamp(value: string | null): boolean {
 
 function RunHistoryRow({ run }: { run: RunSummary }) {
   const workItem = run.operator?.issue;
+  const identity = workItem
+    ? `#${workItem.number}${workItem.title ? ` · ${workItem.title}` : ""}`
+    : run.id;
+  const context = `${run.gaggle} / ${run.workflow}${run.trigger.ref ? ` · ${run.trigger.ref}` : ""}${
+    workItem ? ` · ${run.id}` : ""
+  }`;
 
   return (
     <DataRow href={routeHash({ page: "run", id: run.id })} label={`Open run ${run.id}`}>
       <span className="row-primary">
-        <span className="row-title">
+        <span className="row-title" title={identity}>
           {workItem ? (
             <>
               <span>#{workItem.number}</span>
@@ -487,14 +493,20 @@ function RunHistoryRow({ run }: { run: RunSummary }) {
             <span className="mono">{run.id}</span>
           )}
         </span>
-        <span className="row-subtitle">
+        <span className="row-subtitle" title={context}>
           {run.gaggle} / {run.workflow}
           {run.trigger.ref ? ` · ${run.trigger.ref}` : ""}
           {workItem ? <span className="mono"> · {run.id}</span> : null}
         </span>
       </span>
       <StatusBadge stale={run.stale} status={run.phase} />
-      <span className="run-current-stage">
+      <span
+        aria-label={`Current stage: ${
+          run.currentStage ?? (run.terminal ? "Terminal" : "Not started")
+        }`}
+        className="run-current-stage"
+      >
+        <span className="sr-only">Current stage: </span>
         {run.currentStage ?? (run.terminal ? "Terminal" : "Not started")}
       </span>
       <span>

@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { DaemonApiError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { WorkItemsPage } from "./WorkItemsPage";
@@ -99,11 +100,16 @@ describe("WorkItemsPage", () => {
     );
 
     await screen.findByText("acme/app#42");
-    expect(screen.getByText("Done", { selector: ".status-badge" })).toBeInTheDocument();
-    const doneRow = screen.getByRole("button", { name: /Open PR #42 in acme\/app/i });
-    expect(doneRow).toHaveTextContent(/Last action:\s*Comment/);
-    expect(doneRow).toHaveClass("work-item-row-done");
-    await userEvent.click(screen.getByRole("button", { name: /Open PR #42 in acme\/app/i }));
+    expect(screen.getAllByText("Done", { selector: ".status-badge" })).toHaveLength(2);
+    const row = screen.getByRole("button", { name: /Open PR #42 in acme\/app/i });
+    expect(row.querySelector(".data-table-primary")).toHaveAttribute("title", "acme/app#42");
+    expect(row).toHaveTextContent(/Last action:\s*Comment/);
+    expect(row).toHaveClass("work-item-row-done");
+    expect(row.querySelector(".work-item-status")).toHaveTextContent("Done");
+    expect(row.querySelector(".work-item-mobile-context")).toHaveTextContent(
+      "core / merge-review",
+    );
+    await userEvent.click(row);
     expect(navigate).toHaveBeenCalledWith({
       page: "work-items",
       provider: "github",
@@ -426,6 +432,26 @@ describe("WorkItemsPage", () => {
 
     expect(await screen.findByText(/No confirmed provider actions match this filter/))
       .toHaveTextContent("may still exist in the provider");
+  });
+
+  it("gives upgrade guidance when an older daemon lacks work item history", async () => {
+    const oldClient = client();
+    vi.spyOn(oldClient, "listWorkItems").mockRejectedValue(
+      new DaemonApiError(404, "not_found", "route not found"),
+    );
+    render(
+      <WorkItemsPage
+        client={oldClient}
+        navigate={vi.fn()}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Work Items unavailable" }))
+      .toBeInTheDocument();
+    expect(screen.getByText(/Upgrade Goobers/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
   it("labels an Azure Boards detail page as work-item activity", async () => {
