@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "../api/fixtureClient";
@@ -152,6 +152,45 @@ describe("WorkItemsPage", () => {
       .not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Open issue #77 in acme\/service/i }))
       .toBeInTheDocument();
+  });
+
+  it("derives draft gaggle choices and validation from the draft work-item type", async () => {
+    const navigate = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <WorkItemsPage
+        client={client()}
+        navigate={navigate}
+        route={{ page: "work-items", kind: "pr", gaggle: "core" }}
+        standalone={false}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    const dialog = screen.getByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "issues" }));
+
+    const gaggle = within(dialog).getByRole("combobox", {
+      name: "Draft work item gaggle filter",
+    });
+    expect(gaggle).toHaveValue("");
+    expect(within(gaggle).queryByRole("option", { name: "core" })).not.toBeInTheDocument();
+    expect(within(gaggle).getByRole("option", { name: "tools" })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Apply filters" }));
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(
+      'Invalid gaggle filter "core"',
+    );
+    expect(navigate).not.toHaveBeenCalled();
+
+    await user.selectOptions(gaggle, "tools");
+    await user.click(within(dialog).getByRole("button", { name: "Apply filters" }));
+    expect(navigate).toHaveBeenCalledWith({
+      page: "work-items",
+      kind: "issue",
+      gaggle: "tools",
+      query: undefined,
+    });
   });
 
   it("keeps search focus while word-wheel filtering and replaces the current URL", async () => {
