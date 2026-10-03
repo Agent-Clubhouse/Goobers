@@ -937,6 +937,17 @@ summary:focus-visible {
   min-width: 0;
 }
 
+.overview-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-notices:empty,
+.overview-activity:empty,
+.overview-configuration:empty {
+  display: none;
+}
+
 .page-heading-row {
   align-items: end;
   display: flex;
@@ -1015,7 +1026,7 @@ summary:focus-visible {
 }
 
 .daemon-summary-row {
-  grid-template-columns: minmax(280px, 1fr) auto auto;
+  grid-template-columns: minmax(280px, 1fr) auto;
 }
 
 .instance-summary-kind,
@@ -1111,8 +1122,7 @@ summary:focus-visible {
 }
 
 .daemon-last-checked {
-  border-left: 1px solid var(--line);
-  padding-left: 24px;
+  justify-content: space-between;
 }
 
 .daemon-last-checked > span > strong {
@@ -1142,6 +1152,50 @@ summary:focus-visible {
 
 .instance-summary-row-error .result-check {
   color: var(--danger);
+}
+
+.overview-diagnostics {
+  border-top: 1px solid var(--line);
+}
+
+.overview-diagnostics > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  list-style: none;
+  min-height: 44px;
+  padding: 12px 17px;
+}
+
+.overview-diagnostics > summary::-webkit-details-marker {
+  display: none;
+}
+
+.overview-diagnostics > summary > span {
+  display: grid;
+  gap: 2px;
+}
+
+.overview-diagnostics > summary strong {
+  font-size: 13px;
+}
+
+.overview-diagnostics > summary span span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.overview-diagnostics > summary > .icon {
+  transition: transform 0.15s ease;
+}
+
+.overview-diagnostics[open] > summary > .icon {
+  transform: rotate(90deg);
+}
+
+.overview-diagnostics-content > .instance-summary-row:first-child {
+  border-top: 0;
 }
 
 /*
@@ -9270,6 +9324,16 @@ code,
   }
 }
 
+@media (min-width: 481px) {
+  .overview-diagnostics > summary {
+    display: none;
+  }
+
+  .overview-diagnostics:not([open]) > .overview-diagnostics-content {
+    display: block;
+  }
+}
+
 @media (max-width: 480px) {
   body {
     min-width: 0;
@@ -9383,6 +9447,41 @@ code,
   .page-content {
     padding-left: 12px;
     padding-right: 12px;
+  }
+
+  .overview-page > .page-heading {
+    order: 0;
+  }
+
+  .overview-notices {
+    order: 1;
+  }
+
+  .overview-page > .attention-section {
+    margin-bottom: 20px;
+    order: 2;
+  }
+
+  .overview-activity {
+    order: 3;
+  }
+
+  .overview-activity > .content-section:first-child,
+  .overview-activity > .empty-state {
+    margin-top: 0;
+  }
+
+  .overview-page > .instance-summary-card {
+    order: 4;
+  }
+
+  .overview-configuration {
+    order: 5;
+  }
+
+  .overview-diagnostics-content .instance-summary-row {
+    padding-left: 14px;
+    padding-right: 14px;
   }
 
   .attention-actions {
