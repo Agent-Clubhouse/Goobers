@@ -25,13 +25,13 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
 };
 
-const PRIMARY_ROUTES = [
-  ["Overview", "/#/overview", "Active runs"],
-  ["Workflows", "/#/workflows", "Workflows"],
-  ["Goobers", "/#/goobers", "Goobers"],
-  ["Runs", "/#/runs", "Runs"],
-  ["Insight", "/#/insight", "Insight"],
-  ["AIC", "/#/cost", "AIC"],
+const COMPACT_NAV_ROUTES = [
+  ["Overview", "/#/overview", "Active runs", "direct"],
+  ["Workflows", "/#/workflows", "Workflows", "direct"],
+  ["Goobers", "/#/goobers", "Goobers", "more"],
+  ["Runs", "/#/runs", "Runs", "direct"],
+  ["Insight", "/#/insight", "Insight", "more"],
+  ["AIC", "/#/cost", "AIC", "more"],
 ] as const;
 
 function trackConsoleErrors(page: Page): string[] {
@@ -127,15 +127,17 @@ test("renders the Workflow-detail topology with withheld graph analytics and zer
   expect(pageErrors).toEqual([]);
 });
 
-for (const [area, path, heading] of PRIMARY_ROUTES) {
+for (const [area, path, heading, location] of COMPACT_NAV_ROUTES) {
   test(`keeps the ${area} primary route within a 320px viewport`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 800 });
     await page.goto(path);
 
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("navigation", { name: "Primary" }).getByRole("button", { name: area }),
-    ).toHaveAttribute("aria-current", "page");
+    const navigation = page.getByRole("navigation", { name: "Mobile primary", exact: true });
+    const active = navigation.getByRole("button", {
+      name: location === "direct" ? area : "More",
+    });
+    await expect(active).toHaveAttribute("aria-current", "page");
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
       .toBeLessThanOrEqual(1);
@@ -324,6 +326,12 @@ test("keeps optional Overview diagnostics accessible and exposes capacity warnin
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.recoveryInventory;
+    await route.fulfill({ response, json: body });
+  });
   await page.goto("/#/overview");
 
   const diagnostics = page.getByText("Diagnostics and capacity", { exact: true });
@@ -332,6 +340,7 @@ test("keeps optional Overview diagnostics accessible and exposes capacity warnin
   await expect(page.getByRole("status", { name: "Retention sweep running" })).toBeVisible();
   await expect(page.getByText("Recovery inventory", { exact: true })).toHaveCount(0);
 
+  await page.unroute("**/api/v1/instance");
   await page.route("**/api/v1/instance", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
@@ -671,8 +680,10 @@ test("restores the originating instance summary focus and scroll", async ({ page
   });
   const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
 
-  await origin.click();
-  await expect(page.getByRole("heading", { name: "Recovery metadata", exact: true })).toBeVisible();
+  await origin.evaluate((link) => (link as HTMLAnchorElement).click());
+  await expect(
+    page.getByRole("heading", { name: "Recovery metadata", exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Back to overview" }).click();
 
   await expect(page.getByRole("heading", { name: /healthy|attention/i }).first()).toBeVisible();
@@ -789,8 +800,8 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   await page.goto("/#/overview");
   await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
 
-  const primary = page.getByRole("navigation", { name: "Primary" });
-  for (const name of ["Overview", "Workflows", "Goobers", "Runs", "Work Items", "Insight", "AIC"]) {
+  const primary = page.getByRole("navigation", { name: "Mobile primary", exact: true });
+  for (const name of ["Overview", "Workflows", "Runs", "More"]) {
     await expect(primary.getByRole("button", { name })).toBeVisible();
   }
   await expect(primary.getByRole("button", { name: "Overview" })).toHaveAttribute(
@@ -798,31 +809,35 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
     "page",
   );
 
-  const more = page.getByRole("button", {
-    name: "Show gaggles, status, and support links",
-  });
+  const more = primary.getByRole("button", { name: "More" });
   await more.click();
+  const dialog = page.getByRole("dialog", { name: "Goobers" });
+  for (const name of ["Goobers", "Work Items", "Insight", "AIC"]) {
+    await expect(dialog.getByRole("button", { name })).toBeVisible();
+  }
   await expect(page.getByRole("navigation", { name: "Gaggles" })).toBeVisible();
   const support = page.getByRole("navigation", { name: "Support" });
   await expect(support).toBeVisible();
   await expect(support.getByRole("link", { name: "Docs" })).toBeVisible();
 
-  await primary.getByRole("button", { name: "AIC" }).click();
+  const theme = page.getByRole("button", { name: "Use dark theme" });
+  for (const control of [more, theme]) {
+    const box = await control.boundingBox();
+    expect(box, "representative shell control should have geometry").not.toBeNull();
+    expect(box!.width).toBeGreaterThanOrEqual(24);
+    expect(box!.height).toBeGreaterThanOrEqual(24);
+  }
+
+  await dialog.getByRole("button", { name: "AIC" }).click();
   await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
-  await expect(primary.getByRole("button", { name: "AIC" })).toHaveAttribute(
-    "aria-current",
-    "page",
-  );
+  await expect(more).toHaveAttribute("aria-current", "page");
 
   for (const control of [
-    primary.getByRole("button", { name: "AIC" }),
-    more,
     page.getByLabel("Scope"),
     page.getByLabel("Time window"),
-    page.getByRole("button", { name: "Use dark theme" }),
   ]) {
     const box = await control.boundingBox();
-    expect(box, "representative control should have geometry").not.toBeNull();
+    expect(box, "representative page control should have geometry").not.toBeNull();
     expect(box!.width).toBeGreaterThanOrEqual(24);
     expect(box!.height).toBeGreaterThanOrEqual(24);
   }
