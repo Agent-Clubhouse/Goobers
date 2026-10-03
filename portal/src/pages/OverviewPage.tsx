@@ -1166,11 +1166,11 @@ function attentionDiagnosis(run: RunSummary, failureReasons: FailureReasons): st
 }
 
 function attentionSeverity(run: RunSummary): AttentionSeverity {
-  const trajectory = run.operator?.trajectory.toLowerCase() ?? "";
   if (run.phase === "escalated") {
     return "blocked";
   }
   const liveness = run.operator?.liveness.toLowerCase() ?? "";
+  const trajectory = run.operator?.trajectory.toLowerCase() ?? "";
   if (
     run.stale ||
     ["stale", "lost", "unresponsive"].some((value) => liveness.includes(value)) ||
@@ -1179,14 +1179,11 @@ function attentionSeverity(run: RunSummary): AttentionSeverity {
     return "stalled";
   }
   if (
-    [
-      "blocked",
-      "needs-human",
-      "needs human",
-      "needs-remediation",
-      "blocked-on-sibling",
-      "parked",
-    ].some((value) => trajectory.includes(value))
+    run.operator?.issue?.labels?.some((label) =>
+      ["goobers:needs-human", "goobers:needs-remediation", "goobers:blocked-on-sibling"].includes(
+        label.toLowerCase(),
+      ),
+    )
   ) {
     return "blocked";
   }

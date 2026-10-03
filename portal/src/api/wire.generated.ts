@@ -875,7 +875,10 @@ export const goWireFixtures = {
         "operator": {
           "issue": {
             "number": "673",
-            "title": "Improve operator status"
+            "title": "Improve operator status",
+            "labels": [
+              "goobers:needs-human"
+            ]
           },
           "currentStage": "review",
           "liveness": "terminal",
@@ -967,7 +970,10 @@ export const goWireFixtures = {
     "operator": {
       "issue": {
         "number": "673",
-        "title": "Improve operator status"
+        "title": "Improve operator status",
+        "labels": [
+          "goobers:needs-human"
+        ]
       },
       "currentStage": "review",
       "liveness": "terminal",

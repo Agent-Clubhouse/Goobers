@@ -200,6 +200,38 @@ describe("overview page", () => {
     expect(group.querySelector("time")).toHaveAttribute("datetime", failed.lastActivityAt);
   });
 
+  it.each([
+    "goobers:needs-human",
+    "goobers:needs-remediation",
+    "goobers:blocked-on-sibling",
+  ])("classifies a terminal failed run with the %s item label as blocked", async (label) => {
+    const fixtures = populatedDaemonFixtures();
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!failed) {
+      throw new Error("Populated fixtures must include a failed run.");
+    }
+    failed.operator = {
+      issue: { number: "6487", title: "Blocked failed item", labels: [label] },
+      liveness: "finished",
+      trajectory: "terminal",
+      claim: { leaseStatus: "released", providerMarker: "not-present" },
+      potentialBlockers: [],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const issue = await screen.findByText("#6487 Blocked failed item");
+    const group = issue.closest(".attention-group");
+    if (!group) {
+      throw new Error("Blocked failed attention group was not rendered.");
+    }
+    const summary = group.querySelector<HTMLElement>(".attention-group-summary");
+    if (!summary) {
+      throw new Error("Blocked failed attention summary was not rendered.");
+    }
+    expect(within(summary).getByText("Blocked")).toBeVisible();
+  });
+
   it("selects, deselects, dismisses, and restores all visible attention runs", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
