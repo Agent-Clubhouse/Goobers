@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -99,11 +100,11 @@ func TestDispatcherRBACMatchesKubePodAPIVerbSet(t *testing.T) {
 		rule := &role.Rules[i]
 		for _, apiGroup := range rule.APIGroups {
 			switch {
-			case apiGroup == "" && containsString(rule.Resources, "pods"):
+			case apiGroup == "" && slices.Contains(rule.Resources, "pods"):
 				podRule = rule
-			case apiGroup == "" && containsString(rule.Resources, "persistentvolumeclaims"):
+			case apiGroup == "" && slices.Contains(rule.Resources, "persistentvolumeclaims"):
 				claimRule = rule
-			case apiGroup == "apps" && containsString(rule.Resources, "deployments"):
+			case apiGroup == "apps" && slices.Contains(rule.Resources, "deployments"):
 				deploymentRule = rule
 			}
 		}
@@ -116,7 +117,7 @@ func TestDispatcherRBACMatchesKubePodAPIVerbSet(t *testing.T) {
 	}
 	wantPodVerbs := []string{"create", "get", "delete", "list"}
 	for _, verb := range wantPodVerbs {
-		if !containsString(podRule.Verbs, verb) {
+		if !slices.Contains(podRule.Verbs, verb) {
 			t.Errorf("pods rule verbs = %v, missing %q (kubepods.go calls it)", podRule.Verbs, verb)
 		}
 	}

@@ -880,21 +880,25 @@ func advanceBacklogReconcileCursor(
 	if err != nil {
 		return fmt.Errorf("open scheduler state: %w", err)
 	}
-	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeBacklogReconcileCursorValue(value, observed)
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogScanCursor,
+		func(value stateclient.Value) (backlogReconcileCursorState, error) {
+			return decodeBacklogReconcileCursorValue(value, observed)
+		},
+		func(cursor backlogReconcileCursorState) ([]byte, error) {
+			data, err := json.Marshal(cursor)
 			if err != nil {
-				return nil, false, err
+				return nil, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
 			}
+			return data, nil
+		},
+		func(current backlogReconcileCursorState) (backlogReconcileCursorState, bool, error) {
 			if !reflect.DeepEqual(current, observed) {
-				return nil, false, nil
+				return current, false, nil
 			}
-			data, err := json.Marshal(next)
-			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
-			}
-			return data, true, nil
-		})
+			return next, true, nil
+		},
+	)
 }
 
 func decodeBacklogReconcileCursorValue(value stateclient.Value, fallback backlogReconcileCursorState) (backlogReconcileCursorState, error) {
@@ -1772,21 +1776,29 @@ func advanceBacklogReconcileClaimCursor(
 	if err != nil {
 		return fmt.Errorf("open scheduler state: %w", err)
 	}
-	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
-		func(value stateclient.Value) ([]byte, bool, error) {
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogScanCursor,
+		func(value stateclient.Value) (backlogReconcileCursorState, error) {
 			var cursor backlogReconcileCursorState
 			if value.Exists() {
 				if err := json.Unmarshal(value.Data, &cursor); err != nil {
-					return nil, false, fmt.Errorf("decode backlog reconciliation cursor: %w", err)
+					return backlogReconcileCursorState{}, fmt.Errorf("decode backlog reconciliation cursor: %w", err)
 				}
 			}
-			cursor.Claim = nextClaimCursor
+			return cursor, nil
+		},
+		func(cursor backlogReconcileCursorState) ([]byte, error) {
 			data, err := json.Marshal(cursor)
 			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
+				return nil, fmt.Errorf("marshal backlog reconciliation cursor: %w", err)
 			}
-			return data, true, nil
-		})
+			return data, nil
+		},
+		func(cursor backlogReconcileCursorState) (backlogReconcileCursorState, bool, error) {
+			cursor.Claim = nextClaimCursor
+			return cursor, true, nil
+		},
+	)
 }
 
 func restoreClaimVisibility(ctx context.Context, l instance.Layout, provider *providers.GitHubProvider, repo providers.RepositoryRef, item providers.WorkItem, entry claimsclient.Entry, budget *backlogReconcileBudget, stderr io.Writer) (providers.ClaimResult, error) {

@@ -136,11 +136,7 @@ func decodeBacklogResweepState(value stateclient.Value) (backlogResweepState, er
 }
 
 func readBacklogResweepState(ctx context.Context, store stateclient.Store, key string) (backlogResweepState, error) {
-	value, err := store.Get(ctx, key)
-	if err != nil {
-		return backlogResweepState{}, err
-	}
-	return decodeBacklogResweepState(value)
+	return readJSONState(ctx, store, key, decodeBacklogResweepState)
 }
 
 // advanceBacklogResweepState publishes this cycle's re-sweep state, and does
@@ -159,22 +155,24 @@ func advanceBacklogResweepState(
 	observedGeneration uint64,
 	state backlogResweepState,
 ) error {
-	return store.Update(ctx, key, claimLockOperationBacklogResweep,
-		func(value stateclient.Value) ([]byte, bool, error) {
-			current, err := decodeBacklogResweepState(value)
-			if err != nil {
-				return nil, false, err
-			}
-			if current.Generation != observedGeneration {
-				return nil, false, nil
-			}
-			state.Generation = observedGeneration + 1
+	return updateJSONState(
+		ctx, store, key, claimLockOperationBacklogResweep,
+		decodeBacklogResweepState,
+		func(state backlogResweepState) ([]byte, error) {
 			data, err := json.Marshal(state)
 			if err != nil {
-				return nil, false, fmt.Errorf("marshal backlog re-sweep state: %w", err)
+				return nil, fmt.Errorf("marshal backlog re-sweep state: %w", err)
 			}
-			return data, true, nil
-		})
+			return data, nil
+		},
+		func(current backlogResweepState) (backlogResweepState, bool, error) {
+			if current.Generation != observedGeneration {
+				return current, false, nil
+			}
+			state.Generation = observedGeneration + 1
+			return state, true, nil
+		},
+	)
 }
 
 func sortBacklogResweepCandidates(

@@ -12,6 +12,7 @@ interface RouteCase {
 // union gains a page that has no browser-level smoke coverage here (#4225).
 const ROUTES: Record<Route["page"], RouteCase> = {
   overview: { path: "/#/overview", heading: "Active runs" },
+  "instance-detail": { path: "/#/instance/recovery", heading: "Recovery metadata" },
   workflows: { path: "/#/workflows", heading: "Workflows" },
   goobers: { path: "/#/goobers", heading: "Goobers" },
   gaggle: { path: "/#/gaggle/core", heading: "Core product" },
@@ -116,6 +117,76 @@ for (const [area, path, heading] of PRIMARY_ROUTES) {
   });
 }
 
+test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed, and desktop layouts", async ({
+  page,
+}) => {
+  const layouts = [
+    { name: "320px", width: 320, height: 800 },
+    { name: "390px", width: 390, height: 844 },
+    { name: "430px", width: 430, height: 844 },
+    { name: "landscape", width: 844, height: 390 },
+    { name: "200% zoom reflow", width: 195, height: 422 },
+    { name: "desktop", width: 1280, height: 800 },
+  ];
+
+  for (const layout of layouts) {
+    await page.setViewportSize({ width: layout.width, height: layout.height });
+
+    await page.goto("/#/insight");
+    const insightHeading = page.getByRole("heading", { name: "Insight", exact: true });
+    const outcome = page.locator(".insight-outcome-row-summary");
+    await expect(insightHeading, `Insight title at ${layout.name}`).toBeVisible();
+    await expect(outcome, `Insight summary at ${layout.name}`).toBeVisible();
+    for (const metric of ["success rate", "successful", "failed", "other", "all"]) {
+      await expect(
+        outcome.getByRole("link", { name: new RegExp(`View .*${metric}`, "i") }),
+        `${metric} outcome at ${layout.name}`,
+      ).toBeVisible();
+    }
+    await outcome.locator(".insight-scope-label strong").evaluate((element) => {
+      element.textContent = "A very long operational scope name that must wrap without overflow";
+    });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - innerWidth),
+      `Insight document overflow at ${layout.name}`,
+    ).toBeLessThanOrEqual(1);
+    if (layout.width === 390 && layout.height === 844) {
+      expect((await outcome.boundingBox())!.y).toBeLessThan(layout.height);
+    }
+
+    await page.goto("/#/cost");
+    const costHeading = page.getByRole("heading", { name: "AIC", exact: true });
+    const summary = page.locator(".usage-analytics").first();
+    await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
+    await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
+    await expect(summary.getByText("Total", { exact: true })).toBeVisible();
+    await expect(summary.getByText("P50", { exact: true })).toBeVisible();
+    await expect(summary.getByText("P95", { exact: true })).toBeVisible();
+    const comparison = page.getByRole("region", { name: "Attributed costs comparison" });
+    await expect(comparison).toBeVisible();
+    await expect(comparison).toHaveAttribute("tabindex", "0");
+    await expect(
+      comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
+    ).toHaveCount(4);
+    await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
+    await expect(page.getByText("Scroll sideways to compare every cost column.")).toBeVisible();
+    if (layout.width <= 430) {
+      expect(
+        await comparison.evaluate((element) => element.scrollWidth > element.clientWidth),
+        `Cost comparison local overflow at ${layout.name}`,
+      ).toBe(true);
+    }
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - innerWidth),
+      `Cost document overflow at ${layout.name}`,
+    ).toBeLessThanOrEqual(1);
+    if (layout.width === 390 && layout.height === 844) {
+      expect((await summary.boundingBox())!.y).toBeLessThan(layout.height);
+    }
+
+  }
+});
+
 test("loads Overview and Workflows and processes an SSE invalidation", async ({ page }) => {
   const consoleErrors = trackConsoleErrors(page);
   let workflowRunReads = 0;
@@ -182,6 +253,321 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
   }
+});
+
+for (const viewport of [
+  { width: 320, height: 800 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+  { width: 667, height: 375 },
+]) {
+  test(`keeps run details usable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto(`/#/run/${smokeRunId}`);
+
+    await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+    const back = page.getByRole("button", { name: "Back to runs" });
+    const backBox = await back.boundingBox();
+    expect(backBox?.width).toBeGreaterThanOrEqual(44);
+    expect(backBox?.height).toBeGreaterThanOrEqual(44);
+    const tabs = page.getByRole("tablist", { name: "Run detail views" });
+    for (const name of ["Overview", "Artifacts", "Diagnostics", "Journal"]) {
+      const tab = tabs.getByRole("tab", { name });
+      await expect(tab).toBeVisible();
+      const box = await tab.boundingBox();
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+    }
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+      .toBeLessThanOrEqual(1);
+
+    await tabs.getByRole("tab", { name: "Journal" }).click();
+    const event = page.getByRole("button", { name: /^Select sequence 3:/ });
+    await event.click();
+    const dialog = page.getByRole("dialog", { name: "Event detail" });
+    await expect(dialog).toBeFocused();
+    await expect(dialog).toContainText("Sequence 3");
+    const close = dialog.getByRole("button", { name: "Close event detail" });
+    const closeBox = await close.boundingBox();
+    expect(closeBox?.width).toBeGreaterThanOrEqual(44);
+    expect(closeBox?.height).toBeGreaterThanOrEqual(44);
+    if (viewport.width <= 480) {
+      const box = await dialog.boundingBox();
+      expect(box?.width).toBe(viewport.width);
+      expect(box?.height).toBe(viewport.height);
+    }
+    await close.click();
+    await expect(event).toBeFocused();
+  });
+}
+
+test("drills from an error occurrence and restores its phone focus and scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/errors");
+
+  const origin = page.getByRole("link", {
+    name: `Open latest run ${smokeRunId} for error fixture.error`,
+  });
+  await origin.focus();
+  await page.locator(".portal-main").evaluate((element) => {
+    const spacer = document.createElement("div");
+    spacer.style.height = "600px";
+    element.append(spacer);
+    element.scrollTop = 120;
+  });
+  const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  await origin.click();
+  await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+  await page.getByRole("button", { name: "Back to runs" }).click();
+  await expect(page.getByRole("heading", { name: "Matching errors" })).toBeVisible();
+  await expect(origin).toBeFocused();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(scrollTop);
+});
+
+test("contains event sheet keyboard focus and restores its invoking event", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/run/${smokeRunId}`);
+  await page.getByRole("tab", { name: "Journal" }).click();
+  const event = page.getByRole("button", { name: /^Select sequence 3:/ });
+  await event.click();
+
+  const dialog = page.getByRole("dialog", { name: "Event detail" });
+  const controls = dialog.locator(
+    "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled)",
+  );
+  const first = controls.first();
+  const last = controls.last();
+  await expect(dialog).toBeFocused();
+
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(first).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Escape");
+
+  await expect(dialog).toHaveCount(0);
+  await expect(event).toBeFocused();
+});
+
+test("uses Runs as the safe Back fallback for a directly opened run deep link", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/run/${smokeRunId}`);
+
+  await page.getByRole("button", { name: "Back to runs" }).click();
+
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#\/runs$/);
+});
+
+test("restores an unfocused pointer-activated run row and list scroll after browser back", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/runs?status=all");
+
+  const row = page.getByRole("link", { name: `Open run ${smokeRunId}` });
+  await page.locator(".portal-main").evaluate((element) => {
+    const spacer = document.createElement("div");
+    spacer.dataset.testScrollSpacer = "true";
+    spacer.style.height = "600px";
+    element.append(spacer);
+    element.scrollTop = 180;
+  });
+  const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+  await row.evaluate((element) => {
+    element.addEventListener("mousedown", (event) => event.preventDefault(), { once: true });
+  });
+  await row.click();
+  await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(0);
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
+  await expect(row).toBeFocused();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(scrollTop);
+});
+
+test("keeps the run event sheet usable at 200 percent page zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await page.goto(`/#/run/${smokeRunId}`);
+  await page.getByRole("tab", { name: "Journal" }).click();
+  await page.getByRole("button", { name: /^Select sequence 3:/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Event detail" });
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+
+  await expect(dialog.getByRole("button", { name: "Close event detail" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+});
+
+for (const viewport of [
+  { width: 320, height: 800 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+  { width: 667, height: 375 },
+]) {
+  test(`keeps instance detail routes usable at ${viewport.width}x${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    for (const [path, heading] of [
+      ["recovery", "Recovery metadata"],
+      ["retention", "Telemetry retention"],
+      ["warnings", "Configuration warnings"],
+    ] as const) {
+      await page.goto(`/#/instance/${path}`);
+      await expect(page.getByRole("heading", { name: heading }).first()).toBeVisible();
+      const back = page.getByRole("button", { name: "Back to overview" });
+      const box = await back.boundingBox();
+      expect(box?.width).toBeGreaterThanOrEqual(44);
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+        .toBeLessThanOrEqual(1);
+    }
+  });
+}
+
+test("shows loading and empty states on instance detail routes", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.recoveryInventory;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.fulfill({ response, json: body });
+  });
+
+  const navigation = page.goto("/#/instance/recovery");
+  await expect(page.getByRole("heading", { name: "Loading recovery metadata" })).toBeVisible();
+  await navigation;
+  await expect(page.getByRole("heading", { name: "No recovery metadata reported" })).toBeVisible();
+});
+
+for (const failure of [
+  { name: "permission", status: 403, heading: "Access denied" },
+  { name: "unavailable", status: 503, heading: "Couldn't load Goobers data" },
+] as const) {
+  test(`shows an explicit ${failure.name} state on detail routes`, async ({ page }) => {
+    await page.route("**/api/v1/instance", (route) =>
+      route.fulfill({
+        body: JSON.stringify({ code: "fixture_error", message: failure.name }),
+        contentType: "application/json",
+        status: failure.status,
+      }),
+    );
+    await page.goto("/#/instance/recovery");
+    await expect(page.getByRole("heading", { name: failure.heading })).toBeVisible();
+  });
+}
+
+test("shows an older-daemon state on detail routes", async ({ page }) => {
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.apiVersion = "v0";
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto("/#/instance/retention");
+  await expect(page.getByRole("heading", { name: "Daemon update required" })).toBeVisible();
+});
+
+test("keeps diagnostics and supported action failures explicit on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/run/${smokeRunId}?tab=diagnostics`);
+  await expect(page.locator("aside.run-inspector")).toBeVisible();
+  await page.getByRole("button", { name: "Reveal run files" }).click();
+  await expect(page.getByRole("alert")).toContainText(/not found|could not|failed|malformed/i);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+});
+
+test("restores the originating instance summary focus and scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+  const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.focus();
+  await page.locator(".portal-main").evaluate((element) => {
+    const spacer = document.createElement("div");
+    spacer.style.height = "600px";
+    element.append(spacer);
+    element.scrollTop = 140;
+  });
+  const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+
+  await origin.click();
+  await expect(page.getByRole("heading", { name: "Recovery metadata" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to overview" }).click();
+
+  await expect(page.getByRole("heading", { name: /healthy|attention/i }).first()).toBeVisible();
+  await expect(origin).toBeFocused();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(scrollTop);
+});
+
+test("keeps overview instance detail entry links at least 44 by 44 pixels", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+
+  const links = page.locator('a.instance-warning-link[href^="#/instance/"]');
+  await expect(links).toHaveCount(3);
+  for (const link of await links.all()) {
+    const box = await link.boundingBox();
+    expect(box?.width).toBeGreaterThanOrEqual(44);
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+  }
+});
+
+test("does not mark unrelated history after a canceled detail-link click", async ({ page }) => {
+  await page.goto("/#/overview");
+  const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.evaluate((link) => {
+    link.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  await expect(page).toHaveURL(/#\/overview$/);
+
+  await page.evaluate(() => {
+    window.location.hash = "#/instance/retention";
+  });
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  expect(await page.evaluate(() => window.history.state?.portalOrigin)).not.toBe(true);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/overview$/);
+  await page.goForward();
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+});
+
+test("keeps instance details usable on desktop and at 200 percent zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/#/instance/retention");
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  await expect(page.getByRole("button", { name: "Back to overview" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
 });
 
 test("loads the Gaggle page from fixture daemon data", async ({ page }) => {

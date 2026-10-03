@@ -117,6 +117,14 @@ describe("definition routing", () => {
       tab: "artifacts",
     });
   });
+
+  it("round-trips instance detail routes under the Overview area", () => {
+    for (const detail of ["recovery", "retention", "warnings"] as const) {
+      const route = { page: "instance-detail" as const, detail };
+      expect(parseRoute(routeHash(route))).toEqual(route);
+      expect(activeArea(route)).toBe("overview");
+    }
+  });
 });
 
 describe("Insight routing", () => {
