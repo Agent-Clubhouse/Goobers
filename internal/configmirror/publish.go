@@ -112,13 +112,25 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	return writeSnapshotFromFS(ctx, out, root.FS(), func(path string) (snapshotSourceFile, error) {
+		return root.Open(path)
+	}, document)
+}
+
+type snapshotSourceFile interface {
+	io.Reader
+	Stat() (fs.FileInfo, error)
+	Close() error
+}
+
+func writeSnapshotFromFS(ctx context.Context, out io.Writer, fsys fs.FS, open func(string) (snapshotSourceFile, error), document []byte) error {
 	archive := zip.NewWriter(out)
 	if err := writeEntry(archive, "instance.yaml", strings.NewReader(string(document))); err != nil {
 		return err
 	}
 	count, total := 1, int64(len(document))
 	seen := map[string]bool{"instance.yaml": true}
-	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(fsys, ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -151,35 +163,43 @@ func writeSnapshot(ctx context.Context, out io.Writer, configDir string, documen
 		if info.Size() > MaxFileBytes || total+info.Size() > MaxSnapshotBytes {
 			return errors.New("config mirror snapshot exceeds safety limits")
 		}
-		file, err := root.Open(path)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = file.Close() }()
-		// Check the opened object too: a tree changing during publication must
-		// not bypass the size bound using stale WalkDir metadata.
-		opened, err := file.Stat()
-		if err != nil {
-			return err
-		}
-		if !opened.Mode().IsRegular() || !validSnapshotMode(normalizeDirMode(opened.Mode())) {
-			return fmt.Errorf("config mirror opened a non-regular file %q", path)
-		}
-		writer, err := archive.CreateHeader(snapshotHeader(name, normalizeDirMode(opened.Mode())))
-		if err != nil {
-			return err
-		}
-		n, err := io.Copy(writer, io.LimitReader(file, MaxFileBytes+1))
-		total += n
-		if n > MaxFileBytes || total > MaxSnapshotBytes {
-			return errors.New("config mirror snapshot exceeds safety limits")
-		}
-		return err
+		return writeSnapshotSourceFile(archive, open, path, name, &total)
 	})
 	if err != nil {
 		return err
 	}
 	return archive.Close()
+}
+
+func writeSnapshotSourceFile(archive *zip.Writer, open func(string) (snapshotSourceFile, error), path, name string, total *int64) (retErr error) {
+	file, err := open(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close config mirror source file %q: %w", path, err))
+		}
+	}()
+	// Check the opened object too: a tree changing during publication must
+	// not bypass the size bound using stale WalkDir metadata.
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() || !validSnapshotMode(normalizeDirMode(opened.Mode())) {
+		return fmt.Errorf("config mirror opened a non-regular file %q", path)
+	}
+	writer, err := archive.CreateHeader(snapshotHeader(name, normalizeDirMode(opened.Mode())))
+	if err != nil {
+		return err
+	}
+	n, err := io.Copy(writer, io.LimitReader(file, MaxFileBytes+1))
+	*total += n
+	if n > MaxFileBytes || *total > MaxSnapshotBytes {
+		return errors.New("config mirror snapshot exceeds safety limits")
+	}
+	return err
 }
 
 func writeEntry(archive *zip.Writer, name string, content io.Reader) error {
