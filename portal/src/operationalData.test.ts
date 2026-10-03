@@ -182,6 +182,20 @@ describe("loadOperationalOverview", () => {
     expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
   });
 
+  it("moves stale running work from active runs into needs attention", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Populated fixtures must include a running run.");
+    }
+    running.stale = true;
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.active.map((run) => run.id)).not.toContain(running.id);
+    expect(overview.groups.attention.map((run) => run.id)).toContain(running.id);
+  });
+
   it("reuses cached inventory when only the run model is invalidated (DASH-13)", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listGaggles = vi.spyOn(client, "listGaggles");
