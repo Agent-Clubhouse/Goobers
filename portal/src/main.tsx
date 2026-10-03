@@ -8,8 +8,13 @@ import "./tables.css";
 
 bootstrapPortalTheme();
 
+const headerTarget =
+  new URLSearchParams(window.location.search).get("host") === "fleet"
+    ? document.getElementById("portal-header-host") ?? undefined
+    : undefined;
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <App headerHost={headerTarget ? { target: headerTarget } : undefined} />
   </StrictMode>,
 );

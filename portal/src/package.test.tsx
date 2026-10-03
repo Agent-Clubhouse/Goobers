@@ -106,6 +106,21 @@ describe("PortalWorkbench", () => {
     expect(view.container.querySelector(".portal-frame-hosted-header")).not.toBeInTheDocument();
   });
 
+  it("lets an embedding host own phone navigation without rendering a duplicate", async () => {
+    const target = createHost();
+    render(
+      <PortalWorkbench
+        client={new FixtureDaemonClient(emptyDaemonFixtures())}
+        headerHost={{ target, providesMobileNavigation: true }}
+        scope="operator:instance"
+      />,
+    );
+
+    await screen.findByText("Healthy");
+    expect(screen.queryByRole("navigation", { name: "Mobile primary" })).not.toBeInTheDocument();
+    expect(document.querySelector(".portal-frame")).toHaveClass("portal-frame-host-navigation");
+  });
+
   it("rejects a header container from another document", () => {
     const otherDocument = document.implementation.createHTMLDocument();
     expect(() => PortalWorkbench({
