@@ -203,8 +203,8 @@ func (f *reclaimFixture) abandon(record recovery.Record) {
 	}
 }
 
-// cleanupNewRun drives the "cap + 1"th cleanup: a brand new run whose worktree
-// carries real, unique work and therefore needs a free inventory slot.
+// cleanupNewRun drives the "cap + 1"th terminal cleanup: a brand new run whose
+// worktree carries real, unique work and therefore needs a free inventory slot.
 func (f *reclaimFixture) cleanupNewRun(runID string) error {
 	f.t.Helper()
 	ctx := context.Background()
@@ -229,6 +229,12 @@ func (f *reclaimFixture) cleanupNewRun(runID string) error {
 		f.t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace.Path, "new.txt"), []byte("new agent work"), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
 		f.t.Fatal(err)
 	}
 	return workspace.Remove(ctx, worktree.RemoveOptions{})

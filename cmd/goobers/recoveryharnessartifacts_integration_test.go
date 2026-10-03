@@ -28,7 +28,7 @@ import (
 // inventory within days regardless of the configured cap.
 func TestIntegrationRecoveryCleanupSkipsHarnessOnlyWorktree(t *testing.T) {
 	testdep.Require(t, "git")
-	layout, workspace, cleanup := seedHarnessArtifactWorktree(t)
+	layout, workspace, _, cleanup := seedHarnessArtifactWorktree(t)
 	defer cleanup()
 
 	// Exactly what the executor does before the stage runs, and what the pod
@@ -73,7 +73,7 @@ func TestIntegrationRecoveryCleanupSkipsHarnessOnlyWorktree(t *testing.T) {
 // file, modified in the worktree, is still captured in full.
 func TestIntegrationRecoveryCleanupRetainsTrackedResultFileName(t *testing.T) {
 	testdep.Require(t, "git")
-	layout, workspace, cleanup := seedHarnessArtifactWorktree(t, "claimed-item.json")
+	layout, workspace, finishRun, cleanup := seedHarnessArtifactWorktree(t, "claimed-item.json")
 	defer cleanup()
 
 	executor.ExcludeStageArtifacts(t.Context(), workspace.Path, "claimed-item.json")
@@ -82,6 +82,7 @@ func TestIntegrationRecoveryCleanupRetainsTrackedResultFileName(t *testing.T) {
 	if status := recoveryCLIGit(t, workspace.Path, "status", "--porcelain=v1"); !strings.Contains(status, "claimed-item.json") {
 		t.Fatalf("a tracked change to the result-file name was hidden by the exclusion: %q", status)
 	}
+	finishRun()
 	ctx, cancelCleanup := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancelCleanup()
 	if err := workspace.Remove(ctx, worktree.RemoveOptions{}); err != nil {
@@ -93,7 +94,7 @@ func TestIntegrationRecoveryCleanupRetainsTrackedResultFileName(t *testing.T) {
 // seedHarnessArtifactWorktree builds an instance, a source repo (optionally
 // committing the named files first), and one run worktree wired to the real
 // recovery cleanup guard.
-func seedHarnessArtifactWorktree(t *testing.T, tracked ...string) (instance.Layout, *worktree.Worktree, func()) {
+func seedHarnessArtifactWorktree(t *testing.T, tracked ...string) (instance.Layout, *worktree.Worktree, func(), func()) {
 	t.Helper()
 	layout := instance.NewLayout(initDemo(t))
 	cfg, err := instance.LoadConfig(layout.ConfigFile())
@@ -142,10 +143,20 @@ func seedHarnessArtifactWorktree(t *testing.T, tracked ...string) (instance.Layo
 		cancel()
 		t.Fatal(err)
 	}
-	return layout, workspace, func() {
+	finishRun := func() {
+		t.Helper()
+		if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanup := func() {
 		cancel()
 		_ = run.Close()
 	}
+	return layout, workspace, finishRun, cleanup
 }
 
 func writeHarnessArtifact(t *testing.T, dir, name, content string) {
