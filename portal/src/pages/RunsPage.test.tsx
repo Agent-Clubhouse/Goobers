@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import type { RunSummary } from "../api/types";
+import type { RunList, RunListOptions, RunSummary } from "../api/types";
 import {
   emptyDaemonFixtures,
   largeJournalFixtures,
@@ -162,6 +162,84 @@ describe("runs history page", () => {
 
     expect(await screen.findByRole("link", { name: /Open run 01JZ000NOWORK/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/runs?status=all&showNoWork=1");
+  });
+
+  it("keeps sheet edits isolated until apply and restores focus after Escape", async () => {
+    window.location.hash = "#/runs?status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const trigger = await screen.findByRole("button", { name: "Filters" });
+    await user.click(trigger);
+    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "core");
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(window.location.hash).toBe("#/runs?status=all");
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "core");
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
+    expect(await screen.findByRole("button", { name: "Remove Gaggle: core filter" }))
+      .toBeInTheDocument();
+  });
+
+  it("offers workflows from a newly selected draft gaggle", async () => {
+    window.location.hash = "#/runs?gaggle=core&status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "tools");
+    await user.selectOptions(
+      screen.getByLabelText("Draft workflow filter"),
+      JSON.stringify(["tools", "implementation"]),
+    );
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe(
+      "#/runs?gaggle=tools&workflow=implementation&status=all",
+    );
+  });
+
+  it("reports invalid route filters instead of silently accepting them", async () => {
+    window.location.hash = "#/runs?status=surprising";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Invalid status filter "surprising"',
+    );
+  });
+
+  it.each([
+    ["outcome", "bogus", 'Invalid outcome filter "bogus"'],
+    ["population", "bogus", 'Invalid population filter "bogus"'],
+    ["window", "bogus", 'Invalid time window filter "bogus"'],
+    ["since", "not-a-date", 'Invalid since filter "not-a-date"'],
+    ["until", "not-a-date", 'Invalid until filter "not-a-date"'],
+    ["showNoWork", "true", 'Invalid show no-work filter "true"'],
+  ])("reports an invalid %s route filter", async (name, value, message) => {
+    window.location.hash = `#/runs?${name}=${value}`;
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  });
+
+  it("rejects non-RFC3339 timestamps before requesting run history", async () => {
+    window.location.hash = "#/runs?since=2026-09-03";
+    const client = new TimestampRejectingClient();
+    const listRuns = vi.spyOn(client, "listRuns");
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Invalid since filter "2026-09-03". Enter an RFC3339 timestamp.',
+    );
+    expect(screen.getByRole("group", { name: "Filter runs" })).toBeInTheDocument();
+    expect(listRuns).not.toHaveBeenCalled();
   });
 
   it("uses a bounded narrow-screen page while retaining pagination", async () => {
@@ -282,3 +360,16 @@ describe("runs history page", () => {
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
   });
 });
+
+class TimestampRejectingClient extends FixtureDaemonClient {
+  constructor() {
+    super(populatedDaemonFixtures());
+  }
+
+  override async listRuns(request?: RunListOptions): Promise<RunList> {
+    if (request?.since === "2026-09-03") {
+      throw new Error("daemon rejected non-RFC3339 timestamp");
+    }
+    return super.listRuns(request);
+  }
+}
