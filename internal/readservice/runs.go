@@ -11,6 +11,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -818,7 +819,7 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		return false
 	case options.Workflow != "" && summary.Workflow != options.Workflow:
 		return false
-	case options.Stage != "" && !containsString(summary.Stages, options.Stage):
+	case options.Stage != "" && !slices.Contains(summary.Stages, options.Stage):
 		return false
 	case (options.Outcome != "" ||
 		(options.StagePopulation != "" && !telemetryStagePopulation(options.StagePopulation))) &&
@@ -872,7 +873,7 @@ func candidateRunStatuses(options RunListOptions) (statuses []string, narrowed, 
 			return
 		}
 		for status := range set {
-			if !containsString(next, status) {
+			if !slices.Contains(next, status) {
 				delete(set, status)
 			}
 		}
@@ -2062,15 +2063,6 @@ func matchesStageAttempt(
 			}
 		}
 		return true
-	}
-	return false
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
 	}
 	return false
 }
