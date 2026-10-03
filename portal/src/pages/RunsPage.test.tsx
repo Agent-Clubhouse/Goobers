@@ -238,6 +238,7 @@ describe("runs history page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       'Invalid since filter "2026-09-03". Enter an RFC3339 timestamp.',
     );
+    expect(screen.getByRole("group", { name: "Filter runs" })).toBeInTheDocument();
     expect(listRuns).not.toHaveBeenCalled();
   });
 

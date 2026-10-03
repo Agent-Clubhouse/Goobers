@@ -44,10 +44,10 @@ export function RunsPage({
   const filterError = runsRouteFilterError();
   if (filterError) {
     return (
-      <header className="page-heading">
-        <h1>Runs</h1>
-        <p className="page-toolbar-error" role="alert">{filterError}</p>
-      </header>
+      <InvalidRunsRoutePage
+        filterError={filterError}
+        navigate={navigate}
+      />
     );
   }
   return (
@@ -56,6 +56,51 @@ export function RunsPage({
       filters={filters}
       navigate={navigate}
       standalone={standalone}
+    />
+  );
+}
+
+function InvalidRunsRoutePage({
+  filterError,
+  navigate,
+}: {
+  filterError: string;
+  navigate: Navigate;
+}) {
+  const clearInvalidFilters = () => navigate({ page: "runs" });
+  const filters = () => (
+    <div aria-label="Filter runs" className="filter-bar" role="group">
+      {FILTERS.map((option) => (
+        <button
+          aria-pressed={false}
+          className="filter-button"
+          key={option}
+          onClick={() => navigate({
+            page: "runs",
+            filters: option === "active" ? undefined : { status: option },
+          })}
+          type="button"
+        >
+          {option === "all" ? "All runs" : option}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <PageToolbar
+      activeFilters={[]}
+      count={0}
+      description="Every execution across workflows and gaggles, filtered and paginated by the daemon."
+      filterError={filterError}
+      filters={filters}
+      onApplyFilters={() => {
+        clearInvalidFilters();
+        return undefined;
+      }}
+      onOpenFilters={() => undefined}
+      onResetFilters={clearInvalidFilters}
+      title="Runs"
     />
   );
 }
