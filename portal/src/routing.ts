@@ -37,6 +37,7 @@ export type RunDetailTab = "overview" | "artifacts" | "diagnostics" | "journal";
 
 export interface RunRouteFilters extends ScopeFilters {
   status?: RunStatusFilter;
+  showNoWork?: boolean;
 }
 
 export type InsightSection = "contributors" | "usage" | "failures" | "latency";
@@ -126,8 +127,11 @@ export function parseRoute(hash = window.location.hash): Route {
     const filters: RunRouteFilters = {
       ...parseScopeFilters(search),
       status: runStatusQuery(search),
+      showNoWork: search.get("showNoWork") === "1" ? true : undefined,
     };
-    return hasScopeFilters(filters) || filters.status ? { page: "runs", filters } : { page: "runs" };
+    return hasScopeFilters(filters) || filters.status || filters.showNoWork
+      ? { page: "runs", filters }
+      : { page: "runs" };
   }
   if (area === "errors") {
     return {
@@ -200,6 +204,9 @@ export function routeHash(route: Route): string {
     const search = new URLSearchParams();
     encodeScopeFilters(search, route.filters);
     writeQuery(search, "status", route.filters.status);
+    if (route.filters.showNoWork) {
+      search.set("showNoWork", "1");
+    }
     const suffix = search.size > 0 ? `?${search.toString()}` : "";
     return `#/runs${suffix}`;
   }

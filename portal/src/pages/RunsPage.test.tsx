@@ -162,6 +162,39 @@ describe("runs history page", () => {
 
     expect(await screen.findByRole("link", { name: /Open run 01JZ000NOWORK/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open run 01JZ000PRODUCED/ })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/runs?status=all&showNoWork=1");
+  });
+
+  it("keeps sheet edits isolated until apply and restores focus after Escape", async () => {
+    window.location.hash = "#/runs?status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const trigger = await screen.findByRole("button", { name: "Filters" });
+    await user.click(trigger);
+    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "core");
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(window.location.hash).toBe("#/runs?status=all");
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "core");
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe("#/runs?gaggle=core&status=all");
+    expect(await screen.findByRole("button", { name: "Remove Gaggle: core filter" }))
+      .toBeInTheDocument();
+  });
+
+  it("reports invalid route filters instead of silently accepting them", async () => {
+    window.location.hash = "#/runs?status=surprising";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Invalid status filter "surprising"',
+    );
   });
 
   it("uses a bounded narrow-screen page while retaining pagination", async () => {

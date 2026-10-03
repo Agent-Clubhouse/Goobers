@@ -924,6 +924,230 @@ summary:focus-visible {
   max-width: 720px;
 }
 
+.page-toolbar {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.page-toolbar-heading {
+  min-width: 0;
+}
+
+.page-toolbar-title {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.page-toolbar-title h1 {
+  font-size: clamp(28px, 3vw, 38px);
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+  margin: 0;
+}
+
+.page-toolbar-count {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  font-size: var(--font-meta);
+  font-weight: 720;
+  min-width: 28px;
+  padding: 3px 8px;
+  text-align: center;
+}
+
+.page-toolbar-heading > p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 8px 0 0;
+}
+
+.page-toolbar-actions {
+  align-items: end;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.page-toolbar-filter-trigger {
+  align-items: center;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: white;
+  cursor: pointer;
+  display: none;
+  font-weight: 680;
+  gap: 7px;
+  min-height: 44px;
+  padding: 8px 12px;
+}
+
+.page-toolbar-filter-trigger > span {
+  align-items: center;
+  background: var(--surface);
+  border-radius: 999px;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 10px;
+  justify-content: center;
+  min-height: 20px;
+  min-width: 20px;
+}
+
+.page-toolbar-feedback {
+  display: grid;
+  gap: 8px;
+}
+
+.page-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.page-filter-chip,
+.page-filter-reset {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--font-meta);
+  gap: 6px;
+  min-height: 44px;
+  padding: 5px 10px;
+}
+
+.page-filter-reset {
+  background: transparent;
+  color: var(--accent);
+}
+
+.page-toolbar-error {
+  color: var(--danger);
+  font-size: var(--font-ui);
+  margin: 0;
+}
+
+.page-filter-sheet-backdrop {
+  align-items: end;
+  background: rgb(0 0 0 / 0.48);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: fixed;
+  z-index: 90;
+}
+
+.page-filter-sheet {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -12px 40px rgb(0 0 0 / 0.24);
+  display: grid;
+  gap: 18px;
+  max-height: min(82dvh, 680px);
+  max-width: 560px;
+  overflow-y: auto;
+  padding:
+    20px
+    max(16px, env(safe-area-inset-right))
+    max(20px, env(safe-area-inset-bottom))
+    max(16px, env(safe-area-inset-left));
+  width: 100%;
+}
+
+.page-filter-sheet-heading {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+}
+
+.page-filter-sheet-heading h2 {
+  margin: 0;
+}
+
+.page-filter-sheet-heading > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.page-filter-sheet-fields .filter-bar {
+  align-items: stretch;
+  border: 0;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.page-filter-sheet-fields .filter-button,
+.page-filter-sheet-fields .filter-select,
+.page-filter-sheet-fields .filter-toggle {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  justify-content: start;
+  min-height: 44px;
+  padding: 9px 12px;
+  width: 100%;
+}
+
+.page-filter-sheet-fields .filter-button-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.page-filter-sheet-fields .run-filter-fields {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.page-filter-sheet-fields .filter-select select {
+  min-height: 44px;
+  min-width: 0;
+  width: 100%;
+}
+
+.page-filter-sheet-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.page-filter-sheet-actions > button {
+  min-height: 44px;
+}
+
+.page-filter-apply {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  color: white;
+  cursor: pointer;
+  font-weight: 680;
+}
+
+.page-toolbar-desktop-filters .filter-button,
+.page-toolbar-desktop-filters .filter-select select,
+.page-toolbar-desktop-filters .filter-toggle,
+.page-toolbar-search input {
+  min-height: 44px;
+}
+
 .overview-heading {
   align-items: center;
   display: grid;
@@ -3257,6 +3481,7 @@ summary:focus-visible {
     animation: none;
     opacity: 0.7;
   }
+
 }
 .usage-waste-values {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9040,6 +9265,57 @@ code,
     padding-right: 12px;
   }
 
+  .page-toolbar {
+    gap: 10px;
+  }
+
+  .page-toolbar-heading > p {
+    display: none;
+  }
+
+  .page-toolbar-title h1 {
+    font-size: 26px;
+  }
+
+  .page-toolbar-actions {
+    align-items: stretch;
+  }
+
+  .page-toolbar-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+  }
+
+  .page-toolbar-search > span {
+    position: absolute;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    overflow: hidden;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .page-toolbar-search input {
+    min-height: 44px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .page-toolbar-filter-trigger {
+    display: inline-flex;
+  }
+
+  .page-toolbar-desktop-filters {
+    display: none;
+  }
+
+  .page-filter-chip,
+  .page-filter-reset {
+    min-height: 44px;
+  }
+
   .attention-actions {
     align-items: flex-start;
     display: grid;
@@ -10632,4 +10908,39 @@ select {
   .distribution-values strong
 ) {
   font-size: var(--font-ui);
+}
+
+@media (max-height: 430px) and (max-width: 900px) {
+  .page-toolbar-heading > p {
+    display: none;
+  }
+
+  .page-toolbar-actions {
+    align-items: stretch;
+  }
+
+  .page-toolbar-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+  }
+
+  .page-toolbar-search input {
+    min-height: 44px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .page-toolbar-filter-trigger {
+    display: inline-flex;
+  }
+
+  .page-toolbar-desktop-filters {
+    display: none;
+  }
+
+  .page-filter-chip,
+  .page-filter-reset {
+    min-height: 44px;
+  }
 }
