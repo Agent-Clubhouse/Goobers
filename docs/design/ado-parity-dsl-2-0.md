@@ -138,8 +138,8 @@ behaviour changes.
   (#5664). For every manifest row that names a `github:*` capability on a
   provider-dispatched command, it asserts that the ADO path consumes that capability's
   credential and no other.
-- **Inert names warn.** `ado:code:read`, `ado:pr:comment`, `ado:work-items:write` and
-  `ado:pr:write` have no consumer on ADO today. In DSL 2.0 they are accepted and draw
+- **Inert names warn.** `ado:code:read`, `ado:pr:comment`, `ado:work-items:write`,
+  `ado:packaging:read` and `ado:pr:write` have no consumer on ADO today. In DSL 2.0 they are accepted and draw
   an advisory warning that names the `github:*` name that authorizes the operation.
   `goobers validate --strict` treats the warning as neutral. This does not break
   configurations that followed the older docs. As shipped (ADO-N24) the code is

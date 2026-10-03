@@ -21,12 +21,15 @@ import (
 // ado:pr:status is accepted on report-pr-status but harmless (nothing reads
 // it). ado:work-items:write is consumed only by open-pr, so its advice says
 // that renaming it would not keep open-pr's native work-item link.
+// ado:packaging:read has no built-in DSL 2.0 consumer; custom stages may keep
+// it when they read Azure Artifacts feeds directly.
 var inertADORebinding = map[capability.Capability]string{
 	capability.ADOCodeRead:  "no capability is needed: repository reads use the repository credential",
 	capability.ADOPRComment: fmt.Sprintf("%q authorizes this operation on the stage's provider", capability.GitHubPRWrite),
 	capability.ADOPRWrite:   fmt.Sprintf("%q authorizes this operation on the stage's provider", capability.GitHubPRWrite),
 	capability.ADOWorkItemsWrite: fmt.Sprintf("%q authorizes work-item updates on the backlog provider (%q for reads); only open-pr consumes %q, to link a pull request to its work item",
 		capability.GitHubIssuesWrite, capability.GitHubIssuesRead, capability.ADOWorkItemsWrite),
+	capability.ADOPackagingRead: "no built-in DSL 2.0 stage consumes it; keep it only when the stage's own command reads Azure Artifacts package feeds",
 }
 
 // inertADOCapabilityAdvice returns the rebinding advice for value when it is

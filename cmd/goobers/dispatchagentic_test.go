@@ -157,6 +157,15 @@ func TestPodCredentialResolverHandlesOneRefBackingManyCapabilities(t *testing.T)
 	if got != "ghs_stage_token" {
 		t.Fatalf("Resolve(%q) = %q, want the materialised token", ref, got)
 	}
+	expiresAt := time.Date(2026, 10, 2, 20, 45, 0, 0, time.UTC)
+	resolver.expiries = map[string]time.Time{"repo:push": expiresAt}
+	got, expiry, err := resolver.ResolveWithExpiry(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ResolveWithExpiry(%q) = error %v", ref, err)
+	}
+	if got != "ghs_stage_token" || !expiry.Equal(expiresAt) {
+		t.Fatalf("ResolveWithExpiry(%q) = %q, %v; want token with expiry %v", ref, got, expiry, expiresAt)
+	}
 
 	// An ungranted ref must still be refused rather than silently empty.
 	if _, err := resolver.Resolve(context.Background(), "someone-else/repo"); err == nil {

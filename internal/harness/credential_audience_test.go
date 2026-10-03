@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	capabilitypkg "github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 )
 
@@ -85,6 +87,51 @@ func TestCredentialEnvKeepsRepositoryCredentialsWithTheirProvider(t *testing.T) 
 				t.Fatalf("model credential not injected for provider %q: %v", tc.provider, redactedNames(got))
 			}
 		})
+	}
+}
+
+func TestCredentialEnvIncludesStatedExpiry(t *testing.T) {
+	expiresAt := time.Date(2026, 10, 2, 20, 15, 0, 0, time.UTC)
+	resolver, err := credentials.NewResolverWithExpiring(nil, nil, nil, map[string]credentials.ExpiringResolveFunc{
+		"ado-packaging": func(context.Context) (string, time.Time, error) {
+			return "ado-packaging-token", expiresAt, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "ado:packaging:read", Ref: "ado-packaging"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"ado:packaging:read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		EnvCapabilities: map[string]string{
+			"ado:packaging:read": capabilitypkg.CredentialEnvVar("ado:packaging:read"),
+		},
+	}
+	env := testEnvelope(t.TempDir(), "ado:packaging:read")
+	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "Example", Name: "example-repo"}
+	got, err := adapter.credentialEnv(context.Background(), nil, RunRequest{
+		Envelope:    env,
+		Workspace:   t.TempDir(),
+		Credentials: creds,
+	})
+	if err != nil {
+		t.Fatalf("credentialEnv: %v", err)
+	}
+	if !containsEnv(got, "GOOBERS_CRED_ADO_PACKAGING_READ=ado-packaging-token") {
+		t.Fatalf("packaging credential not injected: %v", redactedNames(got))
+	}
+	wantExpiry := "GOOBERS_CREDENTIAL_EXPIRES_ADO_PACKAGING_READ=" + capabilitypkg.FormatCredentialExpiry(expiresAt)
+	if !containsEnv(got, wantExpiry) {
+		t.Fatalf("packaging expiry not injected: %v", redactedNames(got))
 	}
 }
 
