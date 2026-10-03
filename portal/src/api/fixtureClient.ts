@@ -73,7 +73,7 @@ export interface FixtureStageUsage {
   inputTokens?: number;
   outputTokens?: number;
   copilotPremiumRequests?: number;
-  costUSD?: number;
+  nanoAIU?: number;
 }
 
 const DEFAULT_RUN_LIMIT = 50;
@@ -525,7 +525,7 @@ function matchesUsagePopulation(usage: FixtureStageUsage[], request: RunListOpti
       case "premium-measured":
         return attempt.copilotPremiumRequests !== undefined;
       case "cost-measured":
-        return attempt.costUSD !== undefined;
+        return attempt.nanoAIU !== undefined;
       case "retry-waste":
         return attempt.traversal < (latest.get(attempt.stage) ?? attempt.traversal);
       default:
