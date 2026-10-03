@@ -178,7 +178,7 @@ export function PortalShell({
     }
     mobileMenuOpener.current = null;
     setMobileMenuOpen(false);
-    navigate(route);
+    navigate(route, { replace: true });
   };
 
   const skipToMainContent = (event: React.MouseEvent<HTMLAnchorElement>) => {

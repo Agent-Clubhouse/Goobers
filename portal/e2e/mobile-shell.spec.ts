@@ -47,7 +47,11 @@ for (const layout of phoneLayouts) {
 
 test("reaches primary and secondary destinations without losing scope", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/#/runs?gaggle=core&window=24h");
+  await page.goto("/#/overview");
+  await page.evaluate(() => {
+    window.location.hash = "#/runs?gaggle=core&window=24h";
+  });
+  await expect(page).toHaveURL(/#\/runs\?gaggle=core&window=24h$/);
 
   const navigation = page.getByRole("navigation", { name: "Mobile primary" });
   await navigation.getByRole("button", { name: "Workflows" }).click();
@@ -69,6 +73,12 @@ test("reaches primary and secondary destinations without losing scope", async ({
   await expect(dialog.getByRole("link", { name: "Open gaggle Core product" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: /Use (dark|light) theme/ })).toBeVisible();
   await expect(dialog.getByLabel("Portal details")).toContainText("e2e-fixture");
+  await page.keyboard.press("Escape");
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/runs\?gaggle=core&window=24h$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/overview$/);
 });
 
 test("dismisses the menu with Escape and browser Back and restores focus", async ({ page }) => {
