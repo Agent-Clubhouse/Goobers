@@ -94,6 +94,38 @@ func TestScanMissingTruncatedOversizedAndCanceledRemainUnknown(t *testing.T) {
 	}
 }
 
+func TestPinnedBytesPreservesBoundsAndDigestErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "definition"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		ref    journal.Ref
+		limit  int64
+		wanted string
+	}{
+		{
+			name:   "bounds",
+			ref:    journal.Ref{Path: "definition", Digest: journal.Digest([]byte("content"))},
+			limit:  6,
+			wanted: "pinned definition exceeds bounds",
+		},
+		{
+			name:   "digest",
+			ref:    journal.Ref{Path: "definition", Digest: journal.Digest([]byte("different"))},
+			limit:  7,
+			wanted: "pinned definition size or digest mismatch",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := pinnedBytes(dir, test.ref, test.limit); err == nil || err.Error() != test.wanted {
+				t.Fatalf("error = %v, want %q", err, test.wanted)
+			}
+		})
+	}
+}
+
 func BenchmarkFeatureScan(b *testing.B) {
 	for _, runs := range []int{0, 16} {
 		b.Run(fmt.Sprintf("runs-%d", runs), func(b *testing.B) {
