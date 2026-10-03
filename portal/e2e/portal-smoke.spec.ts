@@ -54,22 +54,27 @@ function trackPageErrors(page: Page): string[] {
   return errors;
 }
 
-async function expectFullyInViewport(locator: Locator, description: string) {
+async function expectFullyInVisualViewport(locator: Locator, description: string) {
   await expect
     .poll(
       () =>
         locator.evaluate((element) => {
           const bounds = element.getBoundingClientRect();
+          const viewport = window.visualViewport;
+          const left = viewport?.offsetLeft ?? 0;
+          const top = viewport?.offsetTop ?? 0;
+          const right = left + (viewport?.width ?? window.innerWidth);
+          const bottom = top + (viewport?.height ?? window.innerHeight);
           return (
             bounds.width > 0 &&
             bounds.height > 0 &&
-            bounds.left >= 0 &&
-            bounds.top >= 0 &&
-            bounds.right <= window.innerWidth &&
-            bounds.bottom <= window.innerHeight
+            bounds.left >= left &&
+            bounds.top >= top &&
+            bounds.right <= right &&
+            bounds.bottom <= bottom
           );
         }),
-      { message: `${description} should be fully within the viewport` },
+      { message: `${description} should be fully within the visual viewport` },
     )
     .toBe(true);
 }
@@ -201,11 +206,11 @@ test("keeps Overview content first without horizontal overflow across compact la
     ).toBeVisible();
 
     if (viewport.width === 390) {
-      await expectFullyInViewport(
+      await expectFullyInVisualViewport(
         page.getByRole("heading", { level: 1 }),
         "Overview title at 390x844",
       );
-      await expectFullyInViewport(activeRow, "active run at 390x844");
+      await expectFullyInVisualViewport(activeRow, "active run at 390x844");
     }
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
@@ -230,11 +235,11 @@ test("keeps Overview content first without horizontal overflow across compact la
       })),
     )
     .toEqual({ width: 960, height: 720, devicePixelRatio: 2 });
-  await expectFullyInViewport(
+  await expectFullyInVisualViewport(
     page.getByRole("heading", { level: 1 }),
     "Overview title at 200% zoom",
   );
-  await expectFullyInViewport(
+  await expectFullyInVisualViewport(
     page
       .getByRole("region", { name: "Active runs" })
       .locator(".data-row")
