@@ -182,6 +182,20 @@ describe("loadOperationalOverview", () => {
     expect(listRuns.mock.calls.every(([request]) => request?.cursor === undefined)).toBe(true);
   });
 
+  it("moves stale running work from active runs into needs attention", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Populated fixtures must include a running run.");
+    }
+    running.stale = true;
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.active.map((run) => run.id)).not.toContain(running.id);
+    expect(overview.groups.attention.map((run) => run.id)).toContain(running.id);
+  });
+
   it("reuses cached inventory when only the run model is invalidated (DASH-13)", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listGaggles = vi.spyOn(client, "listGaggles");
@@ -503,6 +517,40 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("keeps blocked and stalled runs ahead of newer warnings when attention is capped", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const baseTime = NOW - 60_000;
+    const failures = Array.from({ length: 20 }, (_, index) =>
+      attentionRun(
+        `01JZWARNING${String(index).padStart(2, "0")}`,
+        "failed",
+        new Date(baseTime - index * 1_000).toISOString(),
+      ),
+    );
+    const escalation = attentionRun(
+      "01JZBLOCKED",
+      "escalated",
+      new Date(baseTime - 30_000).toISOString(),
+    );
+    const stalled: RunSummary = {
+      ...attentionRun("01JZSTALLED", "failed", new Date(baseTime - 40_000).toISOString()),
+      phase: "running",
+      terminal: false,
+      stale: true,
+      finishedAt: undefined,
+    };
+    fixtures.runs = { runs: [...failures, escalation, stalled] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toHaveLength(20);
+    expect(overview.groups.attention.slice(0, 2).map((run) => run.id)).toEqual([
+      "01JZBLOCKED",
+      "01JZSTALLED",
+    ]);
+    expect(overview.groups.attention.map((run) => run.id)).not.toContain("01JZWARNING18");
   });
 
   it("keeps a run whose last activity is just under the 24h boundary", async () => {
