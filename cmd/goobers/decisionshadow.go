@@ -2,8 +2,10 @@ package main
 
 import (
 	"log/slog"
+	"os"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/handoffcheck"
 	"github.com/goobers/goobers/internal/harness"
@@ -14,19 +16,27 @@ import (
 // instance opted in to decisionGate shadow mode, else nil. A misconfigured or
 // unreachable gate degrades to no observer: shadow mode must never stop a run.
 func newDecisionShadowObserver(cfg *instance.Config, log *slog.Logger) harness.Observer {
-	if cfg == nil || cfg.DecisionGate.EffectiveMode() != decisiongate.ModeShadow {
+	if cfg == nil {
 		return nil
+	}
+	observer, _ := newDecisionShadowObserverFromSettings(cfg.DecisionGate, os.Getenv, log)
+	return observer
+}
+
+func newDecisionShadowObserverFromSettings(settings *decisiongate.Settings, getenv func(string) string, log *slog.Logger) (harness.Observer, func()) {
+	if settings.EffectiveMode() != decisiongate.ModeShadow {
+		return nil, func() {}
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	gate, err := cfg.DecisionGate.Resolve(nil, nil)
+	gate, err := settings.Resolve(getenv, nil)
 	if err != nil {
 		log.Warn("decisionGate disabled", "error", err.Error())
-		return nil
+		return nil, func() {}
 	}
 	newObs := func(outcome string) *decisiongate.Observer {
-		return decisiongate.NewObserver(gate, cfg.DecisionGate.ShadowSample, 2, func(r decisiongate.ShadowRecord) {
+		return decisiongate.NewObserver(gate, settings.ShadowSample, 2, func(r decisiongate.ShadowRecord) {
 			log.Info("decisiongate.shadow",
 				"outcome", outcome,
 				"inputValid", shadowInputValidity(r),
@@ -37,7 +47,7 @@ func newDecisionShadowObserver(cfg *instance.Config, log *slog.Logger) harness.O
 	// Successes are scored too so the log can show false alarms on healthy
 	// replies, not only detections on failed ones.
 	ok, other := newObs("success"), newObs("non-success")
-	return func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope) {
+	observe := func(env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope) {
 		if inputValid, known := decisionShadowInputValidity(result); known {
 			if result.Status == apiv1.ResultSuccess {
 				ok.ObserveValidated(env.RunID, inputValid, result.Summary)
@@ -52,6 +62,26 @@ func newDecisionShadowObserver(cfg *instance.Config, log *slog.Logger) harness.O
 		}
 		other.Observe(env.RunID, result.Summary)
 	}
+	return observe, func() {
+		ok.Wait()
+		other.Wait()
+	}
+}
+
+func decisionGateCredentialSources(settings *decisiongate.Settings) ([]credentials.TokenRef, []credentials.Grant) {
+	if settings.EffectiveMode() != decisiongate.ModeShadow {
+		return nil, nil
+	}
+	refs := []credentials.TokenRef{
+		{Name: decisiongate.CredentialBaseURL, Env: settings.BaseURLEnv},
+		{Name: decisiongate.CredentialAPIKey, Env: settings.KeyEnv},
+		{Name: decisiongate.CredentialModel, Env: settings.ModelEnv},
+	}
+	grants := make([]credentials.Grant, len(refs))
+	for i := range refs {
+		grants[i] = credentials.Grant{Capability: refs[i].Name, Ref: refs[i].Name}
+	}
+	return refs, grants
 }
 
 func decisionShadowInputValidity(result apiv1.ResultEnvelope) (bool, bool) {

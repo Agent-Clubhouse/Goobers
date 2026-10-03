@@ -22,6 +22,14 @@ const (
 	ModeEnforce Mode = "enforce"
 )
 
+// Credential keys used to move provider settings through the stage credential
+// plane. They are runner-internal and are never stage-declarable capabilities.
+const (
+	CredentialBaseURL = "decisiongate:base-url"
+	CredentialAPIKey  = "decisiongate:api-key"
+	CredentialModel   = "decisiongate:model"
+)
+
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Settings is the instance-level opt-in. Secrets are never stored here: the
@@ -53,6 +61,26 @@ func (s *Settings) EffectiveMode() Mode {
 		return ModeOff
 	}
 	return s.Mode
+}
+
+// CredentialKeys returns the provider values a shadow observer needs. Enforce
+// mode is intentionally excluded until it is graduated independently.
+func (s *Settings) CredentialKeys() []string {
+	if s.EffectiveMode() != ModeShadow {
+		return nil
+	}
+	return []string{CredentialBaseURL, CredentialAPIKey, CredentialModel}
+}
+
+// IsCredentialKey reports whether key belongs to the runner-owned decision
+// provider credential set.
+func IsCredentialKey(key string) bool {
+	switch key {
+	case CredentialBaseURL, CredentialAPIKey, CredentialModel:
+		return true
+	default:
+		return false
+	}
 }
 
 // Validate rejects settings that could leak or mis-route. Inline secrets are

@@ -31,6 +31,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/gooberassets"
 )
 
@@ -83,6 +84,9 @@ type Kit struct {
 	EnvCapabilities map[string]string `json:"envCapabilities,omitempty"`
 	// Grants are the capability grants in force for this stage.
 	Grants []Grant `json:"grants,omitempty"`
+	// DecisionGate carries non-secret shadow policy. Provider values are
+	// resolved separately through Grants at stage start.
+	DecisionGate *decisiongate.Settings `json:"decisionGate,omitempty"`
 	// SandboxPosture is the instance's sandbox posture, verbatim.
 	SandboxPosture string `json:"sandboxPosture,omitempty"`
 	// HarnessCommand is the selected goober's configured launcher argv only.

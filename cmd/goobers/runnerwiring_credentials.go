@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/githubapp"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/mcpconfig"
@@ -225,6 +226,8 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 			return nil, nil, fmt.Errorf("build credentials: %s: %w", key, err)
 		}
 	}
+	decisionRefs, decisionGrants := decisionGateCredentialSources(cfg.DecisionGate)
+	refs = append(refs, decisionRefs...)
 	// The expiring-source form threads each minted value's stated expiry
 	// through to the materialized Set (DS10): the credential plane's mint
 	// responses carry it, so a stage pod never treats a snapshot as unbounded.
@@ -242,6 +245,7 @@ func buildRoleCredentials(cfg *instance.Config, stores credentials.StoreResolver
 		}
 		overrides = append(overrides, credentials.Grant{Capability: key, Ref: credentialRefName(key)})
 	}
+	overrides = append(overrides, decisionGrants...)
 	grants := withoutNonADORepoGrants(cfg.Repos, credentials.RunnerGrants(bindings, gaggleOwner, gaggleName, backlog, repoCredentialedCapabilityNames(), overrides))
 	// An explicit credentials: entry for configrepo:write wins over the
 	// workflowSource-minted default, exactly as every other explicit entry wins.
@@ -371,7 +375,7 @@ func buildGooberCredentialGrants(gooberName, harness string, keys []string, sour
 			continue
 		}
 		seen[key] = true
-		if !capability.StageDeclarable(key) && !mcpconfig.IsBYOCredentialKey(key) {
+		if !capability.StageDeclarable(key) && !mcpconfig.IsBYOCredentialKey(key) && !decisiongate.IsCredentialKey(key) {
 			continue
 		}
 		e, ok := refs[key]

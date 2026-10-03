@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -75,9 +77,10 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	//
 	//	harness: copilot-cli: RunRequest.Workspace is empty
 	//
-	// The credential is resolved first because the checkout authenticates with
-	// it, and resolving twice would mint two credentials for one stage.
-	minted, mintedScheme, err := resolveStageCredentialsWithScheme(ctx)
+	// Stage credentials are resolved first because the checkout authenticates
+	// with them. Shadow-provider credentials use a separate advisory resolve:
+	// their failure must not stop the stage.
+	minted, mintedScheme, err := resolveAgenticStageCredentials(ctx, kit)
 	if err != nil {
 		return fail("credential_resolve_failed", err)
 	}
@@ -141,10 +144,12 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	}
 
 	ctx = podAgenticMergeAuthorityContext(ctx, kit.Envelope)
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
+	observer, waitForObserver := newPodDecisionShadowObserver(kit, minted, nil)
+	exec, err := buildPodAgenticExecutorWithObserver(kit, stderr, minted, runsDir, observer)
 	if err != nil {
 		return fail("agentic_executor_unavailable", err)
 	}
+	defer waitForObserver()
 
 	if kit.IsReview() {
 		// The SAME executor and the SAME constructor as an invocation — only
@@ -330,6 +335,10 @@ func podHarnessEnvironment(kit *agentickit.Kit, selected apiv1.Harness) harness.
 // materialized this stage's context into; it becomes both the recorder's Dir()
 // and the contextResolver's root, which is what makes the two agree.
 func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
+	return buildPodAgenticExecutorWithObserver(kit, stderr, minted, runsDir, nil)
+}
+
+func buildPodAgenticExecutorWithObserver(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string, observer harness.Observer) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
 	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}, expiries: map[string]time.Time{}}
 	for _, g := range kit.Grants {
@@ -444,6 +453,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 		Grants:          grants,
 		AdapterRegistry: adapterRegistry,
 		HarnessInfo:     harnessInfo,
+		Observer:        observer,
 	}))
 }
 
@@ -464,6 +474,7 @@ type podExecutorWiring struct {
 	Grants          []credentials.Grant
 	AdapterRegistry *harness.Registry
 	HarnessInfo     harnessPreflightInfo
+	Observer        harness.Observer
 }
 
 // podAgenticExecutorInput assembles the executor input for a pod stage.
@@ -505,7 +516,53 @@ func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
 		ArtifactRecorder: podCheckpointRecorder(w),
 		SecretRegistrar:  w.Registry,
 		AgenticAdapter:   newAgenticAdapter,
+		Observer:         w.Observer,
 	}
+}
+
+func resolveAgenticStageCredentials(ctx context.Context, kit *agentickit.Kit) ([]dispatcher.MintedCredential, string, error) {
+	minted, scheme, err := resolveStageCredentialsWithScheme(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	decisionKeys := kit.DecisionGate.CredentialKeys()
+	if len(decisionKeys) == 0 {
+		return minted, scheme, nil
+	}
+	client, err := credentialPlaneClient(decisionKeys)
+	if err != nil {
+		slog.Warn("decisionGate disabled in pod", "error", err.Error())
+		return minted, scheme, nil
+	}
+	resolution, err := client.ResolveStage(ctx, os.Getenv(dispatcher.EnvRunID), os.Getenv(dispatcher.EnvStage), decisionKeys)
+	if err != nil {
+		slog.Warn("decisionGate disabled in pod", "error", err.Error())
+		return minted, scheme, nil
+	}
+	return append(minted, resolution.Credentials...), scheme, nil
+}
+
+func newPodDecisionShadowObserver(kit *agentickit.Kit, minted []dispatcher.MintedCredential, log *slog.Logger) (harness.Observer, func()) {
+	values := make(map[string]string, len(minted))
+	for _, credential := range minted {
+		values[credential.Capability] = credential.Value
+	}
+	settings := kit.DecisionGate
+	return newDecisionShadowObserverFromSettings(settings, func(name string) string {
+		if settings == nil {
+			return ""
+		}
+		switch name {
+		case settings.BaseURLEnv:
+			return values[decisiongate.CredentialBaseURL]
+		case settings.KeyEnv:
+			return values[decisiongate.CredentialAPIKey]
+		case settings.ModelEnv:
+			return values[decisiongate.CredentialModel]
+		default:
+			return ""
+		}
+	}, log)
 }
 
 type checkpointPodArtifacts struct {

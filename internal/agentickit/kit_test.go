@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/decisiongate"
 )
 
 func sampleKit() *Kit {
@@ -75,6 +76,33 @@ func TestKitGrantsCarryNoSecretMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("CarriesDecisionPolicyWithoutProviderValues", func(t *testing.T) {
+		kit := sampleKit()
+		kit.DecisionGate = &decisiongate.Settings{
+			Mode:       decisiongate.ModeShadow,
+			BaseURLEnv: "DECISION_URL",
+			KeyEnv:     "DECISION_KEY",
+			ModelEnv:   "DECISION_MODEL",
+			Fallback:   decisiongate.FallbackAgent,
+		}
+		data, digest, err := Marshal(kit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"https://provider.example", "provider-secret", "provider-model"} {
+			if strings.Contains(string(data), secret) {
+				t.Fatalf("kit contains provider value %q", secret)
+			}
+		}
+		got, err := Unmarshal(data, digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.DecisionGate == nil || got.DecisionGate.KeyEnv != "DECISION_KEY" {
+			t.Fatalf("decision policy did not survive transport: %+v", got.DecisionGate)
+		}
+	})
 	for _, forbidden := range []string{"token", "secret", "password", "ghp_"} {
 		if strings.Contains(strings.ToLower(string(data)), forbidden) {
 			t.Fatalf("kit payload contains %q; kits carry grant shape, never credential material", forbidden)

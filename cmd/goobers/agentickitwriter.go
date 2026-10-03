@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"time"
@@ -10,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
@@ -178,6 +180,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 	}
 	credentialKeys := append([]string(nil), spec.Capabilities...)
 	credentialKeys = append(credentialKeys, mcpconfig.BYOCredentialKeys(spec.MCPServers)...)
+	credentialKeys = append(credentialKeys, cfg.DecisionGate.CredentialKeys()...)
 	selectedGrants := buildGooberCredentialGrants(env.Goober, string(harnessName), credentialKeys, grants)
 	wireGrants := make([]agentickit.Grant, 0, len(selectedGrants))
 	for _, g := range selectedGrants {
@@ -197,6 +200,7 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 		Assets:               assets,
 		EnvCapabilities:      envCapabilities,
 		Grants:               wireGrants,
+		DecisionGate:         cloneDecisionGateSettings(cfg.DecisionGate),
 		SandboxPosture:       string(instance.EffectiveAgenticSandbox(cfg, nil)),
 		HarnessCommand:       slices.Clone(cfg.Runner.HarnessCommand[string(spec.Harness)]),
 		HarnessEnvUnset:      slices.Clone(cfg.Runner.HarnessEnvUnset),
@@ -205,4 +209,13 @@ func (w agenticKitWriter) buildKitContext(ctx context.Context, env apiv1.Invocat
 
 		RequiredMCPSettleTimeout: cfg.Runner.RequiredMCPSettleTimeout,
 	}, nil
+}
+
+func cloneDecisionGateSettings(settings *decisiongate.Settings) *decisiongate.Settings {
+	if settings == nil || settings.EffectiveMode() != decisiongate.ModeShadow {
+		return nil
+	}
+	cloned := *settings
+	cloned.Gate.Thresholds = maps.Clone(settings.Gate.Thresholds)
+	return &cloned
 }

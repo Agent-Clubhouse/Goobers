@@ -208,6 +208,9 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
+	if pinned.profile.goober != "" {
+		pinned.profile.implicitKeys = append(pinned.profile.implicitKeys, s.config.DecisionGate.CredentialKeys()...)
+	}
 	if mode.deterministicOnly && !pinned.profile.deterministic {
 		return stageResolution{}, credentialPlaneError(http.StatusForbidden, "credential_refresh_agentic_stage",
 			fmt.Sprintf("stage %q is not a deterministic task; mid-stage credential refresh serves deterministic stages only", request.Stage))

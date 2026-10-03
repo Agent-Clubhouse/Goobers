@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,26 @@ func TestSettingsRejectInlineSecrets(t *testing.T) {
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("CredentialKeysAreShadowOnly", func(t *testing.T) {
+		var absent *Settings
+		if got := absent.CredentialKeys(); got != nil {
+			t.Fatalf("nil settings keys = %v", got)
+		}
+		if got := (&Settings{Mode: ModeEnforce}).CredentialKeys(); got != nil {
+			t.Fatalf("enforce keys = %v", got)
+		}
+		got := (&Settings{Mode: ModeShadow}).CredentialKeys()
+		want := []string{CredentialBaseURL, CredentialAPIKey, CredentialModel}
+		if !slices.Equal(got, want) {
+			t.Fatalf("shadow keys = %v, want %v", got, want)
+		}
+		for _, key := range got {
+			if !IsCredentialKey(key) {
+				t.Fatalf("%q is not recognized as a decision credential key", key)
+			}
+		}
+	})
 	for _, key := range []string{"sk-" + strings.Repeat("a1", 12), "Bearer abc", "has space", "a.b", ""} {
 		s := ok
 		s.KeyEnv = key
