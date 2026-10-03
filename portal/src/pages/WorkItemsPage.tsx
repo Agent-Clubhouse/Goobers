@@ -145,7 +145,6 @@ function WorkItemListView({
   return (
     <>
       <header className="page-heading">
-        <p className="page-kicker">External activity</p>
         <h1>Work Items</h1>
         <p>
           Pull requests, issues, and work items that Goobers changed through a recorded
