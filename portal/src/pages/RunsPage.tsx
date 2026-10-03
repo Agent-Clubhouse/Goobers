@@ -41,6 +41,36 @@ export function RunsPage({
   navigate: Navigate;
   standalone: boolean;
 }) {
+  const filterError = runsRouteFilterError();
+  if (filterError) {
+    return (
+      <header className="page-heading">
+        <h1>Runs</h1>
+        <p className="page-toolbar-error" role="alert">{filterError}</p>
+      </header>
+    );
+  }
+  return (
+    <RunsPageContent
+      client={client}
+      filters={filters}
+      navigate={navigate}
+      standalone={standalone}
+    />
+  );
+}
+
+function RunsPageContent({
+  client,
+  filters,
+  navigate,
+  standalone,
+}: {
+  client: DaemonClient;
+  filters?: RunRouteFilters;
+  navigate: Navigate;
+  standalone: boolean;
+}) {
   const analyticalScope = Boolean(
     filters?.since ||
     filters?.until ||
@@ -223,7 +253,7 @@ export function RunsPage({
         filterError={filterError}
         filters={renderFilters}
         onApplyFilters={() => {
-          const error = runsFilterError(draft, gaggleOptions, workflowOptions, false);
+          const error = runsFilterError(draft, gaggleOptions, workflowOptions);
           if (error) return error;
           navigate({
             page: "runs",
@@ -309,47 +339,7 @@ function runsFilterError(
   filters: RunRouteFilters | undefined,
   gaggles: { name: string }[],
   workflows: { gaggle: string; name: string }[],
-  inspectRoute = true,
 ): string | undefined {
-  const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
-  const rawStatus = search.get("status");
-  if (inspectRoute && search.has("status") && !FILTERS.includes(rawStatus as RunsFilter)) {
-    return `Invalid status filter "${rawStatus}". Choose active, attention, complete, or all.`;
-  }
-  const rawOutcome = search.get("outcome");
-  if (
-    inspectRoute &&
-    search.has("outcome") &&
-    !OUTCOMES.includes(rawOutcome as (typeof OUTCOMES)[number])
-  ) {
-    return `Invalid outcome filter "${rawOutcome}".`;
-  }
-  const rawPopulation = search.get("population");
-  if (
-    inspectRoute &&
-    search.has("population") &&
-    !POPULATIONS.includes(rawPopulation as (typeof POPULATIONS)[number])
-  ) {
-    return `Invalid population filter "${rawPopulation}".`;
-  }
-  const rawWindow = search.get("window");
-  if (
-    inspectRoute &&
-    search.has("window") &&
-    !WINDOWS.includes(rawWindow as (typeof WINDOWS)[number])
-  ) {
-    return `Invalid time window filter "${rawWindow}". Choose 24h, 7d, 30d, or all.`;
-  }
-  for (const name of ["since", "until"] as const) {
-    const value = search.get(name);
-    if (inspectRoute && search.has(name) && !validTimestamp(value)) {
-      return `Invalid ${name} filter "${value}". Enter a valid timestamp.`;
-    }
-  }
-  const rawShowNoWork = search.get("showNoWork");
-  if (inspectRoute && search.has("showNoWork") && rawShowNoWork !== "1") {
-    return `Invalid show no-work filter "${rawShowNoWork}".`;
-  }
   if (filters?.gaggle && !gaggles.some((option) => option.name === filters.gaggle)) {
     return `Invalid gaggle filter "${filters.gaggle}". Choose a configured gaggle.`;
   }
@@ -363,8 +353,77 @@ function runsFilterError(
   return undefined;
 }
 
+function runsRouteFilterError(): string | undefined {
+  const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const rawStatus = search.get("status");
+  if (search.has("status") && !FILTERS.includes(rawStatus as RunsFilter)) {
+    return `Invalid status filter "${rawStatus}". Choose active, attention, complete, or all.`;
+  }
+  const rawOutcome = search.get("outcome");
+  if (
+    search.has("outcome") &&
+    !OUTCOMES.includes(rawOutcome as (typeof OUTCOMES)[number])
+  ) {
+    return `Invalid outcome filter "${rawOutcome}".`;
+  }
+  const rawPopulation = search.get("population");
+  if (
+    search.has("population") &&
+    !POPULATIONS.includes(rawPopulation as (typeof POPULATIONS)[number])
+  ) {
+    return `Invalid population filter "${rawPopulation}".`;
+  }
+  const rawWindow = search.get("window");
+  if (
+    search.has("window") &&
+    !WINDOWS.includes(rawWindow as (typeof WINDOWS)[number])
+  ) {
+    return `Invalid time window filter "${rawWindow}". Choose 24h, 7d, 30d, or all.`;
+  }
+  for (const name of ["since", "until"] as const) {
+    const value = search.get(name);
+    if (search.has(name) && !validTimestamp(value)) {
+      return `Invalid ${name} filter "${value}". Enter an RFC3339 timestamp.`;
+    }
+  }
+  const rawShowNoWork = search.get("showNoWork");
+  if (search.has("showNoWork") && rawShowNoWork !== "1") {
+    return `Invalid show no-work filter "${rawShowNoWork}".`;
+  }
+  return undefined;
+}
+
 function validTimestamp(value: string | null): boolean {
-  return value !== null && value.length > 0 && Number.isFinite(Date.parse(value));
+  const match = value?.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/,
+  );
+  if (!match) return false;
+  const [, year, month, day, hour, minute, second, zoneHour, zoneMinute] = match;
+  const numericYear = Number(year);
+  const numericMonth = Number(month);
+  const daysInMonth = [
+    31,
+    numericYear % 4 === 0 && (numericYear % 100 !== 0 || numericYear % 400 === 0) ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  return numericMonth >= 1 &&
+    numericMonth <= 12 &&
+    Number(day) >= 1 &&
+    Number(day) <= (daysInMonth[numericMonth - 1] ?? 0) &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59 &&
+    (zoneHour === undefined || Number(zoneHour) <= 24) &&
+    (zoneMinute === undefined || Number(zoneMinute) <= 59);
 }
 
 function RunHistoryRow({ run }: { run: RunSummary }) {
