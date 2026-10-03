@@ -265,13 +265,6 @@ function WorkItemListView({
         filterError={filterError}
         filters={renderFilters}
         onApplyFilters={() => {
-          const error = workItemFilterError(
-            draft.kind,
-            draft.gaggle,
-            gaggleOptions(draft.kind),
-            false,
-          );
-          if (error) return error;
           updateFilters(draft);
         }}
         onOpenFilters={() => setDraft({ kind, gaggle, outcome })}
@@ -279,6 +272,12 @@ function WorkItemListView({
           page: "work-items",
           query: searchQuery || undefined,
         })}
+        onValidateFilters={() => workItemFilterError(
+          draft.kind,
+          draft.gaggle,
+          gaggleOptions(draft.kind),
+          false,
+        )}
         search={
           <label className="filter-search page-toolbar-search">
             <span>Find work item</span>

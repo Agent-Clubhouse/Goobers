@@ -21,9 +21,10 @@ interface PageToolbarProps {
   description: string;
   filterError?: string;
   filters: (mobile: boolean) => ReactNode;
-  onApplyFilters: () => string | undefined;
+  onApplyFilters: () => void;
   onOpenFilters: () => void;
   onResetFilters: () => void;
+  onValidateFilters?: () => string | undefined;
   search?: ReactNode;
   title: string;
 }
@@ -46,6 +47,7 @@ export function PageToolbar({
   onApplyFilters,
   onOpenFilters,
   onResetFilters,
+  onValidateFilters,
   search,
   title,
 }: PageToolbarProps) {
@@ -98,14 +100,21 @@ export function PageToolbar({
     setOpen(false);
   };
   const apply = () => {
-    const error = onApplyFilters();
+    const error = onValidateFilters?.();
     if (error) {
       setDraftError(error);
       return;
     }
-    const { pageFilterSheet: _sheet, ...state } = window.history.state ?? {};
-    window.history.replaceState(state, "", window.location.href);
-    setOpen(false);
+    const finishApply = () => {
+      onApplyFilters();
+      setOpen(false);
+    };
+    if (window.history.state?.pageFilterSheet === historyKey) {
+      window.addEventListener("popstate", finishApply, { once: true });
+      window.history.back();
+      return;
+    }
+    finishApply();
   };
   const containFocus = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
