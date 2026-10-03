@@ -251,9 +251,10 @@ describe("Insight page", () => {
     );
     const table = screen.getByRole("table", { name: "Attributed costs" });
     expect(within(table).getAllByRole("columnheader")).toHaveLength(4);
-    expect(within(table).getAllByRole("row")[1]).toHaveTextContent(
-      "github2.5 AIC",
-    );
+    const pullRequestRow = within(table)
+      .getAllByRole("row")
+      .find((row) => within(row).queryByText("PR #4398"));
+    expect(pullRequestRow).toHaveTextContent("github2.5 AIC");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
     expect(screen.getAllByText("2.5 AIC").length).toBeGreaterThan(0);

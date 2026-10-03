@@ -154,7 +154,7 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
     }
 
     await page.goto("/#/cost");
-    const costHeading = page.getByRole("heading", { name: "Cost", exact: true });
+    const costHeading = page.getByRole("heading", { name: "AIC", exact: true });
     const summary = page.locator(".usage-analytics").first();
     await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
     await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
@@ -166,8 +166,8 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
     await expect(comparison).toHaveAttribute("tabindex", "0");
     await expect(
       comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
-    ).toHaveCount(5);
-    await expect(comparison.getByText("$123,456,789.12").first()).toBeAttached();
+    ).toHaveCount(4);
+    await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
     await expect(page.getByText("Scroll sideways to compare every cost column.")).toBeVisible();
     if (layout.width <= 430) {
       expect(
