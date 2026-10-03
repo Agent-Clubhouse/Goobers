@@ -61,7 +61,10 @@ func TestObserveBacklogIntakeShadowRecordsFlagWithoutChangingCandidates(t *testi
 		t.Fatalf("calls = %d, events = %d, want one of each", judge.calls, len(annotations.events))
 	}
 	fields := annotations.events[0].Runner
-	if fields["annotation"] != backlogIntakeShadowAnnotation || fields["itemId"] != "42" || fields["flagged"] != true || fields["peerCount"] != 1 {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "widgets"}
+	if fields["annotation"] != backlogIntakeShadowAnnotation || fields["itemId"] != "42" ||
+		fields["provider"] != string(providers.ProviderGitHub) || fields["repositoryKey"] != repo.CanonicalKey() ||
+		fields["flagged"] != true || fields["peerCount"] != 1 {
 		t.Fatalf("shadow annotation = %#v", fields)
 	}
 	if len(items) != 2 || items[0].ID != "42" {

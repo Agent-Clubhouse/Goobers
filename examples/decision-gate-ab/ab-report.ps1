@@ -248,9 +248,12 @@ function Read-ArmSummary {
             $runPhases.Add([string]$event.status)
             if ($itemID) {
               $runTerminals.Add([pscustomobject]@{
+                  RunID = $runID
                   ItemID = $itemID
+                  RepositoryKey = ''
                   Status = [string]$event.status
                   Time = $eventTime
+                  Matched = $false
                 })
             }
           }
@@ -261,31 +264,52 @@ function Read-ArmSummary {
 
   $intakeRecords = New-Object System.Collections.Generic.List[object]
   $instanceJournalPath = Resolve-InstanceJournalPath -Instance $Instance
-  foreach ($line in (Read-LinesShared -Path $instanceJournalPath)) {
-    if ([string]::IsNullOrWhiteSpace($line) -or $line -notmatch '"type":"runner\.annotation"') {
-      continue
+  $instanceEvents = @((Read-LinesShared -Path $instanceJournalPath) | Where-Object {
+      -not [string]::IsNullOrWhiteSpace($_) -and $_ -match '"type":"runner\.annotation"'
+    } | ForEach-Object { $_ | ConvertFrom-Json })
+  $runRepositoryKeys = @{}
+  foreach ($event in $instanceEvents) {
+    if ($event.runner -and $event.runner.annotation -eq 'item-repo' -and
+        $event.PSObject.Properties.Name -contains 'runId' -and $event.runId -and
+        $event.runner.PSObject.Properties.Name -contains 'itemId' -and $event.runner.itemId -and
+        $event.runner.PSObject.Properties.Name -contains 'repositoryKey' -and $event.runner.repositoryKey) {
+      $runRepositoryKeys["$($event.runId)|$($event.runner.itemId)"] = [string]$event.runner.repositoryKey
     }
-    $event = $line | ConvertFrom-Json
-    if (-not $event.runner -or $event.runner.annotation -ne 'backlog.intake-decision-shadow') {
-      continue
+  }
+  foreach ($terminal in $runTerminals) {
+    $key = "$($terminal.RunID)|$($terminal.ItemID)"
+    if ($runRepositoryKeys.ContainsKey($key)) {
+      $terminal.RepositoryKey = $runRepositoryKeys[$key]
     }
+  }
+  $intakeEvents = @($instanceEvents | Where-Object {
+      $_.runner -and $_.runner.annotation -eq 'backlog.intake-decision-shadow' -and
+      $_.runner.PSObject.Properties.Name -contains 'repositoryKey' -and $_.runner.repositoryKey
+    } | Sort-Object @{ Expression = { ConvertTo-NullableDateTime -Value ([string]$_.time) } })
+  foreach ($event in $intakeEvents) {
     $eventTime = ConvertTo-NullableDateTime -Value ([string]$event.time)
     if ($eventTime -and $eventTime -lt $SinceValue) {
       continue
     }
+    $terminal = @($runTerminals | Where-Object {
+        -not $_.Matched -and
+        $_.RepositoryKey -eq [string]$event.runner.repositoryKey -and
+        $_.ItemID -eq [string]$event.runner.itemId -and
+        $eventTime -and $_.Time -and $_.Time -ge $eventTime
+      } | Sort-Object Time | Select-Object -First 1)
+    if ($terminal.Count -eq 0) {
+      continue
+    }
+    $terminal[0].Matched = $true
     $verdict = [string]$event.runner.verdict
     $errored = $event.runner.error -eq $true
     $uncertain = $errored -or $verdict -notin @('yes', 'no')
-    $laterEscalated = @($runTerminals | Where-Object {
-        $_.ItemID -eq [string]$event.runner.itemId -and
-        $_.Status -eq 'escalated' -and
-        (-not $eventTime -or -not $_.Time -or $_.Time -ge $eventTime)
-      }).Count -gt 0
     $intakeRecords.Add([pscustomobject]@{
         ItemID = [string]$event.runner.itemId
+        RepositoryKey = [string]$event.runner.repositoryKey
         Flagged = -not $uncertain -and $event.runner.flagged -eq $true
         Uncertain = $uncertain
-        LaterEscalated = $laterEscalated
+        LaterEscalated = $terminal[0].Status -eq 'escalated'
       })
   }
 

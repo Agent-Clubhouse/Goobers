@@ -110,6 +110,7 @@ func observeBacklogIntakeShadow(
 		}(&results[i])
 	}
 	wg.Wait()
+	repo := env.issueRepo()
 	for _, result := range results {
 		item, outcome, judgeErr := result.item, result.outcome, result.err
 		peerCount := len(open)
@@ -124,15 +125,17 @@ func observeBacklogIntakeShadow(
 			RunID:    runID,
 			Workflow: workflow,
 			Runner: map[string]any{
-				"annotation":   backlogIntakeShadowAnnotation,
-				"itemId":       item.ID,
-				"verdict":      string(outcome.Decision),
-				"flagged":      outcome.Decision == decisiongate.Yes,
-				"probability":  outcome.Probability,
-				"cached":       outcome.Cached,
-				"error":        judgeErr != nil,
-				"peerCount":    peerCount,
-				"shadowSample": sample,
+				"annotation":    backlogIntakeShadowAnnotation,
+				"itemId":        item.ID,
+				"provider":      string(repo.Provider),
+				"repositoryKey": repo.CanonicalKey(),
+				"verdict":       string(outcome.Decision),
+				"flagged":       outcome.Decision == decisiongate.Yes,
+				"probability":   outcome.Probability,
+				"cached":        outcome.Cached,
+				"error":         judgeErr != nil,
+				"peerCount":     peerCount,
+				"shadowSample":  sample,
 			},
 		}
 		if err := annotations.Append(record); err != nil {
