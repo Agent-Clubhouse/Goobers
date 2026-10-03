@@ -2,6 +2,7 @@ package v30
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -199,7 +200,7 @@ func branchInputsFromProblems(m *Machine) []string {
 					"task %q inputsFrom %q references stage %q in parallel %q branch %q, but that stage does not run on every successful path to @join",
 					task.Name, inputKey, ref.stage, ref.parallel, ref.branch))
 			}
-			if len(producer.ExpectedOutputs) > 0 && !containsString(producer.ExpectedOutputs, ref.key) {
+			if len(producer.ExpectedOutputs) > 0 && !slices.Contains(producer.ExpectedOutputs, ref.key) {
 				problems = append(problems, fmt.Sprintf(
 					"task %q inputsFrom %q references output %q from parallel %q branch %q stage %q, but that stage declares outputs %v",
 					task.Name, inputKey, ref.key, ref.parallel, ref.branch, ref.stage, producer.ExpectedOutputs))

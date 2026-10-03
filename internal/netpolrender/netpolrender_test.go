@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -324,8 +325,8 @@ func TestRenderDeterministicAndDeduplicated(t *testing.T) {
 	}
 	// ci-linux and ci-linux-b share one restriction SET → one class.
 	for _, class := range first.Classes {
-		if contains(class.Runners, "ci-linux") {
-			if !contains(class.Runners, "ci-linux-b") {
+		if slices.Contains(class.Runners, "ci-linux") {
+			if !slices.Contains(class.Runners, "ci-linux-b") {
 				t.Errorf("same restriction set split into two classes: %v", class.Runners)
 			}
 		}
