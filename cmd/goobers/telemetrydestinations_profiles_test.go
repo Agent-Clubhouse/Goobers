@@ -108,11 +108,6 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 		}
 		return client, health
 	}
-	shutdown := func(client *telemetry.Client) {
-		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-		defer cancel()
-		_ = client.Shutdown(ctx)
-	}
 	client, health := start()
 	_, span, err := client.StartSchedulerSpan(t.Context(), telemetry.SchedulerAttributes{Gaggle: "fixture", WorkflowID: "fixture", Action: "dispatch"})
 	if err != nil {
@@ -120,8 +115,8 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 	}
 	span.End()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
 	_ = client.Flush(ctx)
-	cancel()
 	waitNamedTelemetry(t, func() bool {
 		s := health.Snapshot()
 		return s.Destinations["bad"].Replay.ActiveFailure && s.Destinations["good"].Replay.LastSuccess != nil
@@ -130,7 +125,7 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 	if before.PendingRecords != 1 || before.FailureClass == "" {
 		t.Fatalf("lost per-destination replay health: %+v", before)
 	}
-	shutdown(client)
+	_ = client.Shutdown(ctx)
 	cfg.Telemetry.Exporters[0], cfg.Telemetry.Exporters[1] = cfg.Telemetry.Exporters[1], cfg.Telemetry.Exporters[0]
 	available.Store(true)
 	client, health = start()
@@ -138,7 +133,7 @@ func TestNamedTelemetryAzureReplayHealthSurvivesRestartAndReorder(t *testing.T) 
 		s := health.Snapshot().Destinations["bad"].Replay
 		return !s.ActiveFailure && s.PendingRecords == 0 && s.LastSuccess != nil
 	})
-	shutdown(client)
+	_ = client.Shutdown(ctx)
 }
 
 func waitNamedTelemetry(t *testing.T, ready func() bool) {
