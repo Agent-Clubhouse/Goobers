@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { Route } from "../src/routing";
 
 const smokeRunId = "01JZE2ESMOKERUN";
@@ -52,6 +52,31 @@ function trackPageErrors(page: Page): string[] {
     errors.push(error.message);
   });
   return errors;
+}
+
+async function expectInVisualViewport(locator: Locator, description: string) {
+  await expect
+    .poll(
+      () =>
+        locator.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const viewport = window.visualViewport;
+          const left = viewport?.offsetLeft ?? 0;
+          const top = viewport?.offsetTop ?? 0;
+          const right = left + (viewport?.width ?? window.innerWidth);
+          const bottom = top + (viewport?.height ?? window.innerHeight);
+          return (
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.right > left &&
+            bounds.left < right &&
+            bounds.bottom > top &&
+            bounds.top < bottom
+          );
+        }),
+      { message: `${description} should intersect the visual viewport` },
+    )
+    .toBe(true);
 }
 
 for (const [name, { path, heading }] of Object.entries(ROUTES)) {
@@ -166,6 +191,7 @@ test("keeps Overview content first without horizontal overflow across compact la
     const outcomes = page.getByRole("region", { name: "Recent outcomes" });
     const active = page.getByRole("region", { name: "Active runs" });
     await expect(active).toContainText("01JZE2ESMOKERUN");
+    const activeRow = active.locator(".data-row").filter({ hasText: smokeRunId });
     const outcomeRow = outcomes.locator(".data-row").filter({ hasText: completedRunId });
     await expect(outcomeRow).toBeVisible();
     await expect(outcomeRow.locator(`a[aria-label="Open run ${completedRunId}"]`)).toHaveAttribute(
@@ -179,10 +205,13 @@ test("keeps Overview content first without horizontal overflow across compact la
       ),
     ).toBeVisible();
 
-    const primaryContent = viewport.width <= 480 ? active : status;
-    const box = await primaryContent.boundingBox();
-    expect(box, "primary Overview content should have geometry").not.toBeNull();
-    expect(box!.y).toBeLessThan(viewport.height);
+    if (viewport.width === 390) {
+      await expectInVisualViewport(
+        page.getByRole("heading", { level: 1 }),
+        "Overview title at 390x844",
+      );
+      await expectInVisualViewport(activeRow, "active run at 390x844");
+    }
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
@@ -193,7 +222,17 @@ test("keeps Overview content first without horizontal overflow across compact la
   const session = await page.context().newCDPSession(page);
   await session.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
   await expect.poll(() => page.evaluate(() => window.visualViewport?.scale)).toBe(2);
-  await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
+  await expectInVisualViewport(
+    page.getByRole("heading", { level: 1 }),
+    "Overview title at 200% zoom",
+  );
+  await expectInVisualViewport(
+    page
+      .getByRole("region", { name: "Active runs" })
+      .locator(".data-row")
+      .filter({ hasText: smokeRunId }),
+    "active run at 200% zoom",
+  );
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 });
 
