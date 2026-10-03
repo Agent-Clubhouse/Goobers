@@ -58,3 +58,26 @@ func TestReadRegularInRoot(t *testing.T) {
 		}
 	})
 }
+
+func TestReadRegularFileGrowthAfterStat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "growing")
+	if err := os.WriteFile(path, []byte("12345678"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := readRegular(file, info, 8); !errors.Is(err, ErrLimitExceededDuringRead) {
+		t.Fatalf("error = %v, want ErrLimitExceededDuringRead", err)
+	}
+}

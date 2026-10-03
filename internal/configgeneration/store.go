@@ -269,6 +269,9 @@ func (s Store) Acquire(ctx context.Context, digest string) (string, *lock.Handle
 
 func readRetainedArchive(directory, digest string) (*Archive, error) {
 	data, err := safeio.ReadRegularInRoot(directory, "archive.json", MaxArchiveBytes)
+	if errors.Is(err, safeio.ErrLimitExceededDuringRead) {
+		return nil, errors.New("config generation archive exceeds size limit")
+	}
 	if errors.Is(err, safeio.ErrLimitExceeded) {
 		return nil, errors.New("invalid retained config archive")
 	}

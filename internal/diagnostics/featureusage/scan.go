@@ -263,6 +263,9 @@ func observeChild(event journal.Event, seen map[string]bool, result map[string]C
 
 func pinnedBytes(dir string, ref journal.Ref, limit int64) ([]byte, error) {
 	data, err := safeio.ReadRegularInRoot(dir, ref.Path, limit)
+	if errors.Is(err, safeio.ErrLimitExceededDuringRead) {
+		return nil, errors.New("pinned definition size or digest mismatch")
+	}
 	if errors.Is(err, safeio.ErrLimitExceeded) {
 		return nil, errors.New("pinned definition exceeds bounds")
 	}
