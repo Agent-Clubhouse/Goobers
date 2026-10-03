@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 	if report.Execution.IdentityMode != "actual" || report.Execution.Source.Fidelity != "static" {
 		t.Fatalf("execution = %+v, want actual/static", report.Execution)
 	}
-	if len(report.MutationBoundary) == 0 || !containsString(report.MutationBoundary, "no repository write") || !containsString(report.MutationBoundary, "no model execution") {
+	if len(report.MutationBoundary) == 0 || !slices.Contains(report.MutationBoundary, "no repository write") || !slices.Contains(report.MutationBoundary, "no model execution") {
 		t.Fatalf("mutation boundary = %v, want explicit no-write/no-model entries", report.MutationBoundary)
 	}
 
@@ -64,15 +65,15 @@ func TestRuntimePreflightJSONReportContract(t *testing.T) {
 		stageByName[stage.Name] = stage
 	}
 	claim := stageByName["claim"]
-	if claim.Kind != "task:deterministic" || !containsString(claim.CredentialCapabilities, "github:issues:write") || !containsString(claim.RequiredCapabilities, "node@20") {
+	if claim.Kind != "task:deterministic" || !slices.Contains(claim.CredentialCapabilities, "github:issues:write") || !slices.Contains(claim.RequiredCapabilities, "node@20") {
 		t.Fatalf("claim stage = %+v, want deterministic capabilities", claim)
 	}
 	assertSelectedRunner(t, claim, "linux-pool", "image")
 	implement := stageByName["implement"]
-	if implement.Kind != "task:agentic" || implement.Goober != "coder" || implement.Harness != "copilot" || !containsString(implement.CredentialCapabilities, "agent:model") {
+	if implement.Kind != "task:agentic" || implement.Goober != "coder" || implement.Harness != "copilot" || !slices.Contains(implement.CredentialCapabilities, "agent:model") {
 		t.Fatalf("implement stage = %+v, want agentic goober/harness/capabilities", implement)
 	}
-	if !containsString(implement.RequiredCapabilities, "node@20") {
+	if !slices.Contains(implement.RequiredCapabilities, "node@20") {
 		t.Fatalf("implement required capabilities = %v, want gaggle-level node@20 floor", implement.RequiredCapabilities)
 	}
 	assertSelectedRunner(t, implement, "linux-pool", "image")
@@ -267,7 +268,7 @@ func TestRuntimePreflightStagesIncludesGatePlacementRequirements(t *testing.T) {
 	if len(stages) != 1 {
 		t.Fatalf("stages = %d, want 1", len(stages))
 	}
-	if !containsString(stages[0].RequiredCapabilities, "node@20") || !containsString(stages[0].RequiredCapabilities, "harness:copilot") {
+	if !slices.Contains(stages[0].RequiredCapabilities, "node@20") || !slices.Contains(stages[0].RequiredCapabilities, "harness:copilot") {
 		t.Fatalf("gate required capabilities = %v, want effective placement requirements", stages[0].RequiredCapabilities)
 	}
 }

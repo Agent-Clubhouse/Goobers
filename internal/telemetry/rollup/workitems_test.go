@@ -36,6 +36,7 @@ func TestWorkItemsGroupsMutationsAndReturnsActionTimeline(t *testing.T) {
 		{"run-1", 1, "issue", "42", "https://github.com/acme/app/issues/42", "claim", start.Add(time.Minute)},
 		{"run-1", 2, "pr", "99", "https://github.com/acme/app/pull/99", "open", start.Add(2 * time.Minute)},
 		{"run-2", 1, "pr", "99", "", "merge", start.Add(time.Hour + time.Minute)},
+		{"run-2", 2, "pr", "99", "", "comment", start.Add(time.Hour + 2*time.Minute)},
 	} {
 		if _, err := db.sql.Exec(`
 			INSERT INTO provider_mutations
@@ -70,7 +71,8 @@ func TestWorkItemsGroupsMutationsAndReturnsActionTimeline(t *testing.T) {
 		t.Fatalf("items = %#v, hasMore = %v", items, hasMore)
 	}
 	item := items[0]
-	if item.ExternalID != "99" || item.ActionCount != 2 || item.LastOperation != "merge" ||
+	if item.ExternalID != "99" || item.ActionCount != 3 || item.LastOperation != "comment" ||
+		item.Outcome != "done" ||
 		item.URL != "https://github.com/acme/app/pull/99" || item.Workflow != "merge-review" {
 		t.Fatalf("work item = %#v", item)
 	}
@@ -79,8 +81,9 @@ func TestWorkItemsGroupsMutationsAndReturnsActionTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if truncated || len(actions) != 2 || actions[0].Operation != "merge" ||
-		actions[1].Operation != "open" || actions[0].RunID != "run-2" {
+	if truncated || len(actions) != 3 || actions[0].Operation != "comment" ||
+		actions[0].Outcome != "done" || actions[1].Operation != "merge" ||
+		actions[2].Operation != "open" || actions[0].RunID != "run-2" {
 		t.Fatalf("actions = %#v, truncated = %v", actions, truncated)
 	}
 	related, err := db.RelatedPullRequests(context.Background(), "github", "acme/app", "42")
@@ -90,6 +93,62 @@ func TestWorkItemsGroupsMutationsAndReturnsActionTimeline(t *testing.T) {
 	if len(related) != 1 || related[0].ExternalID != "99" ||
 		related[0].Repository != "acme/app" {
 		t.Fatalf("related pull requests = %#v", related)
+	}
+}
+
+func TestWorkItemsClassifiesIssueOutcomes(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	for _, run := range []struct {
+		id     string
+		status string
+		at     time.Time
+	}{
+		{"run-done", "completed", start},
+		{"run-failed", "failed", start.Add(time.Hour)},
+	} {
+		if _, err := db.sql.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, status, started_at)
+			VALUES (?, 'implementation', 1, 'core', ?, ?)`,
+			run.id, run.status, formatTime(run.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, mutation := range []struct {
+		runID     string
+		seq       int
+		external  string
+		operation string
+		at        time.Time
+	}{
+		{"run-done", 1, "42", "close", start.Add(time.Minute)},
+		{"run-done", 2, "42", "comment", start.Add(2 * time.Minute)},
+		{"run-failed", 1, "77", "comment", start.Add(time.Hour + time.Minute)},
+	} {
+		if _, err := db.sql.Exec(`
+			INSERT INTO provider_mutations
+				(run_id, seq, provider, kind, external_id, url, operation, occurred_at)
+			VALUES (?, ?, 'github', 'issue', ?, ?, ?, ?)`,
+			mutation.runID, mutation.seq, mutation.external,
+			"https://github.com/acme/app/issues/"+mutation.external,
+			mutation.operation, formatTime(mutation.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, _, err := db.WorkItems(context.Background(), WorkItemQuery{Kind: "issue", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].ExternalID != "77" || items[0].Outcome != "bad-terminal" {
+		t.Fatalf("failed item = %#v", items[0])
+	}
+	if items[1].ExternalID != "42" || items[1].LastOperation != "comment" ||
+		items[1].Outcome != "done" {
+		t.Fatalf("closed item = %#v", items[1])
 	}
 }
 

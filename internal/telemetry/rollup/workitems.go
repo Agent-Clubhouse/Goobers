@@ -54,6 +54,7 @@ type WorkItem struct {
 	Kind          string
 	ExternalID    string
 	URL           string
+	Outcome       string
 	ActionCount   int
 	LastOperation string
 	LastActionAt  time.Time
@@ -77,6 +78,7 @@ type WorkItemAction struct {
 	RunID      string
 	Seq        uint64
 	URL        string
+	Outcome    string
 	Operation  string
 	OccurredAt time.Time
 	Gaggle     string
@@ -170,6 +172,13 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 				COUNT(*) OVER (
 					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_repository)
 				) AS action_count,
+				MAX(CASE
+					WHEN pm.kind = 'pr' AND lower(trim(COALESCE(pm.operation, ''))) = 'merge' THEN 1
+					WHEN pm.kind = 'issue' AND lower(trim(COALESCE(pm.operation, ''))) IN ('close', 'close-out', 'close_out') THEN 1
+					ELSE 0
+				END) OVER (
+					PARTITION BY pm.provider, pm.kind, pm.external_id, lower(pm.item_repository)
+				) AS is_done,
 				pm.operation,
 				pm.occurred_at,
 				pm.run_id,
@@ -183,7 +192,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 			FROM resolved pm
 			LEFT JOIN runs r ON r.run_id = pm.run_id
 		)
-		SELECT provider, kind, external_id, item_url, action_count, operation,
+		SELECT provider, kind, external_id, item_url, action_count, is_done, operation,
 		       occurred_at, run_id, gaggle, workflow, status
 		FROM ranked
 		WHERE item_rank = 1
@@ -198,6 +207,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 	items := make([]WorkItem, 0, limit)
 	for rows.Next() {
 		var item WorkItem
+		var isDone bool
 		var occurredAt sql.NullString
 		if err := rows.Scan(
 			&item.Provider,
@@ -205,6 +215,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 			&item.ExternalID,
 			&item.URL,
 			&item.ActionCount,
+			&isDone,
 			&item.LastOperation,
 			&occurredAt,
 			&item.LastRunID,
@@ -218,6 +229,7 @@ func (db *DB) WorkItems(ctx context.Context, query WorkItemQuery) ([]WorkItem, b
 		if item.LastActionAt, err = parseTime(occurredAt); err != nil {
 			return nil, false, err
 		}
+		item.Outcome = workItemOutcome(isDone, item.RunStatus)
 		item.Repository = workItemRepository(item.Provider, item.URL)
 		items = append(items, item)
 	}
@@ -320,8 +332,17 @@ func (db *DB) WorkItemActions(
 			LEFT JOIN known_gaggle_identity USING (provider, kind, external_id, gaggle)
 			LEFT JOIN known_identity USING (provider, kind, external_id)
 		)
-		SELECT pm.run_id, pm.seq, pm.item_url, COALESCE(pm.operation, ''),
-		       pm.occurred_at, pm.gaggle, pm.workflow, pm.status
+		SELECT pm.run_id, pm.seq, pm.item_url,
+		       CASE
+			       WHEN MAX(CASE
+				       WHEN pm.kind = 'pr' AND lower(trim(COALESCE(pm.operation, ''))) = 'merge' THEN 1
+				       WHEN pm.kind = 'issue' AND lower(trim(COALESCE(pm.operation, ''))) IN ('close', 'close-out', 'close_out') THEN 1
+				       ELSE 0
+			       END) OVER () = 1 THEN 'done'
+			       WHEN pm.status IN ('failed', 'aborted', 'escalated') THEN 'bad-terminal'
+			       ELSE 'in-progress'
+		       END,
+		       COALESCE(pm.operation, ''), pm.occurred_at, pm.gaggle, pm.workflow, pm.status
 		FROM resolved pm
 		WHERE `+where+`
 		ORDER BY julianday(pm.occurred_at) DESC, pm.occurred_at DESC, pm.run_id DESC, pm.seq DESC
@@ -340,6 +361,7 @@ func (db *DB) WorkItemActions(
 			&action.RunID,
 			&action.Seq,
 			&action.URL,
+			&action.Outcome,
 			&action.Operation,
 			&occurredAt,
 			&action.Gaggle,
@@ -362,6 +384,18 @@ func (db *DB) WorkItemActions(
 		actions = actions[:MaxWorkItemActions]
 	}
 	return actions, hasMore, nil
+}
+
+func workItemOutcome(done bool, runStatus string) string {
+	if done {
+		return "done"
+	}
+	switch runStatus {
+	case runStatusFailed, runStatusAborted, runStatusEscalated:
+		return "bad-terminal"
+	default:
+		return "in-progress"
+	}
 }
 
 // RelatedPullRequests returns pull requests attributed to runs that also acted on an issue.

@@ -38,6 +38,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -416,7 +417,7 @@ func (w *workerSeams) forPinnedGaggle(gaggle, workflowName, pin string) (*gaggle
 			}
 			continue
 		}
-		if !containsString(served, digest) {
+		if !slices.Contains(served, digest) {
 			served = append(served, digest)
 		}
 		if digest != pin {
@@ -495,7 +496,7 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 			}
 			continue
 		}
-		if !containsString(served, digest) {
+		if !slices.Contains(served, digest) {
 			served = append(served, digest)
 		}
 		if digest == pin {
@@ -504,13 +505,4 @@ func (w *workerSeams) snapshotForPin(gaggle, workflowName, pin string) (*workerC
 		}
 	}
 	return nil, w.refuseGooberPinLocked(gaggle, workflowName, pin, served, unverifiable)
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

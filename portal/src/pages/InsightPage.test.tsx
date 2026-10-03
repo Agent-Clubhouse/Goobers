@@ -244,7 +244,17 @@ describe("Insight page", () => {
       await screen.findByRole("heading", { name: "AIC by pull request and issue" }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Exact recorded usage · Loaded Jul 18, 2026/)).toBeInTheDocument();
-    const table = screen.getByRole("table");
+    const comparison = screen.getByRole("region", { name: "Attributed costs comparison" });
+    expect(comparison).toHaveAttribute("tabindex", "0");
+    expect(comparison).toHaveAccessibleDescription(
+      "Scroll sideways to compare every cost column.",
+    );
+    const table = screen.getByRole("table", { name: "Attributed costs" });
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(4);
+    const pullRequestRow = within(table)
+      .getAllByRole("row")
+      .find((row) => within(row).queryByText("PR #4398"));
+    expect(pullRequestRow).toHaveTextContent("github2.5 AIC");
     expect(screen.getByText("PR #4398")).toBeInTheDocument();
     expect(screen.getByText("Issue #4398")).toBeInTheDocument();
     expect(screen.getAllByText("2.5 AIC").length).toBeGreaterThan(0);
@@ -401,6 +411,7 @@ describe("Insight page", () => {
         name: /AIC trend by bucket.*cumulative.*P95/i,
       }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Cost chart legend" })).toBeInTheDocument();
     expect(screen.getByText("Cumulative AIC")).toBeInTheDocument();
     expect(screen.getByText("P95 run AIC")).toBeInTheDocument();
     expect(screen.getAllByText(/vs\. previous 7 days/)).toHaveLength(2);
