@@ -107,9 +107,6 @@ func ResolveRootedPath(root, rel string, createMissingDirs bool) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("resolve root: %w", err)
 	}
-	if IsRootedOrVolumeBound(rel) {
-		return "", fmt.Errorf("path escapes root: %q", rel)
-	}
 	full := filepath.Join(root, rel)
 	relBack, err := filepath.Rel(root, full)
 	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) || filepath.IsAbs(relBack) {

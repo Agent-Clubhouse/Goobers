@@ -35,15 +35,29 @@ func TestResolveRootedPathCompatibility(t *testing.T) {
 				assertError(t, err, want)
 			})
 
-			t.Run("absolute and volume escapes", func(t *testing.T) {
+			t.Run("absolute and volume paths", func(t *testing.T) {
 				for _, rel := range []string{"/outside", `C:\outside`} {
 					t.Run(rel, func(t *testing.T) {
-						_, err := resolver.call(t.TempDir(), rel, true)
-						want := fmt.Sprintf("path escapes root: %q", rel)
-						if resolver.name == "safepath" {
-							want = fmt.Sprintf("path %q escapes the root", rel)
+						root := t.TempDir()
+						resolvedRoot, err := filepath.EvalSymlinks(root)
+						if err != nil {
+							t.Fatalf("resolve root: %v", err)
 						}
-						assertError(t, err, want)
+						full, err := resolver.call(root, rel, true)
+						if runtime.GOOS == "windows" && filepath.VolumeName(rel) != "" {
+							want := fmt.Sprintf("path escapes root: %q", rel)
+							if resolver.name == "safepath" {
+								want = fmt.Sprintf("path %q escapes the root", rel)
+							}
+							assertError(t, err, want)
+							return
+						}
+						if err != nil {
+							t.Fatalf("resolve rooted or volume-bound path: %v", err)
+						}
+						if want := filepath.Join(resolvedRoot, rel); full != want {
+							t.Fatalf("resolved path = %q, want %q", full, want)
+						}
 					})
 				}
 			})
