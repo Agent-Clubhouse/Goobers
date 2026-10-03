@@ -225,7 +225,10 @@ func FeaturesForGaggle(def Definition, spec apiv1.GaggleSpec) ([]Feature, error)
 	if spec.Enabled != nil {
 		features = append(features, binaryLayerFeature("gaggle.spec.enabled"))
 	}
-	if spec.Cost != nil || spec.Enabled != nil {
+	if spec.Health != nil {
+		features = append(features, binaryLayerFeatureSince("gaggle.spec.health", "dev"))
+	}
+	if spec.Cost != nil || spec.Enabled != nil || spec.Health != nil {
 		sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
 	}
 	return features, nil
@@ -238,6 +241,7 @@ func binaryLayerFeatures() []Feature {
 	return []Feature{
 		binaryLayerFeature("gaggle.spec.cost.enabled"),
 		binaryLayerFeature("gaggle.spec.enabled"),
+		binaryLayerFeatureSince("gaggle.spec.health", "dev"),
 		binaryLayerFeature("workflow.spec.enabled"),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.enabled", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),
 		binaryLayerFeatureForDSL("workflow.spec.backprop.version", "dev", v30.DSLVersion, supportmatrix.V31DSLVersion),

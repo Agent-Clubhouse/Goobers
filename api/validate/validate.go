@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/configboundary"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/fieldpredicate"
+	"github.com/goobers/goobers/internal/gagglehealth"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/lifecycle"
@@ -358,6 +359,7 @@ const (
 	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorGaggleMixedProviderADO   WarningCode = "CFG010"
 	errorGaggleGitHubBaseURL      WarningCode = "CFG013"
+	errorGaggleHealth             WarningCode = "CFG014"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1179,6 +1181,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Sibling-scope overlap warning (MIRC-2, #1901).
 	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
+	ix.checkGaggleHealth(r)
 	ix.checkGaggleOutboxMirrorPath(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
@@ -2192,6 +2195,17 @@ func (ix *index) checkGaggleRunControls(r *Report) {
 		}
 		if err := runcontrol.Validate("spec.runControls", *g.Spec.RunControls); err != nil {
 			r.add(errorRunControls, Error, ix.gaggleFile[name], "Gaggle", name, "%v", err)
+		}
+	}
+}
+
+func (ix *index) checkGaggleHealth(r *Report) {
+	for name, g := range ix.gaggles {
+		if g.Spec.Health == nil {
+			continue
+		}
+		if err := gagglehealth.ValidatePolicy(*g.Spec.Health); err != nil {
+			r.add(errorGaggleHealth, Error, ix.gaggleFile[name], "Gaggle", name, "spec.health: %v", err)
 		}
 	}
 }

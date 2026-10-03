@@ -102,6 +102,15 @@ never appear in the gaggle. Every non-empty project or backlog `connectionRef`
 must resolve there. Use a `repo` connection for the project and a `backlog`
 connection for the backlog.
 
+`spec.health` is optional and shared across supported workflow DSL pins. Omission
+enables conservative observation, warning notifications, and only the built-in
+idempotent orphaned-claim repair. It may set the evaluation interval; detector
+thresholds; per-code `observe`, `repair`, or `escalate` handling; severity
+increases; notification escalation; and a filtered notification-only
+`eventWorkflow`. Never invent finding codes or use a workflow as repair
+authority: validation rejects unknown codes, severity reductions, and repairs
+outside the product's hard safety allowlist.
+
 ### Goober
 
 Provide:
