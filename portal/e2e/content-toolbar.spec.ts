@@ -78,6 +78,44 @@ test("isolates mobile filter drafts and supports dismissal, chips, reset, and Ba
   await expect(page.getByRole("region", { name: "Run history" })).toBeVisible();
 });
 
+test("applies, removes, and resets advanced Runs sheet filters", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/runs?status=all");
+
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Filters" });
+  await dialog.getByLabel("Draft stage filter").fill("review");
+  await dialog.getByLabel("Draft outcome filter").selectOption("failure");
+  await dialog.getByLabel("Draft population filter").selectOption("attempts");
+  await dialog.getByLabel("Draft since filter").fill("2026-07-18T00:00:00Z");
+  await dialog.getByLabel("Draft until filter").fill("2026-07-19T00:00:00Z");
+  await dialog.getByLabel("Draft time window filter").selectOption("24h");
+  await dialog.getByRole("button", { name: "Apply filters" }).click();
+
+  await expect(page).toHaveURL(
+    /#\/runs\?stage=review&outcome=failure&population=attempts&since=2026-07-18T00%3A00%3A00Z&until=2026-07-19T00%3A00%3A00Z&window=24h&status=all$/,
+  );
+  await expect(page.getByLabel("7 active filters")).toBeVisible();
+  await page.getByRole("button", { name: "Remove Stage: review filter" }).click();
+  await expect(page).not.toHaveURL(/stage=review/);
+  await page.getByRole("button", { name: "Reset filters" }).click();
+  await expect(page).toHaveURL(/#\/runs$/);
+});
+
+test("cancels invalid-route sheet edits without changing the route", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto("/#/runs?status=surprising");
+
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Filters" });
+  await dialog.getByRole("button", { name: "complete" }).click();
+  await expect(page).toHaveURL(/#\/runs\?status=surprising$/);
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/#\/runs\?status=surprising$/);
+});
+
 test("reflows controls at an equivalent 200% browser zoom", async ({ page }) => {
   await page.setViewportSize({ width: 780, height: 844 });
   await page.goto("/#/work-items");
