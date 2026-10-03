@@ -159,6 +159,36 @@ function routeScrollKey(route: Route): string {
   return route.page === "run" ? `run/${route.id}` : routeHash(route);
 }
 
+interface RouteRestoreState {
+  focusKey?: string;
+  scrollTop: number;
+}
+
+interface PortalHistoryState {
+  portalRestore?: RouteRestoreState;
+}
+
+function rememberCurrentRoutePosition(): void {
+  const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+  if (!scrollPane) {
+    return;
+  }
+  const active = document.activeElement;
+  const focusKey =
+    active instanceof HTMLElement ? active.dataset.focusRestore : undefined;
+  const state = (window.history.state ?? {}) as PortalHistoryState;
+  window.history.replaceState(
+    {
+      ...state,
+      portalRestore: {
+        focusKey,
+        scrollTop: scrollPane.scrollTop,
+      },
+    } satisfies PortalHistoryState,
+    "",
+  );
+}
+
 function Portal({
   client,
   mode,
@@ -177,12 +207,33 @@ function Portal({
   const [config, setConfig] = useState<PortalConfig>(cachedConfig ?? defaultPortalConfig);
   const [loading, setLoading] = useState(cachedConfig === undefined);
   const initialRoute = useRef(true);
+  const linkedRoutePending = useRef(false);
   const scrollKey = routeScrollKey(route);
 
   useEffect(() => {
-    const onHashChange = () => setRoute(parseRoute());
+    const onHashChange = () => {
+      if (linkedRoutePending.current) {
+        linkedRoutePending.current = false;
+        const state = (window.history.state ?? {}) as PortalHistoryState;
+        const { portalRestore: _portalRestore, ...nextState } = state;
+        window.history.replaceState(nextState, "");
+      }
+      setRoute(parseRoute());
+    };
+    const rememberLinkedRoute = (event: MouseEvent) => {
+      const target = event.target;
+      const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (link?.hash.startsWith("#/") && link.hash !== window.location.hash) {
+        rememberCurrentRoutePosition();
+        linkedRoutePending.current = true;
+      }
+    };
     window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
+    document.addEventListener("click", rememberLinkedRoute, { capture: true });
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+      document.removeEventListener("click", rememberLinkedRoute, { capture: true });
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -191,13 +242,20 @@ function Portal({
       return;
     }
     const scrollPane = document.querySelector<HTMLElement>(".portal-main");
+    const restore = (window.history.state as PortalHistoryState | null)?.portalRestore;
+    const scrollTop = restore?.scrollTop ?? 0;
     if (typeof scrollPane?.scrollTo === "function") {
-      scrollPane.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      scrollPane.scrollTo({ top: scrollTop, left: 0, behavior: "auto" });
     } else if (scrollPane) {
-      scrollPane.scrollTop = 0;
+      scrollPane.scrollTop = scrollTop;
       scrollPane.scrollLeft = 0;
     }
-    document.getElementById("main-content")?.focus();
+    const focusTarget = restore?.focusKey
+      ? document.querySelector<HTMLElement>(
+          `[data-focus-restore="${CSS.escape(restore.focusKey)}"]`,
+        )
+      : null;
+    (focusTarget ?? document.getElementById("main-content"))?.focus();
   }, [scrollKey]);
 
   useEffect(() => {
@@ -259,6 +317,8 @@ function Portal({
       if (window.location.hash === nextHash) {
         setRoute(nextRoute);
       } else {
+        rememberCurrentRoutePosition();
+        linkedRoutePending.current = true;
         window.location.hash = nextHash;
       }
     },

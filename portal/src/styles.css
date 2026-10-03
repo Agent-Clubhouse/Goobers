@@ -6828,7 +6828,7 @@ code,
   font-size: var(--font-ui);
   font-weight: 680;
   margin-bottom: -1px;
-  min-height: 42px;
+  min-height: 44px;
   padding: 8px 14px;
 }
 
@@ -8392,6 +8392,15 @@ code,
 }
 
 @media (max-width: 820px) {
+  button,
+  select,
+  summary,
+  a.nav-item,
+  a.scope-pivot-link,
+  .data-row {
+    min-height: 44px;
+  }
+
   .instance-summary-row,
   .daemon-summary-row {
     gap: 16px;
@@ -8939,7 +8948,9 @@ code,
     color: var(--accent-ink);
     cursor: pointer;
     font-size: 12px;
-    min-height: 24px;
+    align-items: center;
+    display: flex;
+    min-height: 44px;
     padding: 5px 0;
   }
 
@@ -8972,6 +8983,52 @@ code,
 }
 
 @media (max-width: 480px) {
+  .event-detail-backdrop,
+  .artifact-dialog-backdrop {
+    align-items: stretch;
+    justify-items: stretch;
+    padding: 0;
+  }
+
+  .event-detail-dialog,
+  .artifact-dialog {
+    border: 0;
+    border-radius: 0;
+    height: 100dvh;
+    max-height: none;
+    max-width: none;
+    overscroll-behavior: contain;
+    padding: 16px;
+  }
+
+  .event-detail-dialog header,
+  .artifact-dialog header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  .dialog-close {
+    align-items: center;
+    display: inline-flex;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .event-detail-dialog footer {
+    margin-top: auto;
+  }
+
+  .run-detail-tabs {
+    scrollbar-width: thin;
+  }
+
+  .run-detail-tab {
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
   .topbar-divider,
   .topbar-instance-context {
     display: none;

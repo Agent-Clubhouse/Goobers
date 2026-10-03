@@ -184,6 +184,103 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
   }
 });
 
+for (const viewport of [
+  { width: 320, height: 800 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+  { width: 667, height: 375 },
+]) {
+  test(`keeps run details usable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.goto(`/#/run/${smokeRunId}`);
+
+    await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+    const tabs = page.getByRole("tablist", { name: "Run detail views" });
+    for (const name of ["Overview", "Artifacts", "Diagnostics", "Journal"]) {
+      const tab = tabs.getByRole("tab", { name });
+      await expect(tab).toBeVisible();
+      const box = await tab.boundingBox();
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+    }
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+      .toBeLessThanOrEqual(1);
+
+    await tabs.getByRole("tab", { name: "Journal" }).click();
+    const event = page.getByRole("button", { name: /^Select sequence 3:/ });
+    await event.click();
+    const dialog = page.getByRole("dialog", { name: "Event detail" });
+    await expect(dialog).toBeFocused();
+    await expect(dialog).toContainText("Sequence 3");
+    if (viewport.width <= 480) {
+      const box = await dialog.boundingBox();
+      expect(box?.width).toBe(viewport.width);
+      expect(box?.height).toBe(viewport.height);
+    }
+    await dialog.getByRole("button", { name: "Close event detail" }).click();
+    await expect(event).toBeFocused();
+  });
+}
+
+test("drills from an error occurrence into its run on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/errors");
+
+  await page
+    .getByRole("link", { name: `Open latest run ${smokeRunId} for error fixture.error` })
+    .click();
+  await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+});
+
+test("restores the originating run row and list scroll after browser back", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/runs?status=all");
+
+  const row = page.getByRole("link", { name: `Open run ${smokeRunId}` });
+  await row.focus();
+  await page.locator(".portal-main").evaluate((element) => {
+    const spacer = document.createElement("div");
+    spacer.dataset.testScrollSpacer = "true";
+    spacer.style.height = "600px";
+    element.append(spacer);
+    element.scrollTop = 180;
+  });
+  const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+  await row.evaluate((element) => (element as HTMLAnchorElement).click());
+  await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(0);
+
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
+  await expect(row).toBeFocused();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(scrollTop);
+});
+
+test("keeps the run event sheet usable at 200 percent page zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await page.goto(`/#/run/${smokeRunId}`);
+  await page.getByRole("tab", { name: "Journal" }).click();
+  await page.getByRole("button", { name: /^Select sequence 3:/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Event detail" });
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+
+  await expect(dialog.getByRole("button", { name: "Close event detail" })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+});
+
 test("loads the Gaggle page from fixture daemon data", async ({ page }) => {
   const consoleErrors = trackConsoleErrors(page);
   await page.goto("/#/gaggle/core");

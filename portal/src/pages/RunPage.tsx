@@ -444,7 +444,7 @@ function RunDetailWorkspace({
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
-        <button onClick={() => navigate({ page: "runs" })} type="button">
+        <button aria-label="Back to runs" onClick={() => window.history.back()} type="button">
           Runs
         </button>
         <Icon name="chevron" size={14} />
@@ -1082,6 +1082,9 @@ function EventDetailDialog({
   workflow?: string;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const stageId = eventNodeId(event, runId);
@@ -1098,10 +1101,33 @@ function EventDetailDialog({
       if (keyEvent.key === "Escape") {
         keyEvent.preventDefault();
         onCloseRef.current();
+        return;
+      }
+      if (keyEvent.key === "Tab" && dialogRef.current) {
+        const controls = Array.from(
+          dialogRef.current.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        const first = controls.at(0);
+        const last = controls.at(-1);
+        if (
+          first &&
+          last &&
+          (keyEvent.shiftKey
+            ? document.activeElement === first || document.activeElement === dialogRef.current
+            : document.activeElement === last)
+        ) {
+          keyEvent.preventDefault();
+          (keyEvent.shiftKey ? last : first).focus();
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
   }, []);
 
   return (
