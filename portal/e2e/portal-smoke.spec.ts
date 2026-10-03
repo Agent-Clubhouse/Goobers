@@ -513,7 +513,7 @@ test("restores the originating instance summary focus and scroll", async ({ page
   const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
 
   await origin.click();
-  await expect(page.getByRole("heading", { name: "Recovery metadata" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Recovery metadata", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Back to overview" }).click();
 
   await expect(page.getByRole("heading", { name: /healthy|attention/i }).first()).toBeVisible();
