@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,16 +15,22 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/platform/durability"
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 const maxHealthEventBytes = 256 << 10
 
+// RetentionResolver returns the resolved evidence-retention policy for a
+// gaggle.
+type RetentionResolver func(gaggle string) (time.Duration, error)
+
 // Store owns the instance-level health journal and its derived per-gaggle
 // projections. The journal is authoritative; state files are replaceable caches.
 type Store struct {
-	root      string
-	retention time.Duration
-	now       func() time.Time
+	root             string
+	resolveRetention RetentionResolver
+	now              func() time.Time
+	lock             *platformlock.Handle
 
 	mu     sync.Mutex
 	events []apiv1.GaggleHealthEvent
@@ -31,30 +38,52 @@ type Store struct {
 
 // OpenStore opens an instance health store, validates its journal, and rebuilds
 // every gaggle projection so restart recovery does not depend on state files.
-func OpenStore(instanceRoot string, retention time.Duration) (*Store, error) {
-	return openStore(instanceRoot, retention, time.Now)
+func OpenStore(instanceRoot string, resolveRetention RetentionResolver) (*Store, error) {
+	return openStore(instanceRoot, resolveRetention, time.Now)
 }
 
-func openStore(instanceRoot string, retention time.Duration, now func() time.Time) (*Store, error) {
+func openStore(instanceRoot string, resolveRetention RetentionResolver, now func() time.Time) (*Store, error) {
 	if !filepath.IsAbs(instanceRoot) {
 		return nil, errors.New("gagglehealth: absolute instance root required")
 	}
-	if retention <= 0 || now == nil {
-		return nil, errors.New("gagglehealth: positive evidence retention required")
+	if resolveRetention == nil || now == nil {
+		return nil, errors.New("gagglehealth: retention resolver and clock are required")
 	}
-	store := &Store{root: filepath.Join(instanceRoot, "health"), retention: retention, now: now}
+	store := &Store{root: filepath.Join(instanceRoot, "health"), resolveRetention: resolveRetention, now: now}
 	if err := os.MkdirAll(store.root, 0o700); err != nil {
 		return nil, fmt.Errorf("gagglehealth: create store: %w", err)
 	}
+	lock, err := platformlock.TryAcquire(filepath.Join(store.root, "store.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("gagglehealth: acquire store lock: %w", err)
+	}
+	store.lock = lock
 	events, err := readEvents(store.eventsPath())
 	if err != nil {
+		_ = store.lock.Release()
 		return nil, err
 	}
 	store.events = events
 	if err := store.rebuildAllLocked(); err != nil {
+		_ = store.lock.Release()
 		return nil, err
 	}
 	return store, nil
+}
+
+// Close releases the store's process lock.
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lock == nil {
+		return nil
+	}
+	err := s.lock.Release()
+	s.lock = nil
+	return err
 }
 
 // Append validates and durably appends one globally sequenced transition, then
@@ -65,6 +94,9 @@ func (s *Store) Append(event apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapsho
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lock == nil {
+		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: store is closed")
+	}
 
 	wantSequence := uint64(1)
 	if len(s.events) != 0 {
@@ -98,6 +130,9 @@ func (s *Store) Snapshot(gaggle string) (apiv1.GaggleHealthSnapshot, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lock == nil {
+		return apiv1.GaggleHealthSnapshot{}, errors.New("gagglehealth: store is closed")
+	}
 	if err := validateStoreGaggle(gaggle); err != nil {
 		return apiv1.GaggleHealthSnapshot{}, err
 	}
@@ -141,7 +176,14 @@ func (s *Store) project(gaggle string, events []apiv1.GaggleHealthEvent) (apiv1.
 			partition = append(partition, event)
 		}
 	}
-	return RebuildWithRetention(gaggle, partition, s.retention, s.now())
+	retention, err := s.resolveRetention(gaggle)
+	if err != nil {
+		return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("resolve retention for %q: %w", gaggle, err)
+	}
+	if retention <= 0 {
+		return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("resolve retention for %q: positive duration required", gaggle)
+	}
+	return RebuildWithRetention(gaggle, partition, retention, s.now())
 }
 
 func (s *Store) eventsPath() string {
@@ -224,7 +266,7 @@ func appendEvent(path string, event apiv1.GaggleHealthEvent) error {
 }
 
 func readEvents(path string) ([]apiv1.GaggleHealthEvent, error) {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -232,22 +274,43 @@ func readEvents(path string) ([]apiv1.GaggleHealthEvent, error) {
 		return nil, fmt.Errorf("gagglehealth: open journal: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxHealthEventBytes)
+	reader := bufio.NewReaderSize(file, maxHealthEventBytes+1)
 	var events []apiv1.GaggleHealthEvent
-	for scanner.Scan() {
+	var completeBytes int64
+	for {
+		record, readErr := reader.ReadSlice('\n')
+		if errors.Is(readErr, io.EOF) {
+			if len(record) != 0 {
+				if err := file.Truncate(completeBytes); err != nil {
+					return nil, fmt.Errorf("gagglehealth: truncate torn journal tail: %w", err)
+				}
+				if err := file.Sync(); err != nil {
+					return nil, fmt.Errorf("gagglehealth: sync repaired journal: %w", err)
+				}
+				if err := durability.SyncDir(filepath.Dir(path)); err != nil {
+					return nil, fmt.Errorf("gagglehealth: sync repaired journal directory: %w", err)
+				}
+			}
+			return events, nil
+		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			return nil, errors.New("gagglehealth: journal event exceeds size limit")
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("gagglehealth: read journal: %w", readErr)
+		}
+		completeBytes += int64(len(record))
 		var event apiv1.GaggleHealthEvent
-		decoder := json.NewDecoder(strings.NewReader(scanner.Text()))
+		decoder := json.NewDecoder(strings.NewReader(string(record[:len(record)-1])))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&event); err != nil {
 			return nil, fmt.Errorf("gagglehealth: decode journal event %d: %w", len(events)+1, err)
 		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("gagglehealth: decode journal event %d: trailing data", len(events)+1)
+		}
 		events = append(events, event)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("gagglehealth: read journal: %w", err)
-	}
-	return events, nil
 }
 
 func validateStoreGaggle(gaggle string) error {
