@@ -1,3 +1,4 @@
+// Package releaseversion parses canonical release version strings.
 package releaseversion
 
 import (
