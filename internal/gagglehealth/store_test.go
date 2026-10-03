@@ -163,6 +163,35 @@ func TestStoreRejectsJournalSequenceGaps(t *testing.T) {
 	}
 }
 
+func TestStoreDoesNotPersistFindingDataOnEvaluation(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := openStore(root, fixedRetention(24*time.Hour), func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := apiv1.GaggleHealthIdentity{Gaggle: "alpha"}
+	key, err := EpisodeKey(FindingNoProgress, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := finding(FindingNoProgress, key, identity, now, apiv1.GaggleHealthStalled)
+	secret.Summary = "token ******"
+	if _, err := store.Append(event(1, now, apiv1.GaggleHealthEvaluated, secret)); err == nil {
+		t.Fatal("Append() accepted finding data on an evaluation")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "health", "events.jsonl"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("rejected evaluation was persisted: %s", data)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStoreRepairsTornFinalAppendOnRestart(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()

@@ -124,6 +124,54 @@ func TestGaggleHealthSchemaBoundsSensitiveText(t *testing.T) {
 	}
 }
 
+func TestGaggleHealthEventSchemaDiscriminatesEvaluationFromTransitions(t *testing.T) {
+	base := `{
+		"schemaVersion":"goobers.dev/gaggle-health/v1alpha1",
+		"sequence":1,
+		"occurredAt":"2026-10-02T12:00:00Z",
+		"type":%q,
+		"gaggle":"example"%s
+	}`
+	finding := `,"episodeKey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","finding":{
+		"schemaVersion":"goobers.dev/gaggle-health/v1alpha1",
+		"code":"no-progress",
+		"severity":"error",
+		"contribution":"stalled",
+		"identity":{"gaggle":"example"},
+		"firstObserved":"2026-10-02T12:00:00Z",
+		"lastObserved":"2026-10-02T12:00:00Z",
+		"observationCount":1,
+		"episodeKey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"evidence":[{"kind":"journal-event"}],
+		"summary":"No progress observed.",
+		"confidence":0.9,
+		"evidenceAssessment":"Journal evidence is sufficient.",
+		"repair":{"recommendedAction":"Inspect the run.","policyAuthorized":false,"disposition":"not-attempted","followUp":"none"}
+	}`
+	tests := []struct {
+		name    string
+		event   string
+		wantErr bool
+	}{
+		{name: "evaluation", event: fmt.Sprintf(base, "evaluation", "")},
+		{name: "evaluation with finding", event: fmt.Sprintf(base, "evaluation", finding), wantErr: true},
+		{name: "transition", event: fmt.Sprintf(base, "finding-opened", finding)},
+		{name: "transition without finding", event: fmt.Sprintf(base, "finding-opened", ""), wantErr: true},
+		{name: "transition without episode key", event: fmt.Sprintf(base, "finding-opened", strings.Replace(finding, `,"episodeKey":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, "", 1)), wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := newV(t).ValidateJSON(schemas.GaggleHealth+"#/$defs/event", []byte(tc.event))
+			if tc.wantErr && err == nil {
+				t.Fatal("event schema accepted invalid event shape")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("event schema rejected valid event: %v", err)
+			}
+		})
+	}
+}
+
 func TestGaggleSchemaHealthPolicyIsOptionalAndClosed(t *testing.T) {
 	base := `{
 		"apiVersion":"goobers.dev/v1alpha1",

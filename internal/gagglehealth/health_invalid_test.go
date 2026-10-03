@@ -110,6 +110,19 @@ func TestRebuildRejectsInvalidJournalTransitions(t *testing.T) {
 			candidate.Finding.Identity.Run = "another-run"
 			return []apiv1.GaggleHealthEvent{candidate}
 		}()},
+		{"evaluation with finding", func() []apiv1.GaggleHealthEvent {
+			candidate := event(1, now, apiv1.GaggleHealthEvaluated, base)
+			candidate.EpisodeKey = ""
+			return []apiv1.GaggleHealthEvent{candidate}
+		}()},
+		{"evaluation with episode key", []apiv1.GaggleHealthEvent{{
+			SchemaVersion: apiv1.GaggleHealthSchemaVersion,
+			Sequence:      1,
+			OccurredAt:    now,
+			Type:          apiv1.GaggleHealthEvaluated,
+			Gaggle:        "alpha",
+			EpisodeKey:    key,
+		}}},
 		{"opened with resolved state", func() []apiv1.GaggleHealthEvent {
 			candidate := event(1, now, apiv1.GaggleHealthFindingOpened, base)
 			candidate.Finding.ResolvedAt = &now
