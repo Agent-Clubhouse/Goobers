@@ -65,7 +65,6 @@ export function RunsPage({
     label: gaggle.displayName || gaggle.name,
   }));
   const workflowOptions = inventories
-    .filter(({ gaggle }) => !filters?.gaggle || gaggle.name === filters.gaggle)
     .flatMap(({ gaggle, workflows }) =>
       workflows.map((workflow) => ({
         gaggle: gaggle.name,

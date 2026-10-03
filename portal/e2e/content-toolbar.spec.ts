@@ -56,7 +56,17 @@ test("isolates mobile filter drafts and supports dismissal, chips, reset, and Ba
   await dialog.getByLabel("Draft gaggle filter").selectOption("core");
   await dialog.getByRole("button", { name: "Apply filters" }).click();
   await expect(page).toHaveURL(/#\/runs\?gaggle=core&status=all$/);
-  await expect(page.getByRole("button", { name: "Remove Gaggle: core filter" })).toBeVisible();
+  const removeGaggle = page.getByRole("button", { name: "Remove Gaggle: core filter" });
+  await expect(removeGaggle).toBeVisible();
+  await removeGaggle.click();
+  await expect(page).toHaveURL(/#\/runs\?status=all$/);
+  await expect(removeGaggle).toBeHidden();
+  await expect(page.getByRole("region", { name: "Run history" })).toBeVisible();
+
+  await trigger.click();
+  await dialog.getByLabel("Draft gaggle filter").selectOption("core");
+  await dialog.getByRole("button", { name: "Apply filters" }).click();
+  await expect(page).toHaveURL(/#\/runs\?gaggle=core&status=all$/);
 
   await trigger.click();
   await page.goBack();
@@ -66,9 +76,26 @@ test("isolates mobile filter drafts and supports dismissal, chips, reset, and Ba
   await page.getByRole("button", { name: "Reset filters" }).click();
   await expect(page).toHaveURL(/#\/runs$/);
   await expect(page.getByRole("region", { name: "Run history" })).toBeVisible();
+});
 
-  const session = await page.context().newCDPSession(page);
-  await session.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
+test("reflows controls at an equivalent 200% browser zoom", async ({ page }) => {
+  await page.setViewportSize({ width: 780, height: 844 });
+  await page.goto("/#/work-items");
+
+  await page.setViewportSize({ width: 390, height: 422 });
+  const trigger = page.getByRole("button", { name: "Filters", exact: true });
+  const search = page.getByRole("searchbox", { name: "Search work items" });
+  await expect(trigger).toBeVisible();
+  await expect(search).toBeVisible();
+  await trigger.focus();
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Filters" });
+  await expect(dialog.getByRole("button", { name: "Cancel filter changes" })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Apply filters" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
     .toBeLessThanOrEqual(1);
 });

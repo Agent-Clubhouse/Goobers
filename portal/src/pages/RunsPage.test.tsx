@@ -194,6 +194,24 @@ describe("runs history page", () => {
       .toBeInTheDocument();
   });
 
+  it("offers workflows from a newly selected draft gaggle", async () => {
+    window.location.hash = "#/runs?gaggle=core&status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.selectOptions(screen.getByLabelText("Draft gaggle filter"), "tools");
+    await user.selectOptions(
+      screen.getByLabelText("Draft workflow filter"),
+      JSON.stringify(["tools", "implementation"]),
+    );
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe(
+      "#/runs?gaggle=tools&workflow=implementation&status=all",
+    );
+  });
+
   it("reports invalid route filters instead of silently accepting them", async () => {
     window.location.hash = "#/runs?status=surprising";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
