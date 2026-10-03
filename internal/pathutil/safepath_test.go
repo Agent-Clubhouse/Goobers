@@ -65,14 +65,18 @@ func TestResolveRootedPathCompatibility(t *testing.T) {
 			t.Run("missing parent", func(t *testing.T) {
 				rel := filepath.Join("missing", "nested", "file")
 				root := t.TempDir()
-				_, err := resolver.call(root, rel, false)
+				resolvedRoot, err := filepath.EvalSymlinks(root)
+				if err != nil {
+					t.Fatalf("resolve root: %v", err)
+				}
+				_, err = resolver.call(root, rel, false)
 				assertError(t, err, fmt.Sprintf("path %q: no such directory", rel))
 
 				full, err := resolver.call(root, rel, true)
 				if err != nil {
 					t.Fatalf("resolve while creating parents: %v", err)
 				}
-				if want := filepath.Join(root, rel); full != want {
+				if want := filepath.Join(resolvedRoot, rel); full != want {
 					t.Fatalf("resolved path = %q, want %q", full, want)
 				}
 				info, err := os.Stat(filepath.Join(root, "missing"))
