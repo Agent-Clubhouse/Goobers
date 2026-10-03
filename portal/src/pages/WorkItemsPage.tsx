@@ -3,6 +3,7 @@ import type {
   DaemonClient,
   WorkItemDetail,
   WorkItemKind,
+  WorkItemOutcome,
   WorkItemPage,
   WorkItemSummary,
 } from "../api/types";
@@ -70,6 +71,7 @@ function WorkItemListView({
 }) {
   const [state, setState] = useState<PageState<WorkItemPage>>({ status: "loading" });
   const [searchQuery, setSearchQuery] = useState(query ?? "");
+  const [outcome, setOutcome] = useState<WorkItemOutcome | "all">("all");
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
@@ -96,6 +98,7 @@ function WorkItemListView({
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const items = state.data.items.filter((item) => {
     if (gaggle && item.gaggle !== gaggle) return false;
+    if (outcome !== "all" && item.outcome !== outcome) return false;
     if (!normalizedQuery) return true;
     return [
       workItemLabel(item.repository, item.externalId),
@@ -150,6 +153,19 @@ function WorkItemListView({
         ))}
         <div className="work-item-filter-fields">
           <label className="filter-select work-item-filter-field">
+            <span>Status</span>
+            <select
+              aria-label="Filter work items by status"
+              onChange={(event) => setOutcome(event.target.value as WorkItemOutcome | "all")}
+              value={outcome}
+            >
+              <option value="all">All statuses</option>
+              <option value="done">Done</option>
+              <option value="in-progress">In progress</option>
+              <option value="bad-terminal">Bad terminal</option>
+            </select>
+          </label>
+          <label className="filter-select work-item-filter-field">
             <span>Gaggle</span>
             <select
               aria-label="Filter work items by gaggle"
@@ -184,7 +200,7 @@ function WorkItemListView({
         ) : (
           <div className="data-table data-table-shell work-items-table">
             <div aria-hidden="true" className="data-header data-table-header work-item-grid">
-              <span>Work item</span><span>Last action</span><span>Workflow</span><span>Actions</span><span />
+              <span>Work item</span><span>Outcome</span><span>Workflow</span><span>Actions</span><span />
             </div>
             {items.map((item) => (
               <button
@@ -193,7 +209,7 @@ function WorkItemListView({
                     ? `Open ${workItemShortKind(item)} #${item.externalId} in ${item.repository}`
                     : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
                 }
-                className="data-row work-item-grid"
+                className={`data-row work-item-grid work-item-row-${item.outcome}`}
                 disabled={!item.repository}
                 title={item.repository ? undefined : "No repository was recorded for this item, so it has no detail page."}
                 key={workItemRowKey(item)}
@@ -214,8 +230,12 @@ function WorkItemListView({
                   </small>
                 </span>
                 <span>
-                  <strong>{humanizeOperation(item.lastOperation)}</strong>
-                  <small>{formatTimestamp(item.lastActionAt)}</small>
+                  <strong className={`status-badge work-item-outcome-${item.outcome}`}>
+                    {workItemOutcomeLabel(item.outcome)}
+                  </strong>
+                  <small>
+                    Last action: {humanizeOperation(item.lastOperation)} · {formatTimestamp(item.lastActionAt)}
+                  </small>
                 </span>
                 <span>
                   <strong>{item.workflow || "Unknown"}</strong>
@@ -411,6 +431,17 @@ function workItemShortKind(item: Pick<WorkItemSummary, "provider" | "kind">): st
 
 function workItemLabel(repository: string | undefined, externalId: string): string {
   return repository ? `${repository}#${externalId}` : `#${externalId}`;
+}
+
+function workItemOutcomeLabel(outcome: WorkItemOutcome): string {
+  switch (outcome) {
+    case "done":
+      return "Done";
+    case "bad-terminal":
+      return "Bad terminal";
+    case "in-progress":
+      return "In progress";
+  }
 }
 
 function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
