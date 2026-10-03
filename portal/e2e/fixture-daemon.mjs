@@ -414,7 +414,7 @@ const responses = new Map([
       externalId: "4800",
       url: "https://github.com/Agent-Clubhouse/Goobers/pull/4800",
       cost: {
-        costUSD: 2.5,
+        nanoAIU: 2_500_000_000,
         totalRuns: 1,
         measuredRuns: 1,
         totalAttempts: 2,
