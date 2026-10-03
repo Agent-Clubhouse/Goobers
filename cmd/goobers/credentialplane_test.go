@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/decisiongate"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -228,6 +229,37 @@ func TestCredentialPlaneResolvesStageScopedCredentials(t *testing.T) {
 	}
 	if len(retry.Credentials) != 1 || retry.Credentials[0].Capability != "repo:push" {
 		t.Fatalf("re-resolve credentials = %+v", retry.Credentials)
+	}
+}
+
+func TestCredentialPlaneShadowProviderFailureDoesNotStopAgenticStageCredentials(t *testing.T) {
+	machine := compileCredentialPlaneMachine(t, credentialPlaneSpec())
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+	service.config.DecisionGate = &decisiongate.Settings{Mode: decisiongate.ModeShadow}
+	buildSources := service.buildSources
+	service.buildSources = func(scope credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
+		resolver, grants, err := buildSources(scope)
+		for _, key := range service.config.DecisionGate.CredentialKeys() {
+			grants = append(grants, credentials.Grant{Capability: key, Ref: "unresolvable-" + key})
+		}
+		return resolver, grants, err
+	}
+
+	response, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "implement",
+	})
+	if err != nil {
+		t.Fatalf("ordinary stage credential resolve failed because optional shadow credentials are unavailable: %v", err)
+	}
+	if len(response.Credentials) != 2 {
+		t.Fatalf("credentials = %+v, want only the stage's two ordinary credentials", response.Credentials)
+	}
+
+	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "implement", Capabilities: service.config.DecisionGate.CredentialKeys(),
+	})
+	if err == nil {
+		t.Fatal("advisory shadow credential resolve succeeded with unresolvable provider settings")
 	}
 }
 

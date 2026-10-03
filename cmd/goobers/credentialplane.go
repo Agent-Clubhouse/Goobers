@@ -209,7 +209,7 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 	}
 	defer pinned.release()
 	if pinned.profile.goober != "" {
-		pinned.profile.implicitKeys = append(pinned.profile.implicitKeys, s.config.DecisionGate.CredentialKeys()...)
+		pinned.profile.advisoryKeys = s.config.DecisionGate.CredentialKeys()
 	}
 	if mode.deterministicOnly && !pinned.profile.deterministic {
 		return stageResolution{}, credentialPlaneError(http.StatusForbidden, "credential_refresh_agentic_stage",
@@ -333,11 +333,14 @@ func (s *daemonCredentialService) pinnedStageProfile(reader *journal.Reader, pin
 // item 7's "a stage whose declared capabilities are empty can resolve
 // nothing". An empty request resolves the full declared set.
 func gateRequestedCapabilities(profile stageProfile, request httpapi.CredentialResolveRequest) ([]string, error) {
-	allowed := make(map[string]bool, len(profile.capabilities)+len(profile.implicitKeys))
+	allowed := make(map[string]bool, len(profile.capabilities)+len(profile.implicitKeys)+len(profile.advisoryKeys))
 	for _, capabilityName := range profile.capabilities {
 		allowed[capabilityName] = true
 	}
 	for _, key := range profile.implicitKeys {
+		allowed[key] = true
+	}
+	for _, key := range profile.advisoryKeys {
 		allowed[key] = true
 	}
 	requested := request.Capabilities
@@ -548,6 +551,9 @@ type stageProfile struct {
 	harness      string
 	capabilities []string
 	implicitKeys []string
+	// advisoryKeys may be explicitly requested by optional observers, but are
+	// never implicitly materialized with the stage's required credentials.
+	advisoryKeys []string
 	// deterministic is true for a deterministic task: the only stage kind a
 	// credential-refresh grant is minted for or refreshed for (Goobers#6120
 	// phase 1).
@@ -720,6 +726,7 @@ func (s *daemonCredentialService) stageInjector(scope credentialGaggleScope, pro
 	}
 	credentialKeys := append([]string(nil), profile.capabilities...)
 	credentialKeys = append(credentialKeys, profile.implicitKeys...)
+	credentialKeys = append(credentialKeys, profile.advisoryKeys...)
 	harnessName := profile.harness
 	if harnessName == "" {
 		harnessName = string(apiv1.HarnessCopilot)
