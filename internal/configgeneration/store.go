@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,7 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/lock"
-	"github.com/goobers/goobers/internal/platform/safeopen"
+	"github.com/goobers/goobers/internal/safeio"
 )
 
 // MaxGenerations is the default upper bound on retained execution generations.
@@ -269,24 +268,13 @@ func (s Store) Acquire(ctx context.Context, digest string) (string, *lock.Handle
 }
 
 func readRetainedArchive(directory, digest string) (*Archive, error) {
-	root, err := os.OpenRoot(directory)
-	if err != nil {
-		return nil, err
+	data, err := safeio.ReadRegularInRoot(directory, "archive.json", MaxArchiveBytes)
+	if errors.Is(err, safeio.ErrLimitExceededDuringRead) {
+		return nil, errors.New("config generation archive exceeds size limit")
 	}
-	defer func() { _ = root.Close() }()
-	file, err := safeopen.OpenRegularInRoot(root, "archive.json")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > MaxArchiveBytes {
+	if errors.Is(err, safeio.ErrLimitExceeded) {
 		return nil, errors.New("invalid retained config archive")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, MaxArchiveBytes+1))
 	if err != nil {
 		return nil, err
 	}
