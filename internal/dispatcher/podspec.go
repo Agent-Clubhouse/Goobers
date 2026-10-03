@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -1646,12 +1647,7 @@ func copyStringMap(m map[string]string) map[string]string {
 // (and any test asserting on it) is deterministic despite Go's randomized
 // map iteration.
 func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // InputEnvVar renders a declared input key as its stage environment variable.

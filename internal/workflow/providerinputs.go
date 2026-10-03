@@ -2,7 +2,8 @@ package workflow
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -88,12 +89,7 @@ func undeclaredProviderInputProblem(task, arm, command, input string) string {
 }
 
 func sortedProviderInputKeys(inputs map[string]string) []string {
-	keys := make([]string, 0, len(inputs))
-	for key := range inputs {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(inputs))
 }
 
 // CheckProviderStageUnsetDefaults reports built-in provider-stage inputs that
