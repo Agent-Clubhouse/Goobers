@@ -69,7 +69,6 @@ github.com/goobers/goobers/internal/workflow/ir.ports # Canonical port-ordering 
 github.com/goobers/goobers/internal/workflow/ir.sideEffect # Side-effect classifier retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.taskInputs # Canonical task-input extraction retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.taskSchema # Canonical task-schema builder retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
-github.com/goobers/goobers/internal/workflow/ir.unique # Deduplicating helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.validateSourceDefinition # Persisted-source consistency validator retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.validateTriggers # Trigger validation helper retained for the additive Workflow IR metadata layer introduced in #4082 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.validatePorts # Port validation helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
