@@ -10,6 +10,7 @@ import (
 // AtomicWriteOperation identifies the step that failed during WriteFileAtomic.
 type AtomicWriteOperation string
 
+// Atomic write operations identify each durability step for error handling.
 const (
 	AtomicWriteCreateTemp AtomicWriteOperation = "create temporary file"
 	AtomicWriteChmod      AtomicWriteOperation = "set temporary file mode"
