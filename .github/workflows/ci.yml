@@ -1730,7 +1730,7 @@ jobs:
         run: go test ./internal/instanceannotations ./internal/branchretention ./internal/engineoperator
 
       - name: Windows containment and journals
-        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/secretpattern
+        run: go test ./api/v1alpha1 ./internal/configboundary ./internal/journal ./internal/pathutil ./internal/secretpattern
 
       # Exercise native Logs delivery and real journal-writing CLI lifetimes.
       # Keep the large CLI/engine suites filtered; test/ci checks this selection
