@@ -39,6 +39,8 @@ const (
 	intakeCandidateBodyLimit = 8000
 	intakeTitleLimit         = 500
 	intakePeerLimit          = 100
+	intakePeerBodyLimit      = 2000
+	intakePeerBodiesLimit    = 16000
 )
 
 // EvaluateIntakeRisk judges prose only. Callers must run deterministic native
@@ -47,9 +49,17 @@ func (g *Gate) EvaluateIntakeRisk(ctx context.Context, candidate IntakeItem, ope
 	candidate.Title = truncateIntakeText(candidate.Title, intakeTitleLimit)
 	candidate.Body = truncateIntakeText(candidate.Body, intakeCandidateBodyLimit)
 	peers := make([]IntakeItem, 0, min(len(open), intakePeerLimit))
+	peerBodiesRemaining := intakePeerBodiesLimit
 	for _, item := range open {
 		if item.ID != candidate.ID {
-			peers = append(peers, IntakeItem{ID: item.ID, Title: truncateIntakeText(item.Title, intakeTitleLimit)})
+			bodyLimit := min(intakePeerBodyLimit, peerBodiesRemaining)
+			body := truncateIntakeText(item.Body, bodyLimit)
+			peerBodiesRemaining -= len(body)
+			peers = append(peers, IntakeItem{
+				ID:    item.ID,
+				Title: truncateIntakeText(item.Title, intakeTitleLimit),
+				Body:  body,
+			})
 			if len(peers) == intakePeerLimit {
 				break
 			}

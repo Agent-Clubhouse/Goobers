@@ -167,6 +167,21 @@ function Get-MapCount {
   [int]$Map[$Key]
 }
 
+function Resolve-InstanceJournalPath {
+  param([string]$Instance)
+
+  $scheduler = Join-Path $Instance 'scheduler'
+  $pointer = Join-Path $scheduler 'events.jsonl.current'
+  if (-not (Test-Path -LiteralPath $pointer)) {
+    return Join-Path $scheduler 'events.jsonl'
+  }
+  $generation = (Get-Content -LiteralPath $pointer -Raw).Trim()
+  if ($generation -notmatch '^\d+$') {
+    throw "invalid instance journal generation '$generation' in $pointer"
+  }
+  return Join-Path $scheduler ("events.jsonl.gen-{0:D6}" -f [int]$generation)
+}
+
 function Read-ArmSummary {
   param(
     [string]$Name,
@@ -178,10 +193,20 @@ function Read-ArmSummary {
   $journalPaths = @(Get-ChildItem -LiteralPath (Join-Path $Instance 'gaggles') -Filter events.jsonl -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
   $stageRecords = New-Object System.Collections.Generic.List[object]
   $runPhases = New-Object System.Collections.Generic.List[string]
+  $runTerminals = New-Object System.Collections.Generic.List[object]
   $failureCodes = New-Object System.Collections.Generic.List[string]
 
   foreach ($journalPath in $journalPaths) {
     $runID = Split-Path -Path (Split-Path -Path $journalPath -Parent) -Leaf
+    $runDir = Split-Path -Path $journalPath -Parent
+    $itemID = ''
+    $itemPath = Join-Path $runDir 'inputs/item'
+    if (Test-Path -LiteralPath $itemPath) {
+      $item = Get-Content -LiteralPath $itemPath -Raw | ConvertFrom-Json
+      if ($item.id) {
+        $itemID = [string]$item.id
+      }
+    }
     $errorByAttempt = @{}
     foreach ($line in (Read-LinesShared -Path $journalPath)) {
       if ([string]::IsNullOrWhiteSpace($line)) {
@@ -221,10 +246,47 @@ function Read-ArmSummary {
         'run.finished' {
           if ($event.status) {
             $runPhases.Add([string]$event.status)
+            if ($itemID) {
+              $runTerminals.Add([pscustomobject]@{
+                  ItemID = $itemID
+                  Status = [string]$event.status
+                  Time = $eventTime
+                })
+            }
           }
         }
       }
     }
+  }
+
+  $intakeRecords = New-Object System.Collections.Generic.List[object]
+  $instanceJournalPath = Resolve-InstanceJournalPath -Instance $Instance
+  foreach ($line in (Read-LinesShared -Path $instanceJournalPath)) {
+    if ([string]::IsNullOrWhiteSpace($line) -or $line -notmatch '"type":"runner\.annotation"') {
+      continue
+    }
+    $event = $line | ConvertFrom-Json
+    if (-not $event.runner -or $event.runner.annotation -ne 'backlog.intake-decision-shadow') {
+      continue
+    }
+    $eventTime = ConvertTo-NullableDateTime -Value ([string]$event.time)
+    if ($eventTime -and $eventTime -lt $SinceValue) {
+      continue
+    }
+    $verdict = [string]$event.runner.verdict
+    $errored = $event.runner.error -eq $true
+    $uncertain = $errored -or $verdict -notin @('yes', 'no')
+    $laterEscalated = @($runTerminals | Where-Object {
+        $_.ItemID -eq [string]$event.runner.itemId -and
+        $_.Status -eq 'escalated' -and
+        (-not $eventTime -or -not $_.Time -or $_.Time -ge $eventTime)
+      }).Count -gt 0
+    $intakeRecords.Add([pscustomobject]@{
+        ItemID = [string]$event.runner.itemId
+        Flagged = -not $uncertain -and $event.runner.flagged -eq $true
+        Uncertain = $uncertain
+        LaterEscalated = $laterEscalated
+      })
   }
 
   $decisionRecords = New-Object System.Collections.Generic.List[object]
@@ -267,6 +329,9 @@ function Read-ArmSummary {
   $validClaimedBadNonSuccess = @($validClaimedBad | Where-Object { $_.Outcome -eq 'non-success' })
   $validClaimedBadUnknownOutcome = @($validClaimedBad | Where-Object { $_.Outcome -ne 'success' -and $_.Outcome -ne 'non-success' })
   $modelErrors = @($decisionRecords | Where-Object { $_.Error -and $_.Error -notin @('', '<nil>') })
+  $intakeCertain = @($intakeRecords | Where-Object { -not $_.Uncertain })
+  $intakeFlagged = @($intakeCertain | Where-Object { $_.Flagged })
+  $intakeUnflagged = @($intakeCertain | Where-Object { -not $_.Flagged })
 
   [pscustomobject]@{
     name = $Name
@@ -290,6 +355,15 @@ function Read-ArmSummary {
       validHandoffCalledBadNonSuccess = $validClaimedBadNonSuccess.Count
       validHandoffCalledBadUnknownOutcome = $validClaimedBadUnknownOutcome.Count
       modelErrors = $modelErrors.Count
+    }
+    backlogIntakeShadow = [pscustomobject]@{
+      sampled = $intakeRecords.Count
+      certain = $intakeCertain.Count
+      flagged = $intakeFlagged.Count
+      flaggedLaterEscalated = @($intakeFlagged | Where-Object { $_.LaterEscalated }).Count
+      unflagged = $intakeUnflagged.Count
+      unflaggedLaterEscalated = @($intakeUnflagged | Where-Object { $_.LaterEscalated }).Count
+      uncertainOrError = @($intakeRecords | Where-Object { $_.Uncertain }).Count
     }
   }
 }
@@ -342,6 +416,11 @@ Write-Output (Write-ComparisonRow -Metric 'Valid handoff called bad' -GateOff (F
 Write-Output (Write-ComparisonRow -Metric '... and still non-success' -GateOff (Format-CountWithRate -Count $gateOff.decisionGate.validHandoffCalledBadNonSuccess -Sample $gateOff.decisionGate.validHandoffCalledBad -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.decisionGate.validHandoffCalledBadNonSuccess -Sample $gateOn.decisionGate.validHandoffCalledBad -MinimumSample $MinSample))
 Write-Output (Write-ComparisonRow -Metric '... recovered to success' -GateOff (Format-CountWithRate -Count $gateOff.decisionGate.validHandoffCalledBadSuccess -Sample $gateOff.decisionGate.validHandoffCalledBad -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.decisionGate.validHandoffCalledBadSuccess -Sample $gateOn.decisionGate.validHandoffCalledBad -MinimumSample $MinSample))
 Write-Output (Write-ComparisonRow -Metric 'Model call errors' -GateOff (Format-CountWithRate -Count $gateOff.decisionGate.modelErrors -Sample $gateOff.decisionGate.records -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.decisionGate.modelErrors -Sample $gateOn.decisionGate.records -MinimumSample $MinSample))
+Write-Output (Write-ComparisonRow -Metric 'Intake shadow sampled' -GateOff ([string]$gateOff.backlogIntakeShadow.sampled) -GateOn ([string]$gateOn.backlogIntakeShadow.sampled))
+Write-Output (Write-ComparisonRow -Metric 'Intake shadow flagged' -GateOff (Format-CountWithRate -Count $gateOff.backlogIntakeShadow.flagged -Sample $gateOff.backlogIntakeShadow.certain -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.backlogIntakeShadow.flagged -Sample $gateOn.backlogIntakeShadow.certain -MinimumSample $MinSample))
+Write-Output (Write-ComparisonRow -Metric '... flagged later escalated' -GateOff (Format-CountWithRate -Count $gateOff.backlogIntakeShadow.flaggedLaterEscalated -Sample $gateOff.backlogIntakeShadow.flagged -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.backlogIntakeShadow.flaggedLaterEscalated -Sample $gateOn.backlogIntakeShadow.flagged -MinimumSample $MinSample))
+Write-Output (Write-ComparisonRow -Metric '... unflagged later escalated' -GateOff (Format-CountWithRate -Count $gateOff.backlogIntakeShadow.unflaggedLaterEscalated -Sample $gateOff.backlogIntakeShadow.unflagged -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.backlogIntakeShadow.unflaggedLaterEscalated -Sample $gateOn.backlogIntakeShadow.unflagged -MinimumSample $MinSample))
+Write-Output (Write-ComparisonRow -Metric 'Intake shadow uncertain/error' -GateOff (Format-CountWithRate -Count $gateOff.backlogIntakeShadow.uncertainOrError -Sample $gateOff.backlogIntakeShadow.sampled -MinimumSample $MinSample) -GateOn (Format-CountWithRate -Count $gateOn.backlogIntakeShadow.uncertainOrError -Sample $gateOn.backlogIntakeShadow.sampled -MinimumSample $MinSample))
 Write-Output ''
 Write-Output ('gate-off decision modes:    {0}' -f (Join-CountMap -Map $gateOff.decisionGate.byMode))
 Write-Output ('gate-on decision modes:     {0}' -f (Join-CountMap -Map $gateOn.decisionGate.byMode))

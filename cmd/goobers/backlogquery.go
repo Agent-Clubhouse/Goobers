@@ -562,9 +562,6 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		return code
 	}
 	eligible := scan.eligible
-	if claim {
-		observeBacklogIntakeShadow(ctx, env, runID, workflow, trustLabel, eligible, scan.intakePeers)
-	}
 	cursorKey := scan.cursorKey
 	scanCursor, nextScanCursor := scan.cursor, scan.nextCursor
 	observedRecords, remainingRecords := scan.observedRecords, scan.remainingRecords
@@ -596,6 +593,9 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		// workflow. Never turn this scheduled sweep into a second forward claimant.
 		eligible = eligible[forwardEligibleCount:]
 		forwardEligibleCount = 0
+	}
+	if claim {
+		observeBacklogIntakeShadow(ctx, env, runID, workflow, trustLabel, eligible, scan.intakePeers)
 	}
 	readOnlyResweep := resweep.readOnly
 	curationModeByID := resweep.modeByID

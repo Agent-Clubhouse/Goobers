@@ -160,8 +160,9 @@ filters, reorders, or blocks a claim.
 Each evaluation is a `runner.annotation` in the instance journal with
 `runner.annotation=backlog.intake-decision-shadow`. The payload includes
 `itemId`, `verdict`, `flagged`, `probability`, `peerCount`, `shadowSample`,
-`cached`, and a boolean `error`. Join `itemId` to that item's eventual run and
-terminal phase to report these counts:
+`cached`, and a boolean `error`. The report joins `itemId` to the pinned
+`inputs/item` snapshot in eventual runs and their terminal phases to report
+these counts:
 
 - sampled issues;
 - flagged issues;
