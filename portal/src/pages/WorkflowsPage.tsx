@@ -14,6 +14,7 @@ import { CopyCommand } from "../ui/CopyCommand";
 import { Icon } from "../ui/Icon";
 import { DataList } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
+import { compactRecordLayoutDefault } from "../ui/compactRecordLayout";
 import { manualRunCommand } from "../manualRunCommand";
 
 export function WorkflowsPage({
@@ -115,7 +116,8 @@ function GaggleSection({
   const { gaggle } = inventory;
   const headingId = `gaggle-${gaggle.name}`;
   const contentId = `${headingId}-inventory`;
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(compactRecordLayoutDefault);
+  const gaggleIdentity = `${gaggle.name} · ${gaggle.project.owner}/${gaggle.project.name}`;
 
   return (
     <section aria-labelledby={headingId} className="goober-group workflow-gaggle-group">
@@ -134,9 +136,7 @@ function GaggleSection({
                 <span className="definition-disabled-badge">Disabled</span>
               )}
             </span>
-            <code>
-              {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
-            </code>
+            <code title={gaggleIdentity}>{gaggleIdentity}</code>
           </span>
           <span className="goober-group-summary-meta">
             <span className="section-count">
@@ -190,12 +190,22 @@ function GaggleSection({
                     >
                       <span className="row-primary">
                         <span className="definition-nameplate">
-                          <span className="row-title">{workflow.displayName}</span>
+                          <span className="row-title" title={workflow.displayName}>
+                            {workflow.displayName}
+                          </span>
                           {!workflow.enabled && (
                             <span className="definition-disabled-badge">Disabled</span>
                           )}
                         </span>
-                        <span className="row-subtitle">{workflow.purpose}</span>
+                        <code
+                          className="workflow-identity"
+                          title={`${workflow.identity.gaggle}/${workflow.identity.name}`}
+                        >
+                          {workflow.identity.gaggle}/{workflow.identity.name}
+                        </code>
+                        <span className="row-subtitle" title={workflow.purpose}>
+                          {workflow.purpose}
+                        </span>
                         <CopyCommand
                           compact
                           command={manualRunCommand(
@@ -209,7 +219,7 @@ function GaggleSection({
                         />
                       </span>
                       <WorkflowTriggers workflow={workflow} />
-                      <span>
+                      <span className="workflow-concurrency">
                         {workflow.concurrency.activeRuns} active
                         {workflow.concurrency.desiredRuns !== undefined
                           ? ` / ${workflow.concurrency.desiredRuns} desired`
