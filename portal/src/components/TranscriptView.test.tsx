@@ -42,6 +42,11 @@ describe("transcript rendering", () => {
     expect(screen.queryByText(/ok\tgithub.com\/goobers/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show result" }));
     expect(screen.getByText(/ok\s+github\.com\/goobers\/goobers\/widget/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", {
+        name: "Tool result; scroll horizontally for full content",
+      }),
+    ).toBeInTheDocument();
   });
 
   // Usage and the concluding message are the two most-wanted points and the
@@ -83,6 +88,11 @@ describe("transcript rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Show raw JSONL" }));
     expect(screen.getByText(/"role":"system"/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", {
+        name: "Raw transcript; scroll horizontally for full content",
+      }),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Show conversation" }));
     expect(screen.getByText("Committed the widget fix.")).toBeInTheDocument();

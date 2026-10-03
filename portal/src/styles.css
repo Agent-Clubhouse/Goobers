@@ -8393,12 +8393,36 @@ code,
 
 @media (max-width: 820px) {
   button,
+  input,
   select,
   summary,
   a.nav-item,
   a.scope-pivot-link,
+  a.telemetry-error-latest,
+  .telemetry-error-occurrences a,
   .data-row {
     min-height: 44px;
+  }
+
+  button,
+  input,
+  select,
+  summary,
+  a.nav-item,
+  a.scope-pivot-link,
+  .dialog-close,
+  .artifact-action {
+    min-width: 44px;
+  }
+
+  .configuration-warning p,
+  .configuration-warning-remediation,
+  .event-detail-summary p,
+  .instance-summary-result,
+  .run-heading,
+  .telemetry-error-summary {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .instance-summary-row,
@@ -8983,15 +9007,13 @@ code,
 }
 
 @media (max-width: 480px) {
-  .event-detail-backdrop,
-  .artifact-dialog-backdrop {
+  .event-detail-backdrop {
     align-items: stretch;
     justify-items: stretch;
     padding: 0;
   }
 
-  .event-detail-dialog,
-  .artifact-dialog {
+  .event-detail-dialog {
     border: 0;
     border-radius: 0;
     height: 100dvh;
@@ -9001,8 +9023,7 @@ code,
     padding: 16px;
   }
 
-  .event-detail-dialog header,
-  .artifact-dialog header {
+  .event-detail-dialog header {
     position: sticky;
     top: 0;
     z-index: 1;
@@ -9470,6 +9491,27 @@ code,
   margin: 0;
   max-height: 240px;
   overflow: auto;
+}
+
+.local-scroll-region {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.artifact-row > .local-scroll-region {
+  grid-column: 1 / -1;
+}
+
+.local-scroll-affordance {
+  color: var(--muted);
+  display: block;
+  font-size: var(--font-label);
+  margin-bottom: 4px;
+}
+
+.local-scroll-region:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .transcript-result-toggle {
@@ -10669,4 +10711,11 @@ select {
   .distribution-values strong
 ) {
   font-size: var(--font-ui);
+}
+
+@media (max-width: 820px) {
+  .breadcrumbs button {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }

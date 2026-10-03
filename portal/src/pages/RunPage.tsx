@@ -440,11 +440,19 @@ function RunDetailWorkspace({
     window.history.replaceState(window.history.state, "", nextHash);
     window.dispatchEvent(new HashChangeEvent("hashchange"));
   };
+  const returnToOrigin = () => {
+    const state = window.history.state as { portalOrigin?: boolean } | null;
+    if (state?.portalOrigin) {
+      window.history.back();
+      return;
+    }
+    navigate({ page: "runs" });
+  };
 
   return (
     <>
       <nav aria-label="Breadcrumb" className="breadcrumbs">
-        <button aria-label="Back to runs" onClick={() => window.history.back()} type="button">
+        <button aria-label="Back to runs" onClick={returnToOrigin} type="button">
           Runs
         </button>
         <Icon name="chevron" size={14} />

@@ -80,6 +80,7 @@ export function DataRow({
   label,
   onClick,
 }: DataRowProps) {
+  const restoreKey = focusRestoreKey ?? (href ? label : undefined);
   const content = (
     <>
       {children}
@@ -106,7 +107,7 @@ export function DataRow({
         <a
           aria-label={label}
           className="data-row-stretch-link"
-          data-focus-restore={focusRestoreKey}
+          data-focus-restore={restoreKey}
           href={href}
         />
         {content}
@@ -119,7 +120,7 @@ export function DataRow({
       <a
         aria-label={label}
         className="data-row"
-        data-focus-restore={focusRestoreKey}
+        data-focus-restore={restoreKey}
         href={href}
       >
         {content}

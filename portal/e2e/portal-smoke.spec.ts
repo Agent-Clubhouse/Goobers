@@ -195,6 +195,10 @@ for (const viewport of [
     await page.goto(`/#/run/${smokeRunId}`);
 
     await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
+    const back = page.getByRole("button", { name: "Back to runs" });
+    const backBox = await back.boundingBox();
+    expect(backBox?.width).toBeGreaterThanOrEqual(44);
+    expect(backBox?.height).toBeGreaterThanOrEqual(44);
     const tabs = page.getByRole("tablist", { name: "Run detail views" });
     for (const name of ["Overview", "Artifacts", "Diagnostics", "Journal"]) {
       const tab = tabs.getByRole("tab", { name });
@@ -212,27 +216,56 @@ for (const viewport of [
     const dialog = page.getByRole("dialog", { name: "Event detail" });
     await expect(dialog).toBeFocused();
     await expect(dialog).toContainText("Sequence 3");
+    const close = dialog.getByRole("button", { name: "Close event detail" });
+    const closeBox = await close.boundingBox();
+    expect(closeBox?.width).toBeGreaterThanOrEqual(44);
+    expect(closeBox?.height).toBeGreaterThanOrEqual(44);
     if (viewport.width <= 480) {
       const box = await dialog.boundingBox();
       expect(box?.width).toBe(viewport.width);
       expect(box?.height).toBe(viewport.height);
     }
-    await dialog.getByRole("button", { name: "Close event detail" }).click();
+    await close.click();
     await expect(event).toBeFocused();
   });
 }
 
-test("drills from an error occurrence into its run on a phone", async ({ page }) => {
+test("drills from an error occurrence and restores its phone focus and scroll", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/errors");
 
-  await page
-    .getByRole("link", { name: `Open latest run ${smokeRunId} for error fixture.error` })
-    .click();
+  const origin = page.getByRole("link", {
+    name: `Open latest run ${smokeRunId} for error fixture.error`,
+  });
+  await origin.focus();
+  await page.locator(".portal-main").evaluate((element) => {
+    const spacer = document.createElement("div");
+    spacer.style.height = "600px";
+    element.append(spacer);
+    element.scrollTop = 120;
+  });
+  const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  await origin.click();
   await expect(page.getByRole("heading", { name: `Run ${smokeRunId}` })).toBeVisible();
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
     .toBeLessThanOrEqual(1);
+  await page.getByRole("button", { name: "Back to runs" }).click();
+  await expect(page.getByRole("heading", { name: "Matching errors" })).toBeVisible();
+  await expect(origin).toBeFocused();
+  await expect
+    .poll(() => page.locator(".portal-main").evaluate((element) => element.scrollTop))
+    .toBe(scrollTop);
+});
+
+test("uses Runs as the safe Back fallback for a directly opened run deep link", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/#/run/${smokeRunId}`);
+
+  await page.getByRole("button", { name: "Back to runs" }).click();
+
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#\/runs$/);
 });
 
 test("restores the originating run row and list scroll after browser back", async ({ page }) => {
@@ -279,6 +312,26 @@ test("keeps the run event sheet usable at 200 percent page zoom", async ({ page 
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
     .toBeLessThanOrEqual(1);
+});
+
+test("keeps mobile diagnostics, recovery metadata, warnings, and action errors explicit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+
+  await expect(page.getByText("Recovery inventory")).toBeVisible();
+  await expect(page.getByText("Retention sweep")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Configuration warnings" })).toBeVisible();
+  await expect(page.getByText(/portal is read-only/i)).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth))
+    .toBeLessThanOrEqual(1);
+
+  await page.goto(`/#/run/${smokeRunId}?tab=diagnostics`);
+  await expect(page.locator("aside.run-inspector")).toBeVisible();
+  await page.getByRole("button", { name: "Reveal run files" }).click();
+  await expect(page.getByRole("alert")).toContainText(/not found|could not|failed|malformed/i);
 });
 
 test("loads the Gaggle page from fixture daemon data", async ({ page }) => {

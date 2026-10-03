@@ -479,6 +479,11 @@ describe("run stage inspector", () => {
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
     const preview = await screen.findByText(body);
     expect(preview).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", {
+        name: "Artifact content; scroll horizontally for full content",
+      }),
+    ).toBeInTheDocument();
     expect(preview.className).not.toContain("artifact-content-bounded");
     expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc", {
       signal: expect.any(AbortSignal),

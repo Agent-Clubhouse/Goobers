@@ -165,6 +165,7 @@ interface RouteRestoreState {
 }
 
 interface PortalHistoryState {
+  portalOrigin?: boolean;
   portalRestore?: RouteRestoreState;
 }
 
@@ -216,7 +217,7 @@ function Portal({
         linkedRoutePending.current = false;
         const state = (window.history.state ?? {}) as PortalHistoryState;
         const { portalRestore: _portalRestore, ...nextState } = state;
-        window.history.replaceState(nextState, "");
+        window.history.replaceState({ ...nextState, portalOrigin: true }, "");
       }
       setRoute(parseRoute());
     };

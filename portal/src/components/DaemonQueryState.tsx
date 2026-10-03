@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { DaemonAuthError } from "../api/errors";
+import {
+  DaemonAuthError,
+  UnsupportedApiVersionError,
+  UnsupportedSchemaVersionError,
+} from "../api/errors";
 
 export function DaemonLoadingState({ standalone = false }: { standalone?: boolean }) {
   const [visible, setVisible] = useState(false);
@@ -45,6 +49,23 @@ export function DaemonErrorState({
           <p>
             {error.message} (HTTP {error.status})
           </p>
+        </div>
+        <button className="reconnect-button" onClick={retry} type="button">
+          {standalone ? "Reload" : "Retry"}
+        </button>
+      </section>
+    );
+  }
+
+  if (
+    error instanceof UnsupportedApiVersionError ||
+    error instanceof UnsupportedSchemaVersionError
+  ) {
+    return (
+      <section className="daemon-state daemon-state-error" role="alert">
+        <div>
+          <h1>Daemon update required</h1>
+          <p>{error.message} Update the daemon and reload the portal.</p>
         </div>
         <button className="reconnect-button" onClick={retry} type="button">
           {standalone ? "Reload" : "Retry"}

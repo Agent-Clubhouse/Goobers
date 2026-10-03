@@ -256,7 +256,26 @@ const responses = new Map([
         failures: 0,
         lastResult: "running",
       },
-      warnings: [],
+      recoveryInventory: {
+        state: "warning",
+        used: 7,
+        limit: 8,
+        unreadable: 0,
+        overflow: 0,
+        highWaterPercent: 80,
+        earliestRetainUntil: "2026-09-10T18:10:00Z",
+        inventoryRoot: "C:\\Goobers\\instances\\e2e-fixture\\recovery",
+        policySource: "instance-config",
+        observedAt: "2026-09-09T19:15:00Z",
+      },
+      warnings: [
+        {
+          code: "E2E001",
+          severity: "warning",
+          scope: "Workflow/core/implementation",
+          explanation: "Fixture warning with an ordinary field that wraps on narrow screens.",
+        },
+      ],
     },
   ],
   [
