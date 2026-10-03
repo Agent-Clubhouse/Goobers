@@ -251,7 +251,11 @@ export function activeArea(route: Route): PrimaryArea {
   return route.page;
 }
 
-export type Navigate = (route: Route) => void;
+export interface NavigateOptions {
+  replace?: boolean;
+}
+
+export type Navigate = (route: Route, options?: NavigateOptions) => void;
 
 function optionalQuery(search: URLSearchParams, name: string): string | undefined {
   return search.get(name) || undefined;
