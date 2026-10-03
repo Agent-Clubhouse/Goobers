@@ -144,6 +144,84 @@ func TestBuildTraversesOutcomeDownToNestedExecution(t *testing.T) {
 	}
 }
 
+func TestBuildModelInvocationSourcesKeepStableContracts(t *testing.T) {
+	inputTokens, outputTokens := int64(10), int64(3)
+	aggregate := agentEvent("worker", "", "implement", "gpt-5", journal.AgentCompleted)
+	aggregate.Agent.RequestedModel = "gpt-5-chat"
+	aggregate.Agent.Usage = journal.AgentUsage{
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
+	}
+	graph, err := Build(Input{RunID: "run-1", Events: []journal.Event{aggregate}})
+	if err != nil {
+		t.Fatalf("Build aggregate model invocation: %v", err)
+	}
+	node := nodeByID(t, graph, "model:worker")
+	if node.Label != "gpt-5" || node.Stage != "implement" || node.Attempt != 1 ||
+		node.Provenance != ProvenanceRecorded ||
+		node.Attributes["model"] != "gpt-5" ||
+		node.Attributes["requestedModel"] != "gpt-5-chat" ||
+		node.Attributes["inputTokens"] != "10" ||
+		node.Attributes["outputTokens"] != "3" {
+		t.Fatalf("aggregate model invocation = %+v", node)
+	}
+	if !hasEdge(graph, "subagent:worker", node.ID, EdgeContains) {
+		t.Fatalf("aggregate model containment edge missing: %+v", graph.Edges)
+	}
+
+	missingAggregate := agentEvent("missing-model", "", "implement", "", journal.AgentCompleted)
+	graph, err = Build(Input{RunID: "run-1", Events: []journal.Event{missingAggregate}})
+	if err != nil {
+		t.Fatalf("Build missing aggregate model invocation: %v", err)
+	}
+	if reasons := gapReasons(graph, "model:missing-model"); len(reasons) != 1 ||
+		reasons[0] != "subagent recorded no resolved model" {
+		t.Fatalf("aggregate model gaps = %q", reasons)
+	}
+
+	const digest = "sha256:model-contract"
+	graph, err = Build(Input{
+		RunID: "run-1",
+		Events: []journal.Event{
+			spanEvent("review", "review.transcript", digest),
+			spanProvenance("review", digest, "missing-worker"),
+		},
+		SpanData: map[string][]byte{digest: transcript(
+			`{"role":"assistant","usage":{"input_tokens":10,"output_tokens":3}}`,
+		)},
+	})
+	if err != nil {
+		t.Fatalf("Build span model invocation: %v", err)
+	}
+	models := graph.NodesOfKind(KindModelInvocation)
+	if len(models) != 1 {
+		t.Fatalf("span model invocations = %+v", models)
+	}
+	node = models[0]
+	if node.ID != "model:subagent:missing-worker@sha256:model-contract#1" ||
+		node.Label != "" || node.Stage != "review" || node.Attempt != 1 ||
+		node.Provenance != ProvenanceUnknown ||
+		node.Attributes["inputTokens"] != "10" ||
+		node.Attributes["outputTokens"] != "3" {
+		t.Fatalf("span model invocation = %+v", node)
+	}
+	if reasons := gapReasons(graph, node.ID); len(reasons) != 1 ||
+		reasons[0] != "model invocation names no model" {
+		t.Fatalf("span model gaps = %q", reasons)
+	}
+	edges := graph.OutEdges("subagent:missing-worker")
+	found := false
+	for _, edge := range edges {
+		if edge.To == node.ID && edge.Kind == EdgeContains &&
+			edge.Provenance == ProvenanceUnknown {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("span model containment edge missing unknown provenance: %+v", graph.Edges)
+	}
+}
+
 func TestBuildProjectsRecordedRuntimeAndEnvironmentComponents(t *testing.T) {
 	digest := "sha256:runtime"
 	span, err := json.Marshal(telemetry.SpanRecord{
