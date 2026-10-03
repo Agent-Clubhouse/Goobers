@@ -4740,7 +4740,9 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 
 // PriorRepassCause is the pure half: the backward scan over an already-read
 // event log that classifies WHY a stage is being re-entered, given a way to
-// resolve a gate.evaluated event's verdict artifact.
+// resolve a gate.evaluated event's verdict artifact. The re-entry window starts
+// after the subject's previous completion, so successful forward gates between
+// a correction and the current subject cannot replace the originating cause.
 //
 // Exported and split from the reader above for #3882: the engine holds its
 // journal as workflow state (a JournalProjection whose artifact bytes are
@@ -4756,9 +4758,13 @@ func PriorRepassCause(
 	subjectStage string,
 	artifactBytes func(journal.Ref) ([]byte, error),
 ) (*gate.RepassCause, error) {
+	windowStart := priorSubjectCompletion(events, subjectStage)
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		if event.Type != journal.EventGateEvaluated || event.Target != subjectStage {
+		if event.Type != journal.EventGateEvaluated || event.Verdict == gate.OutcomePass {
+			continue
+		}
+		if event.Target != subjectStage && (windowStart < 0 || i <= windowStart) {
 			continue
 		}
 		cause := &gate.RepassCause{Kind: "gate", Gate: event.Gate, Outcome: event.Verdict}
@@ -4779,6 +4785,7 @@ func PriorRepassCause(
 			if cause.Rationale == "" {
 				cause.Rationale = strings.TrimSpace(verdict.Summary)
 			}
+			cause.Findings = append([]apiv1.Finding(nil), verdict.Findings...)
 		}
 		var infrastructureEvidence *bool
 		for j := i + 1; j < len(events); j++ {
@@ -4829,6 +4836,21 @@ func PriorRepassCause(
 		return cause, nil
 	}
 	return nil, nil
+}
+
+func priorSubjectCompletion(events []journal.Event, subjectStage string) int {
+	seenCurrent := false
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventStageFinished || event.Stage != subjectStage {
+			continue
+		}
+		if seenCurrent {
+			return i
+		}
+		seenCurrent = true
+	}
+	return -1
 }
 
 // recordReviewerDiff produces an agentic reviewer gate's evidence (#301): the

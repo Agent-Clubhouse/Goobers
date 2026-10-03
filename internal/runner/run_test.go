@@ -7228,6 +7228,93 @@ func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 			t.Fatalf("cause = %+v, want reviewer needs-changes rationale", cause)
 		}
 	})
+
+	t.Run("review correction survives forward validation and replay", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-forward-validation")
+		finding := apiv1.Finding{ID: "review:conflict", Message: "resolve the remaining conflict"}
+		data, err := json.Marshal(apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: "electlander still contains unresolved conflict markers",
+			Findings:  []apiv1.Finding{finding},
+		})
+		if err != nil {
+			t.Fatalf("marshal verdict: %v", err)
+		}
+		ref, err := run.RecordArtifact("verdict/review-correction.json", data)
+		if err != nil {
+			t.Fatalf("record verdict: %v", err)
+		}
+		events := []journal.Event{
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+			{
+				Type: journal.EventGateEvaluated, Gate: "review", Verdict: string(apiv1.VerdictNeedsChanges),
+				Target: "guard-before-implement", Ref: &ref,
+			},
+			{Type: journal.EventStageFinished, Stage: "guard-before-implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "pre-review-validation", Status: string(apiv1.ResultSuccess)},
+			{
+				Type: journal.EventGateEvaluated, Gate: "pre-review-gate", Verdict: gate.OutcomePass,
+				Target: "guard-before-review",
+			},
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+		}
+		for _, event := range events {
+			if err := run.Append(event); err != nil {
+				t.Fatalf("append %s: %v", event.Type, err)
+			}
+		}
+
+		assertCause := func(label string) {
+			t.Helper()
+			cause, causeErr := priorRepassCause(run, "guard-before-review")
+			if causeErr != nil {
+				t.Fatalf("%s priorRepassCause: %v", label, causeErr)
+			}
+			if cause == nil || cause.Kind != "reviewer" || cause.Gate != "review" ||
+				cause.Outcome != string(apiv1.VerdictNeedsChanges) ||
+				!strings.Contains(cause.Rationale, "unresolved conflict") ||
+				len(cause.Findings) != 1 || cause.Findings[0].ID != finding.ID {
+				t.Fatalf("%s cause = %+v, want original review correction and findings", label, cause)
+			}
+		}
+		assertCause("live")
+		if err := run.Close(); err != nil {
+			t.Fatalf("close journal before replay: %v", err)
+		}
+		assertCause("replay")
+	})
+
+	t.Run("validation failure remains the correction", func(t *testing.T) {
+		run := newRunnerTestJournal(t, "repass-cause-validation-failure")
+		for _, event := range []journal.Event{
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+			{
+				Type: journal.EventStageFinished, Stage: "pre-review-validation", Status: string(apiv1.ResultFailure),
+				Error: &journal.ErrorDetail{Code: "invalid_findings", Message: "finding response 2 is missing"},
+			},
+			{
+				Type: journal.EventGateEvaluated, Gate: "pre-review-gate", Verdict: gate.OutcomeFail,
+				Target: "guard-before-implement",
+			},
+			{Type: journal.EventStageFinished, Stage: "guard-before-implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
+			{Type: journal.EventStageFinished, Stage: "guard-before-review", Status: string(apiv1.ResultSuccess)},
+		} {
+			if err := run.Append(event); err != nil {
+				t.Fatalf("append %s: %v", event.Type, err)
+			}
+		}
+		cause, err := priorRepassCause(run, "guard-before-review")
+		if err != nil {
+			t.Fatalf("priorRepassCause: %v", err)
+		}
+		if cause == nil || cause.Kind != "stage-failure" || cause.Gate != "pre-review-gate" ||
+			cause.Outcome != gate.OutcomeFail || cause.Stage != "pre-review-validation" ||
+			cause.ErrorCode != "invalid_findings" {
+			t.Fatalf("cause = %+v, want validation failure correction", cause)
+		}
+	})
 }
 
 func newRunnerTestJournal(t *testing.T, runID string) *journal.Run {
