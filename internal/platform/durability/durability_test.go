@@ -2,6 +2,7 @@ package durability
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,11 +11,12 @@ import (
 )
 
 type stubAtomicFile struct {
-	name      string
-	fail      AtomicWriteOperation
-	written   []byte
-	mode      fs.FileMode
-	closeCall int
+	name       string
+	fail       AtomicWriteOperation
+	written    []byte
+	mode       fs.FileMode
+	closeCall  int
+	shortWrite bool
 }
 
 func (f *stubAtomicFile) Name() string { return f.name }
@@ -30,6 +32,10 @@ func (f *stubAtomicFile) Chmod(mode fs.FileMode) error {
 func (f *stubAtomicFile) Write(data []byte) (int, error) {
 	if f.fail == AtomicWriteWrite {
 		return 0, errors.New("write failed")
+	}
+	if f.shortWrite {
+		f.written = append(f.written, data[:len(data)-1]...)
+		return len(data) - 1, nil
 	}
 	f.written = append(f.written, data...)
 	return len(data), nil
@@ -175,6 +181,36 @@ func TestWriteFileAtomicCreateFailure(t *testing.T) {
 	}
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want wrapped create error", err)
+	}
+}
+
+func TestWriteFileAtomicShortWriteCleansUp(t *testing.T) {
+	file := &stubAtomicFile{name: "temporary", shortWrite: true}
+	removed := false
+	err := WriteFileAtomic("destination", []byte("data"), 0o600, func(config *atomicWriteConfig) {
+		config.createTemp = func(_, _ string) (atomicFile, error) {
+			return file, nil
+		}
+		config.remove = func(path string) error {
+			if path != file.name {
+				t.Fatalf("remove path = %q, want %q", path, file.name)
+			}
+			removed = true
+			return nil
+		}
+	})
+	var writeErr *AtomicWriteError
+	if !errors.As(err, &writeErr) || writeErr.Operation != AtomicWriteWrite {
+		t.Fatalf("error = %v, want write AtomicWriteError", err)
+	}
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("error = %v, want wrapped io.ErrShortWrite", err)
+	}
+	if file.closeCall != 1 {
+		t.Fatalf("close calls = %d, want 1", file.closeCall)
+	}
+	if !removed {
+		t.Fatal("temporary file was not cleaned up")
 	}
 }
 
