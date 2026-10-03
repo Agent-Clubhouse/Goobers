@@ -9519,6 +9519,23 @@ code,
   }
 }
 
+@media (max-width: 900px) and (max-height: 500px) and (orientation: landscape) {
+  .filter-button,
+  .filter-select select,
+  .filter-search input,
+  .filter-toggle,
+  .text-button,
+  .reconnect-button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .text-button,
+  .reconnect-button {
+    justify-content: center;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -204,31 +204,38 @@ for (const viewport of viewports) {
   });
 }
 
-test("keeps scoped mobile actions at least 44 by 44 CSS pixels", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/#/runs");
+for (const viewport of [
+  { name: "portrait", width: 390, height: 844 },
+  { name: "landscape", width: 844, height: 390 },
+] as const) {
+  test(`keeps scoped mobile actions at least 44 by 44 CSS pixels in ${viewport.name}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await page.goto("/#/runs");
 
-  await expectTouchTargets(page.locator(".filter-bar :is(button, select, .filter-toggle)"));
-  await expectTouchTargets(page.getByRole("link", { name: /^Open run / }));
-  await page.locator(".content-section").evaluate((section) => {
-    const loadMore = document.createElement("button");
-    loadMore.className = "text-button";
-    loadMore.textContent = "Load more runs";
-    section.append(loadMore);
-  });
-  await expectTouchTargets(page.getByRole("button", { name: "Load more runs" }));
+    await expectTouchTargets(page.locator(".filter-bar :is(button, select, .filter-toggle)"));
+    await expectTouchTargets(page.getByRole("link", { name: /^Open run / }));
+    await page.locator(".content-section").evaluate((section) => {
+      const loadMore = document.createElement("button");
+      loadMore.className = "text-button";
+      loadMore.textContent = "Load more runs";
+      section.append(loadMore);
+    });
+    await expectTouchTargets(page.getByRole("button", { name: "Load more runs" }));
 
-  await page.goto("/#/work-items");
-  await expectTouchTargets(page.locator(".filter-bar :is(button, select, input)"));
-  await expectTouchTargets(page.locator(".work-item-grid.data-row"));
-  await page.locator(".content-section").evaluate((section) => {
-    const retry = document.createElement("button");
-    retry.className = "reconnect-button";
-    retry.textContent = "Retry";
-    section.append(retry);
+    await page.goto("/#/work-items");
+    await expectTouchTargets(page.locator(".filter-bar :is(button, select, input)"));
+    await expectTouchTargets(page.locator(".work-item-grid.data-row"));
+    await page.locator(".content-section").evaluate((section) => {
+      const retry = document.createElement("button");
+      retry.className = "reconnect-button";
+      retry.textContent = "Retry";
+      section.append(retry);
+    });
+    await expectTouchTargets(page.getByRole("button", { name: "Retry" }));
   });
-  await expectTouchTargets(page.getByRole("button", { name: "Retry" }));
-});
+}
 
 test("shows semantic mobile context and preserves deep links and browser Back", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
