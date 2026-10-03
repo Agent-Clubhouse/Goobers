@@ -105,7 +105,8 @@ test("run detail waterfall uses all timestamps and renders execution metadata", 
 test("telemetry insights render unavailable values and measured zeroes", () => {
     const html = renderTelemetryInsights({ metrics: { costUSD: { value: 0, unit: "USD" } } });
     assert.match(html, /Unknown/);
-    assert.match(html, /0 USD/);
+    assert.match(html, /0 AIC/);
+    assert.doesNotMatch(html, /USD/);
     assert.match(renderHtml("insights-test"), /Telemetry insights/);
 });
 
