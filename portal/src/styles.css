@@ -1675,6 +1675,7 @@ summary:focus-visible {
 .goober-identity {
   color: var(--muted);
   font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .goober-group > .goober-roster {
@@ -1698,6 +1699,12 @@ summary:focus-visible {
   padding: 0;
   text-align: left;
   width: 100%;
+}
+
+.workflow-identity {
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .goober-card-toggle-label h4 {
@@ -9298,6 +9305,109 @@ code,
   .journal-stage-filter select {
     max-width: 100%;
     width: 100%;
+  }
+}
+
+@media (max-width: 820px), (max-width: 900px) and (orientation: landscape) {
+  .workflow-gaggle-group {
+    margin-top: 16px;
+  }
+
+  .workflow-gaggle-content {
+    padding: 0 8px 12px;
+  }
+
+  .workflow-gaggle-content .gaggle-content {
+    margin-top: 12px;
+  }
+
+  .workflow-grid {
+    display: none;
+  }
+
+  .workflow-grid ~ .workflow-row {
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+
+  .workflow-row > .row-primary,
+  .workflow-row > .workflow-trigger-list,
+  .workflow-row > .outcome-cell,
+  .workflow-row > .workflow-row-actions {
+    display: grid;
+    grid-column: 1;
+  }
+
+  .workflow-row > .workflow-concurrency {
+    display: none;
+  }
+
+  .workflow-row > .workflow-row-actions {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+  }
+
+  .workflow-row-actions > a,
+  .workflow-row-actions .scope-pivot-link,
+  .workflow-gaggle-actions > a,
+  .workflow-gaggle-actions .scope-pivot-link,
+  .goober-card-toggle,
+  .definition-view-toggle button,
+  .copy-command-button {
+    align-items: center;
+    display: inline-flex;
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .workflow-row .row-title,
+  .workflow-row .row-subtitle {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .workflow-trigger-list::before {
+    color: var(--muted);
+    content: "Trigger";
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .goober-card {
+    min-width: 0;
+  }
+
+  .goober-card-toggle {
+    padding: 2px 0;
+  }
+
+  .goober-card-toggle-label {
+    overflow-wrap: anywhere;
+  }
+
+  .goober-card .goober-summary {
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .goober-card .goober-summary-list:not(.goober-summary-basics) {
+    display: none;
+  }
+
+  .goober-card[data-expanded="true"] .goober-summary-list:not(.goober-summary-basics) {
+    display: grid;
+  }
+
+  .goober-ownership-list li,
+  .goober-field-list li {
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 }
 

@@ -63,6 +63,8 @@ describe("goobers roster page", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Core implementer")).toBeInTheDocument();
     expect(screen.getByText("core/implementer")).toBeInTheDocument();
+    expect(screen.getByText("configured")).toBeInTheDocument();
+    expect(screen.getByText("core/implementer")).toHaveAttribute("title", "core/implementer");
     expect(screen.getByRole("link", { name: "View all gaggles" })).toHaveAttribute(
       "href",
       "#/goobers",
