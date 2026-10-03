@@ -8,6 +8,7 @@ import { defaultPortalConfig } from "./cobrand";
 describe("PortalWorkbench", () => {
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     document.querySelectorAll("[data-test-header-host]").forEach((element) => element.remove());
     document.getElementById("cobrand-theme")?.remove();
     delete document.documentElement.dataset.theme;
@@ -107,6 +108,13 @@ describe("PortalWorkbench", () => {
   });
 
   it("lets an embedding host own phone navigation without rendering a duplicate", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+      addEventListener: vi.fn(),
+      matches: true,
+      media: query,
+      onchange: null,
+      removeEventListener: vi.fn(),
+    })));
     const target = createHost();
     render(
       <PortalWorkbench
@@ -117,6 +125,7 @@ describe("PortalWorkbench", () => {
     );
 
     await screen.findByText("Healthy");
+    expect(window.matchMedia).toHaveBeenCalled();
     expect(screen.queryByRole("navigation", { name: "Mobile primary" })).not.toBeInTheDocument();
     expect(document.querySelector(".portal-frame")).toHaveClass("portal-frame-host-navigation");
   });

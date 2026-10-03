@@ -148,11 +148,10 @@ export function PortalShell({
 
   useEffect(() => {
     if (compactShell || !mobileMenuOpen) return;
-    if (window.history.state?.portalMenu) {
-      const { portalMenu: _portalMenu, ...state } = window.history.state;
-      window.history.replaceState(state, "");
-    }
     mobileMenuOpener.current = null;
+    if (window.history.state?.portalMenu) {
+      window.history.back();
+    }
     setMobileMenuOpen(false);
   }, [compactShell, mobileMenuOpen]);
 
@@ -468,6 +467,7 @@ export function PortalShell({
           onClick={(event) => {
             if (event.target === event.currentTarget) closeMobileMenu();
           }}
+          onKeyDown={containDialogFocus}
           ref={mobileMenu}
         >
           <div className="mobile-menu-content">
@@ -583,6 +583,28 @@ function useMediaQuery(query: string): boolean {
   }, [query]);
 
   return matches;
+}
+
+function containDialogFocus(event: React.KeyboardEvent<HTMLDialogElement>) {
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!first || !last) return;
+  if (
+    event.shiftKey &&
+    (document.activeElement === first || document.activeElement === event.currentTarget)
+  ) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function MobileDestination({

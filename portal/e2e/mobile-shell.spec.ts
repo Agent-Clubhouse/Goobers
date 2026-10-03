@@ -93,19 +93,88 @@ test("dismisses the menu with Escape and browser Back and restores focus", async
   await expect(page).toHaveURL(/#\/overview$/);
 });
 
-test("composes one compact host header without duplicating Portal chrome", async ({ page }) => {
+test("contains focus within the menu and keeps focused controls visible above a keyboard", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/?host=fleet#/overview");
+  await page.goto("/#/overview");
 
-  await expect(page.locator("#portal-header-host .topbar")).toHaveCount(1);
-  await expect(page.locator("#root > .portal-frame > .topbar")).toHaveCount(0);
-  const heading = page.getByRole("main").getByRole("heading").first();
-  await expect(heading).toBeVisible();
-  const headingBox = await heading.boundingBox();
-  expect(headingBox).not.toBeNull();
-  expect(headingBox!.y).toBeLessThanOrEqual(136);
-  await expect(page.getByRole("navigation", { name: "Mobile primary" })).toHaveCount(1);
-  await expectNoDocumentOverflow(page);
+  await page
+    .getByRole("navigation", { name: "Mobile primary" })
+    .getByRole("button", { name: "More" })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Goobers" });
+  const focusable = dialog.locator(
+    'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  const first = focusable.first();
+  const last = focusable.last();
+
+  await first.focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(last).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(first).toBeFocused();
+  const focusableCount = await focusable.count();
+  for (let index = 0; index <= focusableCount; index += 1) {
+    await page.keyboard.press("Tab");
+    expect(await dialog.evaluate((element) =>
+      element === document.activeElement || element.contains(document.activeElement),
+    )).toBe(true);
+  }
+
+  await page.setViewportSize({ width: 390, height: 430 });
+  await last.focus();
+  await expect
+    .poll(async () => {
+      const box = await last.boundingBox();
+      return box ? box.y + box.height : Number.POSITIVE_INFINITY;
+    })
+    .toBeLessThanOrEqual(430);
+});
+
+test("consumes the menu history entry when leaving compact mode", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+  await page
+    .getByRole("navigation", { name: "Mobile primary" })
+    .getByRole("button", { name: "Runs" })
+    .click();
+  await expect(page).toHaveURL(/#\/runs$/);
+  await page
+    .getByRole("navigation", { name: "Mobile primary" })
+    .getByRole("button", { name: "More" })
+    .click();
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect(page.getByRole("dialog", { name: "Goobers" })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.history.state?.portalMenu)).toBeUndefined();
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/overview$/);
+});
+
+for (const layout of phoneLayouts.slice(0, 2)) {
+  test(`composes one compact host header at ${layout.name}`, async ({ page }) => {
+    await page.setViewportSize(layout);
+    await page.goto("/?host=fleet#/overview");
+
+    await expect(page.locator("#portal-header-host .topbar")).toHaveCount(1);
+    await expect(page.locator("#root > .portal-frame > .topbar")).toHaveCount(0);
+    const heading = page.getByRole("main").getByRole("heading").first();
+    await expect(heading).toBeVisible();
+    const headingBox = await heading.boundingBox();
+    expect(headingBox).not.toBeNull();
+    expect(headingBox!.y).toBeLessThanOrEqual(136);
+    await expect(page.getByRole("navigation", { name: "Mobile primary" })).toHaveCount(1);
+    await expectNoDocumentOverflow(page);
+  });
+}
+
+test("defers compact navigation to an embedding host without duplication", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?host=fleet&hostNavigation=true#/overview");
+
+  await expect(page.getByRole("navigation", { name: "Host mobile primary" })).toHaveCount(1);
+  await expect(page.getByRole("navigation", { name: "Mobile primary", exact: true })).toHaveCount(0);
+  await expect(page.locator(".mobile-primary-nav")).toHaveCount(1);
 });
 
 test("retains the desktop sidebar and header layout", async ({ page }) => {
