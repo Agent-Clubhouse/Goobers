@@ -149,3 +149,27 @@ That is intentional:
 
 Do not fold unknown-validity records into the valid denominator by hand.
 
+## 8. Measure backlog-intake shadow flags
+
+When `decisionGate.mode` is `shadow`, a claiming `backlog-query` also evaluates
+each sampled, deterministically eligible item for either a near-duplicate or a
+prose-only dependency on another trust-approved open item. Native provider
+dependency links remain authoritative and are checked first. The result never
+filters, reorders, or blocks a claim.
+
+Each evaluation is a `runner.annotation` in the instance journal with
+`runner.annotation=backlog.intake-decision-shadow`. The payload includes
+`itemId`, `verdict`, `flagged`, `probability`, `peerCount`, `shadowSample`,
+`cached`, and a boolean `error`. Join `itemId` to that item's eventual run and
+terminal phase to report these counts:
+
+- sampled issues;
+- flagged issues;
+- flagged issues that later escalated;
+- unflagged issues that later escalated;
+- uncertain or errored evaluations.
+
+Always print the counts and sample size. Do not publish a flagged or escalation
+rate below the experiment's minimum sample size, and keep uncertain/error
+records out of both the flagged and unflagged denominators. Model or annotation
+failures retain the existing claim path.

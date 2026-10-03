@@ -116,6 +116,9 @@ func (s *Settings) Resolve(getenv func(string) string, observe func(Event)) (*Ga
 	if _, ok := cfg.Thresholds[ClaimQuestion]; !ok {
 		cfg.Thresholds[ClaimQuestion] = DefaultClaimThreshold
 	}
+	if _, ok := cfg.Thresholds[IntakeRiskQuestion]; !ok {
+		cfg.Thresholds[IntakeRiskQuestion] = DefaultIntakeRiskThreshold
+	}
 	if cfg.CallTimeout == 0 {
 		cfg.CallTimeout = 5 * time.Second
 	}

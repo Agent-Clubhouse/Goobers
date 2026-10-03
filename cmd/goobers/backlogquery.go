@@ -562,6 +562,9 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		return code
 	}
 	eligible := scan.eligible
+	if claim {
+		observeBacklogIntakeShadow(ctx, env, runID, workflow, trustLabel, eligible, scan.intakePeers)
+	}
 	cursorKey := scan.cursorKey
 	scanCursor, nextScanCursor := scan.cursor, scan.nextCursor
 	observedRecords, remainingRecords := scan.observedRecords, scan.remainingRecords
@@ -2338,6 +2341,9 @@ func backlogScanPermitsAssignee(opts backlogScanOptions, item providers.WorkItem
 
 type backlogEligibilityScan struct {
 	eligible []providers.WorkItem
+	// intakePeers is the deterministically filtered open comparison set before
+	// native dependency checks remove explicitly blocked candidates.
+	intakePeers []providers.WorkItem
 	// state is the scheduler-state store this scan reads and writes
 	// blocked.json and its scan cursor through: the instance's own files under
 	// claims.lock locally, the daemon's copy over the scheduler-state plane in
@@ -2460,6 +2466,7 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		}
 		result.eligible = backstopped
 	}
+	result.intakePeers = append([]providers.WorkItem(nil), result.eligible...)
 	var warnings []string
 	var dependencyExcluded func(providers.WorkItem, string)
 	if env.debug {
