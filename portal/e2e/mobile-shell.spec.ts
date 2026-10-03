@@ -178,13 +178,24 @@ for (const layout of phoneLayouts.slice(0, 2)) {
   });
 }
 
-test("defers compact navigation to an embedding host without duplication", async ({ page }) => {
+test("keeps navigation functional in an embedding host without duplication", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/?host=fleet&hostNavigation=true#/overview");
 
-  await expect(page.getByRole("navigation", { name: "Host mobile primary" })).toHaveCount(1);
-  await expect(page.getByRole("navigation", { name: "Mobile primary", exact: true })).toHaveCount(0);
+  const navigation = page.getByRole("navigation", { name: "Mobile primary" });
+  await expect(navigation).toHaveCount(1);
   await expect(page.locator(".mobile-primary-nav")).toHaveCount(1);
+
+  await navigation.getByRole("button", { name: "Runs" }).click();
+  await expect(page).toHaveURL(/#\/runs$/);
+  await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
+
+  await navigation.getByRole("button", { name: "More" }).click();
+  const dialog = page.getByRole("dialog", { name: "Goobers" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Work Items" }).click();
+  await expect(page).toHaveURL(/#\/work-items$/);
+  await expect(page.getByRole("heading", { name: "Work Items", exact: true })).toBeVisible();
 });
 
 test("retains the desktop sidebar and header layout", async ({ page }) => {
