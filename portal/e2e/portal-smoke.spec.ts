@@ -54,27 +54,22 @@ function trackPageErrors(page: Page): string[] {
   return errors;
 }
 
-async function expectInVisualViewport(locator: Locator, description: string) {
+async function expectFullyInViewport(locator: Locator, description: string) {
   await expect
     .poll(
       () =>
         locator.evaluate((element) => {
           const bounds = element.getBoundingClientRect();
-          const viewport = window.visualViewport;
-          const left = viewport?.offsetLeft ?? 0;
-          const top = viewport?.offsetTop ?? 0;
-          const right = left + (viewport?.width ?? window.innerWidth);
-          const bottom = top + (viewport?.height ?? window.innerHeight);
           return (
             bounds.width > 0 &&
             bounds.height > 0 &&
-            bounds.right > left &&
-            bounds.left < right &&
-            bounds.bottom > top &&
-            bounds.top < bottom
+            bounds.left >= 0 &&
+            bounds.top >= 0 &&
+            bounds.right <= window.innerWidth &&
+            bounds.bottom <= window.innerHeight
           );
         }),
-      { message: `${description} should intersect the visual viewport` },
+      { message: `${description} should be fully within the viewport` },
     )
     .toBe(true);
 }
@@ -206,27 +201,40 @@ test("keeps Overview content first without horizontal overflow across compact la
     ).toBeVisible();
 
     if (viewport.width === 390) {
-      await expectInVisualViewport(
+      await expectFullyInViewport(
         page.getByRole("heading", { level: 1 }),
         "Overview title at 390x844",
       );
-      await expectInVisualViewport(activeRow, "active run at 390x844");
+      await expectFullyInViewport(activeRow, "active run at 390x844");
     }
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
   }
 
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1920, height: 1440 });
   await page.goto("/#/overview");
   const session = await page.context().newCDPSession(page);
-  await session.send("Emulation.setPageScaleFactor", { pageScaleFactor: 2 });
-  await expect.poll(() => page.evaluate(() => window.visualViewport?.scale)).toBe(2);
-  await expectInVisualViewport(
+  await session.send("Emulation.setDeviceMetricsOverride", {
+    width: 960,
+    height: 720,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      })),
+    )
+    .toEqual({ width: 960, height: 720, devicePixelRatio: 2 });
+  await expectFullyInViewport(
     page.getByRole("heading", { level: 1 }),
     "Overview title at 200% zoom",
   );
-  await expectInVisualViewport(
+  await expectFullyInViewport(
     page
       .getByRole("region", { name: "Active runs" })
       .locator(".data-row")
