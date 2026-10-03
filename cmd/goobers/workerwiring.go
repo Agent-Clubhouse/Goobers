@@ -498,57 +498,83 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 	return exec.Run(ctx, env, run)
 }
 
-type workerGoober struct{ seams *workerSeams }
+type workerGoober struct {
+	seams          *workerSeams
+	acquire        func(context.Context, apiv1.InvocationEnvelope) (*gaggleSeams, func(), error)
+	materialize    func(context.Context, *gaggleSeams, apiv1.InvocationEnvelope) error
+	mergeAuthority func(context.Context, apiv1.InvocationEnvelope) (context.Context, error)
+}
+
+type workerExecutorContext struct {
+	ctx     context.Context
+	exec    invoke.Goober
+	release func()
+}
 
 func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	prepared, err := a.prepareExecutor(ctx, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	defer prepared.release()
+	return prepared.exec.Invoke(prepared.ctx, env)
+}
+
+func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	prepared, err := a.prepareExecutor(ctx, env)
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	defer prepared.release()
+	return prepared.exec.Review(prepared.ctx, env)
+}
+
+func (a workerGoober) prepareExecutor(ctx context.Context, env apiv1.InvocationEnvelope) (prepared workerExecutorContext, err error) {
 	// Resolve the gaggle's kit ONCE for the whole call, BY THE RUN'S PIN.
 	// Resolving again for materialize would let a reload landing
 	// mid-invocation hand the same attempt two different trees; resolving
 	// without the pin would let a reload landing between two attempts hand
 	// the same RUN two different curators (#3884).
-	g, release, err := a.seams.forInvocationGaggle(ctx, env, true)
-	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+	acquire := a.acquire
+	if acquire == nil {
+		acquire = func(ctx context.Context, env apiv1.InvocationEnvelope) (*gaggleSeams, func(), error) {
+			return a.seams.forInvocationGaggle(ctx, env, true)
+		}
 	}
-	defer release()
-	if err := g.refuseUnavailableHarness(env); err != nil {
-		return apiv1.ResultEnvelope{}, err
+	g, release, err := acquire(ctx, env)
+	if err != nil {
+		return workerExecutorContext{}, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			release()
+		}
+	}()
+	if err = g.refuseUnavailableHarness(env); err != nil {
+		return workerExecutorContext{}, err
 	}
 	exec, err := a.executor(g, env)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return workerExecutorContext{}, err
 	}
-	if err := a.seams.materialize(ctx, g, env); err != nil {
-		return apiv1.ResultEnvelope{}, err
+	materialize := a.materialize
+	if materialize == nil {
+		materialize = a.seams.materialize
 	}
-	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
+	if err = materialize(ctx, g, env); err != nil {
+		return workerExecutorContext{}, err
+	}
+	mergeAuthority := a.mergeAuthority
+	if mergeAuthority == nil {
+		mergeAuthority = a.seams.mergeAuthorityContext
+	}
+	ctx, err = mergeAuthority(ctx, env)
 	if err != nil {
-		return apiv1.ResultEnvelope{}, err
+		return workerExecutorContext{}, err
 	}
-	return exec.Invoke(ctx, env)
-}
-
-func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	g, release, err := a.seams.forInvocationGaggle(ctx, env, true)
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	defer release()
-	if err := g.refuseUnavailableHarness(env); err != nil {
-		return apiv1.Verdict{}, err
-	}
-	exec, err := a.executor(g, env)
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	if err := a.seams.materialize(ctx, g, env); err != nil {
-		return apiv1.Verdict{}, err
-	}
-	ctx, err = a.seams.mergeAuthorityContext(ctx, env)
-	if err != nil {
-		return apiv1.Verdict{}, err
-	}
-	return exec.Review(ctx, env)
+	transferred = true
+	return workerExecutorContext{ctx: ctx, exec: exec, release: release}, nil
 }
 
 func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (invoke.Goober, error) {
