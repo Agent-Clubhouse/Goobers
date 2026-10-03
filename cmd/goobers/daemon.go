@@ -538,7 +538,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	if err := validateStoredCopilotAuthBoundaries(input.Config, input.Definitions, goobers); err != nil {
 		return nil, err
 	}
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), input.Definitions, goobers)
 	if err != nil {
 		return nil, err
 	}
@@ -1061,7 +1061,7 @@ func buildRetainedLegacyRunner(input retainedLegacyRunnerInput) (*runner.Runner,
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	instructions, err := loadGooberInstructions(input.Layout.ConfigDir(), input.Goobers)
+	instructions, err := loadGooberInstructions(input.Layout.ConfigDir(), input.Definitions, input.Goobers)
 	if err != nil {
 		return nil, nil, err
 	}

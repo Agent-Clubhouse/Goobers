@@ -188,7 +188,7 @@ func buildRuntimePreflightReportWithReadiness(root, workflowName, identityMode s
 		return runtimePreflightReport{}, fmt.Errorf("load config: %w", err)
 	}
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(layout.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(layout.ConfigDir(), set, goobers)
 	if err != nil {
 		return runtimePreflightReport{}, err
 	}

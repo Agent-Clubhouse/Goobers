@@ -371,7 +371,7 @@ func tutorConfigVersions(configDir, gaggle string, names []string, environment h
 		return nil, &configReportError{report: report, err: err}
 	}
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		return nil, err
 	}

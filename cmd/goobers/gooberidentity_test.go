@@ -49,7 +49,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 		},
 	}}}
 	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
-	firstInstructions, err := loadGooberInstructions(configDir, goobers)
+	firstInstructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	if err := os.WriteFile(instructionsPath, []byte("second instructions"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	secondInstructions, err := loadGooberInstructions(configDir, goobers)
+	secondInstructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +84,28 @@ func TestCompiledMachinesDigestResolvedInstructions(t *testing.T) {
 	}
 	if first[identity].Digest() != second[identity].Digest() {
 		t.Fatalf("workflow digest changed with instruction content: %s != %s", first[identity].Digest(), second[identity].Digest())
+	}
+}
+
+func TestLoadGooberInstructionsUsesDefinitionSourceDirectory(t *testing.T) {
+	root := initDemo(t)
+	configDir := instance.NewLayout(root).ConfigDir()
+	canonicalDir := filepath.Join(configDir, "gaggles", "example", "goobers", "coder")
+	sourceDir := filepath.Join(configDir, "gaggles", "example", "goobers", "deps-coder")
+	if err := os.Rename(canonicalDir, sourceDir); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := instance.LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	instructions, err := loadGooberInstructions(configDir, set, goobersByName(set))
+	if err != nil {
+		t.Fatalf("loadGooberInstructions: %v", err)
+	}
+	if instructions["coder"] == "" {
+		t.Fatal("coder instructions were not loaded from the goober definition source directory")
 	}
 }
 
@@ -127,7 +149,7 @@ func TestCompiledMachinesDigestCompleteSkillPackage(t *testing.T) {
 		},
 	}}}
 	identity := localscheduler.WorkflowIdentity{Gaggle: "alpha", Workflow: "implement"}
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +263,7 @@ func TestCompiledMachinesDigestUsesAdmittedHarnessConfig(t *testing.T) {
 			}},
 		},
 	}}}
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, nil, goobers)
 	if err != nil {
 		t.Fatal(err)
 	}
