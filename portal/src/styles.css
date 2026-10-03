@@ -3005,8 +3005,24 @@ summary:focus-visible {
   color: var(--warning);
 }
 
-.external-cost-table-wrap {
+.external-cost-table-wrap,
+.external-cost-run-table-wrap {
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+}
+
+.external-cost-table-wrap:focus-visible,
+.external-cost-run-table-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.local-scroll-affordance {
+  color: var(--muted);
+  font-size: var(--font-meta);
+  margin: 0 0 6px;
 }
 
 .external-cost-table {
@@ -3650,7 +3666,7 @@ summary:focus-visible {
   align-items: center;
   display: grid;
   gap: 14px;
-  grid-template-columns: minmax(140px, 1.4fr) repeat(3, minmax(90px, 0.8fr));
+  grid-template-columns: minmax(140px, 1.4fr) repeat(4, minmax(90px, 0.8fr));
   padding: 10px 13px;
 }
 
@@ -8716,14 +8732,56 @@ code,
 
   .insight-outcome-header,
   .insight-outcome-row {
-    grid-template-columns: minmax(170px, 1.2fr) minmax(140px, 1fr) repeat(2, 60px);
+    grid-template-columns: minmax(0, 1fr) repeat(4, minmax(58px, auto));
   }
 
-  .insight-outcome-header > span:nth-child(5),
-  .insight-outcome-header > span:nth-child(6),
-  .insight-outcome-row > :nth-child(5),
-  .insight-outcome-row > :nth-child(6) {
+  .insight-outcome-header {
     display: none;
+  }
+
+  .insight-outcome-row {
+    align-items: stretch;
+  }
+
+  .insight-scope-label,
+  .insight-rate {
+    grid-column: 1 / -1;
+  }
+
+  .insight-rate {
+    grid-template-columns: minmax(80px, 1fr) auto;
+  }
+
+  .insight-number {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    padding: 6px;
+    text-align: left;
+  }
+
+  .insight-number::before {
+    color: var(--muted);
+    font-size: var(--font-label);
+    font-weight: 720;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .insight-number:nth-child(3)::before {
+    content: "Succeeded";
+  }
+
+  .insight-number:nth-child(4)::before {
+    content: "Failed";
+  }
+
+  .insight-number:nth-child(5)::before {
+    content: "Other";
+  }
+
+  .insight-number:nth-child(6)::before {
+    content: "Total";
   }
 
   .error-signature-header,
@@ -8999,6 +9057,10 @@ code,
 }
 
 @media (max-width: 480px) {
+  body {
+    min-width: 0;
+  }
+
   .topbar-divider,
   .topbar-instance-context {
     display: none;
@@ -9147,12 +9209,11 @@ code,
   .insight-outcome-header,
   .insight-outcome-row {
     gap: 10px;
-    grid-template-columns: minmax(135px, 1fr) minmax(115px, 0.8fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .insight-outcome-header > span:nth-child(n + 3),
-  .insight-outcome-row > :nth-child(n + 3) {
-    display: none;
+  .insight-number {
+    display: grid;
   }
 
   .usage-header {
@@ -9171,6 +9232,34 @@ code,
   .usage-metric-heading > strong {
     display: block;
     font-size: 10px;
+  }
+
+  .gaggle-spend-header {
+    display: none;
+  }
+
+  .gaggle-spend-row {
+    gap: 8px 14px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gaggle-spend-row .distribution-name {
+    grid-column: 1 / -1;
+  }
+
+  .gaggle-spend-row > span[data-label] {
+    display: grid;
+    gap: 3px;
+    overflow-wrap: anywhere;
+  }
+
+  .gaggle-spend-row > span[data-label]::before {
+    color: var(--muted);
+    content: attr(data-label);
+    font-size: var(--font-label);
+    font-weight: 720;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   .error-signature-header,
