@@ -626,7 +626,7 @@ function validTimestamp(value: string | null): boolean {
     Number(hour) <= 23 &&
     Number(minute) <= 59 &&
     Number(second) <= 59 &&
-    (zoneHour === undefined || Number(zoneHour) <= 24) &&
+    (zoneHour === undefined || Number(zoneHour) <= 23) &&
     (zoneMinute === undefined || Number(zoneMinute) <= 59);
 }
 

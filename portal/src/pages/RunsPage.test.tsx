@@ -213,7 +213,7 @@ describe("runs history page", () => {
       "&since=2026-07-18T00%3A00%3A00Z&until=2026-07-19T00%3A00%3A00Z" +
       "&window=24h&status=all",
     );
-    expect(screen.getByLabelText("7 active filters")).toBeInTheDocument();
+    expect(await screen.findByLabelText("7 active filters")).toBeInTheDocument();
     for (const label of [
       "Status: all",
       "Stage: review",
@@ -223,7 +223,7 @@ describe("runs history page", () => {
       "Until: 2026-07-19T00:00:00Z",
       "Time window: Last 24 hours",
     ]) {
-      expect(screen.getByRole("button", { name: `Remove ${label} filter` }))
+      expect(await screen.findByRole("button", { name: `Remove ${label} filter` }))
         .toBeInTheDocument();
     }
 
@@ -289,14 +289,17 @@ describe("runs history page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
   });
 
-  it("rejects non-RFC3339 timestamps before requesting run history", async () => {
-    window.location.hash = "#/runs?since=2026-09-03";
+  it.each([
+    "2026-09-03",
+    "2026-09-03T12:00:00+24:00",
+  ])("rejects non-RFC3339 timestamp %s before requesting run history", async (timestamp) => {
+    window.location.hash = `#/runs?since=${encodeURIComponent(timestamp)}`;
     const client = new TimestampRejectingClient();
     const listRuns = vi.spyOn(client, "listRuns");
     render(<App client={client} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      'Invalid since filter "2026-09-03". Enter an RFC3339 timestamp.',
+      `Invalid since filter "${timestamp}". Enter an RFC3339 timestamp.`,
     );
     expect(screen.getByRole("group", { name: "Filter runs" })).toBeInTheDocument();
     expect(listRuns).not.toHaveBeenCalled();
