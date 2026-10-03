@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -76,13 +77,15 @@ func TestDecodeKeyedStateRecord(t *testing.T) {
 
 type keyedStateTestStore struct {
 	values    []stateclient.Value
+	getValue  stateclient.Value
 	key       string
 	operation string
 	writes    [][]byte
 }
 
-func (s *keyedStateTestStore) Get(context.Context, string) (stateclient.Value, error) {
-	return stateclient.Value{}, errors.New("unexpected Get")
+func (s *keyedStateTestStore) Get(_ context.Context, key string) (stateclient.Value, error) {
+	s.key = key
+	return s.getValue, nil
 }
 
 func (s *keyedStateTestStore) Put(context.Context, string, []byte, string) (stateclient.Value, error) {
@@ -110,6 +113,82 @@ func (s *keyedStateTestStore) Update(
 
 func (s *keyedStateTestStore) Section(context.Context, string, string, func() error) error {
 	return errors.New("unexpected Section")
+}
+
+func TestReadJSONState(t *testing.T) {
+	store := &keyedStateTestStore{
+		getValue: stateclient.Value{Data: []byte(`{"count":3}`), ETag: "etag"},
+	}
+	got, err := readJSONState(t.Context(), store, "test/cursor",
+		func(value stateclient.Value) (keyedStateTestRecord, error) {
+			var record keyedStateTestRecord
+			err := json.Unmarshal(value.Data, &record)
+			return record, err
+		})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.Count != 3 || store.key != "test/cursor" {
+		t.Fatalf("read = %+v from %q, want count 3 from test/cursor", got, store.key)
+	}
+}
+
+func TestUpdateJSONState(t *testing.T) {
+	store := &keyedStateTestStore{values: []stateclient.Value{
+		{Data: []byte(`{"count":1}`), ETag: "old"},
+		{Data: []byte(`{"count":4}`), ETag: "winner"},
+	}}
+	callbacks := 0
+	err := updateJSONState(
+		t.Context(),
+		store,
+		"test/cursor",
+		"test.update",
+		func(value stateclient.Value) (keyedStateTestRecord, error) {
+			var record keyedStateTestRecord
+			err := json.Unmarshal(value.Data, &record)
+			return record, err
+		},
+		func(record keyedStateTestRecord) ([]byte, error) {
+			return json.Marshal(record)
+		},
+		func(current keyedStateTestRecord) (keyedStateTestRecord, bool, error) {
+			callbacks++
+			current.Count++
+			return current, true, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if callbacks != 2 || len(store.writes) != 2 || string(store.writes[1]) != `{"count":5}` {
+		t.Fatalf("callbacks/writes = %d/%q, want 2/[... count 5]", callbacks, store.writes)
+	}
+
+	store = &keyedStateTestStore{values: []stateclient.Value{{Data: []byte(`{"count":2}`)}}}
+	err = updateJSONState(
+		t.Context(),
+		store,
+		"test/cursor",
+		"test.update",
+		func(value stateclient.Value) (keyedStateTestRecord, error) {
+			var record keyedStateTestRecord
+			err := json.Unmarshal(value.Data, &record)
+			return record, err
+		},
+		func(record keyedStateTestRecord) ([]byte, error) {
+			return json.Marshal(record)
+		},
+		func(current keyedStateTestRecord) (keyedStateTestRecord, bool, error) {
+			return current, false, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("no-write update: %v", err)
+	}
+	if len(store.writes) != 0 {
+		t.Fatalf("no-write update wrote %q", store.writes)
+	}
 }
 
 func TestUpdateKeyedStateRecord(t *testing.T) {
