@@ -1145,9 +1145,15 @@ summary:focus-visible {
   margin: 0;
 }
 
+.page-filter-sheet-fields .filter-select input,
 .page-filter-sheet-fields .filter-select select {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
   min-height: 44px;
   min-width: 0;
+  padding: 6px 8px;
   width: 100%;
 }
 

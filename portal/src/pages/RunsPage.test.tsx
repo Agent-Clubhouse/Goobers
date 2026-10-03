@@ -194,6 +194,60 @@ describe("runs history page", () => {
       .toBeInTheDocument();
   });
 
+  it("applies advanced sheet filters and exposes each one as a removable chip", async () => {
+    window.location.hash = "#/runs?status=all";
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.type(screen.getByLabelText("Draft stage filter"), "review");
+    await user.selectOptions(screen.getByLabelText("Draft outcome filter"), "failure");
+    await user.selectOptions(screen.getByLabelText("Draft population filter"), "attempts");
+    await user.type(screen.getByLabelText("Draft since filter"), "2026-07-18T00:00:00Z");
+    await user.type(screen.getByLabelText("Draft until filter"), "2026-07-19T00:00:00Z");
+    await user.selectOptions(screen.getByLabelText("Draft time window filter"), "24h");
+    await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    expect(window.location.hash).toBe(
+      "#/runs?stage=review&outcome=failure&population=attempts" +
+      "&since=2026-07-18T00%3A00%3A00Z&until=2026-07-19T00%3A00%3A00Z" +
+      "&window=24h&status=all",
+    );
+    expect(screen.getByLabelText("7 active filters")).toBeInTheDocument();
+    for (const label of [
+      "Status: all",
+      "Stage: review",
+      "Outcome: Failure",
+      "Population: Attempts",
+      "Since: 2026-07-18T00:00:00Z",
+      "Until: 2026-07-19T00:00:00Z",
+      "Time window: Last 24 hours",
+    ]) {
+      expect(screen.getByRole("button", { name: `Remove ${label} filter` }))
+        .toBeInTheDocument();
+    }
+
+    await user.click(screen.getByRole("button", { name: "Remove Stage: review filter" }));
+    expect(window.location.hash).not.toContain("stage=review");
+    await user.click(screen.getByRole("button", { name: "Reset filters" }));
+    expect(window.location.hash).toBe("#/runs");
+  });
+
+  it("keeps invalid-route sheet edits isolated when canceled", async () => {
+    window.location.hash = "#/runs?status=surprising";
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
+    const user = userEvent.setup();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await user.click(await screen.findByRole("button", { name: "Filters" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "complete" }));
+    expect(window.location.hash).toBe("#/runs?status=surprising");
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(window.location.hash).toBe("#/runs?status=surprising");
+  });
+
   it("offers workflows from a newly selected draft gaggle", async () => {
     window.location.hash = "#/runs?gaggle=core&status=all";
     const user = userEvent.setup();

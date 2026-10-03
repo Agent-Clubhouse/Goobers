@@ -46,6 +46,7 @@ export function RunsPage({
     return (
       <InvalidRunsRoutePage
         filterError={filterError}
+        filters={filters}
         navigate={navigate}
       />
     );
@@ -62,30 +63,42 @@ export function RunsPage({
 
 function InvalidRunsRoutePage({
   filterError,
+  filters,
   navigate,
 }: {
   filterError: string;
+  filters?: RunRouteFilters;
   navigate: Navigate;
 }) {
+  const [draft, setDraft] = useState<RunRouteFilters>({ ...filters });
   const clearInvalidFilters = () => navigate({ page: "runs" });
-  const filters = () => (
-    <div aria-label="Filter runs" className="filter-bar" role="group">
-      {FILTERS.map((option) => (
-        <button
-          aria-pressed={false}
-          className="filter-button"
-          key={option}
-          onClick={() => navigate({
-            page: "runs",
-            filters: option === "active" ? undefined : { status: option },
-          })}
-          type="button"
-        >
-          {option === "all" ? "All runs" : option}
-        </button>
-      ))}
-    </div>
-  );
+  const renderFilters = (mobile: boolean) => {
+    const selectedStatus = mobile ? draft.status ?? "active" : "active";
+    return (
+      <div aria-label="Filter runs" className="filter-bar" role="group">
+        {FILTERS.map((option) => (
+          <button
+            aria-pressed={selectedStatus === option}
+            className={selectedStatus === option
+              ? "filter-button filter-button-active"
+              : "filter-button"}
+            key={option}
+            onClick={() => {
+              const status = option === "active" ? undefined : option;
+              if (mobile) {
+                setDraft({ ...filters, status });
+                return;
+              }
+              navigate({ page: "runs", filters: status ? { status } : undefined });
+            }}
+            type="button"
+          >
+            {option === "all" ? "All runs" : option}
+          </button>
+        ))}
+      </div>
+    );
+  };
 
   return (
     <PageToolbar
@@ -93,12 +106,15 @@ function InvalidRunsRoutePage({
       count={0}
       description="Every execution across workflows and gaggles, filtered and paginated by the daemon."
       filterError={filterError}
-      filters={filters}
+      filters={renderFilters}
       onApplyFilters={() => {
-        clearInvalidFilters();
+        navigate({
+          page: "runs",
+          filters: Object.values(draft).some(Boolean) ? draft : undefined,
+        });
         return undefined;
       }}
-      onOpenFilters={() => undefined}
+      onOpenFilters={() => setDraft({ ...filters })}
       onResetFilters={clearInvalidFilters}
       title="Runs"
     />
@@ -180,9 +196,9 @@ function RunsPageContent({
   const history = query.state.data;
   const filterError = runsFilterError(filters, gaggleOptions, workflowOptions);
   const activeFilters: ActivePageFilter[] = [
-    ...(filter !== "active" ? [{
+    ...(filters?.status ? [{
       key: "status",
-      label: `Status: ${filter}`,
+      label: `Status: ${filters.status}`,
       onRemove: () => updateFilters({ status: undefined }),
     }] : []),
     ...(filters?.gaggle ? [{
@@ -194,6 +210,36 @@ function RunsPageContent({
       key: "workflow",
       label: `Workflow: ${filters.workflow}`,
       onRemove: () => updateFilters({ workflow: undefined }),
+    }] : []),
+    ...(filters?.stage ? [{
+      key: "stage",
+      label: `Stage: ${filters.stage}`,
+      onRemove: () => updateFilters({ stage: undefined }),
+    }] : []),
+    ...(filters?.outcome ? [{
+      key: "outcome",
+      label: `Outcome: ${filterValueLabel(filters.outcome)}`,
+      onRemove: () => updateFilters({ outcome: undefined }),
+    }] : []),
+    ...(filters?.population ? [{
+      key: "population",
+      label: `Population: ${filterValueLabel(filters.population)}`,
+      onRemove: () => updateFilters({ population: undefined }),
+    }] : []),
+    ...(filters?.since ? [{
+      key: "since",
+      label: `Since: ${filters.since}`,
+      onRemove: () => updateFilters({ since: undefined }),
+    }] : []),
+    ...(filters?.until ? [{
+      key: "until",
+      label: `Until: ${filters.until}`,
+      onRemove: () => updateFilters({ until: undefined }),
+    }] : []),
+    ...(filters?.window ? [{
+      key: "window",
+      label: `Time window: ${windowLabel(filters.window)}`,
+      onRemove: () => updateFilters({ window: undefined }),
     }] : []),
     ...(showNoWork ? [{
       key: "no-work",
@@ -280,6 +326,93 @@ function RunsPageContent({
             />
             Show no-work runs
           </label>
+          {mobile && (
+            <>
+              <label className="filter-select run-filter-field">
+                <span>Stage</span>
+                <input
+                  aria-label="Draft stage filter"
+                  onChange={(event) => change({ stage: event.target.value || undefined })}
+                  placeholder="Any stage"
+                  type="text"
+                  value={values.stage ?? ""}
+                />
+              </label>
+              <label className="filter-select run-filter-field">
+                <span>Outcome</span>
+                <select
+                  aria-label="Draft outcome filter"
+                  onChange={(event) => change({
+                    outcome: event.target.value
+                      ? event.target.value as RunRouteFilters["outcome"]
+                      : undefined,
+                  })}
+                  value={values.outcome ?? ""}
+                >
+                  <option value="">Any outcome</option>
+                  {OUTCOMES.map((outcome) => (
+                    <option key={outcome} value={outcome}>{filterValueLabel(outcome)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="filter-select run-filter-field">
+                <span>Population</span>
+                <select
+                  aria-label="Draft population filter"
+                  onChange={(event) => change({
+                    population: event.target.value
+                      ? event.target.value as RunRouteFilters["population"]
+                      : undefined,
+                  })}
+                  value={values.population ?? ""}
+                >
+                  <option value="">Any population</option>
+                  {POPULATIONS.map((population) => (
+                    <option key={population} value={population}>
+                      {filterValueLabel(population)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="filter-select run-filter-field">
+                <span>Since</span>
+                <input
+                  aria-label="Draft since filter"
+                  onChange={(event) => change({ since: event.target.value || undefined })}
+                  placeholder="RFC3339 timestamp"
+                  type="text"
+                  value={values.since ?? ""}
+                />
+              </label>
+              <label className="filter-select run-filter-field">
+                <span>Until</span>
+                <input
+                  aria-label="Draft until filter"
+                  onChange={(event) => change({ until: event.target.value || undefined })}
+                  placeholder="RFC3339 timestamp"
+                  type="text"
+                  value={values.until ?? ""}
+                />
+              </label>
+              <label className="filter-select run-filter-field">
+                <span>Time window</span>
+                <select
+                  aria-label="Draft time window filter"
+                  onChange={(event) => change({
+                    window: event.target.value
+                      ? event.target.value as RunRouteFilters["window"]
+                      : undefined,
+                  })}
+                  value={values.window ?? ""}
+                >
+                  <option value="">Any time</option>
+                  {WINDOWS.map((window) => (
+                    <option key={window} value={window}>{windowLabel(window)}</option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
         </div>
       </div>
     );
@@ -395,7 +528,35 @@ function runsFilterError(
   ) {
     return `Invalid workflow filter "${filters.workflow}". Choose a configured workflow.`;
   }
+  for (const name of ["since", "until"] as const) {
+    const value = filters?.[name];
+    if (value && !validTimestamp(value)) {
+      return `Invalid ${name} filter "${value}". Enter an RFC3339 timestamp.`;
+    }
+  }
   return undefined;
+}
+
+function filterValueLabel(value: string): string {
+  return value
+    .split("-")
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function windowLabel(window: RunRouteFilters["window"]): string {
+  switch (window) {
+    case "24h":
+      return "Last 24 hours";
+    case "7d":
+      return "Last 7 days";
+    case "30d":
+      return "Last 30 days";
+    case "all":
+      return "All time";
+    default:
+      return "";
+  }
 }
 
 function runsRouteFilterError(): string | undefined {
