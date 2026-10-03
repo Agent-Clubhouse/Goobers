@@ -199,6 +199,58 @@ describe("WorkItemsPage", () => {
     });
   });
 
+  it("keeps valid gaggle filters beyond the mixed-kind page boundary", async () => {
+    const issue = {
+      provider: "github",
+      repository: "acme/service",
+      kind: "issue" as const,
+      actionCount: 1,
+      lastOperation: "comment",
+      lastActionAt: "2026-09-01T12:00:00Z",
+      lastRunId: "run-issue",
+    };
+    const pullRequest = {
+      provider: "github",
+      repository: "acme/app",
+      kind: "pr" as const,
+      externalId: "boundary",
+      actionCount: 1,
+      lastOperation: "merge",
+      lastActionAt: "2026-08-31T12:00:00Z",
+      lastRunId: "run-pr",
+      gaggle: "boundary-gaggle",
+    };
+    render(
+      <WorkItemsPage
+        client={new FixtureDaemonClient({
+          ...populatedDaemonFixtures(),
+          workItems: {
+            hasMore: true,
+            items: [
+              ...Array.from({ length: 200 }, (_, index) => ({
+                ...issue,
+                externalId: String(index),
+                gaggle: `issue-gaggle-${index}`,
+              })),
+              pullRequest,
+            ],
+          },
+        })}
+        navigate={vi.fn()}
+        route={{ page: "work-items", kind: "pr", gaggle: "boundary-gaggle" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByRole("button", {
+      name: /Open PR #boundary in acme\/app/i,
+    })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Filter work items by gaggle" }))
+      .toHaveValue("boundary-gaggle");
+    expect(screen.queryByText('Invalid gaggle filter "boundary-gaggle"'))
+      .not.toBeInTheDocument();
+  });
+
   it("keeps search focus while word-wheel filtering and replaces the current URL", async () => {
     const navigate = vi.fn();
     window.history.replaceState(null, "", "#/work-items");

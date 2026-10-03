@@ -80,14 +80,26 @@ function WorkItemListView({
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
-    const page = client.listWorkItems({ kind, limit: 200 }, { signal: controller.signal });
-    const filterItems = kind
-      ? client.listWorkItems({ limit: 200 }, { signal: controller.signal })
-      : page;
-    Promise.all([page, filterItems]).then(
-      ([data, filterData]) => setState({
+    const pullRequests = client.listWorkItems(
+      { kind: "pr", limit: 200 },
+      { signal: controller.signal },
+    );
+    const issues = client.listWorkItems(
+      { kind: "issue", limit: 200 },
+      { signal: controller.signal },
+    );
+    const page = kind === "pr"
+      ? pullRequests
+      : kind === "issue"
+        ? issues
+        : client.listWorkItems({ limit: 200 }, { signal: controller.signal });
+    Promise.all([page, pullRequests, issues]).then(
+      ([data, pullRequestData, issueData]) => setState({
         status: "ready",
-        data: { page: data, filterItems: filterData.items },
+        data: {
+          page: data,
+          filterItems: [...pullRequestData.items, ...issueData.items],
+        },
       }),
       (error: Error) => {
         if (!controller.signal.aborted) setState({ status: "error", error });
