@@ -392,9 +392,10 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 	if err != nil {
 		t.Fatal(err)
 	}
-	if commitCurrent && !terminal {
-		if len(entries) != 0 {
-			t.Fatalf("committed intermediate stage created %d recovery entries, want none", len(entries))
+	wantRecovery := abandoned || (terminal && !removeBeforeTerminal)
+	if !wantRecovery {
+		if dirs := recoverySnapshotDirectories(entries); dirs != 0 {
+			t.Fatalf("intermediate stage cleanup created %d recovery entries, want none", dirs)
 		}
 		return
 	}
@@ -450,6 +451,16 @@ func runRecoveryCleanupFixture(t *testing.T, terminal, removeBeforeTerminal, aba
 			t.Fatalf("verify retained preparation: %t %v", found, err)
 		}
 	}
+}
+
+func recoverySnapshotDirectories(entries []os.DirEntry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			count++
+		}
+	}
+	return count
 }
 
 type recoveryCleanupTestJournal struct{ err error }

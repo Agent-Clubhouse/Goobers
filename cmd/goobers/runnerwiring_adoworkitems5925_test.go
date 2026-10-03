@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,12 +15,14 @@ import (
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
 
-// #5925: an Azure DevOps repository's own credential backs
-// ado:work-items:write, as it backs provider:pr:write and ado:pr:complete. A
-// GitHub or Gitea repository credential never backs it.
+// #5925/#6581: an Azure DevOps repository's own credential backs
+// ado:work-items:write and ado:packaging:read, as it backs provider:pr:write
+// and ado:pr:complete. A GitHub or Gitea repository credential never backs
+// them.
 
 func grantRefFor(grants []credentials.Grant, c capability.Capability) (string, bool) {
 	for _, grant := range grants {
@@ -35,7 +41,7 @@ func mixedProviderCredentialConfig() *instance.Config {
 	}}
 }
 
-func TestBuildCredentialsBacksADOWorkItemsWriteFromTheADORepoOnly(t *testing.T) {
+func TestBuildCredentialsBacksADOOnlyCapabilitiesFromTheADORepoOnly(t *testing.T) {
 	t.Setenv("EXAMPLE_GH_TOKEN", "gh-token")
 	t.Setenv("EXAMPLE_GITEA_TOKEN", "gitea-token")
 	t.Setenv("EXAMPLE_ADO_PAT", "ado-pat")
@@ -45,8 +51,10 @@ func TestBuildCredentialsBacksADOWorkItemsWriteFromTheADORepoOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ref, ok := grantRefFor(adoGrants, capability.ADOWorkItemsWrite); !ok || ref != adoTestRef {
-		t.Fatalf("ADO gaggle %s grant ref = %q (granted %t), want the ADO repository's own %q", capability.ADOWorkItemsWrite, ref, ok, adoTestRef)
+	for _, c := range adoRepoCredentialedCapabilities {
+		if ref, ok := grantRefFor(adoGrants, c); !ok || ref != adoTestRef {
+			t.Fatalf("ADO gaggle %s grant ref = %q (granted %t), want the ADO repository's own %q", c, ref, ok, adoTestRef)
+		}
 	}
 
 	for _, repo := range []struct{ owner, name string }{{"example-gh", "gh-repo"}, {"example-gitea", "gitea-repo"}} {
@@ -54,8 +62,10 @@ func TestBuildCredentialsBacksADOWorkItemsWriteFromTheADORepoOnly(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ref, ok := grantRefFor(grants, capability.ADOWorkItemsWrite); ok {
-			t.Fatalf("%s/%s gaggle was granted %s from %q; a non-ADO repository credential must not back it", repo.owner, repo.name, capability.ADOWorkItemsWrite, ref)
+		for _, c := range adoRepoCredentialedCapabilities {
+			if ref, ok := grantRefFor(grants, c); ok {
+				t.Fatalf("%s/%s gaggle was granted %s from %q; a non-ADO repository credential must not back it", repo.owner, repo.name, c, ref)
+			}
 		}
 		// Every other repository-backed capability is unchanged.
 		for _, c := range credentialedCapabilities {
@@ -66,60 +76,69 @@ func TestBuildCredentialsBacksADOWorkItemsWriteFromTheADORepoOnly(t *testing.T) 
 	}
 }
 
-func TestBuildCredentialsKeepsAnExplicitADOWorkItemsWriteEntry(t *testing.T) {
+func TestBuildCredentialsKeepsExplicitADOOnlyCapabilityEntries(t *testing.T) {
 	t.Setenv("EXAMPLE_GH_TOKEN", "gh-token")
 	t.Setenv("EXAMPLE_GITEA_TOKEN", "gitea-token")
 	t.Setenv("EXAMPLE_ADO_PAT", "ado-pat")
-	t.Setenv("EXAMPLE_WORK_ITEMS_PAT", "work-items-pat")
+	t.Setenv("EXAMPLE_ADO_ONLY_PAT", "ado-only-pat")
 	cfg := mixedProviderCredentialConfig()
-	cfg.Credentials = []instance.CredentialGrant{{
-		Capability: string(capability.ADOWorkItemsWrite),
-		Token:      instance.TokenRef{Env: "EXAMPLE_WORK_ITEMS_PAT"},
-	}}
-	for _, repo := range []struct{ owner, name string }{{adoTestOwner, adoTestName}, {"example-gh", "gh-repo"}} {
-		_, grants, err := buildCredentials(cfg, nil, repo.owner, repo.name, nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := credentialRefName(string(capability.ADOWorkItemsWrite))
-		if ref, ok := grantRefFor(grants, capability.ADOWorkItemsWrite); !ok || ref != want {
-			t.Fatalf("%s/%s %s grant ref = %q (granted %t), want the explicit entry %q", repo.owner, repo.name, capability.ADOWorkItemsWrite, ref, ok, want)
+	for _, c := range adoRepoCredentialedCapabilities {
+		cfg.Credentials = []instance.CredentialGrant{{
+			Capability: string(c),
+			Token:      instance.TokenRef{Env: "EXAMPLE_ADO_ONLY_PAT"},
+		}}
+		for _, repo := range []struct{ owner, name string }{{adoTestOwner, adoTestName}, {"example-gh", "gh-repo"}} {
+			_, grants, err := buildCredentials(cfg, nil, repo.owner, repo.name, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := credentialRefName(string(c))
+			if ref, ok := grantRefFor(grants, c); !ok || ref != want {
+				t.Fatalf("%s/%s %s grant ref = %q (granted %t), want the explicit entry %q", repo.owner, repo.name, c, ref, ok, want)
+			}
 		}
 	}
 }
 
-func TestConfiguredCredentialGrantsBackADOWorkItemsWriteOnADOOnly(t *testing.T) {
+func TestConfiguredCredentialGrantsBackADOOnlyCapabilitiesOnADOOnly(t *testing.T) {
 	cfg := mixedProviderCredentialConfig()
 	ado, err := configuredCredentialGrants(cfg, apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "example-project", Name: adoTestName}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ado[string(capability.ADOWorkItemsWrite)] {
-		t.Fatalf("ADO project grants = %v, want %s backed by the repository credential", ado, capability.ADOWorkItemsWrite)
+	for _, c := range adoRepoCredentialedCapabilities {
+		if !ado[string(c)] {
+			t.Fatalf("ADO project grants = %v, want %s backed by the repository credential", ado, c)
+		}
 	}
 	gh, err := configuredCredentialGrants(cfg, apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "example-gh", Name: "gh-repo"}, apiv1.BacklogRef{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gh[string(capability.ADOWorkItemsWrite)] {
-		t.Fatalf("GitHub project grants = %v, want no %s", gh, capability.ADOWorkItemsWrite)
+	for _, c := range adoRepoCredentialedCapabilities {
+		if gh[string(c)] {
+			t.Fatalf("GitHub project grants = %v, want no %s", gh, c)
+		}
 	}
 	if !gh[string(capability.ProviderPRWrite)] {
 		t.Fatalf("GitHub project grants = %v, want %s unchanged", gh, capability.ProviderPRWrite)
 	}
 }
 
-// TestCredentialPlaneResolvesADOWorkItemsWriteFromTheRepoSource is the pod
-// half: a stage declaring ado:work-items:write on an azure-cli ADO gaggle
-// resolves it from the repository's own minted credential.
-func TestCredentialPlaneResolvesADOWorkItemsWriteFromTheRepoSource(t *testing.T) {
+// TestCredentialPlaneResolvesADOOnlyCapabilitiesFromTheRepoSource is the pod
+// half: a stage declaring ADO-only repo-backed capabilities on an azure-cli
+// ADO gaggle resolves them from the repository's own minted credential.
+func TestCredentialPlaneResolvesADOOnlyCapabilitiesFromTheRepoSource(t *testing.T) {
 	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	azure := &adoTestAzureRunner{token: "entra-work-items-token-0123456789", expires: expires}
+	azure := &adoTestAzureRunner{token: "entra-ado-only-token-0123456789", expires: expires}
 	stubADOCredentialSource(t, func(repo instance.RepoRef, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
 		return adoauth.Source(repo, azure, stores)
 	})
 	spec := credentialPlaneSpec()
-	spec.Tasks[1].Capabilities = []string{string(capability.ADOWorkItemsWrite)}
+	spec.Tasks[1].Capabilities = []string{
+		string(capability.ADOWorkItemsWrite),
+		string(capability.ADOPackagingRead),
+	}
 	machine := compileCredentialPlaneMachine(t, spec)
 	service, _, runID := newCredentialPlaneFixture(t, machine)
 	service.buildSources = nil // the daemon's own buildCredentials
@@ -137,10 +156,57 @@ func TestCredentialPlaneResolvesADOWorkItemsWriteFromTheRepoSource(t *testing.T)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if len(response.Credentials) != 1 || response.Credentials[0].Capability != string(capability.ADOWorkItemsWrite) {
-		t.Fatalf("credentials = %+v, want %s", response.Credentials, capability.ADOWorkItemsWrite)
+	if len(response.Credentials) != 2 {
+		t.Fatalf("credentials = %+v, want two ADO-only capabilities", response.Credentials)
 	}
-	if response.Credentials[0].Value != azure.token {
-		t.Fatalf("%s value was not the repository's minted token", capability.ADOWorkItemsWrite)
+	byCapability := map[string]httpapi.MintedCredential{}
+	for _, credential := range response.Credentials {
+		byCapability[credential.Capability] = credential
+	}
+	for _, c := range []capability.Capability{capability.ADOWorkItemsWrite, capability.ADOPackagingRead} {
+		credential, ok := byCapability[string(c)]
+		if !ok {
+			t.Fatalf("credentials = %+v, missing %s", response.Credentials, c)
+		}
+		if credential.Value != azure.token {
+			t.Fatalf("%s value was not the repository's minted token", c)
+		}
+		if credential.ExpiresAt == nil || !credential.ExpiresAt.Equal(expires) {
+			t.Fatalf("%s expiry = %v, want %v", c, credential.ExpiresAt, expires)
+		}
+	}
+	if response.RepoAuthScheme != "bearer" {
+		t.Fatalf("repoAuthScheme = %q, want bearer", response.RepoAuthScheme)
+	}
+
+	data, err := os.ReadFile(filepath.Join(service.layout.SchedulerDir(), "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), azure.token) {
+		t.Fatal("credential audit contains the minted value")
+	}
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event journal.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("parse instance event %q: %v", line, err)
+		}
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != credentialResolutionMarker {
+			continue
+		}
+		materialized, _ := event.Runner["materialized"].([]any)
+		var names []string
+		for _, name := range materialized {
+			names = append(names, name.(string))
+		}
+		joined := strings.Join(names, ",")
+		if strings.Contains(joined, string(capability.ADOWorkItemsWrite)) && strings.Contains(joined, string(capability.ADOPackagingRead)) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("credential audit did not name both ADO-only capabilities:\n%s", data)
 	}
 }

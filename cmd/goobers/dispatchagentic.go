@@ -267,24 +267,33 @@ func fetchAgenticKit(ctx context.Context, digest string) (*agentickit.Kit, error
 // A ref names ONE underlying credential, so any capability it backs that the
 // plane did materialise yields the same token: the first hit is the answer.
 type podCredentialResolver struct {
-	byRef map[string][]string // credential ref -> capabilities it backs
-	vals  map[string]string   // capability -> resolved value
+	byRef    map[string][]string // credential ref -> capabilities it backs
+	vals     map[string]string   // capability -> resolved value
+	expiries map[string]time.Time
 }
 
-func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, error) {
+func (r podCredentialResolver) Resolve(ctx context.Context, name string) (string, error) {
+	value, _, err := r.ResolveWithExpiry(ctx, name)
+	return value, err
+}
+
+func (r podCredentialResolver) ResolveWithExpiry(ctx context.Context, name string) (string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, err
+	}
 	capabilities, ok := r.byRef[name]
 	if !ok {
-		return "", fmt.Errorf("credential %q is not granted to this stage", name)
+		return "", time.Time{}, fmt.Errorf("credential %q is not granted to this stage", name)
 	}
 	for _, capability := range capabilities {
 		if value, ok := r.vals[capability]; ok {
-			return value, nil
+			return value, r.expiries[capability], nil
 		}
 	}
 	// The plane materialised none of them. Name every capability the ref backs
 	// rather than an arbitrary one: the operator granted a capability, and
 	// which of these is missing is exactly what they need to see.
-	return "", fmt.Errorf("credential %q is backed by capabilities %s, none of which were materialised by the credential plane",
+	return "", time.Time{}, fmt.Errorf("credential %q is backed by capabilities %s, none of which were materialised by the credential plane",
 		name, strings.Join(capabilities, ", "))
 }
 
@@ -322,7 +331,7 @@ func podHarnessEnvironment(kit *agentickit.Kit, selected apiv1.Harness) harness.
 // and the contextResolver's root, which is what makes the two agree.
 func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
-	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
+	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}, expiries: map[string]time.Time{}}
 	for _, g := range kit.Grants {
 		if g.Ref != "" && g.Capability != "" {
 			resolver.byRef[g.Ref] = append(resolver.byRef[g.Ref], g.Capability)
@@ -332,6 +341,9 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	registry.Register([]byte(os.Getenv(dispatcher.JournalTokenEnv)))
 	for _, c := range minted {
 		resolver.vals[c.Capability] = c.Value
+		if c.ExpiresAt != nil && !c.ExpiresAt.IsZero() {
+			resolver.expiries[c.Capability] = *c.ExpiresAt
+		}
 		// Register before use so the value is scrubbed out of transcripts and
 		// journal events even if the harness echoes it.
 		registry.Register([]byte(c.Value))

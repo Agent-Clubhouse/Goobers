@@ -52,7 +52,7 @@ func (m *Manager) handoffPinnedState(ctx context.Context, key, expectedOwner str
 	return m.preparePreservedTarget(ctx, CleanupTarget{
 		Path: path, WorktreeID: "pin-" + key, OwnerRunID: owner.OwnerRunID,
 		Gaggle: owner.Gaggle, BaseRef: owner.BaseRef, RepositoryDigest: owner.RepositoryDigest,
-		CreatedAt: owner.CreatedAt, Pinned: true,
+		CreatedAt: owner.CreatedAt, Pinned: true, RetainOnCleanup: true,
 	})
 }
 
@@ -100,6 +100,6 @@ func (m *Manager) recordPinnedCustody(ctx context.Context, key string, opts Pinn
 	baseRef := pinnedBaseRef(ctx, filepath.Join(m.pinnedRoot, key, "pin"), opts.BaseRef)
 	return writeMarker(filepath.Join(m.pinnedRoot, key, pinnedCustodyFile), marker{
 		RunID: opts.RunID, OwnerRunID: opts.RunID,
-		BaseRef: baseRef, RepositoryDigest: RepositoryDigest(opts.RepoURL), CreatedAt: time.Now().UTC(),
+		BaseRef: baseRef, RetainOnCleanup: true, RepositoryDigest: RepositoryDigest(opts.RepoURL), CreatedAt: time.Now().UTC(),
 	})
 }

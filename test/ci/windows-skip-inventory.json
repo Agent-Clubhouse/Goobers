@@ -865,6 +865,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/textsuggest",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure byte-oriented edit-distance tests have no Windows-specific seam; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/toolchain",
       "coverage": "none",
       "category": "not-selected",
@@ -947,6 +953,12 @@
       "coverage": "none",
       "category": "not-selected",
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
+    },
+    {
+      "package": "internal/workflowgraph",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Platform-neutral workflow graph traversal has no Windows-specific seam; runs on the Linux unit shards only."
     },
     {
       "package": "internal/workflowsafety",

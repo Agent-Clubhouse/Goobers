@@ -127,6 +127,7 @@ func TestGaggleCredentialOverrideProbesSkipsOtherProviderCapabilities(t *testing
 			{Capability: "ado:pr:complete", Token: instance.TokenRef{Env: "ADO_OVERRIDE"}},
 			{Capability: "ado:work-items:write", Token: instance.TokenRef{Env: "ADO_OVERRIDE"}},
 			{Capability: "github:issues:write", Token: instance.TokenRef{Env: "GH_OVERRIDE"}},
+			{Capability: "ado:packaging:read", Token: instance.TokenRef{Env: "ADO_OVERRIDE"}},
 		},
 	}
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{

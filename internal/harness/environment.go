@@ -191,6 +191,9 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			)
 		}
 		env = append(env, envVar+"="+token)
+		if expiresAt, ok := req.Credentials.Expiry(capability); ok && !expiresAt.IsZero() {
+			env = append(env, capabilitypkg.CredentialExpiryEnvVar(capability)+"="+capabilitypkg.FormatCredentialExpiry(expiresAt))
+		}
 	}
 	return appendRunAuthorityEnv(ctx, env, req), nil
 }

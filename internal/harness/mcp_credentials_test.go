@@ -19,6 +19,7 @@ func TestCredentialFitsProviderFollowsTheCapabilityNamespace(t *testing.T) {
 		{capability: "github:issues:approve", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderGitea: true}},
 		{capability: "github:milestones:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderGitea: true}},
 		{capability: "ado:pr:complete", fits: map[apiv1.Provider]bool{apiv1.ProviderADO: true}},
+		{capability: "ado:packaging:read", fits: map[apiv1.Provider]bool{apiv1.ProviderADO: true}},
 		{capability: "repo:push", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderADO: true, apiv1.ProviderGitea: true}},
 		{capability: "provider:pr:write", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderADO: true, apiv1.ProviderGitea: true}},
 		{capability: "contents:read", fits: map[apiv1.Provider]bool{apiv1.ProviderGitHub: true, "": true, apiv1.ProviderADO: true, apiv1.ProviderGitea: true}},
@@ -84,6 +85,8 @@ func TestMCPCredentialRefsFollowTheRepositoryProvider(t *testing.T) {
 		{provider: apiv1.ProviderGitea, capability: "ado:pr:complete", wantFits: false},
 		{provider: apiv1.ProviderADO, capability: "ado:pr:complete", wantFits: true},
 		{provider: apiv1.ProviderGitHub, capability: "ado:pr:complete", wantFits: false},
+		{provider: apiv1.ProviderADO, capability: "ado:packaging:read", wantFits: true},
+		{provider: apiv1.ProviderGitHub, capability: "ado:packaging:read", wantFits: false},
 		{provider: apiv1.ProviderADO, capability: "repo:push", wantFits: true},
 		{provider: apiv1.ProviderGitea, capability: "repo:push", wantFits: true},
 	}

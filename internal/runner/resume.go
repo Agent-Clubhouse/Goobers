@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowgraph"
 )
 
 // ErrTerminalGenerationChanged means an intervention was validated against an
@@ -781,7 +782,7 @@ func (f *resumeFrame) resolveStartState(rd *journal.Reader, machine *workflow.Ma
 			return "", fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
 			startState = workflow.TargetJoin
-		case startState == ws.parallel.spec.Name || !branchContainsState(machine, current.start, startState):
+		case startState == ws.parallel.spec.Name || !workflowgraph.BranchContainsState(machine, current.start, startState):
 			startState = current.machine
 			if startState == "" {
 				startState = current.start
@@ -1040,21 +1041,19 @@ func latestHumanGateProgress(events []journal.Event, machine *workflow.Machine) 
 }
 
 func currentRunSegment(events []journal.Event) ([]journal.Event, string) {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
-			return events[i+1:], events[i].Target
-		}
+	i, ok := journal.LastIndex(events, func(event journal.Event) bool {
+		return event.Type == journal.EventRunResumed || event.Type == journal.EventGateOverridden
+	})
+	if ok {
+		return events[i+1:], events[i].Target
 	}
 	return events, ""
 }
 
 func latestRunResume(events []journal.Event) (journal.Event, bool) {
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventRunResumed || events[i].Type == journal.EventGateOverridden {
-			return events[i], true
-		}
-	}
-	return journal.Event{}, false
+	return journal.LastEvent(events, func(event journal.Event) bool {
+		return event.Type == journal.EventRunResumed || event.Type == journal.EventGateOverridden
+	})
 }
 
 func latestActiveGateOverride(events []journal.Event) (journal.Event, bool) {
@@ -1691,18 +1690,13 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 }
 
 func interventionParallelContext(events []journal.Event, machine *workflow.Machine, gateName string) (string, int, bool) {
-	gateIndex := -1
-	branch := 0
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Type == journal.EventGateEvaluated && events[i].Gate == gateName && events[i].Branch > 0 {
-			gateIndex = i
-			branch = events[i].Branch
-			break
-		}
-	}
-	if gateIndex < 0 {
+	gateIndex, ok := journal.LastIndex(events, func(event journal.Event) bool {
+		return event.Type == journal.EventGateEvaluated && event.Gate == gateName && event.Branch > 0
+	})
+	if !ok {
 		return "", 0, false
 	}
+	branch := events[gateIndex].Branch
 	for i := gateIndex - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Type != journal.EventParallelStarted {
@@ -1710,30 +1704,12 @@ func interventionParallelContext(events []journal.Event, machine *workflow.Machi
 		}
 		spec, ok := machine.Parallel(event.Parallel)
 		if !ok || branch > len(spec.Branches) ||
-			!branchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
+			!workflowgraph.BranchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
 			continue
 		}
 		return spec.Name, branch, true
 	}
 	return "", 0, false
-}
-
-func branchContainsState(machine *workflow.Machine, start, state string) bool {
-	seen := map[string]bool{}
-	stack := []string{start}
-	for len(stack) > 0 {
-		current := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if current == state {
-			return true
-		}
-		if current == "" || workflow.IsReservedAnyTarget(current) || seen[current] || !machine.Has(current) {
-			continue
-		}
-		seen[current] = true
-		stack = append(stack, machine.Outgoing(current)...)
-	}
-	return false
 }
 
 func pendingFanIn(events []journal.Event, machine *workflow.Machine) *parallelExec {

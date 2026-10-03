@@ -349,6 +349,7 @@ repository the stage routes to:
 | `github:pr:merge` | pull-request completion in `merge-pr` and `merge-queue-poll` |
 | `ado:pr:complete` | the same completion, instead of `github:pr:merge`, when the stage declares it (optional) |
 | `ado:work-items:write` | linking the pull request `open-pr` opened to its work item natively (optional; the repository credential backs it when the stage declares it) |
+| `ado:packaging:read` | custom stage commands that read Azure Artifacts package feeds (optional; delivered as `GOOBERS_CRED_ADO_PACKAGING_READ` with `GOOBERS_CREDENTIAL_EXPIRES_ADO_PACKAGING_READ` when the source states an expiry) |
 
 This needs no `runner.envPassthrough` entry for a PAT or an Azure identity
 variable, and a stage pod needs no Azure identity of its own: only the daemon
@@ -363,7 +364,9 @@ credential is delivered and Azure DevOps rejects the link, the stage fails. The
 shipped workflows do not declare `ado:work-items:write`; add it to the `open-pr`
 stage to link natively. No `credentials:` entry is needed: the repository
 credential backs it, as it backs `provider:pr:write`. A GitHub or Gitea
-repository credential never backs it.
+repository credential never backs it. The same ADO repository credential backs
+`ado:packaging:read` for stages that need to query or restore from private
+Azure Artifacts feeds.
 
 The daemon states one authorization scheme per stage, taken from the
 repository's `auth` kind, and it applies to every credential the stage

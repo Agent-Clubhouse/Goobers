@@ -28,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/workflowgraph"
 )
 
 // Definitions is the slice of the daemon's current workflow definitions an
@@ -1031,30 +1032,12 @@ func interventionParallelContext(events []journal.Event, machine *workflow.Machi
 		}
 		spec, ok := machine.Parallel(event.Parallel)
 		if !ok || branch > len(spec.Branches) ||
-			!interventionBranchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
+			!workflowgraph.BranchContainsState(machine, spec.Branches[branch-1].Start, gateName) {
 			continue
 		}
 		return spec.Name, branch, true
 	}
 	return "", 0, false
-}
-
-func interventionBranchContainsState(machine *workflow.Machine, start, target string) bool {
-	seen := make(map[string]bool)
-	stack := []string{start}
-	for len(stack) > 0 {
-		state := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if state == target {
-			return true
-		}
-		if state == "" || workflow.IsReservedAnyTarget(state) || seen[state] || !machine.Has(state) {
-			continue
-		}
-		seen[state] = true
-		stack = append(stack, machine.Outgoing(state)...)
-	}
-	return false
 }
 
 func interventionResumeTarget(target string) (string, bool) {

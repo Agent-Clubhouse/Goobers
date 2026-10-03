@@ -10,12 +10,15 @@
 // `github:prs:write` slipping through unnoticed because nothing checked either
 // spelling against a ground truth).
 //
-// This package has no dependencies beyond the stdlib, so every layer that
-// needs to name a capability — including packages that deliberately avoid
-// importing api/v1alpha1 or internal/journal to stay decoupled from the wire
-// contract or the runner (internal/telemetry/query's own doc comment) — can
-// depend on it without pulling in anything heavier.
+// This package has no dependencies beyond the stdlib and the lightweight
+// internal/textsuggest helper, so every layer that needs to name a capability
+// — including packages that deliberately avoid importing api/v1alpha1 or
+// internal/journal to stay decoupled from the wire contract or the runner
+// (internal/telemetry/query's own doc comment) — can depend on it without
+// pulling in anything heavier.
 package capability
+
+import "github.com/goobers/goobers/internal/textsuggest"
 
 // Capability identifies a scoped grant a stage or dedicated runner component
 // may hold. The dotted "resource:verb" shape mirrors provider/credential
@@ -137,6 +140,9 @@ const (
 	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
 	// items. It does not grant repository or pull-request writes.
 	ADOWorkItemsWrite Capability = "ado:work-items:write"
+	// ADOPackagingRead grants read access to Azure Artifacts package feeds. It
+	// does not grant repository, pull-request, or work-item writes.
+	ADOPackagingRead Capability = "ado:packaging:read"
 	// TelemetryRead grants read access to the local telemetry rollup and named,
 	// host-governed external operational telemetry connectors.
 	TelemetryRead Capability = "telemetry:read"
@@ -168,7 +174,7 @@ func All() []Capability {
 		RepoRead, RepoPush, ConfigRepoRead, ConfigRepoWrite,
 		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRRead, GitHubPRWrite, GitHubPRReview, ProviderCICancel, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
 		GitHubCodeScanningRead, GitHubDependabotAlertsRead,
-		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
+		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite, ADOPackagingRead,
 		TelemetryRead, JournalRead, AgentModel,
 	}
 }
@@ -198,7 +204,7 @@ func Suggest(s string) (Capability, bool) {
 	bestDistance := -1
 	var best Capability
 	for _, candidate := range All() {
-		distance := editDistance(s, string(candidate))
+		distance := textsuggest.Distance(s, string(candidate))
 		if bestDistance == -1 || distance < bestDistance {
 			bestDistance = distance
 			best = candidate
@@ -208,28 +214,4 @@ func Suggest(s string) (Capability, bool) {
 		return "", false
 	}
 	return best, true
-}
-
-func editDistance(a, b string) int {
-	previous := make([]int, len(b)+1)
-	for j := range previous {
-		previous[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		current := make([]int, len(b)+1)
-		current[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 0
-			if a[i-1] != b[j-1] {
-				cost = 1
-			}
-			current[j] = min(
-				current[j-1]+1,
-				previous[j]+1,
-				previous[j-1]+cost,
-			)
-		}
-		previous = current
-	}
-	return previous[len(b)]
 }
