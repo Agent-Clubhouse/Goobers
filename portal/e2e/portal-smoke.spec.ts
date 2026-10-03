@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import type { Route } from "../src/routing";
 
 const smokeRunId = "01JZE2ESMOKERUN";
@@ -52,6 +52,31 @@ function trackPageErrors(page: Page): string[] {
     errors.push(error.message);
   });
   return errors;
+}
+
+async function expectFullyInVisualViewport(locator: Locator, description: string) {
+  await expect
+    .poll(
+      () =>
+        locator.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const viewport = window.visualViewport;
+          const left = viewport?.offsetLeft ?? 0;
+          const top = viewport?.offsetTop ?? 0;
+          const right = left + (viewport?.width ?? window.innerWidth);
+          const bottom = top + (viewport?.height ?? window.innerHeight);
+          return (
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.left >= left &&
+            bounds.top >= top &&
+            bounds.right <= right &&
+            bounds.bottom <= bottom
+          );
+        }),
+      { message: `${description} should be fully within the visual viewport` },
+    )
+    .toBe(true);
 }
 
 for (const [name, { path, heading }] of Object.entries(ROUTES)) {
@@ -143,13 +168,16 @@ test("loads Overview and Workflows and processes an SSE invalidation", async ({ 
   expect(consoleErrors).toEqual([]);
 });
 
-test("keeps Overview status and recent outcomes compact at desktop and narrow widths", async ({
+test("keeps Overview content first without horizontal overflow across compact layouts", async ({
   page,
 }) => {
   const completedRunId = "01JZE2ECOMPLETEDRUNWITHALONGIDENTIFIER";
   for (const viewport of [
     { width: 1280, height: 800 },
+    { width: 320, height: 844 },
     { width: 390, height: 844 },
+    { width: 430, height: 844 },
+    { width: 844, height: 390 },
   ]) {
     await page.setViewportSize(viewport);
     await page.goto("/#/overview");
@@ -157,15 +185,13 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
     const status = page.getByRole("region", {
       name: "Daemon connection and instance counts",
     });
-    await expect(status).toContainText("Retention sweep");
-    await expect(status).toContainText("Running");
     await expect(status).toContainText("Active runs1");
     await expect(status).toContainText("Gaggles1");
 
     const outcomes = page.getByRole("region", { name: "Recent outcomes" });
-    await expect(page.getByRole("region", { name: "Active runs" })).toContainText(
-      "01JZE2ESMOKERUN",
-    );
+    const active = page.getByRole("region", { name: "Active runs" });
+    await expect(active).toContainText("01JZE2ESMOKERUN");
+    const activeRow = active.locator(".data-row").filter({ hasText: smokeRunId });
     const outcomeRow = outcomes.locator(".data-row").filter({ hasText: completedRunId });
     await expect(outcomeRow).toBeVisible();
     await expect(outcomeRow.locator(`a[aria-label="Open run ${completedRunId}"]`)).toHaveAttribute(
@@ -179,9 +205,142 @@ test("keeps Overview status and recent outcomes compact at desktop and narrow wi
       ),
     ).toBeVisible();
 
+    if (viewport.width === 390) {
+      await expectFullyInVisualViewport(
+        page.getByRole("heading", { level: 1 }),
+        "Overview title at 390x844",
+      );
+      await expectFullyInVisualViewport(activeRow, "active run at 390x844");
+    }
+
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
   }
+
+  await page.setViewportSize({ width: 1920, height: 1440 });
+  await page.goto("/#/overview");
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setDeviceMetricsOverride", {
+    width: 960,
+    height: 720,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+      })),
+    )
+    .toEqual({ width: 960, height: 720, devicePixelRatio: 2 });
+  await expectFullyInVisualViewport(
+    page.getByRole("heading", { level: 1 }),
+    "Overview title at 200% zoom",
+  );
+  await expectFullyInVisualViewport(
+    page
+      .getByRole("region", { name: "Active runs" })
+      .locator(".data-row")
+      .filter({ hasText: smokeRunId }),
+    "active run at 200% zoom",
+  );
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});
+
+test("keeps optional Overview diagnostics accessible and exposes capacity warnings", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+
+  const diagnostics = page.getByText("Diagnostics and capacity", { exact: true });
+  await expect(diagnostics).toBeVisible();
+  await diagnostics.click();
+  await expect(page.getByRole("status", { name: "Retention sweep running" })).toBeVisible();
+  await expect(page.getByText("Recovery inventory", { exact: true })).toHaveCount(0);
+
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        recoveryInventory: {
+          state: "warning",
+          used: 9,
+          limit: 10,
+          unreadable: 0,
+          overflow: 0,
+          highWaterPercent: 80,
+          inventoryRoot: "C:\\fixture\\recovery",
+          policySource: "instance-config",
+          observedAt: "2026-08-17T08:01:59Z",
+        },
+      },
+    });
+  });
+  await page.reload();
+
+  const warning = page.getByRole("alert", { name: "Recovery inventory warning" });
+  await expect(warning).toBeVisible();
+  await expect(
+    warning.getByRole("link", { name: "Recovery capacity and operator actions" }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});
+
+test("preserves attention selection and dismissals across navigation and Back", async ({ page }) => {
+  await page.route("**/api/v1/runs*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/runs" && url.searchParams.get("phase") === "failed") {
+      await route.fulfill({
+        json: {
+          runs: [{
+            id: "01JZE2EATTENTION",
+            workflow: "implementation",
+            workflowVersion: 7,
+            workflowDigest: "sha256:core",
+            gaggle: "core",
+            trigger: { kind: "item", ref: "6645" },
+            phase: "failed",
+            terminal: true,
+            startedAt: "2026-08-17T07:00:00Z",
+            finishedAt: "2026-08-17T07:10:00Z",
+            durationMillis: 600_000,
+            lastActivityAt: "2026-08-17T07:10:00Z",
+            stale: false,
+            lastSeq: 8,
+            repassCount: 0,
+            retryCount: 0,
+            policyRetryCount: 0,
+            infraRetryCount: 0,
+            noWork: false,
+            terminalReason: "review failed",
+          }],
+        },
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/#/overview");
+  const selection = page.getByRole("checkbox", {
+    name: /Select all 1 runs in core \/ implementation/,
+  });
+  await selection.check();
+  await page.goto("/#/runs");
+  await page.goBack();
+  await expect(selection).toBeChecked();
+
+  await page.getByRole("button", { name: /Dismiss all runs in core \/ implementation/ }).click();
+  await expect(page.getByRole("button", { name: "Show dismissed (1)" })).toBeVisible();
+  await page.goto("/#/runs");
+  await page.goBack();
+  await expect(page.getByRole("button", { name: "Show dismissed (1)" })).toBeVisible();
 });
 
 test("loads the Gaggle page from fixture daemon data", async ({ page }) => {
