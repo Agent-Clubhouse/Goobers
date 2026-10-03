@@ -37,7 +37,7 @@ type WorkItemSummary struct {
 	Kind          string    `json:"kind"`
 	ExternalID    string    `json:"externalId"`
 	URL           string    `json:"url,omitempty"`
-	Outcome       string    `json:"outcome"`
+	Outcome       string    `json:"outcome,omitempty"`
 	ActionCount   int       `json:"actionCount"`
 	LastOperation string    `json:"lastOperation"`
 	LastActionAt  time.Time `json:"lastActionAt"`
@@ -54,7 +54,7 @@ type WorkItemDetail struct {
 	Kind                string            `json:"kind"`
 	ExternalID          string            `json:"externalId"`
 	URL                 string            `json:"url,omitempty"`
-	Outcome             string            `json:"outcome"`
+	Outcome             string            `json:"outcome,omitempty"`
 	Cost                *WorkItemCost     `json:"cost,omitempty"`
 	RelatedPullRequests []RelatedWorkItem `json:"relatedPullRequests"`
 	Actions             []WorkItemAction  `json:"actions"`
