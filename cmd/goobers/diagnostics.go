@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -232,24 +233,11 @@ func diagnosticsContract() diagnostics.ContractInfo {
 		for _, use := range entry.Capabilities {
 			command.Capabilities = append(command.Capabilities, string(use.Capability))
 		}
-		sort.Strings(command.Capabilities)
-		command.Capabilities = dedupeStrings(command.Capabilities)
+		slices.Sort(command.Capabilities)
+		command.Capabilities = slices.Compact(command.Capabilities)
 		info.StageCommands = append(info.StageCommands, command)
 	}
 	return info
-}
-
-func dedupeStrings(values []string) []string {
-	out := values[:0]
-	var previous string
-	for i, value := range values {
-		if i > 0 && value == previous {
-			continue
-		}
-		previous = value
-		out = append(out, value)
-	}
-	return out
 }
 
 // diagnosticsRunDirs enumerates individual run directories across every

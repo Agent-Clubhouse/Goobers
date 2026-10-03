@@ -1558,16 +1558,14 @@ func withoutString(values []string, reject string) []string {
 }
 
 func uniqueSortedLabels(labels []string) []string {
-	seen := make(map[string]bool, len(labels))
 	out := make([]string, 0, len(labels))
 	for _, label := range labels {
-		if label != "" && !seen[label] {
-			seen[label] = true
+		if label != "" {
 			out = append(out, label)
 		}
 	}
-	sort.Strings(out)
-	return out
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func reconciliationComment(reasons []string) string {

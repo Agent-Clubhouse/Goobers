@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/goobers/goobers/internal/stringpolicy"
 )
 
 // maxPerPage is the GitHub REST API's maximum page size; getAllPages requests
@@ -489,20 +491,15 @@ func requireOwnerRepo(repo RepositoryRef) error {
 }
 
 func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
+	normalized := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			continue
 		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
+		normalized = append(normalized, value)
 	}
-	return out
+	return stringpolicy.Unique(normalized)
 }
 
 // statusLabelPrefix namespaces the labels that mirror a work item's Goobers
