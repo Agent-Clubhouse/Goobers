@@ -523,6 +523,42 @@ test("restores the originating instance summary focus and scroll", async ({ page
     .toBe(scrollTop);
 });
 
+test("keeps overview instance detail entry links at least 44 by 44 pixels", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+
+  const links = page.locator('a.instance-warning-link[href^="#/instance/"]');
+  await expect(links).toHaveCount(3);
+  for (const link of await links.all()) {
+    const box = await link.boundingBox();
+    expect(box?.width).toBeGreaterThanOrEqual(44);
+    expect(box?.height).toBeGreaterThanOrEqual(44);
+  }
+});
+
+test("does not mark unrelated history after a modified detail-link click", async ({ page }) => {
+  await page.goto("/#/overview");
+  const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.evaluate((link) => {
+    link.addEventListener("click", (event) => event.preventDefault(), { once: true });
+    link.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
+    );
+  });
+  await expect(page).toHaveURL(/#\/overview$/);
+
+  await page.evaluate(() => {
+    window.location.hash = "#/instance/retention";
+  });
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+  expect(await page.evaluate(() => window.history.state?.portalOrigin)).not.toBe(true);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/overview$/);
+  await page.goForward();
+  await expect(page.getByRole("heading", { name: "Telemetry retention" })).toBeVisible();
+});
+
 test("keeps instance details usable on desktop and at 200 percent zoom", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/#/instance/retention");

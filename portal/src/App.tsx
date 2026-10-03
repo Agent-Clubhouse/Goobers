@@ -225,6 +225,18 @@ function Portal({
     const rememberLinkedRoute = (event: MouseEvent) => {
       const target = event.target;
       const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        link?.hasAttribute("download") ||
+        (link?.target && link.target.toLowerCase() !== "_self")
+      ) {
+        return;
+      }
       if (link?.hash.startsWith("#/") && link.hash !== window.location.hash) {
         rememberCurrentRoutePosition(link.dataset.focusRestore);
         linkedRoutePending.current = true;

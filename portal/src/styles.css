@@ -8533,6 +8533,7 @@ code,
   a.scope-pivot-link,
   a.telemetry-error-latest,
   .telemetry-error-occurrences a,
+  .instance-warning-link,
   .data-row {
     min-height: 44px;
   }
@@ -8544,8 +8545,14 @@ code,
   a.nav-item,
   a.scope-pivot-link,
   .dialog-close,
+  .instance-warning-link,
   .artifact-action {
     min-width: 44px;
+  }
+
+  .instance-warning-link {
+    align-items: center;
+    display: inline-flex;
   }
 
   .configuration-warning p,
