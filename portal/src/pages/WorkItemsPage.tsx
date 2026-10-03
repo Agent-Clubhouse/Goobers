@@ -7,6 +7,7 @@ import type {
   WorkItemPage,
   WorkItemSummary,
 } from "../api/types";
+import { DaemonApiError, MissingCapabilityError } from "../api/errors";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import type { Navigate, Route } from "../routing";
 import { routeHash } from "../routing";
@@ -89,6 +90,21 @@ function WorkItemListView({
 
   if (state.status === "loading") return <DaemonLoadingState standalone={standalone} />;
   if (state.status === "error") {
+    if (isMissingWorkItemsCapability(state.error)) {
+      return (
+        <section className="daemon-state daemon-state-error" role="alert">
+          <div>
+            <h1>Work Items unavailable</h1>
+            <p>
+              This daemon does not support work item history. Upgrade Goobers to use this page.
+            </p>
+          </div>
+          <button className="reconnect-button" onClick={load} type="button">
+            Retry
+          </button>
+        </section>
+      );
+    }
     return <DaemonErrorState error={state.error} retry={load} standalone={standalone} />;
   }
 
@@ -202,49 +218,70 @@ function WorkItemListView({
             <div aria-hidden="true" className="data-header data-table-header work-item-grid">
               <span>Work item</span><span>Outcome</span><span>Workflow</span><span>Actions</span><span />
             </div>
-            {items.map((item) => (
-              <button
-                aria-label={
-                  item.repository
-                    ? `Open ${workItemShortKind(item)} #${item.externalId} in ${item.repository}`
-                    : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
-                }
-                className={`data-row work-item-grid work-item-row-${item.outcome}`}
-                disabled={!item.repository}
-                title={item.repository ? undefined : "No repository was recorded for this item, so it has no detail page."}
-                key={workItemRowKey(item)}
-                onClick={() => item.repository && navigate({
-                  page: "work-items",
-                  provider: item.provider,
-                  repository: item.repository,
-                  kind: item.kind,
-                  id: item.externalId,
-                })}
-                type="button"
-              >
-                <span className="work-item-identity">
-                  <strong className="data-table-primary">{workItemLabel(item.repository, item.externalId)}</strong>
-                  <small className="data-table-meta">
-                    {item.provider} · {workItemKindLabel(item.provider, item.kind)}
-                    {!item.repository && " · repository unknown"}
-                  </small>
-                </span>
-                <span>
-                  <strong className={`status-badge work-item-outcome-${item.outcome}`}>
-                    {workItemOutcomeLabel(item.outcome)}
-                  </strong>
-                  <small>
-                    Last action: {humanizeOperation(item.lastOperation)} · {formatTimestamp(item.lastActionAt)}
-                  </small>
-                </span>
-                <span>
-                  <strong>{item.workflow || "Unknown"}</strong>
-                  <small>{item.gaggle || "No gaggle recorded"}</small>
-                </span>
-                <strong>{item.actionCount}</strong>
-                <Icon name="chevron" size={15} />
-              </button>
-            ))}
+            {items.map((item) => {
+              const label = workItemLabel(item.repository, item.externalId);
+              return (
+                <button
+                  aria-label={
+                    item.repository
+                      ? `Open ${workItemShortKind(item)} #${item.externalId} in ${item.repository}`
+                      : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
+                  }
+                  className={`data-row work-item-grid work-item-row-${item.outcome}`}
+                  disabled={!item.repository}
+                  title={item.repository
+                    ? undefined
+                    : "No repository was recorded for this item, so it has no detail page."}
+                  key={workItemRowKey(item)}
+                  onClick={() => item.repository && navigate({
+                    page: "work-items",
+                    provider: item.provider,
+                    repository: item.repository,
+                    kind: item.kind,
+                    id: item.externalId,
+                  })}
+                  type="button"
+                >
+                  <span className="work-item-identity">
+                    <strong className="data-table-primary" title={label}>{label}</strong>
+                    <small className="data-table-meta">
+                      {item.provider} · {workItemKindLabel(item.provider, item.kind)}
+                      {!item.repository && " · repository unknown"}
+                    </small>
+                  </span>
+                  <span className="work-item-last-action">
+                    <strong className={`status-badge work-item-outcome-${item.outcome}`}>
+                      {workItemOutcomeLabel(item.outcome)}
+                    </strong>
+                    <small>
+                      Last action: {humanizeOperation(item.lastOperation)} ·{" "}
+                      {formatTimestamp(item.lastActionAt)}
+                    </small>
+                  </span>
+                  <span className="work-item-workflow">
+                    <strong>{item.workflow || "Unknown"}</strong>
+                    <small>{item.gaggle || "No gaggle recorded"}</small>
+                  </span>
+                  <strong className="work-item-action-count">{item.actionCount}</strong>
+                  <span className="work-item-mobile-context">
+                    <span
+                      className={`status-badge work-item-status work-item-outcome-${item.outcome}`}
+                      data-status={item.outcome}
+                    >
+                      {workItemOutcomeLabel(item.outcome)}
+                    </span>
+                    <span>
+                      Last action: {humanizeOperation(item.lastOperation)} · {item.actionCount}{" "}
+                      {item.actionCount === 1 ? "action" : "actions"}
+                    </span>
+                    <span>
+                      {item.gaggle || "Unknown gaggle"} / {item.workflow || "Unknown workflow"}
+                    </span>
+                  </span>
+                  <span className="row-arrow"><Icon name="chevron" size={15} /></span>
+                </button>
+              );
+            })}
             {state.data.hasMore && (
               <p className="data-overflow">Showing the 200 most recently actioned work items.</p>
             )}
@@ -457,4 +494,12 @@ function humanizeOperation(operation: string): string {
   return operation
     .replaceAll("-", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isMissingWorkItemsCapability(error: Error): boolean {
+  return (
+    (error instanceof MissingCapabilityError && error.capability === "work-items") ||
+    (error instanceof DaemonApiError &&
+      (error.status === 404 || error.code === "not_found"))
+  );
 }
