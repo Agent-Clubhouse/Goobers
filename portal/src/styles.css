@@ -8607,6 +8607,10 @@ code,
     display: none;
   }
 
+  body {
+    min-width: 0;
+  }
+
   .topbar {
     height: auto;
     min-height: 54px;
@@ -9216,11 +9220,20 @@ code,
   .filter-button,
   .filter-select select,
   .filter-search input,
-  .filter-toggle {
+  .filter-toggle,
+  .text-button,
+  .reconnect-button {
     min-height: 44px;
   }
 
+  .text-button,
+  .reconnect-button {
+    justify-content: center;
+    min-width: 44px;
+  }
+
   .filter-button {
+    min-width: 44px;
     padding-bottom: 0;
   }
 

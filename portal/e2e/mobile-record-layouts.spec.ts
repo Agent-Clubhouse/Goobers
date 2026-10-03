@@ -160,8 +160,27 @@ const viewports = [
   { name: "390px phone", width: 390, height: 844 },
   { name: "430px phone", width: 430, height: 932 },
   { name: "phone landscape", width: 844, height: 390 },
-  { name: "200% zoom equivalent", width: 390, height: 422 },
+  { name: "200% zoom reflow", width: 195, height: 422 },
 ] as const;
+
+async function expectTouchTargets(targets: Locator) {
+  await expect(targets.first()).toBeVisible();
+  const count = await targets.count();
+  for (let index = 0; index < count; index += 1) {
+    const target = targets.nth(index);
+    if (!await target.isVisible()) continue;
+    const box = await target.boundingBox();
+    expect(box, `touch target ${index + 1} should have geometry`).not.toBeNull();
+    expect(
+      box!.width,
+      `touch target ${index + 1} should be at least 44px wide`,
+    ).toBeGreaterThanOrEqual(44);
+    expect(
+      box!.height,
+      `touch target ${index + 1} should be at least 44px tall`,
+    ).toBeGreaterThanOrEqual(44);
+  }
+}
 
 for (const viewport of viewports) {
   test(`keeps Runs and Work Items usable at ${viewport.name}`, async ({ page }) => {
@@ -184,6 +203,32 @@ for (const viewport of viewports) {
     }
   });
 }
+
+test("keeps scoped mobile actions at least 44 by 44 CSS pixels", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/runs");
+
+  await expectTouchTargets(page.locator(".filter-bar :is(button, select, .filter-toggle)"));
+  await expectTouchTargets(page.getByRole("link", { name: /^Open run / }));
+  await page.locator(".content-section").evaluate((section) => {
+    const loadMore = document.createElement("button");
+    loadMore.className = "text-button";
+    loadMore.textContent = "Load more runs";
+    section.append(loadMore);
+  });
+  await expectTouchTargets(page.getByRole("button", { name: "Load more runs" }));
+
+  await page.goto("/#/work-items");
+  await expectTouchTargets(page.locator(".filter-bar :is(button, select, input)"));
+  await expectTouchTargets(page.locator(".work-item-grid.data-row"));
+  await page.locator(".content-section").evaluate((section) => {
+    const retry = document.createElement("button");
+    retry.className = "reconnect-button";
+    retry.textContent = "Retry";
+    section.append(retry);
+  });
+  await expectTouchTargets(page.getByRole("button", { name: "Retry" }));
+});
 
 test("shows semantic mobile context and preserves deep links and browser Back", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
