@@ -575,7 +575,11 @@ func rebuild(gaggle string, events []apiv1.GaggleHealthEvent, retention time.Dur
 		if !validEventType(event.Type) {
 			return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("unknown health event type %q", event.Type)
 		}
-		if event.Type != apiv1.GaggleHealthEvaluated {
+		if event.Type == apiv1.GaggleHealthEvaluated {
+			if event.Finding != nil || event.EpisodeKey != "" {
+				return apiv1.GaggleHealthSnapshot{}, errors.New("health evaluation must not contain a finding or episode key")
+			}
+		} else {
 			if event.Finding == nil || event.EpisodeKey == "" || event.Finding.EpisodeKey != event.EpisodeKey {
 				return apiv1.GaggleHealthSnapshot{}, errors.New("health transition requires a matching finding snapshot")
 			}

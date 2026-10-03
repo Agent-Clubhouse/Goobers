@@ -96,6 +96,23 @@
       "description": "Append-only instance health-journal transition carrying a complete bounded finding snapshot.",
       "additionalProperties": false,
       "required": ["schemaVersion", "sequence", "occurredAt", "type", "gaggle"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "evaluation" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "episodeKey": false,
+              "finding": false
+            }
+          },
+          "else": {
+            "required": ["episodeKey", "finding"]
+          }
+        }
+      ],
       "properties": {
         "schemaVersion": { "const": "goobers.dev/gaggle-health/v1alpha1", "description": "Health-event contract version." },
         "sequence": { "type": "integer", "minimum": 1, "description": "Strictly increasing instance health-journal sequence." },
