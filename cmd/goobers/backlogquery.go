@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"sort"
@@ -1731,13 +1732,9 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 	if current, held := listing.Lookup(session.claimKey(item)); held && (current.RunID == holder || !current.SharedDeadline.IsZero()) {
 		return false, nil
 	}
-	surrendered := false
-	for _, entry := range listing.HistoryForItem(item.ID) {
-		if entry.RunID != holder {
-			continue
-		}
-		surrendered = entry.ReleasedAt != nil
-		break
+	surrendered, err := session.providerClaimSurrendered(ctx, item, holder, listing)
+	if err != nil {
+		return false, err
 	}
 	if !surrendered {
 		return false, nil
@@ -1747,12 +1744,88 @@ func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.C
 		ID:         item.ID,
 		// This run holds the authoritative ledger lease for the item, which is
 		// exactly the precondition LedgerAuthorized documents.
-		RunID:            session.runID,
-		LedgerAuthorized: true,
+		RunID:              session.runID,
+		LedgerAuthorized:   true,
+		ExpectedClaimRunID: holder,
 	}); err != nil {
 		return false, fmt.Errorf("retire provider claim: %w", err)
 	}
 	return true, nil
+}
+
+func (session *backlogClaimSession) providerClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, listing claimsclient.Listing) (bool, error) {
+	foundHistory := false
+	for _, entry := range listing.HistoryForItem(item.ID) {
+		if entry.RunID != holder {
+			continue
+		}
+		foundHistory = true
+		if entry.ReleasedAt != nil {
+			return true, nil
+		}
+	}
+	return session.orphanedProviderClaimSurrendered(ctx, item, holder, foundHistory)
+}
+
+type providerClaimEpochReader interface {
+	OpenClaimEpochs(context.Context, providers.RepositoryRef, string) ([]providers.ClaimEpoch, error)
+}
+
+func (session *backlogClaimSession) orphanedProviderClaimSurrendered(ctx context.Context, item providers.WorkItem, holder string, hasHistory bool) (bool, error) {
+	reader, ok := session.env.issueProvider.(providerClaimEpochReader)
+	if !ok || reader == nil {
+		return false, nil
+	}
+	epoch, ok, err := session.ownTrustedClaimEpoch(ctx, reader, item.ID, holder)
+	if err != nil || !ok {
+		return false, err
+	}
+	if session.providerClaimHolderTerminal(holder) {
+		return true, nil
+	}
+	if hasHistory {
+		return false, nil
+	}
+	if epoch.CreatedAt.IsZero() || time.Since(epoch.CreatedAt) <= localscheduler.ClaimHistoryTTL {
+		return false, nil
+	}
+	return !session.providerClaimHolderKnown(holder), nil
+}
+
+func (session *backlogClaimSession) ownTrustedClaimEpoch(ctx context.Context, reader providerClaimEpochReader, itemID, holder string) (providers.ClaimEpoch, bool, error) {
+	epochs, err := reader.OpenClaimEpochs(ctx, session.env.backlogRepo, itemID)
+	if err != nil {
+		return providers.ClaimEpoch{}, false, fmt.Errorf("read open provider claim epochs: %w", err)
+	}
+	instanceID := stageInstanceIdentity()
+	for _, epoch := range epochs {
+		if !epoch.Trusted || epoch.RunID != holder {
+			continue
+		}
+		if instanceID == "" || epoch.InstanceID == "" || epoch.InstanceID != instanceID {
+			return providers.ClaimEpoch{}, false, nil
+		}
+		return epoch, true, nil
+	}
+	return providers.ClaimEpoch{}, false, nil
+}
+
+func (session *backlogClaimSession) providerClaimHolderTerminal(holder string) bool {
+	runDir, err := session.env.layout.FindRunDir(holder)
+	if err != nil {
+		return false
+	}
+	reader, err := journal.OpenReadOnly(runDir)
+	if err != nil {
+		return false
+	}
+	phase, err := reader.Phase()
+	return err == nil && phase != journal.PhaseRunning
+}
+
+func (session *backlogClaimSession) providerClaimHolderKnown(holder string) bool {
+	_, err := session.env.layout.FindRunDir(holder)
+	return err == nil || !errors.Is(err, fs.ErrNotExist)
 }
 
 func (session *backlogClaimSession) forgetNewClaim(itemID string) {

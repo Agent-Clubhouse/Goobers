@@ -661,6 +661,42 @@ func TestGiteaReleaseWorkItemClaimRemovesMarker(t *testing.T) {
 	}
 }
 
+func TestGiteaOpenClaimEpochsUsesSharedRESTProtocol(t *testing.T) {
+	m := newGiteaIssueMock()
+	created := time.Date(2026, 10, 2, 12, 30, 0, 0, time.UTC)
+	m.comments = []map[string]interface{}{
+		{
+			"id":         1,
+			"body":       claimBreadcrumbWithAttribution(t, "trusted-run", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+			"user":       map[string]string{"login": m.userLogin},
+			"created_at": created,
+		},
+		{
+			"id":         2,
+			"body":       claimBreadcrumb("foreign-run"),
+			"user":       map[string]string{"login": "someone-else"},
+			"created_at": created.Add(time.Minute),
+		},
+	}
+	p, repo := newGiteaIssueProvider(t, m)
+
+	epochs, err := p.OpenClaimEpochs(context.Background(), repo, "7")
+	if err != nil {
+		t.Fatalf("OpenClaimEpochs: %v", err)
+	}
+	if len(epochs) != 2 {
+		t.Fatalf("epochs = %+v, want trusted and foreign epochs", epochs)
+	}
+	if !epochs[0].Trusted || epochs[0].RunID != "trusted-run" ||
+		epochs[0].InstanceID != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ||
+		!epochs[0].CreatedAt.Equal(created) {
+		t.Fatalf("trusted epoch = %+v", epochs[0])
+	}
+	if epochs[1].Trusted || epochs[1].RunID != "foreign-run" {
+		t.Fatalf("foreign epoch = %+v", epochs[1])
+	}
+}
+
 // --- HasOpenWorkItemBlocker ---
 
 func TestGiteaHasOpenWorkItemBlocker(t *testing.T) {

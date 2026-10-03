@@ -1398,6 +1398,9 @@ type ClaimWorkItemRequest struct {
 	// historical run. Callers set it only after verifying that RunID currently
 	// owns the authoritative ledger lease.
 	LedgerAuthorized bool `json:"ledgerAuthorized,omitempty"`
+	// ExpectedClaimRunID, when set, requires the currently open provider claim
+	// epoch to still be held by this run before releasing it.
+	ExpectedClaimRunID string `json:"expectedClaimRunId,omitempty"`
 }
 
 // ClaimResult reports the outcome of a claim attempt.

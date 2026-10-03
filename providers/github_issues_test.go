@@ -1260,6 +1260,36 @@ func TestGitHubLedgerAuthorizedReleaseReconcilesHistoricalWinner(t *testing.T) {
 	}
 }
 
+func TestGitHubLedgerAuthorizedReleaseHonorsExpectedWinner(t *testing.T) {
+	m := newIssueMock()
+	m.labels = append(m.labels, LabelClaimed)
+	m.comments = append(m.comments, map[string]interface{}{
+		"id":   int64(1),
+		"body": claimBreadcrumb("new-live-run"),
+		"user": map[string]string{"login": "goobers"},
+	})
+	m.nextID = 1
+	p, repo := newIssueProvider(t, m)
+
+	_, err := p.ReleaseWorkItemClaim(context.Background(), ClaimWorkItemRequest{
+		Repository:         repo,
+		ID:                 "7",
+		RunID:              "current-run",
+		LedgerAuthorized:   true,
+		ExpectedClaimRunID: "historical-run",
+	})
+	if err == nil || !strings.Contains(err.Error(), `not expected run "historical-run"`) {
+		t.Fatalf("ledger-authorized release error = %v, want expected-winner refusal", err)
+	}
+	winner, claimed, err := claimWinner(context.Background(), p, p.BaseURL, repo, "7")
+	if err != nil {
+		t.Fatalf("claimWinner after refused release: %v", err)
+	}
+	if !claimed || winner != "new-live-run" {
+		t.Fatalf("claimWinner after refused release = %q, %v; want new-live-run still claimed", winner, claimed)
+	}
+}
+
 func TestGitHubReconcileOrphanedClaimClosesEpochAndExplainsLabels(t *testing.T) {
 	m := newIssueMock()
 	m.labels = append(m.labels, LabelClaimed, LabelReady)

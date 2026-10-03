@@ -190,6 +190,9 @@ type ClaimEpoch struct {
 	Trusted bool
 	// RunID is the run the claim breadcrumb names.
 	RunID string
+	// CreatedAt is when the opening claim breadcrumb was posted. A zero value
+	// means the provider did not return a timestamp.
+	CreatedAt time.Time
 	// InstanceID is the durable instance identity carried by the breadcrumb's
 	// attribution marker. Empty means the breadcrumb is unattributed (legacy)
 	// or its marker does not parse; it never identifies a particular instance.
@@ -241,6 +244,9 @@ func scanClaimEpochs(raw []restComment, markerAuthor string) []ClaimEpoch {
 			Author:  comment.User.Login,
 			Trusted: strings.EqualFold(comment.User.Login, markerAuthor),
 			RunID:   runID,
+		}
+		if comment.CreatedAt != nil {
+			epoch.CreatedAt = *comment.CreatedAt
 		}
 		if attribution, ok, err := ParseAttribution(comment.Body); err == nil && ok {
 			epoch.InstanceID = attribution.InstanceID
@@ -431,6 +437,12 @@ func releaseRESTWorkItemClaim(ctx context.Context, c restClaimMutationProvider, 
 		},
 		removeLabel: func(ctx context.Context, label string) (WorkItem, error) {
 			if err := c.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+				return WorkItem{}, err
+			}
+			return c.GetWorkItem(ctx, req.Repository, req.ID)
+		},
+		restoreLabel: func(ctx context.Context, label string) (WorkItem, error) {
+			if err := c.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
 				return WorkItem{}, err
 			}
 			return c.GetWorkItem(ctx, req.Repository, req.ID)

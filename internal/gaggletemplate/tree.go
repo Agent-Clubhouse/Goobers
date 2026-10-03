@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -154,12 +155,7 @@ func (t Tree) Write(root string) error {
 }
 
 func sortedKeys(t Tree) []string {
-	keys := make([]string, 0, len(t))
-	for key := range t {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(t))
 }
 
 func equalFile(a File, aOK bool, b File, bOK bool) bool {

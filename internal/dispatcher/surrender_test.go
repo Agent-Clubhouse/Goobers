@@ -1,10 +1,13 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -120,6 +123,51 @@ func TestSurrenderDirPutIdempotent(t *testing.T) {
 	}
 	if string(got) != string(doc) {
 		t.Fatalf("document = %s, want the first write kept (write-once per key)", got)
+	}
+}
+
+func TestSurrenderDirConcurrentPutPreservesFirstPublication(t *testing.T) {
+	ctx := context.Background()
+	plane := testPlane(t)
+	const writers = 24
+	payloads := make([][]byte, writers)
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var ready sync.WaitGroup
+	ready.Add(writers)
+	for i := range writers {
+		payloads[i] = bytes.Repeat(fmt.Appendf(nil, "writer-%02d-", i), 4096)
+		go func(data []byte) {
+			ready.Done()
+			<-start
+			errs <- plane.Put(ctx, "run-race", "build", 1, data)
+		}(payloads[i])
+	}
+	ready.Wait()
+	close(start)
+
+	var first []byte
+	for first == nil {
+		data, err := plane.Get(ctx, "run-race", "build", 1)
+		if err == nil {
+			first = data
+			break
+		}
+		if !errors.Is(err, ErrNoSurrender) {
+			t.Fatalf("observe first publication: %v", err)
+		}
+	}
+	for range writers {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent Put: %v", err)
+		}
+	}
+	got, err := plane.Get(ctx, "run-race", "build", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, first) {
+		t.Fatal("first publication was replaced by a concurrent writer")
 	}
 }
 

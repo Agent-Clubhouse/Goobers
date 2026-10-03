@@ -872,42 +872,21 @@ func (p *ADOProvider) setADOClaimLabel(ctx context.Context, repo RepositoryRef, 
 // ownClaimComments), matching the GitHub provider's filter to the
 // authenticated login.
 func (p *ADOProvider) adoClaimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	comments, err := p.ownClaimComments(ctx, repo, id)
+	epochs, err := p.OpenClaimEpochs(ctx, repo, id)
 	if err != nil {
 		return "", false, err
 	}
-	sort.SliceStable(comments, func(i, j int) bool {
-		left, leftErr := strconv.Atoi(comments[i].ID)
-		right, rightErr := strconv.Atoi(comments[j].ID)
-		if leftErr != nil || rightErr != nil {
-			return comments[i].ID < comments[j].ID
-		}
-		return left < right
-	})
-	winner := ""
-	for _, comment := range comments {
-		if releasedBy := claimReleaseRunID(comment.Body); releasedBy != "" {
-			if winner == releasedBy {
-				winner = ""
-			}
-			continue
-		}
-		if winner == "" {
-			winner = claimRunID(comment.Body)
+	for _, epoch := range epochs {
+		if epoch.Trusted {
+			return epoch.RunID, true, nil
 		}
 	}
-	return winner, winner != "", nil
+	return "", false, nil
 }
 
-// ownClaimComments lists the work item's comments written by the identity the
-// provider's credential authenticates as. Authorship is keyed on the stable
-// identity GUID (createdBy.id equals connectionData authenticatedUser.id),
-// never the display name, so a project member cannot take or end a claim by
-// posting the breadcrumb text themselves. When the identity cannot be resolved
-// the read fails; it never falls back to an unfiltered scan. Breadcrumbs
-// written under a previous credential identity stop counting once the
-// identity changes.
-func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, id string) ([]Comment, error) {
+// OpenClaimEpochs lists the work item's open provider claim epochs, including
+// the ones authored by identities the claim election does not trust.
+func (p *ADOProvider) OpenClaimEpochs(ctx context.Context, repo RepositoryRef, id string) ([]ClaimEpoch, error) {
 	self, err := p.AuthenticatedIdentity(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve claim marker author: %w", err)
@@ -916,13 +895,66 @@ func (p *ADOProvider) ownClaimComments(ctx context.Context, repo RepositoryRef, 
 	if err != nil {
 		return nil, err
 	}
-	own := make([]Comment, 0, len(comments))
-	for _, comment := range comments {
-		if comment.AuthorID != "" && strings.EqualFold(comment.AuthorID, self.ID) {
-			own = append(own, comment)
-		}
+	sort.SliceStable(comments, func(i, j int) bool {
+		return adoCommentOrderLess(comments[i].ID, comments[j].ID)
+	})
+	return scanADOClaimEpochs(comments, self.ID), nil
+}
+
+func scanADOClaimEpochs(comments []Comment, markerAuthorID string) []ClaimEpoch {
+	type openEpoch struct {
+		epoch  ClaimEpoch
+		opened int
 	}
-	return own, nil
+	open := map[string]openEpoch{}
+	for index, comment := range comments {
+		authorID := strings.ToLower(strings.TrimSpace(comment.AuthorID))
+		if authorID == "" {
+			continue
+		}
+		current, hasOpen := open[authorID]
+		if releasedBy := claimReleaseRunID(comment.Body); releasedBy != "" {
+			if hasOpen && current.epoch.RunID == releasedBy {
+				delete(open, authorID)
+			}
+			continue
+		}
+		runID := claimRunID(comment.Body)
+		if hasOpen || runID == "" {
+			continue
+		}
+		epoch := ClaimEpoch{
+			Author:  comment.Author,
+			Trusted: strings.EqualFold(comment.AuthorID, markerAuthorID),
+			RunID:   runID,
+		}
+		if comment.CreatedAt != nil {
+			epoch.CreatedAt = *comment.CreatedAt
+		}
+		if attribution, ok, err := ParseAttribution(comment.Body); err == nil && ok {
+			epoch.InstanceID = attribution.InstanceID
+		}
+		open[authorID] = openEpoch{epoch: epoch, opened: index}
+	}
+	ordered := make([]openEpoch, 0, len(open))
+	for _, entry := range open {
+		ordered = append(ordered, entry)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].opened < ordered[j].opened })
+	epochs := make([]ClaimEpoch, 0, len(ordered))
+	for _, entry := range ordered {
+		epochs = append(epochs, entry.epoch)
+	}
+	return epochs
+}
+
+func adoCommentOrderLess(leftID, rightID string) bool {
+	left, leftErr := strconv.Atoi(leftID)
+	right, rightErr := strconv.Atoi(rightID)
+	if leftErr != nil || rightErr != nil {
+		return leftID < rightID
+	}
+	return left < right
 }
 
 // ReleaseWorkItemClaim ends the current ADO claim epoch: it posts a release
@@ -975,6 +1007,9 @@ func (p *ADOProvider) releaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 		},
 		removeLabel: func(ctx context.Context, label string) (WorkItem, error) {
 			return p.setADOClaimLabel(ctx, req.Repository, req.ID, nil, []string{label})
+		},
+		restoreLabel: func(ctx context.Context, label string) (WorkItem, error) {
+			return p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
 		},
 	})
 	return final, err
