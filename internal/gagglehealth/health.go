@@ -1,16 +1,20 @@
 package gagglehealth
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/secretpattern"
 )
 
 const (
@@ -21,7 +25,11 @@ const (
 	MaxEvidenceDetailLength     = 512
 	MaxEvidencePerFinding       = 16
 	MaxHistoryFindings          = 1000
+	MaxIdentityLength           = 253
+	MaxEvidenceKindLength       = 64
 )
+
+var findingTextScrubber = secretpattern.NewScrubber()
 
 const (
 	FindingTriggerSilence       = "trigger-silence"
@@ -315,6 +323,16 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	if finding.Identity.Gaggle == "" || finding.EpisodeKey == "" {
 		return errors.New("finding gaggle and episodeKey are required")
 	}
+	expectedKey, err := EpisodeKey(finding.Code, finding.Identity)
+	if err != nil {
+		return err
+	}
+	if finding.EpisodeKey != expectedKey || !validDigest(finding.EpisodeKey) {
+		return errors.New("finding episodeKey does not match its code and identity")
+	}
+	if err := validateIdentity(finding.Identity); err != nil {
+		return err
+	}
 	if severityRank(finding.Severity) < severityRank(rule.severity) {
 		return fmt.Errorf("finding severity is below the hard minimum %s", rule.severity)
 	}
@@ -327,10 +345,10 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	if finding.Confidence < 0 || finding.Confidence > 1 {
 		return errors.New("finding confidence must be between 0 and 1")
 	}
-	if len(finding.Summary) > MaxSummaryLength ||
-		len(finding.EvidenceAssessment) > MaxEvidenceAssessmentLength ||
-		len(finding.Repair.RecommendedAction) > MaxActionLength ||
-		len(finding.Repair.ResultSummary) > MaxResultSummaryLength {
+	if utf8.RuneCountInString(finding.Summary) > MaxSummaryLength ||
+		utf8.RuneCountInString(finding.EvidenceAssessment) > MaxEvidenceAssessmentLength ||
+		utf8.RuneCountInString(finding.Repair.RecommendedAction) > MaxActionLength ||
+		utf8.RuneCountInString(finding.Repair.ResultSummary) > MaxResultSummaryLength {
 		return errors.New("finding contains an unbounded human-readable field")
 	}
 	if finding.Summary == "" || finding.EvidenceAssessment == "" ||
@@ -340,10 +358,31 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	if len(finding.Evidence) > MaxEvidencePerFinding || len(finding.ResolutionEvidence) > MaxEvidencePerFinding {
 		return errors.New("finding contains too many evidence references")
 	}
-	for _, evidence := range append(append([]apiv1.GaggleHealthEvidence{}, finding.Evidence...), finding.ResolutionEvidence...) {
-		if evidence.Kind == "" || len(evidence.Detail) > MaxEvidenceDetailLength {
-			return errors.New("finding evidence kind is required and detail must be bounded")
+	for _, text := range []string{finding.Summary, finding.EvidenceAssessment, finding.Repair.RecommendedAction, finding.Repair.ResultSummary} {
+		if err := validateRedactedText(text); err != nil {
+			return err
 		}
+	}
+	for _, evidence := range append(append([]apiv1.GaggleHealthEvidence{}, finding.Evidence...), finding.ResolutionEvidence...) {
+		if evidence.Kind == "" || utf8.RuneCountInString(evidence.Kind) > MaxEvidenceKindLength ||
+			utf8.RuneCountInString(evidence.Run) > MaxIdentityLength ||
+			utf8.RuneCountInString(evidence.Detail) > MaxEvidenceDetailLength {
+			return errors.New("finding evidence fields do not satisfy wire bounds")
+		}
+		if evidence.Digest != "" && !validDigest(evidence.Digest) {
+			return errors.New("finding evidence digest must be 64 lowercase hexadecimal characters")
+		}
+		for _, text := range []string{evidence.Kind, evidence.Run, evidence.Detail} {
+			if err := validateRedactedText(text); err != nil {
+				return err
+			}
+		}
+	}
+	if utf8.RuneCountInString(finding.Repair.IdempotencyKey) > MaxIdentityLength {
+		return errors.New("finding repair idempotencyKey exceeds the wire bound")
+	}
+	if err := validateIdentifier("repair idempotencyKey", finding.Repair.IdempotencyKey, false); err != nil {
+		return err
 	}
 	if finding.Repair.PolicyAuthorized && !rule.safeRepair {
 		return errors.New("finding repair authorization violates hard safety policy")
@@ -378,6 +417,99 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	return nil
 }
 
+func validateIdentity(identity apiv1.GaggleHealthIdentity) error {
+	values := []struct {
+		name     string
+		value    string
+		required bool
+	}{
+		{"gaggle", identity.Gaggle, true},
+		{"workflow", identity.Workflow, false},
+		{"run", identity.Run, false},
+		{"stage", identity.Stage, false},
+		{"backlogItem", identity.BacklogItem, false},
+		{"pullRequest", identity.PullRequest, false},
+		{"claim", identity.Claim, false},
+		{"runner", identity.Runner, false},
+		{"worker", identity.Worker, false},
+	}
+	for _, value := range values {
+		if utf8.RuneCountInString(value.value) > MaxIdentityLength {
+			return fmt.Errorf("finding identity %s exceeds the wire bound", value.name)
+		}
+		if err := validateIdentifier("identity "+value.name, value.value, value.required); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIdentifier(name, value string, required bool) error {
+	if value == "" {
+		if required {
+			return fmt.Errorf("finding %s is required", name)
+		}
+		return nil
+	}
+	if strings.TrimSpace(value) != value || containsControl(value) || rootedPath(value) {
+		return fmt.Errorf("finding %s contains whitespace, control data, or a host-private path", name)
+	}
+	if !bytes.Equal(findingTextScrubber.Scrub([]byte(value)), []byte(value)) {
+		return fmt.Errorf("finding %s contains secret-shaped data", name)
+	}
+	return nil
+}
+
+func validateRedactedText(value string) error {
+	if value == "" {
+		return nil
+	}
+	if containsControl(value) || containsRootedPath(value) {
+		return errors.New("finding text contains control data or a host-private path")
+	}
+	if !bytes.Equal(findingTextScrubber.Scrub([]byte(value)), []byte(value)) {
+		return errors.New("finding text contains secret-shaped data")
+	}
+	return nil
+}
+
+func containsControl(value string) bool {
+	for _, r := range value {
+		if r < 0x20 && r != '\t' && r != '\n' && r != '\r' || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRootedPath(value string) bool {
+	for _, field := range strings.Fields(value) {
+		candidate := strings.Trim(field, `"'(),.;[]{}<>`)
+		if rootedPath(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func rootedPath(value string) bool {
+	return filepath.IsAbs(value) ||
+		filepath.VolumeName(value) != "" ||
+		strings.HasPrefix(value, "/") ||
+		strings.HasPrefix(value, `\`) ||
+		(len(value) >= 3 && value[1] == ':' &&
+			(value[2] == '/' || value[2] == '\\') &&
+			((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')))
+}
+
+func validDigest(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
+}
+
 // AggregateState applies deterministic precedence to all active findings.
 func AggregateState(findings []apiv1.GaggleHealthFinding) apiv1.GaggleHealthState {
 	state := apiv1.GaggleHealthHealthy
@@ -410,6 +542,19 @@ func stateRank(state apiv1.GaggleHealthState) int {
 
 // Rebuild replays one gaggle's authoritative instance-journal stream.
 func Rebuild(gaggle string, events []apiv1.GaggleHealthEvent) (apiv1.GaggleHealthSnapshot, error) {
+	return rebuild(gaggle, events, 0, time.Time{})
+}
+
+// RebuildWithRetention replays a gaggle and omits resolved episodes older than
+// the configured evidence-retention window. Active episodes are never pruned.
+func RebuildWithRetention(gaggle string, events []apiv1.GaggleHealthEvent, retention time.Duration, now time.Time) (apiv1.GaggleHealthSnapshot, error) {
+	if retention <= 0 || now.IsZero() {
+		return apiv1.GaggleHealthSnapshot{}, errors.New("positive retention and current time are required")
+	}
+	return rebuild(gaggle, events, retention, now)
+}
+
+func rebuild(gaggle string, events []apiv1.GaggleHealthEvent, retention time.Duration, now time.Time) (apiv1.GaggleHealthSnapshot, error) {
 	snapshot := apiv1.GaggleHealthSnapshot{
 		SchemaVersion: apiv1.GaggleHealthSchemaVersion,
 		Gaggle:        gaggle,
@@ -434,7 +579,13 @@ func Rebuild(gaggle string, events []apiv1.GaggleHealthEvent) (apiv1.GaggleHealt
 			if event.Finding == nil || event.EpisodeKey == "" || event.Finding.EpisodeKey != event.EpisodeKey {
 				return apiv1.GaggleHealthSnapshot{}, errors.New("health transition requires a matching finding snapshot")
 			}
+			if event.Finding.Identity.Gaggle != event.Gaggle {
+				return apiv1.GaggleHealthSnapshot{}, errors.New("health transition finding belongs to another gaggle")
+			}
 			if err := ValidateFinding(*event.Finding); err != nil {
+				return apiv1.GaggleHealthSnapshot{}, err
+			}
+			if err := validateTransition(event); err != nil {
 				return apiv1.GaggleHealthSnapshot{}, err
 			}
 		}
@@ -459,7 +610,9 @@ func Rebuild(gaggle string, events []apiv1.GaggleHealthEvent) (apiv1.GaggleHealt
 				return apiv1.GaggleHealthSnapshot{}, errors.New("finding-resolved requires resolvedAt")
 			}
 			delete(active, event.EpisodeKey)
-			snapshot.History = append(snapshot.History, *event.Finding)
+			if retention == 0 || !event.Finding.ResolvedAt.Before(now.Add(-retention)) {
+				snapshot.History = append(snapshot.History, *event.Finding)
+			}
 			if len(snapshot.History) > MaxHistoryFindings {
 				snapshot.History = snapshot.History[len(snapshot.History)-MaxHistoryFindings:]
 			}
@@ -475,6 +628,36 @@ func Rebuild(gaggle string, events []apiv1.GaggleHealthEvent) (apiv1.GaggleHealt
 	})
 	snapshot.State = AggregateState(snapshot.Active)
 	return snapshot, nil
+}
+
+func validateTransition(event apiv1.GaggleHealthEvent) error {
+	finding := event.Finding
+	switch event.Type {
+	case apiv1.GaggleHealthFindingOpened, apiv1.GaggleHealthFindingUpdated:
+		if finding.ResolvedAt != nil {
+			return errors.New("active finding transition cannot contain resolved state")
+		}
+	case apiv1.GaggleHealthRepairStartedEvent:
+		if finding.ResolvedAt != nil || finding.Repair.Disposition != apiv1.GaggleHealthRepairStarted {
+			return errors.New("repair-started transition requires an active started repair")
+		}
+	case apiv1.GaggleHealthRepairFinishedEvent:
+		if finding.ResolvedAt != nil ||
+			(finding.Repair.Disposition != apiv1.GaggleHealthRepairSucceeded &&
+				finding.Repair.Disposition != apiv1.GaggleHealthRepairFailed &&
+				finding.Repair.Disposition != apiv1.GaggleHealthRepairRefused) {
+			return errors.New("repair-finished transition requires an active finished repair")
+		}
+	case apiv1.GaggleHealthEscalated:
+		if finding.ResolvedAt != nil || finding.Repair.FollowUp != apiv1.GaggleHealthFollowUpEscalated {
+			return errors.New("escalation transition requires an active escalated follow-up")
+		}
+	case apiv1.GaggleHealthFindingResolved:
+		if finding.ResolvedAt == nil || finding.Repair.FollowUp != apiv1.GaggleHealthFollowUpResolved {
+			return errors.New("finding-resolved transition requires resolved state")
+		}
+	}
+	return nil
 }
 
 func validEventType(eventType apiv1.GaggleHealthEventType) bool {

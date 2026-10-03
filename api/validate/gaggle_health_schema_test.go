@@ -11,6 +11,7 @@ import (
 
 	"github.com/goobers/goobers/api/schemas"
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gagglehealth"
 )
 
 func TestGaggleHealthResponseSchemaMatchesGoType(t *testing.T) {
@@ -32,6 +33,75 @@ func TestGaggleHealthResponseSchemaMatchesGoType(t *testing.T) {
 	}
 	if err := newV(t).ValidateJSON(schemas.GaggleHealth, data); err != nil {
 		t.Fatalf("health response does not validate: %v", err)
+	}
+}
+
+func TestGaggleHealthResponseSchemaAcceptsCompleteFinding(t *testing.T) {
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	identity := apiv1.GaggleHealthIdentity{
+		Gaggle: "example", Workflow: "implementation", Run: "run-1", Stage: "review",
+		BacklogItem: "4424", PullRequest: "17", Claim: "claim-1", Runner: "local", Worker: "worker-1",
+	}
+	key, err := gagglehealth.EpisodeKey(gagglehealth.FindingNoProgress, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempted := now.Add(time.Minute)
+	completed := now.Add(2 * time.Minute)
+	finding := apiv1.GaggleHealthFinding{
+		SchemaVersion:    apiv1.GaggleHealthSchemaVersion,
+		Code:             gagglehealth.FindingNoProgress,
+		Severity:         apiv1.GaggleHealthSeverityError,
+		Contribution:     apiv1.GaggleHealthRecovering,
+		Identity:         identity,
+		FirstObserved:    now,
+		LastObserved:     completed,
+		ObservationCount: 2,
+		EpisodeKey:       key,
+		Evidence: []apiv1.GaggleHealthEvidence{{
+			Kind: "artifact-digest", Run: "run-1", Sequence: 7,
+			Digest: strings.Repeat("a", 64), Detail: "bounded redacted evidence",
+		}},
+		Summary:            "The run has not progressed.",
+		Confidence:         0.9,
+		EvidenceAssessment: "Two journal observations are sufficient.",
+		Repair: apiv1.GaggleHealthRepair{
+			RecommendedAction: "Inspect the affected run.",
+			Disposition:       apiv1.GaggleHealthRepairFailed,
+			AttemptedAt:       &attempted,
+			CompletedAt:       &completed,
+			IdempotencyKey:    "repair-run-1",
+			ResultSummary:     "The repair did not restore progress.",
+			FollowUp:          apiv1.GaggleHealthFollowUpVerifying,
+		},
+	}
+	response := apiv1.GaggleHealthResponse{
+		SchemaVersion: apiv1.GaggleHealthSchemaVersion,
+		Health: apiv1.GaggleHealthSnapshot{
+			SchemaVersion: apiv1.GaggleHealthSchemaVersion,
+			Gaggle:        "example",
+			State:         apiv1.GaggleHealthRecovering,
+			UpdatedAt:     completed,
+			Active:        []apiv1.GaggleHealthFinding{finding},
+			History:       []apiv1.GaggleHealthFinding{},
+			LastSequence:  3,
+		},
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := newV(t).ValidateJSON(schemas.GaggleHealth, data); err != nil {
+		t.Fatalf("complete health response does not validate: %v", err)
+	}
+	finding.Evidence[0].Digest = "not-a-digest"
+	response.Health.Active[0] = finding
+	data, err = json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := newV(t).ValidateJSON(schemas.GaggleHealth, data); err == nil {
+		t.Fatal("health schema accepted malformed evidence digest")
 	}
 }
 
