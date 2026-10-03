@@ -71,14 +71,24 @@ function WorkItemListView({
   query?: string;
   standalone: boolean;
 }) {
-  const [state, setState] = useState<PageState<WorkItemPage>>({ status: "loading" });
+  const [state, setState] = useState<PageState<{
+    page: WorkItemPage;
+    filterItems: WorkItemSummary[];
+  }>>({ status: "loading" });
   const [searchQuery, setSearchQuery] = useState(query ?? "");
   const [draft, setDraft] = useState<{ kind?: WorkItemKind; gaggle?: string }>({ kind, gaggle });
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
-    client.listWorkItems({ kind, limit: 200 }, { signal: controller.signal }).then(
-      (data) => setState({ status: "ready", data }),
+    const page = client.listWorkItems({ kind, limit: 200 }, { signal: controller.signal });
+    const filterItems = kind
+      ? client.listWorkItems({ limit: 200 }, { signal: controller.signal })
+      : page;
+    Promise.all([page, filterItems]).then(
+      ([data, filterData]) => setState({
+        status: "ready",
+        data: { page: data, filterItems: filterData.items },
+      }),
       (error: Error) => {
         if (!controller.signal.aborted) setState({ status: "error", error });
       },
@@ -110,11 +120,14 @@ function WorkItemListView({
     return <DaemonErrorState error={state.error} retry={load} standalone={standalone} />;
   }
 
-  const gaggleOptions = [...new Set(
-    state.data.items.map((item) => item.gaggle).filter((value): value is string => Boolean(value)),
+  const gaggleOptions = (selectedKind?: WorkItemKind) => [...new Set(
+    state.data.filterItems
+      .filter((item) => !selectedKind || item.kind === selectedKind)
+      .map((item) => item.gaggle)
+      .filter((value): value is string => Boolean(value)),
   )].sort((left, right) => left.localeCompare(right));
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
-  const items = state.data.items.filter((item) => {
+  const items = state.data.page.items.filter((item) => {
     if (gaggle && item.gaggle !== gaggle) return false;
     if (!normalizedQuery) return true;
     return [
@@ -142,7 +155,7 @@ function WorkItemListView({
     });
     window.history.replaceState(window.history.state, "", hash);
   };
-  const filterError = workItemFilterError(kind, gaggle, gaggleOptions);
+  const filterError = workItemFilterError(kind, gaggle, gaggleOptions(kind));
   const activeFilters: ActivePageFilter[] = [
     ...(kind ? [{
       key: "kind",
@@ -157,6 +170,7 @@ function WorkItemListView({
   ];
   const renderFilters = (mobile: boolean) => {
     const values = mobile ? draft : { kind, gaggle };
+    const options = gaggleOptions(values.kind);
     const change = (updates: { kind?: WorkItemKind; gaggle?: string }) => {
       if (mobile) {
         setDraft((current) => ({ ...current, ...updates }));
@@ -189,7 +203,7 @@ function WorkItemListView({
             value={values.gaggle ?? ""}
           >
             <option value="">All gaggles</option>
-            {gaggleOptions.map((option) => (
+            {options.map((option) => (
               <option key={option} value={option}>{option}</option>
             ))}
           </select>
@@ -207,7 +221,12 @@ function WorkItemListView({
         filterError={filterError}
         filters={renderFilters}
         onApplyFilters={() => {
-          const error = workItemFilterError(draft.kind, draft.gaggle, gaggleOptions, false);
+          const error = workItemFilterError(
+            draft.kind,
+            draft.gaggle,
+            gaggleOptions(draft.kind),
+            false,
+          );
           if (error) return error;
           updateFilters(draft);
         }}
@@ -306,7 +325,7 @@ function WorkItemListView({
                 </button>
               );
             })}
-            {state.data.hasMore && (
+            {state.data.page.hasMore && (
               <p className="data-overflow">Showing the 200 most recently actioned work items.</p>
             )}
           </div>
