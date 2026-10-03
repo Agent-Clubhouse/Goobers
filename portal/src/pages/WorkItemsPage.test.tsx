@@ -16,8 +16,9 @@ function client() {
         kind: "pr",
         externalId: "42",
         url: "https://github.com/acme/app/pull/42",
+        outcome: "done",
         actionCount: 2,
-        lastOperation: "merge",
+        lastOperation: "comment",
         lastActionAt: "2026-09-01T12:00:00Z",
         lastRunId: "run-2",
         gaggle: "core",
@@ -29,6 +30,7 @@ function client() {
         kind: "issue",
         externalId: "77",
         url: "https://github.com/acme/service/issues/77",
+        outcome: "in-progress",
         actionCount: 1,
         lastOperation: "comment",
         lastActionAt: "2026-09-01T11:00:00Z",
@@ -45,6 +47,7 @@ function client() {
         kind: "pr",
         externalId: "42",
         url: "https://github.com/acme/app/pull/42",
+        outcome: "done",
         cost: {
           nanoAIU: 1_250_000_000,
           totalRuns: 1,
@@ -96,7 +99,10 @@ describe("WorkItemsPage", () => {
     );
 
     await screen.findByText("acme/app#42");
-    expect(screen.getByText("Merge")).toBeInTheDocument();
+    expect(screen.getByText("Done", { selector: ".status-badge" })).toBeInTheDocument();
+    const doneRow = screen.getByRole("button", { name: /Open PR #42 in acme\/app/i });
+    expect(doneRow).toHaveTextContent(/Last action:\s*Comment/);
+    expect(doneRow).toHaveClass("work-item-row-done");
     await userEvent.click(screen.getByRole("button", { name: /Open PR #42 in acme\/app/i }));
     expect(navigate).toHaveBeenCalledWith({
       page: "work-items",
@@ -124,6 +130,28 @@ describe("WorkItemsPage", () => {
       .toHaveValue("core");
     expect(screen.getByRole("searchbox", { name: "Search work items" }))
       .toHaveValue("app#42");
+  });
+
+  it("filters work items by outcome", async () => {
+    render(
+      <WorkItemsPage
+        client={client()}
+        navigate={vi.fn()}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /Open PR #42 in acme\/app/i });
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Filter work items by status" }),
+      "in-progress",
+    );
+
+    expect(screen.queryByRole("button", { name: /Open PR #42 in acme\/app/i }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open issue #77 in acme\/service/i }))
+      .toBeInTheDocument();
   });
 
   it("keeps search focus while word-wheel filtering and replaces the current URL", async () => {
@@ -194,6 +222,7 @@ describe("WorkItemsPage", () => {
 
   it("keeps equal numeric ids separate across providers, repositories, and projects", async () => {
     const summary = {
+      outcome: "in-progress" as const,
       actionCount: 1,
       lastOperation: "create",
       lastActionAt: "2026-09-01T12:00:00Z",
@@ -275,6 +304,7 @@ describe("WorkItemsPage", () => {
               kind: "issue",
               externalId: "7",
               url: "https://dev.azure.com/contoso/alpha/_workitems/edit/7",
+              outcome: "in-progress",
               relatedPullRequests: [],
               actions: [],
               truncated: false,
