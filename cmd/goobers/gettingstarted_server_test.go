@@ -20,20 +20,46 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
-	daemonservice "github.com/goobers/goobers/internal/service"
 	"github.com/goobers/goobers/providers"
 )
 
 func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
 	t.Helper()
 	return &guidedServer{
-		workdir:      workdir,
-		instancePath: filepath.Join(workdir, "tutorial-instance"),
-		executable:   "goobers-under-test",
-		platform:     runtime.GOOS,
-		errorLog:     log.New(io.Discard, "", 0),
-		completed:    make(chan struct{}),
+		workdir:         workdir,
+		instancePath:    filepath.Join(workdir, "tutorial-instance"),
+		executable:      "goobers-under-test",
+		platform:        runtime.GOOS,
+		runtimeIdentity: "CONTOSO\\alice",
+		errorLog:        log.New(io.Discard, "", 0),
+		completed:       make(chan struct{}),
 	}
+}
+
+func newCompletionTestServer(t *testing.T) *guidedServer {
+	t.Helper()
+	server := newTestGuidedServer(t, t.TempDir())
+	source := filepath.Join(t.TempDir(), "config")
+	if _, err := instance.SeedGuidedConfigSource(source, instance.GuidedOptions{
+		GaggleName:    "widgets",
+		DisplayName:   "acme/widgets",
+		RepoProvider:  "github",
+		RepoOwner:     "acme",
+		RepoName:      "widgets",
+		RepoBranch:    "main",
+		GitHubCLIUser: "octocat",
+		Workflows:     []string{instance.GuidedWorkflowWorkNomination},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := instance.LoadGuidedSourceConfig(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.InitGuidedFromSource(server.instancePath, source, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return server
 }
 
 // stubGuidedExec replaces the subprocess seam, recording each action's argv and
@@ -138,7 +164,7 @@ func TestGettingStartedStateNeverLeaksTokenValues(t *testing.T) {
 }
 
 func TestGettingStartedCompleteSignalsServerShutdown(t *testing.T) {
-	server := newTestGuidedServer(t, t.TempDir())
+	server := newCompletionTestServer(t)
 	recorder := guidedPost(
 		http.HandlerFunc(server.serveGuided),
 		"/guided/actions/complete",
@@ -154,68 +180,129 @@ func TestGettingStartedCompleteSignalsServerShutdown(t *testing.T) {
 	}
 }
 
-func TestGettingStartedCompleteInstallsWindowsScheduledTask(t *testing.T) {
-	server := newTestGuidedServer(t, t.TempDir())
-	server.instancePath = serviceTestInstance(t)
-	server.platform = "windows"
-	manager := &fakeDaemonServiceManager{}
-	previous := newScheduledTaskManager
-	newScheduledTaskManager = func(root string) (scheduledTaskManager, error) {
-		if root != server.instancePath {
-			t.Fatalf("scheduled task root = %q, want %q", root, server.instancePath)
-		}
-		return identityTaskManager{manager}, nil
-	}
-	t.Cleanup(func() { newScheduledTaskManager = previous })
-
-	recorder := guidedPost(
-		http.HandlerFunc(server.serveGuided),
-		"/guided/actions/complete",
-		`{"installScheduledTask":true}`,
-	)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
-	}
-	response := decodeGuidedResponse[guidedCompleteBody](t, recorder)
-	if !response.Complete || !response.ScheduledTaskInstalled || !manager.installed {
-		t.Fatalf("complete response = %+v installed = %v", response, manager.installed)
+func TestGuidedCommandPreservesWindowsPaths(t *testing.T) {
+	got := guidedCommand(`C:\Program Files\Goobers\goobers.exe`, "up", `C:\work\widgets-goobers`)
+	want := `"C:\Program Files\Goobers\goobers.exe" "up" "C:\work\widgets-goobers"`
+	if got != want {
+		t.Fatalf("guidedCommand() = %q, want %q", got, want)
 	}
 }
 
-func TestGettingStartedCompleteStartsExistingWindowsScheduledTask(t *testing.T) {
-	server := newTestGuidedServer(t, t.TempDir())
-	server.instancePath = serviceTestInstance(t)
-	server.platform = "windows"
-	manager := &fakeDaemonServiceManager{
-		status: daemonservice.Status{Installed: true},
+func TestGettingStartedForegroundCompletionHandsOffToOriginalTerminal(t *testing.T) {
+	server := newCompletionTestServer(t)
+	server.completionMode = guidedRuntimeForeground
+	previous := guidedForegroundRun
+	called := false
+	guidedForegroundRun = func(_ context.Context, args []string, stdout, stderr io.Writer) int {
+		called = true
+		if !reflect.DeepEqual(args, []string{server.instancePath}) || stdout == nil || stderr == nil {
+			t.Fatalf("foreground handoff args = %v stdout=%v stderr=%v", args, stdout, stderr)
+		}
+		return 23
 	}
-	previous := newScheduledTaskManager
-	newScheduledTaskManager = func(string) (scheduledTaskManager, error) {
-		return identityTaskManager{manager}, nil
-	}
-	t.Cleanup(func() { newScheduledTaskManager = previous })
+	t.Cleanup(func() { guidedForegroundRun = previous })
 
-	recorder := guidedPost(
-		http.HandlerFunc(server.serveGuided),
-		"/guided/actions/complete",
-		`{"installScheduledTask":true}`,
-	)
+	if code := runGuidedCompletion(context.Background(), server, io.Discard, io.Discard); code != 23 || !called {
+		t.Fatalf("runGuidedCompletion code = %d called = %v", code, called)
+	}
+	server.completionMode = guidedRuntimeLater
+	called = false
+	if code := runGuidedCompletion(context.Background(), server, io.Discard, io.Discard); code != 0 || called {
+		t.Fatalf("not-now completion code = %d called = %v", code, called)
+	}
+}
+
+func TestGettingStartedCompleteRuntimeChoices(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		body       string
+		wantMode   guidedRuntimeMode
+		wantAction string
+	}{
+		{name: "foreground", body: `{"mode":"foreground"}`, wantMode: guidedRuntimeForeground},
+		{name: "not now", body: `{"mode":"not-now"}`, wantMode: guidedRuntimeLater},
+		{name: "scheduled task", body: `{"mode":"scheduled-task"}`, wantMode: guidedRuntimeTask, wantAction: "service task-install"},
+		{name: "machine service", body: `{"mode":"machine-service","confirmLocalSystem":true}`, wantMode: guidedRuntimeService, wantAction: "service install --acknowledge-local-system"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := newCompletionTestServer(t)
+			server.platform = "windows"
+			calls := []string{}
+			installed := false
+			server.execAction = func(_ context.Context, argv ...string) (guidedExecResult, error) {
+				call := strings.Join(argv, " ")
+				calls = append(calls, call)
+				if strings.Contains(call, "status") {
+					status, err := json.Marshal(map[string]any{
+						"installed": installed,
+						"running":   installed,
+						"state":     map[bool]string{true: "running", false: "not installed"}[installed],
+						"account":   "CONTOSO\\alice",
+					})
+					return guidedExecResult{stdout: string(status)}, err
+				}
+				installed = true
+				return guidedExecResult{}, nil
+			}
+			recorder := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/complete", testCase.body)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+			}
+			response := decodeGuidedResponse[guidedCompleteBody](t, recorder)
+			if !response.Complete || response.SupervisionMode != string(testCase.wantMode) ||
+				len(response.Workflows) == 0 || response.Workflows[0].Command == "" {
+				t.Fatalf("complete response = %+v", response)
+			}
+			if testCase.wantAction != "" && !slices.Contains(calls, testCase.wantAction+" "+server.instancePath) {
+				t.Fatalf("calls = %v, want %q", calls, testCase.wantAction+" "+server.instancePath)
+			}
+			if testCase.wantAction == "" && len(calls) != 0 {
+				t.Fatalf("calls = %v, want no lifecycle command", calls)
+			}
+		})
+	}
+}
+
+func TestGettingStartedSupervisionPreviewUsesCurrentStatus(t *testing.T) {
+	server := newCompletionTestServer(t)
+	server.platform = "windows"
+	server.execAction = func(_ context.Context, argv ...string) (guidedExecResult, error) {
+		call := strings.Join(argv, " ")
+		status := map[string]any{
+			"installed": true,
+			"running":   false,
+			"state":     "stopped",
+		}
+		if strings.Contains(call, "task-status") {
+			status["account"] = "CONTOSO\\alice"
+		}
+		data, err := json.Marshal(status)
+		return guidedExecResult{exitCode: 1, stdout: string(data)}, err
+	}
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/supervision")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
 	}
-	if !manager.started || manager.installed {
-		t.Fatalf("started = %v installed = %v", manager.started, manager.installed)
+	preview := decodeGuidedResponse[guidedSupervisionPreviewBody](t, recorder)
+	if !strings.Contains(preview.ScheduledTask.Command, `"task-start"`) ||
+		strings.Contains(preview.ScheduledTask.Command, "task-install") {
+		t.Fatalf("scheduled task preview = %+v", preview.ScheduledTask)
+	}
+	if !strings.Contains(preview.MachineService.Command, `"start"`) ||
+		strings.Contains(preview.MachineService.Command, `"install"`) {
+		t.Fatalf("machine service preview = %+v", preview.MachineService)
 	}
 }
 
 func TestGettingStartedCompleteRejectsScheduledTaskOutsideWindows(t *testing.T) {
-	server := newTestGuidedServer(t, t.TempDir())
+	server := newCompletionTestServer(t)
 	server.platform = "linux"
 
 	recorder := guidedPost(
 		http.HandlerFunc(server.serveGuided),
 		"/guided/actions/complete",
-		`{"installScheduledTask":true}`,
+		`{"mode":"scheduled-task"}`,
 	)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
@@ -227,29 +314,68 @@ func TestGettingStartedCompleteRejectsScheduledTaskOutsideWindows(t *testing.T) 
 	}
 }
 
-func TestGettingStartedCompleteKeepsServerRunningWhenScheduledTaskFails(t *testing.T) {
-	server := newTestGuidedServer(t, t.TempDir())
-	server.instancePath = serviceTestInstance(t)
+func TestGettingStartedCompleteRequiresLocalSystemConfirmation(t *testing.T) {
+	server := newCompletionTestServer(t)
 	server.platform = "windows"
-	manager := &fakeDaemonServiceManager{statusErr: fmt.Errorf("task scheduler unavailable")}
-	previous := newScheduledTaskManager
-	newScheduledTaskManager = func(string) (scheduledTaskManager, error) {
-		return identityTaskManager{manager}, nil
-	}
-	t.Cleanup(func() { newScheduledTaskManager = previous })
-
 	recorder := guidedPost(
 		http.HandlerFunc(server.serveGuided),
 		"/guided/actions/complete",
-		`{"installScheduledTask":true}`,
+		`{"mode":"machine-service"}`,
 	)
-	if recorder.Code != http.StatusInternalServerError {
+	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
 	}
 	select {
 	case <-server.completed:
-		t.Fatal("failed complete action signaled server shutdown")
+		t.Fatal("unconfirmed machine service signaled server shutdown")
 	default:
+	}
+}
+
+func TestGettingStartedCompleteKeepsServerRunningWhenScheduledTaskActionFails(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		installed bool
+		wantCall  string
+	}{
+		{name: "install", wantCall: "service task-install"},
+		{name: "start", installed: true, wantCall: "service task-start"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := newCompletionTestServer(t)
+			server.platform = "windows"
+			server.execAction = func(_ context.Context, argv ...string) (guidedExecResult, error) {
+				call := strings.Join(argv, " ")
+				if strings.Contains(call, "task-status") {
+					status, err := json.Marshal(map[string]any{
+						"installed": testCase.installed,
+						"running":   false,
+						"state":     "stopped",
+					})
+					return guidedExecResult{exitCode: 1, stdout: string(status)}, err
+				}
+				if strings.HasPrefix(call, testCase.wantCall) {
+					return guidedExecResult{exitCode: 1, stderr: "Task Scheduler unavailable"}, nil
+				}
+				t.Fatalf("unexpected lifecycle call %q", call)
+				return guidedExecResult{}, nil
+			}
+
+			recorder := guidedPost(
+				http.HandlerFunc(server.serveGuided),
+				"/guided/actions/complete",
+				`{"mode":"scheduled-task"}`,
+			)
+			if recorder.Code != http.StatusInternalServerError ||
+				!strings.Contains(recorder.Body.String(), "Task Scheduler unavailable") {
+				t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+			}
+			select {
+			case <-server.completed:
+				t.Fatal("failed complete action signaled server shutdown")
+			default:
+			}
+		})
 	}
 }
 
