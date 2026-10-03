@@ -18,6 +18,16 @@ import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
 const FILTERS: readonly RunsFilter[] = ["active", "attention", "complete", "all"];
+const OUTCOMES = ["finished", "terminal", "success", "failure", "other"] as const;
+const POPULATIONS = [
+  "attempts",
+  "measured",
+  "token-measured",
+  "premium-measured",
+  "cost-measured",
+  "retry-waste",
+] as const;
+const WINDOWS = ["24h", "7d", "30d", "all"] as const;
 const NARROW_RUNS_PAGE_SIZE = 20;
 
 export function RunsPage({
@@ -303,8 +313,42 @@ function runsFilterError(
 ): string | undefined {
   const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
   const rawStatus = search.get("status");
-  if (inspectRoute && rawStatus && !FILTERS.includes(rawStatus as RunsFilter)) {
+  if (inspectRoute && search.has("status") && !FILTERS.includes(rawStatus as RunsFilter)) {
     return `Invalid status filter "${rawStatus}". Choose active, attention, complete, or all.`;
+  }
+  const rawOutcome = search.get("outcome");
+  if (
+    inspectRoute &&
+    search.has("outcome") &&
+    !OUTCOMES.includes(rawOutcome as (typeof OUTCOMES)[number])
+  ) {
+    return `Invalid outcome filter "${rawOutcome}".`;
+  }
+  const rawPopulation = search.get("population");
+  if (
+    inspectRoute &&
+    search.has("population") &&
+    !POPULATIONS.includes(rawPopulation as (typeof POPULATIONS)[number])
+  ) {
+    return `Invalid population filter "${rawPopulation}".`;
+  }
+  const rawWindow = search.get("window");
+  if (
+    inspectRoute &&
+    search.has("window") &&
+    !WINDOWS.includes(rawWindow as (typeof WINDOWS)[number])
+  ) {
+    return `Invalid time window filter "${rawWindow}". Choose 24h, 7d, 30d, or all.`;
+  }
+  for (const name of ["since", "until"] as const) {
+    const value = search.get(name);
+    if (inspectRoute && search.has(name) && !validTimestamp(value)) {
+      return `Invalid ${name} filter "${value}". Enter a valid timestamp.`;
+    }
+  }
+  const rawShowNoWork = search.get("showNoWork");
+  if (inspectRoute && search.has("showNoWork") && rawShowNoWork !== "1") {
+    return `Invalid show no-work filter "${rawShowNoWork}".`;
   }
   if (filters?.gaggle && !gaggles.some((option) => option.name === filters.gaggle)) {
     return `Invalid gaggle filter "${filters.gaggle}". Choose a configured gaggle.`;
@@ -317,6 +361,10 @@ function runsFilterError(
     return `Invalid workflow filter "${filters.workflow}". Choose a configured workflow.`;
   }
   return undefined;
+}
+
+function validTimestamp(value: string | null): boolean {
+  return value !== null && value.length > 0 && Number.isFinite(Date.parse(value));
 }
 
 function RunHistoryRow({ run }: { run: RunSummary }) {
