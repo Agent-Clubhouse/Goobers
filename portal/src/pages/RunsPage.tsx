@@ -1,15 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RunTiming } from "../components/RunTiming";
 import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
+import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
 import { manualRunCommand, statusCommand } from "../manualRunCommand";
 import { useOperationalSnapshot } from "../operationalData";
 import {
   routeHash,
   type Navigate,
   type RunRouteFilters,
-  type RunStatusFilter,
 } from "../routing";
 import { scopeWindowLabel } from "../scope";
 import { type RunsFilter, useRunsHistory } from "../runsHistory";
@@ -45,7 +45,9 @@ export function RunsPage({
   // otherwise bury the runs an operator actually came here to find. The
   // toggle is the explicit escape hatch — it never deletes or hides the
   // underlying run, only this list's default view of it.
-  const [showNoWork, setShowNoWork] = useState(false);
+  const showNoWork = filters?.showNoWork ?? false;
+  const [draft, setDraft] = useState<RunRouteFilters>({ ...filters });
+  useEffect(() => setDraft({ ...filters }), [filters]);
   const scope = { ...filters, showNoWork };
   const pageSize =
     typeof window !== "undefined" && window.innerWidth <= 480
@@ -79,22 +81,7 @@ export function RunsPage({
       filters: Object.values(next).some(Boolean) ? next : undefined,
     });
   };
-  const setStatus = (status: RunStatusFilter) => {
-    updateFilters({ status: status === "active" ? undefined : status });
-  };
-  const setGaggle = (gaggle: string) => {
-    updateFilters({
-      gaggle: gaggle || undefined,
-      workflow: undefined,
-    });
-  };
-  const setWorkflow = (value: string) => {
-    const [gaggle, workflow] = value ? JSON.parse(value) as [string, string] : ["", ""];
-    updateFilters({
-      gaggle: workflow ? gaggle : filters?.gaggle,
-      workflow: workflow || undefined,
-    });
-  };
+  const resetFilters = () => navigate({ page: "runs" });
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -107,27 +94,47 @@ export function RunsPage({
   }
 
   const history = query.state.data;
-
-  return (
-    <>
-      <header className="page-heading">
-        <h1>Runs</h1>
-        <p>
-          {filters
-            ? `Executions behind the selected Insight scope${scopeWindowLabel(filters)}.`
-            : standalone
-              ? "Every execution recorded in this instance, filtered and paginated by the read service."
-              : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
-        </p>
-      </header>
-
+  const filterError = runsFilterError(filters, gaggleOptions, workflowOptions);
+  const activeFilters: ActivePageFilter[] = [
+    ...(filter !== "active" ? [{
+      key: "status",
+      label: `Status: ${filter}`,
+      onRemove: () => updateFilters({ status: undefined }),
+    }] : []),
+    ...(filters?.gaggle ? [{
+      key: "gaggle",
+      label: `Gaggle: ${filters.gaggle}`,
+      onRemove: () => updateFilters({ gaggle: undefined, workflow: undefined }),
+    }] : []),
+    ...(filters?.workflow ? [{
+      key: "workflow",
+      label: `Workflow: ${filters.workflow}`,
+      onRemove: () => updateFilters({ workflow: undefined }),
+    }] : []),
+    ...(showNoWork ? [{
+      key: "no-work",
+      label: "Includes no-work runs",
+      onRemove: () => updateFilters({ showNoWork: undefined }),
+    }] : []),
+  ];
+  const renderFilters = (mobile: boolean) => {
+    const values = mobile ? draft : { ...filters, status: filter, showNoWork };
+    const change = (updates: Partial<RunRouteFilters>) => {
+      if (mobile) {
+        setDraft((current) => ({ ...current, ...updates }));
+      } else {
+        updateFilters(updates);
+      }
+    };
+    const selectedStatus = values.status ?? "active";
+    return (
       <div aria-label="Filter runs" className="filter-bar" role="group">
         {FILTERS.map((option) => (
           <button
-            aria-pressed={filter === option}
-            className={filter === option ? "filter-button filter-button-active" : "filter-button"}
+            aria-pressed={selectedStatus === option}
+            className={selectedStatus === option ? "filter-button filter-button-active" : "filter-button"}
             key={option}
-            onClick={() => setStatus(option)}
+            onClick={() => change({ status: option === "active" ? undefined : option })}
             type="button"
           >
             {option === "all" ? "All runs" : option}
@@ -137,51 +144,87 @@ export function RunsPage({
           <label className="filter-select run-filter-field">
             <span>Gaggle</span>
             <select
-              aria-label="Filter by gaggle"
-              onChange={(event) => setGaggle(event.target.value)}
-              value={filters?.gaggle ?? ""}
+              aria-label={mobile ? "Draft gaggle filter" : "Filter by gaggle"}
+              onChange={(event) => change({
+                gaggle: event.target.value || undefined,
+                workflow: undefined,
+              })}
+              value={values.gaggle ?? ""}
             >
               <option value="">All gaggles</option>
               {gaggleOptions.map((gaggle) => (
-                <option key={gaggle.name} value={gaggle.name}>
-                  {gaggle.label}
-                </option>
+                <option key={gaggle.name} value={gaggle.name}>{gaggle.label}</option>
               ))}
             </select>
           </label>
           <label className="filter-select run-filter-field">
             <span>Workflow</span>
             <select
-              aria-label="Filter by workflow"
-              onChange={(event) => setWorkflow(event.target.value)}
-              value={
-                filters?.workflow
-                  ? JSON.stringify([filters.gaggle ?? "", filters.workflow])
-                  : ""
-              }
+              aria-label={mobile ? "Draft workflow filter" : "Filter by workflow"}
+              onChange={(event) => {
+                const [gaggle, workflow] = event.target.value
+                  ? JSON.parse(event.target.value) as [string, string]
+                  : ["", ""];
+                change({
+                  gaggle: workflow ? gaggle : values.gaggle,
+                  workflow: workflow || undefined,
+                });
+              }}
+              value={values.workflow
+                ? JSON.stringify([values.gaggle ?? "", values.workflow])
+                : ""}
             >
               <option value="">All workflows</option>
-              {workflowOptions.map((workflow) => (
-                <option
-                  key={`${workflow.gaggle}/${workflow.name}`}
-                  value={JSON.stringify([workflow.gaggle, workflow.name])}
-                >
-                  {filters?.gaggle ? workflow.label : `${workflow.gaggle} / ${workflow.label}`}
-                </option>
-              ))}
+              {workflowOptions
+                .filter((workflow) => !values.gaggle || workflow.gaggle === values.gaggle)
+                .map((workflow) => (
+                  <option
+                    key={`${workflow.gaggle}/${workflow.name}`}
+                    value={JSON.stringify([workflow.gaggle, workflow.name])}
+                  >
+                    {values.gaggle ? workflow.label : `${workflow.gaggle} / ${workflow.label}`}
+                  </option>
+                ))}
             </select>
           </label>
           <label className="filter-toggle run-filter-field">
             <input
-              aria-label="Show no-work runs"
-              checked={showNoWork}
-              onChange={(event) => setShowNoWork(event.target.checked)}
+              aria-label={mobile ? "Draft show no-work runs" : "Show no-work runs"}
+              checked={values.showNoWork ?? false}
+              onChange={(event) => change({ showNoWork: event.target.checked || undefined })}
               type="checkbox"
             />
             Show no-work runs
           </label>
         </div>
       </div>
+    );
+  };
+
+  return (
+    <>
+      <PageToolbar
+        activeFilters={activeFilters}
+        count={history.runs.length}
+        description={filters
+          ? `Executions behind the selected Insight scope${scopeWindowLabel(filters)}.`
+          : standalone
+            ? "Every execution recorded in this instance, filtered and paginated by the read service."
+            : "Every execution across workflows and gaggles, filtered and paginated by the daemon."}
+        filterError={filterError}
+        filters={renderFilters}
+        onApplyFilters={() => {
+          const error = runsFilterError(draft, gaggleOptions, workflowOptions, false);
+          if (error) return error;
+          navigate({
+            page: "runs",
+            filters: Object.values(draft).some(Boolean) ? draft : undefined,
+          });
+        }}
+        onOpenFilters={() => setDraft({ ...filters })}
+        onResetFilters={resetFilters}
+        title="Runs"
+      />
 
       {query.state.status === "stale" && query.state.error && (
         <div className="run-stale-state run-stale-state-error" role="alert">
@@ -205,7 +248,7 @@ export function RunsPage({
                 className="text-button"
                 href={routeHash({ page: "runs", filters: { status: "all" } })}
                 onClick={() => {
-                  setShowNoWork(true);
+                  updateFilters({ showNoWork: true });
                 }}
               >
                 Clear all filters
@@ -251,6 +294,30 @@ export function RunsPage({
       </section>
     </>
   );
+}
+
+function runsFilterError(
+  filters: RunRouteFilters | undefined,
+  gaggles: { name: string }[],
+  workflows: { gaggle: string; name: string }[],
+  inspectRoute = true,
+): string | undefined {
+  const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const rawStatus = search.get("status");
+  if (inspectRoute && rawStatus && !FILTERS.includes(rawStatus as RunsFilter)) {
+    return `Invalid status filter "${rawStatus}". Choose active, attention, complete, or all.`;
+  }
+  if (filters?.gaggle && !gaggles.some((option) => option.name === filters.gaggle)) {
+    return `Invalid gaggle filter "${filters.gaggle}". Choose a configured gaggle.`;
+  }
+  if (
+    filters?.workflow &&
+    !workflows.some((option) =>
+      option.name === filters.workflow && (!filters.gaggle || option.gaggle === filters.gaggle))
+  ) {
+    return `Invalid workflow filter "${filters.workflow}". Choose a configured workflow.`;
+  }
+  return undefined;
 }
 
 function RunHistoryRow({ run }: { run: RunSummary }) {

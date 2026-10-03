@@ -88,6 +88,16 @@ describe("definition routing", () => {
     expect(parseRoute(routeHash(route))).toEqual(route);
   });
 
+  it("round-trips the no-work run visibility filter", () => {
+    const route = {
+      page: "runs" as const,
+      filters: { status: "all" as const, showNoWork: true },
+    };
+
+    expect(routeHash(route)).toBe("#/runs?status=all&showNoWork=1");
+    expect(parseRoute(routeHash(route))).toEqual(route);
+  });
+
   it("round-trips shareable run detail state", () => {
     const route = {
       page: "run" as const,

@@ -9,6 +9,7 @@ import type {
 } from "../api/types";
 import { DaemonApiError, MissingCapabilityError } from "../api/errors";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
 import type { Navigate, Route } from "../routing";
 import { routeHash } from "../routing";
 import { formatTimestamp } from "../runDetailData";
@@ -72,7 +73,7 @@ function WorkItemListView({
 }) {
   const [state, setState] = useState<PageState<WorkItemPage>>({ status: "loading" });
   const [searchQuery, setSearchQuery] = useState(query ?? "");
-  const [outcome, setOutcome] = useState<WorkItemOutcome | "all">("all");
+  const [draft, setDraft] = useState<{ kind?: WorkItemKind; gaggle?: string }>({ kind, gaggle });
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
@@ -87,6 +88,7 @@ function WorkItemListView({
 
   useEffect(load, [client, kind]);
   useEffect(() => setSearchQuery(query ?? ""), [query]);
+  useEffect(() => setDraft({ kind, gaggle }), [kind, gaggle]);
 
   if (state.status === "loading") return <DaemonLoadingState standalone={standalone} />;
   if (state.status === "error") {
@@ -114,7 +116,6 @@ function WorkItemListView({
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const items = state.data.items.filter((item) => {
     if (gaggle && item.gaggle !== gaggle) return false;
-    if (outcome !== "all" && item.outcome !== outcome) return false;
     if (!normalizedQuery) return true;
     return [
       workItemLabel(item.repository, item.externalId),
@@ -141,60 +142,82 @@ function WorkItemListView({
     });
     window.history.replaceState(window.history.state, "", hash);
   };
-
-  return (
-    <>
-      <header className="page-heading">
-        <p className="page-kicker">External activity</p>
-        <h1>Work Items</h1>
-        <p>
-          Pull requests, issues, and work items that Goobers changed through a recorded
-          provider operation.
-        </p>
-      </header>
-      <div aria-label="Work item type" className="filter-bar">
+  const filterError = workItemFilterError(kind, gaggle, gaggleOptions);
+  const activeFilters: ActivePageFilter[] = [
+    ...(kind ? [{
+      key: "kind",
+      label: kind === "pr" ? "Pull requests" : "Issues",
+      onRemove: () => updateFilters({ kind: undefined }),
+    }] : []),
+    ...(gaggle ? [{
+      key: "gaggle",
+      label: `Gaggle: ${gaggle}`,
+      onRemove: () => updateFilters({ gaggle: undefined }),
+    }] : []),
+  ];
+  const renderFilters = (mobile: boolean) => {
+    const values = mobile ? draft : { kind, gaggle };
+    const change = (updates: { kind?: WorkItemKind; gaggle?: string }) => {
+      if (mobile) {
+        setDraft((current) => ({ ...current, ...updates }));
+      } else {
+        updateFilters(updates);
+      }
+    };
+    return (
+      <div aria-label="Work item filters" className="filter-bar" role="group">
         {([
           ["all", undefined],
           ["pull requests", "pr"],
           ["issues", "issue"],
         ] as const).map(([label, value]) => (
           <button
-            className={kind === value ? "filter-button filter-button-active" : "filter-button"}
+            aria-pressed={values.kind === value}
+            className={values.kind === value ? "filter-button filter-button-active" : "filter-button"}
             key={label}
-            onClick={() => updateFilters({ kind: value })}
+            onClick={() => change({ kind: value })}
             type="button"
           >
             {label}
           </button>
         ))}
-        <div className="work-item-filter-fields">
-          <label className="filter-select work-item-filter-field">
-            <span>Status</span>
-            <select
-              aria-label="Filter work items by status"
-              onChange={(event) => setOutcome(event.target.value as WorkItemOutcome | "all")}
-              value={outcome}
-            >
-              <option value="all">All statuses</option>
-              <option value="done">Done</option>
-              <option value="in-progress">In progress</option>
-              <option value="bad-terminal">Bad terminal</option>
-            </select>
-          </label>
-          <label className="filter-select work-item-filter-field">
-            <span>Gaggle</span>
-            <select
-              aria-label="Filter work items by gaggle"
-              onChange={(event) => updateFilters({ gaggle: event.target.value || undefined })}
-              value={gaggle ?? ""}
-            >
-              <option value="">All gaggles</option>
-              {gaggleOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
-              ))}
-            </select>
-          </label>
-          <label className="filter-search work-item-filter-field">
+        <label className="filter-select work-item-filter-field">
+          <span>Gaggle</span>
+          <select
+            aria-label={mobile ? "Draft work item gaggle filter" : "Filter work items by gaggle"}
+            onChange={(event) => change({ gaggle: event.target.value || undefined })}
+            value={values.gaggle ?? ""}
+          >
+            <option value="">All gaggles</option>
+            {gaggleOptions.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <PageToolbar
+        activeFilters={activeFilters}
+        count={items.length}
+        description="Pull requests, issues, and work items changed through a recorded provider operation."
+        filterError={filterError}
+        filters={renderFilters}
+        onApplyFilters={() => {
+          const error = workItemFilterError(draft.kind, draft.gaggle, gaggleOptions, false);
+          if (error) return error;
+          updateFilters(draft);
+        }}
+        onOpenFilters={() => setDraft({ kind, gaggle })}
+        onResetFilters={() => navigate({
+          page: "work-items",
+          query: searchQuery || undefined,
+        })}
+        search={
+          <label className="filter-search page-toolbar-search">
             <span>Find work item</span>
             <input
               aria-label="Search work items"
@@ -204,8 +227,9 @@ function WorkItemListView({
               value={searchQuery}
             />
           </label>
-        </div>
-      </div>
+        }
+        title="Work Items"
+      />
       <section className="content-section">
         {items.length === 0 ? (
           <p className="inline-empty">
@@ -290,6 +314,26 @@ function WorkItemListView({
       </section>
     </>
   );
+}
+
+function workItemFilterError(
+  kind: WorkItemKind | undefined,
+  gaggle: string | undefined,
+  gaggles: string[],
+  inspectRoute = true,
+): string | undefined {
+  const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const rawKind = search.get("kind");
+  if (inspectRoute && rawKind && rawKind !== "pr" && rawKind !== "issue") {
+    return `Invalid work item type "${rawKind}". Choose pull requests or issues.`;
+  }
+  if (kind && kind !== "pr" && kind !== "issue") {
+    return `Invalid work item type "${kind}". Choose pull requests or issues.`;
+  }
+  if (gaggle && !gaggles.includes(gaggle)) {
+    return `Invalid gaggle filter "${gaggle}". Choose a recorded gaggle.`;
+  }
+  return undefined;
 }
 
 function WorkItemDetailView({
