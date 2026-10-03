@@ -326,28 +326,47 @@ func (b *builder) linkAgent(agent journal.AgentProvenance, latest map[string]jou
 // implies when no transcript span breaks it down per call.
 func (b *builder) addAgentModelNode(agent journal.AgentProvenance, agentNodeID string) {
 	id := "model:" + agent.ID
-	attributes := map[string]string{}
+	attributes := modelUsageAttributes(agent.ResolvedModel, agent.Usage.InputTokens, agent.Usage.OutputTokens)
 	if agent.RequestedModel != "" {
 		attributes["requestedModel"] = agent.RequestedModel
 	}
-	if agent.Usage.InputTokens != nil {
-		attributes["inputTokens"] = strconv.FormatInt(*agent.Usage.InputTokens, 10)
+	provenance := provenanceOf(agent.ResolvedModel != "")
+	b.addModelInvocationNode(
+		id, agent.ResolvedModel, agent.Stage, agent.Attempt, attributes, provenance,
+		"subagent recorded no resolved model", agentNodeID, provenance,
+	)
+}
+
+func modelUsageAttributes(model string, inputTokens, outputTokens *int64) map[string]string {
+	attributes := map[string]string{}
+	if model != "" {
+		attributes["model"] = model
 	}
-	if agent.Usage.OutputTokens != nil {
-		attributes["outputTokens"] = strconv.FormatInt(*agent.Usage.OutputTokens, 10)
+	if inputTokens != nil {
+		attributes["inputTokens"] = strconv.FormatInt(*inputTokens, 10)
 	}
-	recorded := agent.ResolvedModel != ""
-	if recorded {
-		attributes["model"] = agent.ResolvedModel
+	if outputTokens != nil {
+		attributes["outputTokens"] = strconv.FormatInt(*outputTokens, 10)
 	}
+	return attributes
+}
+
+func (b *builder) addModelInvocationNode(
+	id, label, stage string,
+	attempt int,
+	attributes map[string]string,
+	provenance Provenance,
+	gapMessage, ownerID string,
+	edgeProvenance Provenance,
+) {
 	b.addNode(Node{
-		ID: id, Kind: KindModelInvocation, Label: agent.ResolvedModel, Stage: agent.Stage,
-		Attempt: agent.Attempt, Provenance: provenanceOf(recorded), Attributes: attributes,
+		ID: id, Kind: KindModelInvocation, Label: label, Stage: stage,
+		Attempt: attempt, Provenance: provenance, Attributes: attributes,
 	})
-	if !recorded {
-		b.gap(id, KindModelInvocation, "subagent recorded no resolved model")
+	if provenance == ProvenanceUnknown {
+		b.gap(id, KindModelInvocation, gapMessage)
 	}
-	b.addEdge(agentNodeID, id, EdgeContains, provenanceOf(recorded))
+	b.addEdge(ownerID, id, EdgeContains, edgeProvenance)
 }
 
 func (b *builder) hasSpan(agentID string) bool {
@@ -457,27 +476,17 @@ func (b *builder) addTranscript(data []byte, ownerID, spanDigest string, ownerKn
 
 func (b *builder) addModelInvocation(record genaiRecord, ownerID, spanDigest string, ownerProvenance Provenance, event journal.Event, index int) string {
 	id := spanScopedID("model", ownerID, spanDigest, index)
-	attributes := map[string]string{}
-	if record.Model != "" {
-		attributes["model"] = record.Model
-	}
+	var inputTokens, outputTokens *int64
 	if record.Usage != nil {
-		if record.Usage.InputTokens != nil {
-			attributes["inputTokens"] = strconv.FormatInt(*record.Usage.InputTokens, 10)
-		}
-		if record.Usage.OutputTokens != nil {
-			attributes["outputTokens"] = strconv.FormatInt(*record.Usage.OutputTokens, 10)
-		}
+		inputTokens = record.Usage.InputTokens
+		outputTokens = record.Usage.OutputTokens
 	}
-	recorded := record.Model != ""
-	b.addNode(Node{
-		ID: id, Kind: KindModelInvocation, Label: record.Model, Stage: event.Stage,
-		Attempt: event.Attempt, Provenance: provenanceOf(recorded), Attributes: attributes,
-	})
-	if !recorded {
-		b.gap(id, KindModelInvocation, "model invocation names no model")
-	}
-	b.addEdge(ownerID, id, EdgeContains, ownerProvenance)
+	b.addModelInvocationNode(
+		id, record.Model, event.Stage, event.Attempt,
+		modelUsageAttributes(record.Model, inputTokens, outputTokens),
+		provenanceOf(record.Model != ""), "model invocation names no model",
+		ownerID, ownerProvenance,
+	)
 	return id
 }
 
