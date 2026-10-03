@@ -198,18 +198,18 @@ func TestRunDelegatedSynchronousWaitsPastQueuedAckResponseWindow(t *testing.T) {
 	var hookMu sync.Mutex
 	hookRequestID := ""
 	hookEnabled := false
-	finalWaitClockStarted := false
+	finalWaitClockTicks := 0
 	delegationNow = func() time.Time {
 		hookMu.Lock()
 		enabled := hookEnabled
-		if enabled && !finalWaitClockStarted {
-			finalWaitClockStarted = true
-			hookMu.Unlock()
-			return now
+		tick := finalWaitClockTicks
+		if enabled {
+			finalWaitClockTicks++
+			tick = finalWaitClockTicks
 		}
 		hookMu.Unlock()
 		if enabled {
-			return now.Add(triggerResponseWait() + time.Millisecond)
+			return now.Add(time.Duration(tick) * (triggerResponseWait() + time.Millisecond))
 		}
 		return now
 	}
