@@ -602,7 +602,7 @@ function InstanceSummaryPanel({
     () =>
       diagnosticsRequireAttention ||
       typeof window.matchMedia !== "function" ||
-      !window.matchMedia("(max-width: 480px)").matches,
+      !window.matchMedia("(max-width: 1024px)").matches,
   );
   const daemonTitle = standalone
     ? overview.health.ready

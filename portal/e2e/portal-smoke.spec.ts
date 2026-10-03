@@ -671,14 +671,10 @@ test("restores the originating instance summary focus and scroll", async ({ page
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/overview");
   const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.scrollIntoViewIfNeeded();
   await origin.focus();
-  await page.locator(".portal-main").evaluate((element) => {
-    const spacer = document.createElement("div");
-    spacer.style.height = "600px";
-    element.append(spacer);
-    element.scrollTop = 140;
-  });
   const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
 
   await origin.evaluate((link) => (link as HTMLAnchorElement).click());
   await expect(

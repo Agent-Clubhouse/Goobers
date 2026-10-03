@@ -9352,13 +9352,45 @@ code,
   }
 }
 
-@media (min-width: 481px) {
+@media (min-width: 1025px) {
   .overview-diagnostics > summary {
     display: none;
   }
 
   .overview-diagnostics:not([open]) > .overview-diagnostics-content {
     display: block;
+  }
+}
+
+@media (max-width: 1024px) {
+  .overview-page > .page-heading {
+    order: 0;
+  }
+
+  .overview-notices {
+    order: 1;
+  }
+
+  .overview-page > .attention-section {
+    margin-bottom: 20px;
+    order: 2;
+  }
+
+  .overview-activity {
+    order: 3;
+  }
+
+  .overview-activity > .content-section:first-child,
+  .overview-activity > .empty-state {
+    margin-top: 0;
+  }
+
+  .overview-page > .instance-summary-card {
+    order: 4;
+  }
+
+  .overview-configuration {
+    order: 5;
   }
 }
 
