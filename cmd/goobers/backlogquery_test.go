@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -536,6 +537,139 @@ func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
 	if !strings.Contains(string(data), `"outcome":"contention"`) || !strings.Contains(string(data), `"outcome":"success"`) {
 		t.Fatalf("claim lifecycle telemetry did not distinguish contention and reconciliation: %s", data)
 	}
+}
+
+func TestBacklogQueryRetiresOwnAgedOutProviderClaimHolder(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Aged-out stranded item", "goobers:approved")
+	t.Setenv(executor.InstanceIDEnvVar, testOwnInstanceID)
+	server.addCommentAtAs(7, server.authenticatedLogin,
+		providerClaimBreadcrumbForInstance(t, "agedoutholder", testOwnInstanceID),
+		time.Now().Add(-(localscheduler.ClaimHistoryTTL + time.Hour)))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recoveringrun")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("aged-out claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !providerReleasePosted(server, 7, "agedoutholder") {
+		t.Fatal("aged-out own provider claim was not released")
+	}
+}
+
+func TestBacklogQueryRetiresTerminalProviderClaimHolder(t *testing.T) {
+	root := initDemo(t)
+	layout := layoutFor(root)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{RunID: "terminalholder", Workflow: "implementation"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseFailed)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Terminal holder item", "goobers:approved")
+	t.Setenv(executor.InstanceIDEnvVar, testOwnInstanceID)
+	server.addCommentAtAs(7, server.authenticatedLogin,
+		providerClaimBreadcrumbForInstance(t, "terminalholder", testOwnInstanceID), time.Now())
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recoveringrun")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("terminal holder claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !providerReleasePosted(server, 7, "terminalholder") {
+		t.Fatal("terminal provider claim holder was not released")
+	}
+}
+
+func TestBacklogQueryDoesNotRetireLiveProviderClaimHolder(t *testing.T) {
+	root := initDemo(t)
+	layout := layoutFor(root)
+	run, err := journal.Create(layout.RunsDir(), journal.RunIdentity{RunID: "liveholder", Workflow: "implementation"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Live holder item", "goobers:approved")
+	t.Setenv(executor.InstanceIDEnvVar, testOwnInstanceID)
+	server.addCommentAtAs(7, server.authenticatedLogin,
+		providerClaimBreadcrumbForInstance(t, "liveholder", testOwnInstanceID),
+		time.Now().Add(-(localscheduler.ClaimHistoryTTL + time.Hour)))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "secondrun")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") {
+		t.Fatalf("live holder claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if providerReleasePosted(server, 7, "liveholder") {
+		t.Fatal("live provider claim holder was released")
+	}
+}
+
+func TestBacklogQueryDoesNotRetireForeignInstanceProviderClaim(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Foreign instance item", "goobers:approved")
+	t.Setenv(executor.InstanceIDEnvVar, testOwnInstanceID)
+	server.addCommentAtAs(7, server.authenticatedLogin,
+		providerClaimBreadcrumbForInstance(t, "foreignholder", "ffffffffffffffffffffffffffffffff"),
+		time.Now().Add(-(localscheduler.ClaimHistoryTTL + time.Hour)))
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "secondrun")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "no work:") {
+		t.Fatalf("foreign holder claim: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if providerReleasePosted(server, 7, "foreignholder") {
+		t.Fatal("foreign instance provider claim was released")
+	}
+}
+
+func providerClaimBreadcrumbForInstance(t *testing.T, runID, instanceID string) string {
+	t.Helper()
+	body, err := providers.StampAttribution(
+		"goobers-claim: run="+runID+"\n\nClaimed by Goobers run `"+runID+"` for exactly-once processing.",
+		providers.Attribution{
+			InstanceID: instanceID, Gaggle: "goobers", Workflow: "implementation",
+			Task: "claim", Goober: "deterministic", Run: runID,
+		},
+		"claim",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func providerReleasePosted(server *fakeGitHubServer, issue int, runID string) bool {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for _, comment := range server.issues[issue].comments {
+		if strings.Contains(comment, "goobers-claim-release: run="+runID) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestBacklogQueryPlainScanReportsNoWorkForEmptyPumpTick locks in the #233

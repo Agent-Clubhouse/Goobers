@@ -58,6 +58,7 @@ type releaseClaimProtocolHooks struct {
 	postRelease              func(context.Context, string) error
 	hasLabel                 func(WorkItem, string) bool
 	removeLabel              func(context.Context, string) (WorkItem, error)
+	restoreLabel             func(context.Context, string) (WorkItem, error)
 	finishWithoutLabel       func(context.Context, WorkItem) (WorkItem, error)
 	readItemBeforeBreadcrumb bool
 }
@@ -70,6 +71,9 @@ func releaseClaimWithProtocol(ctx context.Context, req ClaimWorkItemRequest, hoo
 	winner, claimed, err := hooks.winner(ctx)
 	if err != nil {
 		return WorkItem{}, WorkItem{}, "", err
+	}
+	if claimed && req.ExpectedClaimRunID != "" && winner != req.ExpectedClaimRunID {
+		return WorkItem{}, WorkItem{}, "", fmt.Errorf("provider claim is held by run %q, not expected run %q", winner, req.ExpectedClaimRunID)
 	}
 	if claimed && winner != req.RunID && !req.LedgerAuthorized {
 		return WorkItem{}, WorkItem{}, "", fmt.Errorf("provider claim is held by run %q", winner)
@@ -95,6 +99,19 @@ func releaseClaimWithProtocol(ctx context.Context, req ClaimWorkItemRequest, hoo
 			return WorkItem{}, WorkItem{}, "", err
 		}
 	}
+	if req.ExpectedClaimRunID != "" {
+		if current, currentClaimed, err := hooks.winner(ctx); err != nil {
+			return WorkItem{}, WorkItem{}, "", err
+		} else if currentClaimed {
+			final, err := hooks.getItem(ctx)
+			if err != nil {
+				return WorkItem{}, WorkItem{}, "", err
+			}
+			return before, final, releasedRunID, nil
+		} else if current != "" {
+			return WorkItem{}, WorkItem{}, "", fmt.Errorf("provider claim owner changed to run %q after release", current)
+		}
+	}
 	if !hooks.hasLabel(before, label) {
 		if hooks.finishWithoutLabel != nil {
 			final, err := hooks.finishWithoutLabel(ctx, before)
@@ -108,6 +125,16 @@ func releaseClaimWithProtocol(ctx context.Context, req ClaimWorkItemRequest, hoo
 	final, err := hooks.removeLabel(ctx, label)
 	if err != nil {
 		return WorkItem{}, WorkItem{}, "", err
+	}
+	if req.ExpectedClaimRunID != "" && hooks.restoreLabel != nil {
+		if _, currentClaimed, err := hooks.winner(ctx); err != nil {
+			return WorkItem{}, WorkItem{}, "", err
+		} else if currentClaimed {
+			final, err = hooks.restoreLabel(ctx, label)
+			if err != nil {
+				return WorkItem{}, WorkItem{}, "", err
+			}
+		}
 	}
 	return before, final, releasedRunID, nil
 }
