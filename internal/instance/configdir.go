@@ -4,17 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
-	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/configtree"
-	"github.com/goobers/goobers/internal/gooberassets"
-	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/yamldoc"
 )
@@ -159,41 +154,13 @@ type rawDoc struct {
 // readDocs walks root and returns every YAML document with its kind/name.
 func readDocs(root string) ([]rawDoc, error) {
 	var docs []rawDoc
-
-	// Custom skip predicate for special directories
-	skipPredicate := func(path string, entry fs.DirEntry) bool {
-		return configtree.IsGaggleSkillsDir(root, path) || gooberassets.IsSourceDir(path)
-	}
-
-	opts := mcpio.DefaultWalkFilesOptions()
-	opts.SkipDirPredicate = skipPredicate
-	opts.SkipSymlinkEntries = false
-
-	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
-		return mcpio.WalkFiles(tree, func(path string, entry fs.DirEntry) error {
-			// Only process YAML files
-			ext := strings.ToLower(filepath.Ext(path))
-			if ext != ".yaml" && ext != ".yml" {
-				return nil
-			}
-
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-
-			parsedDocs := yamldoc.SplitDocuments(raw)
-			for _, pd := range parsedDocs {
-				rel, _ := filepath.Rel(root, path)
-				rel = filepath.ToSlash(rel)
-				docs = append(docs, rawDoc{kind: pd.Meta.Kind, name: pd.Meta.Name, file: rel, yaml: pd.Content})
-			}
-			return nil
-		}, opts)
+	err := configtree.WalkRawYAMLDocs(root, func(_ string, rel string, doc yamldoc.ParsedDoc) error {
+		rel = filepath.ToSlash(rel)
+		docs = append(docs, rawDoc{kind: doc.Meta.Kind, name: doc.Meta.Name, file: rel, yaml: doc.Content})
+		return nil
 	})
-
 	if err != nil {
-		return nil, fmt.Errorf("walk %s: %w", root, err)
+		return nil, err
 	}
 	return docs, nil
 }
