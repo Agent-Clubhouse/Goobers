@@ -643,140 +643,97 @@ func TestAutomatedInputsRejectsReservedOutputKeys(t *testing.T) {
 }
 
 func TestOutputEqualsRequiresParams(t *testing.T) {
-	if _, err := evalCheck(t, "output-equals", nil, nil); err == nil {
-		t.Fatal("want error for missing params.key/equals")
+	tests := []struct {
+		name    string
+		params  map[string]string
+		wantErr string
+	}{
+		{"missing key", nil, `gate: check "output-equals" requires params.key`},
+		{"empty key", map[string]string{"key": "", "equals": "main"}, `gate: check "output-equals" requires params.key`},
+		{"missing equals", map[string]string{"key": "branch"}, `gate: check "output-equals" requires params.equals`},
 	}
-	if _, err := evalCheck(t, "output-equals", map[string]string{"key": "k"}, nil); err == nil {
-		t.Fatal("want error for missing params.equals")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := evalCheck(t, "output-equals", tt.params, nil)
+			if err == nil || err.Error() != tt.wantErr {
+				t.Fatalf("error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 
 func TestOutputEquals(t *testing.T) {
-	out, err := evalCheck(t, "output-equals", map[string]string{"key": "branch", "equals": "main"}, map[string]interface{}{"branch": "main"})
-	if err != nil || out != OutcomePass {
-		t.Fatalf("got %q, %v; want pass", out, err)
-	}
-	out, err = evalCheck(t, "output-equals", map[string]string{"key": "branch", "equals": "main"}, map[string]interface{}{"branch": "dev"})
-	if err != nil || out != OutcomeFail {
-		t.Fatalf("got %q, %v; want fail", out, err)
-	}
-}
-
-func TestOutputNumericGTE(t *testing.T) {
-	cases := []struct {
-		name      string
-		value     interface{}
-		threshold string
-		want      string
+	tests := []struct {
+		name   string
+		inputs map[string]interface{}
+		equals string
+		want   string
 	}{
-		{"float above", 85.5, "80", OutcomePass},
-		{"float below", 70.0, "80", OutcomeFail},
-		{"int equal", 80, "80", OutcomePass},
-		{"string numeric", "81", "80", OutcomePass},
+		{"equal string", map[string]interface{}{"branch": "main"}, "main", OutcomePass},
+		{"different string", map[string]interface{}{"branch": "dev"}, "main", OutcomeFail},
+		{"stringified integer", map[string]interface{}{"branch": 12}, "12", OutcomePass},
+		{"missing output stringifies empty", nil, "", OutcomePass},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := evalCheck(t, "output-numeric-gte", map[string]string{"key": "coverage", "threshold": tc.threshold}, map[string]interface{}{"coverage": tc.value})
-			if err != nil || out != tc.want {
-				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := evalCheck(t, "output-equals", map[string]string{"key": "branch", "equals": tt.equals}, tt.inputs)
+			if err != nil || out != tt.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tt.want)
 			}
 		})
 	}
 }
 
-func TestOutputNumericGTEErrorsOnBadInput(t *testing.T) {
-	if _, err := evalCheck(t, "output-numeric-gte", map[string]string{"key": "coverage", "threshold": "not-a-number"}, map[string]interface{}{"coverage": 80.0}); err == nil {
-		t.Fatal("want error for non-numeric threshold")
-	}
-	if _, err := evalCheck(t, "output-numeric-gte", map[string]string{"key": "coverage", "threshold": "80"}, map[string]interface{}{"coverage": "nope"}); err == nil {
-		t.Fatal("want error for non-numeric input value")
-	}
-	if _, err := evalCheck(t, "output-numeric-gte", map[string]string{"key": "coverage", "threshold": "80"}, nil); err == nil {
-		t.Fatal("want error for missing input value")
-	}
-}
-
-func TestOutputNumericLTE(t *testing.T) {
-	cases := []struct {
-		name  string
+func TestNumericOutputChecks(t *testing.T) {
+	tests := []struct {
+		check string
 		value interface{}
 		want  string
 	}{
-		{"float below", 70.0, OutcomePass},
-		{"int equal", 80, OutcomePass},
-		{"string above", "81", OutcomeFail},
+		{"output-numeric-gte", 79.5, OutcomeFail},
+		{"output-numeric-gte", 80, OutcomePass},
+		{"output-numeric-gte", "81", OutcomePass},
+		{"output-numeric-lte", 79.5, OutcomePass},
+		{"output-numeric-lte", 80, OutcomePass},
+		{"output-numeric-lte", "81", OutcomeFail},
+		{"output-numeric-lt", 79.5, OutcomePass},
+		{"output-numeric-lt", 80, OutcomeFail},
+		{"output-numeric-lt", "81", OutcomeFail},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := evalCheck(t, "output-numeric-lte", map[string]string{"key": "changedFiles", "threshold": "80"}, map[string]interface{}{"changedFiles": tc.value})
-			if err != nil || out != tc.want {
-				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s/%v", tt.check, tt.value), func(t *testing.T) {
+			out, err := evalCheck(t, tt.check, map[string]string{"key": "value", "threshold": "80"}, map[string]interface{}{"value": tt.value})
+			if err != nil || out != tt.want {
+				t.Fatalf("got %q, %v; want %q", out, err, tt.want)
 			}
 		})
 	}
 }
 
-func TestOutputNumericLTEErrorsOnBadInput(t *testing.T) {
-	params := map[string]string{"key": "changedFiles", "threshold": "80"}
-	cases := []struct {
-		name   string
-		params map[string]string
-		inputs map[string]interface{}
-	}{
-		{"missing key param", map[string]string{"threshold": "80"}, nil},
-		{"missing threshold param", map[string]string{"key": "changedFiles"}, nil},
-		{"non-numeric threshold", map[string]string{"key": "changedFiles", "threshold": "many"}, map[string]interface{}{"changedFiles": 10}},
-		{"non-numeric input", params, map[string]interface{}{"changedFiles": "many"}},
-		{"unsupported input type", params, map[string]interface{}{"changedFiles": true}},
-		{"missing input", params, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := evalCheck(t, "output-numeric-lte", tc.params, tc.inputs); err == nil {
-				t.Fatal("want error")
+func TestNumericOutputCheckErrors(t *testing.T) {
+	for _, check := range []string{"output-numeric-gte", "output-numeric-lte", "output-numeric-lt"} {
+		t.Run(check, func(t *testing.T) {
+			tests := []struct {
+				name    string
+				params  map[string]string
+				inputs  map[string]interface{}
+				wantErr string
+			}{
+				{"missing key", map[string]string{"threshold": "80"}, nil, fmt.Sprintf(`gate: check %q requires params.key`, check)},
+				{"empty key", map[string]string{"key": "", "threshold": "80"}, nil, fmt.Sprintf(`gate: check %q requires params.key`, check)},
+				{"missing threshold", map[string]string{"key": "value"}, nil, fmt.Sprintf(`gate: check %q requires params.threshold`, check)},
+				{"bad threshold", map[string]string{"key": "value", "threshold": "many"}, map[string]interface{}{"value": 80}, fmt.Sprintf(`gate: check %q: params.threshold "many": strconv.ParseFloat: parsing "many": invalid syntax`, check)},
+				{"bad numeric output", map[string]string{"key": "value", "threshold": "80"}, map[string]interface{}{"value": "many"}, fmt.Sprintf(`gate: check %q: input "value" = "many" is not numeric: strconv.ParseFloat: parsing "many": invalid syntax`, check)},
+				{"non-numeric output", map[string]string{"key": "value", "threshold": "80"}, map[string]interface{}{"value": true}, fmt.Sprintf(`gate: check %q: input "value" has unsupported type bool`, check)},
+				{"missing output", map[string]string{"key": "value", "threshold": "80"}, nil, fmt.Sprintf(`gate: check %q: input "value" is not set`, check)},
 			}
-		})
-	}
-}
-
-func TestOutputNumericLT(t *testing.T) {
-	cases := []struct {
-		name  string
-		value interface{}
-		want  string
-	}{
-		{"float below", 79.5, OutcomePass},
-		{"int equal", 80, OutcomeFail},
-		{"string above", "81", OutcomeFail},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := evalCheck(t, "output-numeric-lt", map[string]string{"key": "warnings", "threshold": "80"}, map[string]interface{}{"warnings": tc.value})
-			if err != nil || out != tc.want {
-				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
-			}
-		})
-	}
-}
-
-func TestOutputNumericLTErrorsOnBadInput(t *testing.T) {
-	params := map[string]string{"key": "warnings", "threshold": "80"}
-	cases := []struct {
-		name   string
-		params map[string]string
-		inputs map[string]interface{}
-	}{
-		{"missing key param", map[string]string{"threshold": "80"}, nil},
-		{"missing threshold param", map[string]string{"key": "warnings"}, nil},
-		{"non-numeric threshold", map[string]string{"key": "warnings", "threshold": "many"}, map[string]interface{}{"warnings": 10}},
-		{"non-numeric input", params, map[string]interface{}{"warnings": "many"}},
-		{"unsupported input type", params, map[string]interface{}{"warnings": true}},
-		{"missing input", params, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := evalCheck(t, "output-numeric-lt", tc.params, tc.inputs); err == nil {
-				t.Fatal("want error")
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					_, err := evalCheck(t, check, tt.params, tt.inputs)
+					if err == nil || err.Error() != tt.wantErr {
+						t.Fatalf("error = %v, want %q", err, tt.wantErr)
+					}
+				})
 			}
 		})
 	}
