@@ -3115,6 +3115,126 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestRunnerConfigHarnessArgValidationErrors(t *testing.T) {
+	seventeenArgs := make([]string, 17)
+	for i := range seventeenArgs {
+		seventeenArgs[i] = "{sessionId}"
+	}
+
+	tests := []struct {
+		name string
+		cfg  RunnerConfig
+		run  func(RunnerConfig) error
+		want string
+	}{
+		{
+			name: "session unknown harness",
+			cfg:  RunnerConfig{HarnessSessionArgs: map[string][]string{"unknown": {"{sessionId}"}}},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["unknown"]: unknown harness (known: claude-code, codex, copilot)`,
+		},
+		{
+			name: "session non-copilot harness",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"codex": {"codex"}},
+				HarnessSessionArgs: map[string][]string{"codex": {"{sessionId}"}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["codex"]: only the copilot harness supports launcher session arguments`,
+		},
+		{
+			name: "session missing command",
+			cfg:  RunnerConfig{HarnessSessionArgs: map[string][]string{"copilot": {"{sessionId}"}}},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"]: requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "session count bounds",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": seventeenArgs},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"]: must contain 1 to 16 arguments`,
+		},
+		{
+			name: "session invalid argument",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"{sessionId}", ""}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"][1]: invalid session argument`,
+		},
+		{
+			name: "session unsupported braces",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"{other}"}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"][0]: only {sessionId} is supported`,
+		},
+		{
+			name: "session missing placeholder",
+			cfg: RunnerConfig{
+				HarnessCommand:     map[string][]string{"copilot": {"copilot"}},
+				HarnessSessionArgs: map[string][]string{"copilot": {"fixed"}},
+			},
+			run:  RunnerConfig.validateHarnessSessionArgs,
+			want: `runner.harnessSessionArgs["copilot"]: at least one argument must contain {sessionId}`,
+		},
+		{
+			name: "preflight unknown harness",
+			cfg:  RunnerConfig{HarnessPreflightArgs: map[string][]string{"unknown": {"check"}}},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["unknown"]: unknown harness (known: claude-code, codex, copilot)`,
+		},
+		{
+			name: "preflight non-copilot harness",
+			cfg: RunnerConfig{
+				HarnessCommand:       map[string][]string{"codex": {"codex"}},
+				HarnessPreflightArgs: map[string][]string{"codex": {"check"}},
+			},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["codex"]: only the copilot harness supports preflight arguments`,
+		},
+		{
+			name: "preflight missing command",
+			cfg:  RunnerConfig{HarnessPreflightArgs: map[string][]string{"copilot": {"check"}}},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["copilot"]: requires runner.harnessCommand["copilot"]`,
+		},
+		{
+			name: "preflight count bounds",
+			cfg: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": seventeenArgs},
+			},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["copilot"]: must contain 1 to 16 arguments`,
+		},
+		{
+			name: "preflight invalid argument",
+			cfg: RunnerConfig{
+				HarnessCommand:       map[string][]string{"copilot": {"copilot"}},
+				HarnessPreflightArgs: map[string][]string{"copilot": {""}},
+			},
+			run:  RunnerConfig.validateHarnessPreflightArgs,
+			want: `runner.harnessPreflightArgs["copilot"][0]: invalid preflight argument`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run(tt.cfg)
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("validation error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // TestConfigValidateDaemonIdentity covers #1780's DaemonIdentityConfig: the
 // same exactly-one-kind, kind-specific-required-fields, fail-closed-inline-
 // secret discipline RepoAuthConfig already enforces for repo-level auth.

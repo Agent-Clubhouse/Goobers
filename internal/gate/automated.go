@@ -139,6 +139,28 @@ func getCompiledRegex(pattern string) (*regexp.Regexp, error) {
 // string the gate's Branches map declares).
 type CheckFunc func(inputs map[string]interface{}, params map[string]string) (outcome string, err error)
 
+func numericOutputCheck(name string, cmp func(got, threshold float64) bool) CheckFunc {
+	return func(inputs map[string]interface{}, params map[string]string) (string, error) {
+		key, ok := params["key"]
+		if !ok || key == "" {
+			return "", fmt.Errorf("gate: check %q requires params.key", name)
+		}
+		thresholdStr, ok := params["threshold"]
+		if !ok {
+			return "", fmt.Errorf("gate: check %q requires params.threshold", name)
+		}
+		threshold, err := strconv.ParseFloat(thresholdStr, 64)
+		if err != nil {
+			return "", fmt.Errorf("gate: check %q: params.threshold %q: %w", name, thresholdStr, err)
+		}
+		got, err := numericField(inputs, key)
+		if err != nil {
+			return "", fmt.Errorf("gate: check %q: %w", name, err)
+		}
+		return boolOutcome(cmp(got, threshold)), nil
+	}
+}
+
 // AutomatedInputs flattens the subject result into the scalar input contract
 // shared by every runner.
 func AutomatedInputs(subject apiv1.ResultEnvelope) (map[string]interface{}, error) {
@@ -214,69 +236,21 @@ func DefaultChecks() map[string]CheckFunc {
 		// Inputs[Params["key"]] is >= Params["threshold"]. Covers "coverage
 		// >= X"-style checks. Both params required; non-numeric values error
 		// rather than silently failing closed on a misconfigured gate.
-		"output-numeric-gte": func(inputs map[string]interface{}, params map[string]string) (string, error) {
-			key, ok := params["key"]
-			if !ok || key == "" {
-				return "", fmt.Errorf("gate: check %q requires params.key", "output-numeric-gte")
-			}
-			thresholdStr, ok := params["threshold"]
-			if !ok {
-				return "", fmt.Errorf("gate: check %q requires params.threshold", "output-numeric-gte")
-			}
-			threshold, err := strconv.ParseFloat(thresholdStr, 64)
-			if err != nil {
-				return "", fmt.Errorf("gate: check %q: params.threshold %q: %w", "output-numeric-gte", thresholdStr, err)
-			}
-			got, err := numericField(inputs, key)
-			if err != nil {
-				return "", fmt.Errorf("gate: check %q: %w", "output-numeric-gte", err)
-			}
-			return boolOutcome(got >= threshold), nil
-		},
+		"output-numeric-gte": numericOutputCheck("output-numeric-gte", func(got, threshold float64) bool {
+			return got >= threshold
+		}),
 		// "output-numeric-lte": pass iff the numeric value of
 		// Inputs[Params["key"]] is <= Params["threshold"]. Both params
 		// required; non-numeric values error.
-		"output-numeric-lte": func(inputs map[string]interface{}, params map[string]string) (string, error) {
-			key, ok := params["key"]
-			if !ok || key == "" {
-				return "", fmt.Errorf("gate: check %q requires params.key", "output-numeric-lte")
-			}
-			thresholdStr, ok := params["threshold"]
-			if !ok {
-				return "", fmt.Errorf("gate: check %q requires params.threshold", "output-numeric-lte")
-			}
-			threshold, err := strconv.ParseFloat(thresholdStr, 64)
-			if err != nil {
-				return "", fmt.Errorf("gate: check %q: params.threshold %q: %w", "output-numeric-lte", thresholdStr, err)
-			}
-			got, err := numericField(inputs, key)
-			if err != nil {
-				return "", fmt.Errorf("gate: check %q: %w", "output-numeric-lte", err)
-			}
-			return boolOutcome(got <= threshold), nil
-		},
+		"output-numeric-lte": numericOutputCheck("output-numeric-lte", func(got, threshold float64) bool {
+			return got <= threshold
+		}),
 		// "output-numeric-lt": pass iff the numeric value of
 		// Inputs[Params["key"]] is < Params["threshold"]. Both params
 		// required; non-numeric values error.
-		"output-numeric-lt": func(inputs map[string]interface{}, params map[string]string) (string, error) {
-			key, ok := params["key"]
-			if !ok || key == "" {
-				return "", fmt.Errorf("gate: check %q requires params.key", "output-numeric-lt")
-			}
-			thresholdStr, ok := params["threshold"]
-			if !ok {
-				return "", fmt.Errorf("gate: check %q requires params.threshold", "output-numeric-lt")
-			}
-			threshold, err := strconv.ParseFloat(thresholdStr, 64)
-			if err != nil {
-				return "", fmt.Errorf("gate: check %q: params.threshold %q: %w", "output-numeric-lt", thresholdStr, err)
-			}
-			got, err := numericField(inputs, key)
-			if err != nil {
-				return "", fmt.Errorf("gate: check %q: %w", "output-numeric-lt", err)
-			}
-			return boolOutcome(got < threshold), nil
-		},
+		"output-numeric-lt": numericOutputCheck("output-numeric-lt", func(got, threshold float64) bool {
+			return got < threshold
+		}),
 		// "output-not-equals": pass iff Inputs[Params["key"]] stringifies
 		// to a value other than Params["equals"]. Both params required.
 		"output-not-equals": func(inputs map[string]interface{}, params map[string]string) (string, error) {
