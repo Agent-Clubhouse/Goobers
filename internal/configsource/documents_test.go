@@ -1,4 +1,4 @@
-package configtree
+package configsource
 
 import (
 	"errors"

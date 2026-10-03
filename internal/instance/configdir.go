@@ -9,7 +9,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
-	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/yamldoc"
 )
@@ -154,7 +153,7 @@ type rawDoc struct {
 // readDocs walks root and returns every YAML document with its kind/name.
 func readDocs(root string) ([]rawDoc, error) {
 	var docs []rawDoc
-	err := configtree.WalkRawYAMLDocs(root, func(_ string, rel string, doc yamldoc.ParsedDoc) error {
+	err := configsource.WalkRawYAMLDocs(root, func(_ string, rel string, doc yamldoc.ParsedDoc) error {
 		rel = filepath.ToSlash(rel)
 		docs = append(docs, rawDoc{kind: doc.Meta.Kind, name: doc.Meta.Name, file: rel, yaml: doc.Content})
 		return nil

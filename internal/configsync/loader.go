@@ -26,7 +26,6 @@ import (
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
-	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/yamldoc"
 )
@@ -233,7 +232,7 @@ func copyTree(src, dst string, skip map[string]bool) error {
 // readDocs walks root and returns every YAML document with its kind/name.
 func readDocs(root string) ([]rawDoc, error) {
 	var docs []rawDoc
-	err := configtree.WalkRawYAMLDocs(root, func(_, _ string, doc yamldoc.ParsedDoc) error {
+	err := configsource.WalkRawYAMLDocs(root, func(_, _ string, doc yamldoc.ParsedDoc) error {
 		docs = append(docs, rawDoc{
 			kind: doc.Meta.Kind, name: doc.Meta.Name, dslVersion: doc.Meta.DSLVersion, yaml: doc.Content,
 		})

@@ -1,4 +1,4 @@
-package configtree
+package configsource
 
 import (
 	"fmt"
@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/yamldoc"
@@ -16,11 +17,11 @@ import (
 func WalkRawYAMLDocs(root string, fn func(path, rel string, doc yamldoc.ParsedDoc) error) error {
 	opts := mcpio.DefaultWalkFilesOptions()
 	opts.SkipDirPredicate = func(path string, _ fs.DirEntry) bool {
-		return IsGaggleSkillsDir(root, path) || gooberassets.IsSourceDir(path)
+		return configtree.IsGaggleSkillsDir(root, path) || gooberassets.IsSourceDir(path)
 	}
 	opts.SkipSymlinkEntries = false
 
-	err := WalkDefinitionTrees(root, func(tree string) error {
+	err := configtree.WalkDefinitionTrees(root, func(tree string) error {
 		return mcpio.WalkFiles(tree, func(path string, _ fs.DirEntry) error {
 			ext := strings.ToLower(filepath.Ext(path))
 			if ext != ".yaml" && ext != ".yml" {
