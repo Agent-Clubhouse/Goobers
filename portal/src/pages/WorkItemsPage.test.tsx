@@ -175,6 +175,23 @@ describe("WorkItemsPage", () => {
       .toBeInTheDocument();
   });
 
+  it("reports an invalid outcome route filter instead of discarding it", async () => {
+    window.location.hash = "#/work-items?outcome=bogus";
+    render(
+      <WorkItemsPage
+        client={client()}
+        navigate={vi.fn()}
+        route={{ page: "work-items" }}
+        standalone={false}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Invalid work item status "bogus"',
+    );
+    window.location.hash = "#/work-items";
+  });
+
   it("derives draft gaggle choices and validation from the draft work-item type", async () => {
     const navigate = vi.fn();
     const user = userEvent.setup();

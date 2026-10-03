@@ -215,6 +215,20 @@ describe("runs history page", () => {
     );
   });
 
+  it.each([
+    ["outcome", "bogus", 'Invalid outcome filter "bogus"'],
+    ["population", "bogus", 'Invalid population filter "bogus"'],
+    ["window", "bogus", 'Invalid time window filter "bogus"'],
+    ["since", "not-a-date", 'Invalid since filter "not-a-date"'],
+    ["until", "not-a-date", 'Invalid until filter "not-a-date"'],
+    ["showNoWork", "true", 'Invalid show no-work filter "true"'],
+  ])("reports an invalid %s route filter", async (name, value, message) => {
+    window.location.hash = `#/runs?${name}=${value}`;
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  });
+
   it("uses a bounded narrow-screen page while retaining pagination", async () => {
     window.location.hash = "#/runs?status=all";
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });

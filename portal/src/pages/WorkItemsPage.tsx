@@ -350,8 +350,18 @@ function workItemFilterError(
 ): string | undefined {
   const search = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
   const rawKind = search.get("kind");
-  if (inspectRoute && rawKind && rawKind !== "pr" && rawKind !== "issue") {
+  if (inspectRoute && search.has("kind") && rawKind !== "pr" && rawKind !== "issue") {
     return `Invalid work item type "${rawKind}". Choose pull requests or issues.`;
+  }
+  const rawOutcome = search.get("outcome");
+  if (
+    inspectRoute &&
+    search.has("outcome") &&
+    rawOutcome !== "done" &&
+    rawOutcome !== "in-progress" &&
+    rawOutcome !== "bad-terminal"
+  ) {
+    return `Invalid work item status "${rawOutcome}". Choose done, in progress, or bad terminal.`;
   }
   if (kind && kind !== "pr" && kind !== "issue") {
     return `Invalid work item type "${kind}". Choose pull requests or issues.`;
