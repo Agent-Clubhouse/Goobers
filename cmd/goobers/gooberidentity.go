@@ -42,7 +42,7 @@ func (e *workflowDigestError) Unwrap() error {
 	return e.Err
 }
 
-func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
+func loadGooberInstructions(configDir string, set *instance.ConfigSet, goobers map[string]apiv1.GooberSpec) (map[string]string, error) {
 	names := make([]string, 0, len(goobers))
 	for name := range goobers {
 		names = append(names, name)
@@ -50,13 +50,22 @@ func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpe
 	sort.Strings(names)
 	instructions := make(map[string]string, len(goobers))
 	for _, name := range names {
-		content, err := os.ReadFile(instructionsPath(configDir, goobers[name], name))
+		content, err := os.ReadFile(resolvedInstructionsPath(configDir, set, goobers[name], name))
 		if err != nil {
 			return nil, &gooberInstructionsError{Goober: name, Err: err}
 		}
 		instructions[name] = string(content)
 	}
 	return instructions, nil
+}
+
+func resolvedInstructionsPath(configDir string, set *instance.ConfigSet, spec apiv1.GooberSpec, gooberName string) string {
+	if set != nil {
+		if source, ok := set.GooberSource(gooberName); ok {
+			return filepath.Join(configDir, filepath.Dir(source), spec.Instructions)
+		}
+	}
+	return instructionsPath(configDir, spec, gooberName)
 }
 
 type skillSource struct{ name, gaggle string }

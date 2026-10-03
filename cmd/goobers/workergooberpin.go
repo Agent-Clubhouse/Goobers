@@ -320,7 +320,7 @@ func newGooberDigestIndex(
 // substitution the pin exists to prevent.
 func loadSnapshotGooberInputs(configDir string, set *instance.ConfigSet) (map[string]string, map[string]map[string][]workflow.SkillFile, error) {
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		return nil, nil, err
 	}
