@@ -19,6 +19,12 @@ type PageState<T> =
   | { status: "error"; error: Error }
   | { status: "ready"; data: T };
 
+type WorkItemFilters = {
+  kind?: WorkItemKind;
+  gaggle?: string;
+  outcome?: WorkItemOutcome;
+};
+
 export function WorkItemsPage({
   client,
   navigate,
@@ -49,6 +55,7 @@ export function WorkItemsPage({
       gaggle={route.gaggle}
       kind={route.kind}
       navigate={navigate}
+      outcome={route.outcome}
       query={route.query}
       standalone={standalone}
     />
@@ -60,6 +67,7 @@ function WorkItemListView({
   gaggle,
   kind,
   navigate,
+  outcome,
   query,
   standalone,
 }: {
@@ -67,6 +75,7 @@ function WorkItemListView({
   gaggle?: string;
   kind?: WorkItemKind;
   navigate: Navigate;
+  outcome?: WorkItemOutcome;
   query?: string;
   standalone: boolean;
 }) {
@@ -75,7 +84,7 @@ function WorkItemListView({
     filterItems: WorkItemSummary[];
   }>>({ status: "loading" });
   const [searchQuery, setSearchQuery] = useState(query ?? "");
-  const [draft, setDraft] = useState<{ kind?: WorkItemKind; gaggle?: string }>({ kind, gaggle });
+  const [draft, setDraft] = useState<WorkItemFilters>({ kind, gaggle, outcome });
   const load = () => {
     const controller = new AbortController();
     setState({ status: "loading" });
@@ -109,7 +118,7 @@ function WorkItemListView({
 
   useEffect(load, [client, kind]);
   useEffect(() => setSearchQuery(query ?? ""), [query]);
-  useEffect(() => setDraft({ kind, gaggle }), [kind, gaggle]);
+  useEffect(() => setDraft({ kind, gaggle, outcome }), [kind, gaggle, outcome]);
 
   if (state.status === "loading") return <DaemonLoadingState standalone={standalone} />;
   if (state.status === "error") {
@@ -125,6 +134,7 @@ function WorkItemListView({
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
   const items = state.data.page.items.filter((item) => {
     if (gaggle && item.gaggle !== gaggle) return false;
+    if (outcome && item.outcome !== outcome) return false;
     if (!normalizedQuery) return true;
     return [
       workItemLabel(item.repository, item.externalId),
@@ -132,11 +142,12 @@ function WorkItemListView({
       item.externalId,
     ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
   });
-  const updateFilters = (updates: { kind?: WorkItemKind; gaggle?: string; query?: string }) => {
+  const updateFilters = (updates: WorkItemFilters & { query?: string }) => {
     navigate({
       page: "work-items",
       kind,
       gaggle,
+      outcome,
       query: searchQuery || undefined,
       ...updates,
     });
@@ -147,6 +158,7 @@ function WorkItemListView({
       page: "work-items",
       kind,
       gaggle,
+      outcome,
       query: value || undefined,
     });
     window.history.replaceState(window.history.state, "", hash);
@@ -163,11 +175,16 @@ function WorkItemListView({
       label: `Gaggle: ${gaggle}`,
       onRemove: () => updateFilters({ gaggle: undefined }),
     }] : []),
+    ...(outcome ? [{
+      key: "outcome",
+      label: `Status: ${workItemOutcomeLabel(outcome)}`,
+      onRemove: () => updateFilters({ outcome: undefined }),
+    }] : []),
   ];
   const renderFilters = (mobile: boolean) => {
-    const values = mobile ? draft : { kind, gaggle };
+    const values = mobile ? draft : { kind, gaggle, outcome };
     const options = gaggleOptions(values.kind);
-    const change = (updates: { kind?: WorkItemKind; gaggle?: string }) => {
+    const change = (updates: WorkItemFilters) => {
       if (mobile) {
         setDraft((current) => ({ ...current, ...updates }));
       } else {
@@ -191,6 +208,21 @@ function WorkItemListView({
             {label}
           </button>
         ))}
+        <label className="filter-select work-item-filter-field">
+          <span>Status</span>
+          <select
+            aria-label={mobile ? "Draft work item status filter" : "Filter work items by status"}
+            onChange={(event) => change({
+              outcome: workItemOutcomeFilter(event.target.value),
+            })}
+            value={values.outcome ?? ""}
+          >
+            <option value="">All statuses</option>
+            <option value="done">Done</option>
+            <option value="in-progress">In progress</option>
+            <option value="bad-terminal">Bad terminal</option>
+          </select>
+        </label>
         <label className="filter-select work-item-filter-field">
           <span>Gaggle</span>
           <select
@@ -226,7 +258,7 @@ function WorkItemListView({
           if (error) return error;
           updateFilters(draft);
         }}
-        onOpenFilters={() => setDraft({ kind, gaggle })}
+        onOpenFilters={() => setDraft({ kind, gaggle, outcome })}
         onResetFilters={() => navigate({
           page: "work-items",
           query: searchQuery || undefined,
@@ -517,6 +549,12 @@ function workItemOutcomeLabel(outcome: WorkItemOutcome): string {
     case "in-progress":
       return "In progress";
   }
+}
+
+function workItemOutcomeFilter(value: string): WorkItemOutcome | undefined {
+  return value === "done" || value === "in-progress" || value === "bad-terminal"
+    ? value
+    : undefined;
 }
 
 function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
