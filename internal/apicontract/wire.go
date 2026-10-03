@@ -242,15 +242,15 @@ func newWireFixtures() wireFixtures {
 	p95Tokens := int64(48000)
 	p50PremiumRequests := 1.0
 	p95PremiumRequests := 2.0
-	p50CostUSD := 1.25
-	p95CostUSD := 2.5
+	p50CostAIC := 125.0
+	p95CostAIC := 250.0
 	retryWasteDuration := int64(100000)
 	retryWasteTokens := int64(12000)
-	retryWasteCostUSD := 0.75
+	retryWasteCostAIC := 75.0
 	modelInputTokens := int64(36000)
 	modelOutputTokens := int64(12000)
 	modelPremiumRequests := 3.0
-	modelCostUSD := 1.5
+	modelCostAIC := 150.0
 	warning := validate.CodedWarning{
 		Code:        validate.WarningDeprecatedFeature,
 		Severity:    validate.Warning,
@@ -828,12 +828,12 @@ func newWireFixtures() wireFixtures {
 				P50Tokens:            &p50Tokens,
 				P95Tokens:            &p95Tokens,
 				CostSamples:          4,
-				P50CostUSD:           &p50CostUSD,
-				P95CostUSD:           &p95CostUSD,
+				P50CostAIC:           &p50CostAIC,
+				P95CostAIC:           &p95CostAIC,
 				RetryWasteAttempts:   1,
 				RetryWasteDurationMs: &retryWasteDuration,
 				RetryWasteTokens:     &retryWasteTokens,
-				RetryWasteCostUSD:    &retryWasteCostUSD,
+				RetryWasteCostAIC:    &retryWasteCostAIC,
 				StuckAbortedAttempts: 1,
 			}},
 			Usage: []readservice.TelemetryUsageStats{{
@@ -848,12 +848,12 @@ func newWireFixtures() wireFixtures {
 				P50CopilotPremiumRequests: &p50PremiumRequests,
 				P95CopilotPremiumRequests: &p95PremiumRequests,
 				CostSamples:               4,
-				CostUSD:                   &modelCostUSD,
-				P50CostUSD:                &p50CostUSD,
-				P95CostUSD:                &p95CostUSD,
+				CostAIC:                   &modelCostAIC,
+				P50CostAIC:                &p50CostAIC,
+				P95CostAIC:                &p95CostAIC,
 				RetryWasteAttempts:        1,
 				RetryWasteTokens:          &retryWasteTokens,
-				RetryWasteCostUSD:         &retryWasteCostUSD,
+				RetryWasteCostAIC:         &retryWasteCostAIC,
 			}},
 			Models: []readservice.TelemetryModelStats{{
 				Model:                  "gpt-5.4",
@@ -865,7 +865,7 @@ func newWireFixtures() wireFixtures {
 				PremiumRequestSamples:  3,
 				CopilotPremiumRequests: &modelPremiumRequests,
 				CostSamples:            3,
-				CostUSD:                &modelCostUSD,
+				CostAIC:                &modelCostAIC,
 			}},
 		},
 		TelemetryErrorSignatures: readservice.TelemetryErrorSignaturesResult{

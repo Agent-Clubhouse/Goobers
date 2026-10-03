@@ -1470,12 +1470,12 @@ export const goWireFixtures = {
         "p50Tokens": 24000,
         "p95Tokens": 48000,
         "costSamples": 4,
-        "p50CostUSD": 1.25,
-        "p95CostUSD": 2.5,
+        "p50CostAIC": 125,
+        "p95CostAIC": 250,
         "retryWasteAttempts": 1,
         "retryWasteDurationMs": 100000,
         "retryWasteTokens": 12000,
-        "retryWasteCostUSD": 0.75,
+        "retryWasteCostAIC": 75,
         "stuckAbortedAttempts": 1
       }
     ],
@@ -1492,12 +1492,12 @@ export const goWireFixtures = {
         "p50CopilotPremiumRequests": 1,
         "p95CopilotPremiumRequests": 2,
         "costSamples": 4,
-        "costUSD": 1.5,
-        "p50CostUSD": 1.25,
-        "p95CostUSD": 2.5,
+        "costAIC": 150,
+        "p50CostAIC": 125,
+        "p95CostAIC": 250,
         "retryWasteAttempts": 1,
         "retryWasteTokens": 12000,
-        "retryWasteCostUSD": 0.75
+        "retryWasteCostAIC": 75
       }
     ],
     "models": [
@@ -1511,7 +1511,7 @@ export const goWireFixtures = {
         "premiumRequestSamples": 3,
         "copilotPremiumRequests": 3,
         "costSamples": 3,
-        "costUSD": 1.5
+        "costAIC": 150
       }
     ],
     "creditAssignment": [

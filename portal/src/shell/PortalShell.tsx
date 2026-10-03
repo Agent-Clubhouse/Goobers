@@ -292,13 +292,13 @@ export function PortalShell({
           </button>
           <button
             aria-current={activeArea === "cost" ? "page" : undefined}
-            aria-label="Cost"
+            aria-label="AIC"
             className={activeArea === "cost" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => navigate({ page: "cost", filters: scopedFilters })}
             type="button"
           >
             <Icon name="cost" />
-            <span className="nav-label">Cost</span>
+            <span className="nav-label">AIC</span>
           </button>
         </nav>
 

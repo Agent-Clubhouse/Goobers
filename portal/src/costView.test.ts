@@ -8,7 +8,7 @@ import {
 } from "./costView";
 
 describe("external cost view model", () => {
-  it("labels native units, normalized estimates, and partial coverage", () => {
+  it("selects AIC from native or normalized totals and labels partial coverage", () => {
     const result: TelemetryCostResult = {
       scope: "summary",
       since: "2026-08-01T00:00:00Z",
@@ -73,14 +73,12 @@ describe("external cost view model", () => {
         externalKind: "pr",
         externalId: "4398",
         provider: "github",
-        native: "3 AIC",
-        nativeValue: 2.5,
-        normalized: "$0.03",
-        normalizedValue: 0.025,
+        aic: "2.5 AIC",
+        aicValue: 2.5,
         coverage: "Lower bound: 2 of 3 runs and 3 of 4 attempts measured.",
         coverageRatio: 0.75,
         lowerBound: true,
-        models: ["gpt-5.6-sol: 3 AIC · 3/3 attempts"],
+        models: ["gpt-5.6-sol: 2.5 AIC · 3/3 attempts"],
         runs: result.pullRequests[0].runs,
       },
     ]);
@@ -108,14 +106,14 @@ describe("external cost view model", () => {
       "github:pr:7",
       "github:pr:12",
     ]);
-    expect(sortExternalCostRows(rows, "native", "desc").map((row) => row.key)).toEqual([
-      "github:pr:12",
+    expect(sortExternalCostRows(rows, "aic", "desc").map((row) => row.key)).toEqual([
       "github:issue:41",
+      "github:pr:12",
       "github:pr:7",
     ]);
-    expect(sortExternalCostRows(rows, "native", "asc").map((row) => row.key)).toEqual([
-      "github:issue:41",
+    expect(sortExternalCostRows(rows, "aic", "asc").map((row) => row.key)).toEqual([
       "github:pr:12",
+      "github:issue:41",
       "github:pr:7",
     ]);
   });
@@ -129,10 +127,8 @@ function externalCostRows(): ExternalCostRow[] {
       externalKind: "pr",
       externalId: "12",
       provider: "github",
-      native: "2.5 AI credits",
-      nativeValue: 2.5,
-      normalized: "$0.025 estimated",
-      normalizedValue: 0.025,
+      aic: "2.5 AIC",
+      aicValue: 2.5,
       coverage: "Complete coverage",
       coverageRatio: 1,
       lowerBound: false,
@@ -145,10 +141,8 @@ function externalCostRows(): ExternalCostRow[] {
       externalKind: "issue",
       externalId: "41",
       provider: "github",
-      native: "$0.42",
-      nativeValue: 0.42,
-      normalized: "42 AI credits estimated",
-      normalizedValue: 42,
+      aic: "42 AIC estimated",
+      aicValue: 42,
       coverage: "Lower bound",
       coverageRatio: 0.5,
       lowerBound: true,
@@ -161,8 +155,7 @@ function externalCostRows(): ExternalCostRow[] {
       externalKind: "pr",
       externalId: "7",
       provider: "github",
-      native: "Unmeasured",
-      normalized: "Unavailable",
+      aic: "Unmeasured",
       coverage: "No coverage",
       coverageRatio: 0,
       lowerBound: true,

@@ -82,16 +82,16 @@ const insightStats = {
   }],
   usage: [{
     scope: "instance", totalAttempts: 25, p50Tokens: 1200, p95Tokens: 4300,
-    costUSD: 12.34, p50CostUSD: 0.4, p95CostUSD: 1.1, costSamples: 25,
-    retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostUSD: 0.75,
+    costAIC: 1234, p50CostAIC: 40, p95CostAIC: 110, costSamples: 25,
+    retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostAIC: 75,
   }, {
     scope: "gaggle", gaggle: "team", totalAttempts: 20, p50Tokens: 1000, p95Tokens: 3000,
-    costUSD: 9.5, p50CostUSD: 0.35, p95CostUSD: 0.9, costSamples: 20,
-    retryWasteAttempts: 1, retryWasteTokens: 300, retryWasteCostUSD: 0.25,
+    costAIC: 950, p50CostAIC: 35, p95CostAIC: 90, costSamples: 20,
+    retryWasteAttempts: 1, retryWasteTokens: 300, retryWasteCostAIC: 25,
   }, {
     scope: "workflow", gaggle: "team", workflow: "implementation", totalAttempts: 18, p50Tokens: 950, p95Tokens: 2800,
-    costUSD: 8.75, p50CostUSD: 0.32, p95CostUSD: 0.85, costSamples: 18,
-    retryWasteAttempts: 1, retryWasteTokens: 250, retryWasteCostUSD: 0.2,
+    costAIC: 875, p50CostAIC: 32, p95CostAIC: 85, costSamples: 18,
+    retryWasteAttempts: 1, retryWasteTokens: 250, retryWasteCostAIC: 20,
   }],
   models: [],
   creditAssignment: [{
@@ -107,10 +107,10 @@ const insightStats = {
     forwardCurationThroughput: 2, implementationDemand: 3, sampleEverRecorded: true,
   },
   trend: [
-    { since: "2026-09-13T00:00:00Z", until: "2026-09-13T12:00:00Z", usage: [{ scope: "instance", costUSD: 3, p50Tokens: 900, costSamples: 5 }] },
-    { since: "2026-09-13T12:00:00Z", until: "2026-09-14T00:00:00Z", usage: [{ scope: "instance", costUSD: 4, p50Tokens: 1000, costSamples: 6 }] },
+    { since: "2026-09-13T00:00:00Z", until: "2026-09-13T12:00:00Z", usage: [{ scope: "instance", costAIC: 300, p50Tokens: 900, costSamples: 5 }] },
+    { since: "2026-09-13T12:00:00Z", until: "2026-09-14T00:00:00Z", usage: [{ scope: "instance", costAIC: 400, p50Tokens: 1000, costSamples: 6 }] },
   ],
-  trendPrevious: { since: "2026-09-12T00:00:00Z", until: "2026-09-13T00:00:00Z", usage: [{ scope: "instance", costUSD: 7 }] },
+  trendPrevious: { since: "2026-09-12T00:00:00Z", until: "2026-09-13T00:00:00Z", usage: [{ scope: "instance", costAIC: 700 }] },
 };
 
 const costSummary = {
@@ -200,7 +200,7 @@ const workItemDetail = {
   externalId: "7",
   url: "https://github.com/Agent-Clubhouse/Goobers/issues/7",
   cost: {
-    costUSD: 1.25,
+    nanoAIU: 1_250_000_000,
     totalRuns: 2,
     measuredRuns: 1,
     totalAttempts: 3,
@@ -923,7 +923,7 @@ test("Work Items tab filters the bounded list and opens action, cost, and relate
 
   const detail = page.locator("#work-item-content");
   await expect(detail.getByRole("heading", { name: "Agent-Clubhouse/Goobers#7", exact: true })).toBeVisible();
-  await expect(detail).toContainText("$1.25");
+  await expect(detail).toContainText("1.25 AIC");
   await expect(detail).toContainText("Lower bound; some usage is unmeasured.");
   await expect(detail.getByRole("link", { name: "Open issue", exact: false })).toHaveAttribute(
     "href",
@@ -1062,7 +1062,7 @@ test("Insights tab loads aggregate telemetry for the instance scope by default",
   const content = page.locator("#insight-content");
   await expect(content).toContainText("Success and failure");
   await expect(content).toContainText("Tokens and retry waste");
-  await expect(content).toContainText("Cost over time");
+  await expect(content).toContainText("AIC over time");
   await expect(content).toContainText("Ready-pool health");
   await expect(content).toContainText("Highest-contributing nodes");
   await expect(page.locator("#insight-status")).toBeEmpty();
@@ -1146,7 +1146,7 @@ test("Insights tab renders loading, error, and empty states", async ({ page }) =
   expect(errors).toEqual([]);
 });
 
-test("Cost tab renders selected-scope usage, instance rollup, trend, and attributed work items", async ({ page }) => {
+test("AIC tab renders selected-scope usage, instance rollup, trend, and attributed work items", async ({ page }) => {
   const errors = await openCanvas(page);
   const insightRequests: URL[] = [];
   const costRequests: URL[] = [];
@@ -1155,15 +1155,15 @@ test("Cost tab renders selected-scope usage, instance rollup, trend, and attribu
     if (url.pathname === "/api/insight-stats") insightRequests.push(url);
     if (url.pathname === "/api/cost-summary") costRequests.push(url);
   });
-  await page.getByRole("tab", { name: "Cost", exact: true }).click();
-  await expect(page.getByRole("combobox", { name: "Cost scope" })).toHaveValue("instance");
-  await expect(page.getByRole("combobox", { name: "Cost time window" })).toHaveValue("7d");
+  await page.getByRole("tab", { name: "AIC", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Scope" })).toHaveValue("instance");
+  await expect(page.getByRole("combobox", { name: "Time window" })).toHaveValue("7d");
   const content = page.locator("#cost-content");
-  await expect(content).toContainText("Cost summary");
-  await expect(content).toContainText("$12.34");
-  await expect(content).toContainText("Cost trend");
-  await expect(content).toContainText("Cost by gaggle");
-  await expect(content).toContainText("Cost by pull request and issue");
+  await expect(content).toContainText("AIC summary");
+  await expect(content).toContainText("1,234 AIC");
+  await expect(content).toContainText("AIC over time");
+  await expect(content).toContainText("AIC by gaggle");
+  await expect(content).toContainText("AIC by pull request and issue");
   await expect(content).toContainText("PR #5183");
   await expect(content).toContainText("Issue #7");
   await expect(page.locator("#cost-status")).toBeEmpty();
@@ -1174,7 +1174,7 @@ test("Cost tab renders selected-scope usage, instance rollup, trend, and attribu
   expect(errors).toEqual([]);
 });
 
-test("Cost scope and window changes refetch and hide instance-only rollup outside instance scope", async ({ page }) => {
+test("AIC scope and window changes refetch and hide instance-only rollup outside instance scope", async ({ page }) => {
   const errors = await openCanvas(page);
   const insightRequests: URL[] = [];
   const costRequests: URL[] = [];
@@ -1183,14 +1183,14 @@ test("Cost scope and window changes refetch and hide instance-only rollup outsid
     if (url.pathname === "/api/insight-stats") insightRequests.push(url);
     if (url.pathname === "/api/cost-summary") costRequests.push(url);
   });
-  await page.getByRole("tab", { name: "Cost", exact: true }).click();
-  const scopeSelect = page.getByRole("combobox", { name: "Cost scope" });
+  await page.getByRole("tab", { name: "AIC", exact: true }).click();
+  const scopeSelect = page.getByRole("combobox", { name: "Scope" });
   await scopeSelect.selectOption("gaggle:team");
-  await expect(page.locator("#cost-content")).toContainText("$9.50");
-  await expect(page.locator("#cost-content")).not.toContainText("Cost by gaggle");
+  await expect(page.locator("#cost-content")).toContainText("950 AIC");
+  await expect(page.locator("#cost-content")).not.toContainText("AIC by gaggle");
   await expect(page.locator("#cost-content")).toContainText("Attribution is instance-wide");
   await expect(page.locator("#cost-content")).toContainText("PR #5183");
-  await page.getByRole("combobox", { name: "Cost time window" }).selectOption("all");
+  await page.getByRole("combobox", { name: "Time window" }).selectOption("all");
   await expect.poll(() => costRequests.length).toBe(3);
   await expect(page.locator("#cost-content")).toContainText("choose 24h, 7d, or 30d");
   await expect(page.locator("#cost-content")).toContainText("all-time attribution is capped at 90 days");
@@ -1200,14 +1200,14 @@ test("Cost scope and window changes refetch and hide instance-only rollup outsid
   expect(errors).toEqual([]);
 });
 
-test("Cost tab looks up pull request and issue costs by provider and id", async ({ page }) => {
+test("AIC tab looks up pull request and issue costs by provider and id", async ({ page }) => {
   const errors = await openCanvas(page);
   const costRequests: URL[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname === "/api/cost-summary") costRequests.push(url);
   });
-  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await page.getByRole("tab", { name: "AIC", exact: true }).click();
   await page.getByRole("textbox", { name: "External cost ID" }).fill("5183");
   await page.getByRole("button", { name: "Lookup" }).click();
   await expect(page.locator("#cost-content")).toContainText("Lookup result");
@@ -1228,7 +1228,7 @@ test("Cost tab looks up pull request and issue costs by provider and id", async 
   expect(errors).toEqual([]);
 });
 
-test("Cost tab renders loading, error, and empty states", async ({ page }) => {
+test("AIC tab renders loading, error, and empty states", async ({ page }) => {
   const errors = await openCanvas(page);
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });
@@ -1236,26 +1236,26 @@ test("Cost tab renders loading, error, and empty states", async ({ page }) => {
     await blocked;
     await route.fulfill({ json: { connected: false, reason: "Cost telemetry requires a running Goobers daemon." } });
   });
-  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await page.getByRole("tab", { name: "AIC", exact: true }).click();
   await expect(page.locator("#cost-status")).toHaveText("Loading\u2026");
   release();
   await expect(page.locator("#cost-status")).toHaveText("Attributed costs unavailable: Cost telemetry requires a running Goobers daemon.");
-  await expect(page.locator("#cost-content")).toContainText("Cost summary");
+  await expect(page.locator("#cost-content")).toContainText("AIC summary");
   await expect(page.locator("#cost-content")).toContainText("Attributed pull request and issue costs could not be loaded");
 
   await page.route("http://canvas.test/api/cost-summary?**", (route) =>
     route.fulfill({ json: { connected: true, costs: { pullRequests: [], issues: [] } } }));
-  await page.getByRole("combobox", { name: "Cost time window" }).selectOption("30d");
+  await page.getByRole("combobox", { name: "Time window" }).selectOption("30d");
   await expect(page.locator("#cost-status")).toBeEmpty();
   await expect(page.locator("#cost-content")).toContainText("No pull request or issue cost was attributed");
   expect(errors).toEqual([]);
 });
 
-test("Cost tab keeps attributed costs visible when selected-scope stats fail", async ({ page }) => {
+test("AIC tab keeps attributed costs visible when selected-scope stats fail", async ({ page }) => {
   const errors = await openCanvas(page);
   await page.route("http://canvas.test/api/insight-stats?**", (route) =>
     route.fulfill({ status: 503, contentType: "text/plain", body: "Telemetry stats budget exhausted." }));
-  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await page.getByRole("tab", { name: "AIC", exact: true }).click();
   await expect(page.locator("#cost-status")).toContainText("Selected-scope cost telemetry unavailable:");
   await expect(page.locator("#cost-content")).toContainText("Selected-scope usage, trend, and instance rollup are unavailable");
   await expect(page.locator("#cost-content")).toContainText("PR #5183");
@@ -1263,7 +1263,7 @@ test("Cost tab keeps attributed costs visible when selected-scope stats fail", a
   expect(errors).toEqual([]);
 });
 
-test("Cost tab still runs explicit lookup when summary attribution fails", async ({ page }) => {
+test("AIC tab still runs explicit lookup when summary attribution fails", async ({ page }) => {
   const errors = await openCanvas(page);
   await page.route("http://canvas.test/api/cost-summary?**", (route) => {
     const url = new URL(route.request().url());
@@ -1277,7 +1277,7 @@ test("Cost tab still runs explicit lookup when summary attribution fails", async
       },
     });
   });
-  await page.getByRole("tab", { name: "Cost", exact: true }).click();
+  await page.getByRole("tab", { name: "AIC", exact: true }).click();
   await page.locator("#cost-lookup-id").fill("5183");
   await page.getByRole("button", { name: "Lookup", exact: true }).click();
   await expect(page.locator("#cost-status")).toContainText("Attributed costs unavailable:");
