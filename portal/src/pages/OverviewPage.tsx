@@ -1059,6 +1059,7 @@ interface AttentionGroup {
   context: string;
   diagnosis: string;
   severity: AttentionSeverity;
+  severitySource: RunSummary;
   latest: RunSummary;
   runs: RunSummary[];
 }
@@ -1080,8 +1081,25 @@ function groupAttentionRuns(
     const existing = grouped.get(key);
     if (existing) {
       existing.runs.push(run);
-      if (attentionSeverityRank(attentionSeverity(run)) < attentionSeverityRank(existing.severity)) {
-        existing.severity = attentionSeverity(run);
+      if (Date.parse(run.lastActivityAt) > Date.parse(existing.latest.lastActivityAt)) {
+        existing.latest = run;
+      }
+      const severity = attentionSeverity(run);
+      const severityRank = attentionSeverityRank(severity);
+      const existingSeverityRank = attentionSeverityRank(existing.severity);
+      if (
+        severityRank < existingSeverityRank ||
+        (severityRank === existingSeverityRank &&
+          Date.parse(run.lastActivityAt) >
+            Date.parse(existing.severitySource.lastActivityAt))
+      ) {
+        existing.label = issue
+          ? `#${issue.number}${issue.title ? ` ${issue.title}` : ""}`
+          : `${workflowIdentity(run)} · ${attentionCategoryLabel(run, failureReasons)}`;
+        existing.context = workflowIdentity(run);
+        existing.diagnosis = attentionDiagnosis(run, failureReasons);
+        existing.severity = severity;
+        existing.severitySource = run;
       }
       continue;
     }
@@ -1094,6 +1112,7 @@ function groupAttentionRuns(
       context: workflowIdentity(run),
       diagnosis: attentionDiagnosis(run, failureReasons),
       severity: attentionSeverity(run),
+      severitySource: run,
       latest: run,
       runs: [run],
     });

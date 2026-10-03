@@ -147,6 +147,59 @@ describe("overview page", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps mixed-severity issue summaries aligned with severity and latest activity", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const stalled = fixtures.runs.runs.find((run) => run.phase === "running");
+    const escalated = fixtures.runs.runs.find((run) => run.phase === "escalated");
+    const failed = fixtures.runs.runs.find((run) => run.phase === "failed");
+    if (!stalled || !escalated || !failed) {
+      throw new Error("Populated fixtures must include running, escalated, and failed runs.");
+    }
+    const issue = { number: "6487", title: "Mixed attention history" };
+    const now = Date.now();
+    stalled.stale = true;
+    stalled.lastActivityAt = new Date(now - 2 * 60_000).toISOString();
+    stalled.operator = {
+      issue,
+      liveness: "stale",
+      trajectory: "stalled",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+    escalated.lastActivityAt = new Date(now - 3 * 60_000).toISOString();
+    escalated.terminalReason = "Provider action required.";
+    escalated.operator = {
+      issue,
+      liveness: "finished",
+      trajectory: "blocked",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+    failed.lastActivityAt = new Date(now - 60_000).toISOString();
+    failed.operator = {
+      issue,
+      liveness: "finished",
+      trajectory: "failed",
+      claim: { leaseStatus: "released", providerMarker: "verified" },
+      potentialBlockers: [],
+    };
+
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const label = await screen.findByText("#6487 Mixed attention history");
+    const group = label.closest(".attention-group");
+    if (!group) {
+      throw new Error("Mixed-severity attention group was not rendered.");
+    }
+    const summary = group.querySelector<HTMLElement>(".attention-group-summary");
+    if (!summary) {
+      throw new Error("Mixed-severity attention summary was not rendered.");
+    }
+    expect(within(summary).getByText("Blocked")).toBeVisible();
+    expect(within(summary).getByText("3 runs · Provider action required.")).toBeVisible();
+    expect(group.querySelector("time")).toHaveAttribute("datetime", failed.lastActivityAt);
+  });
+
   it("selects, deselects, dismisses, and restores all visible attention runs", async () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
