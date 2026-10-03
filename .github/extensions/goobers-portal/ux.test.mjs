@@ -314,7 +314,7 @@ test("telemetry insights distinguish partial data and preserve explicit zero uni
         failureCount: 0,
         repassCount: 0,
         model: "copilot-model",
-        metrics: { inputTokens: { value: 0, unit: "tokens" }, costUSD: { value: 0, unit: "USD" } },
+        metrics: { inputTokens: { value: 0, unit: "tokens" }, nanoAIU: 0 },
         events: [
             { type: "stage.started", stage: "queue", attempt: 1, time: "2026-08-28T10:00:02Z" },
             { type: "stage.finished", stage: "queue", attempt: 1, status: "succeeded", time: "2026-08-28T10:00:10Z" },
@@ -325,9 +325,20 @@ test("telemetry insights distinguish partial data and preserve explicit zero uni
     assert.equal(result.duration.queueMillis, 2000);
     assert.deepEqual(result.usage, [
         { label: "Input tokens", value: 0, unit: "tokens" },
-        { label: "Cost", value: 0, unit: "USD" },
+        { label: "AIC", value: 0, unit: "AIC" },
     ]);
     assert.equal(result.budgets.length, 0);
+});
+
+test("telemetry insights convert legacy USD cost and budget measures to AIC", () => {
+    const result = deriveTelemetryInsights({
+        metrics: {
+            costUSD: { value: 1.25, unit: "USD" },
+            maxCostUSD: { value: 2, unit: "usd" },
+        },
+    });
+    assert.deepEqual(result.usage, [{ label: "AIC", value: 125, unit: "AIC" }]);
+    assert.deepEqual(result.budgets, [{ label: "AIC budget", value: 200, unit: "AIC" }]);
 });
 
 test("telemetry insights aggregate retry and failure hotspots", () => {
@@ -375,12 +386,12 @@ test("telemetry insights reports unknown queue wait when execution exceeds total
     assert.equal(result.duration.queueMillis, null);
 });
 
-test("telemetry insights honors explicit usage units and omits unitless values", () => {
+test("telemetry insights omit unsupported currency and unitless usage values", () => {
     const result = deriveTelemetryInsights({
         metrics: {
             costUSD: { value: 5, unit: "EUR" },
             inputTokens: 10,
         },
     });
-    assert.deepEqual(result.usage, [{ label: "Cost", value: 5, unit: "EUR" }]);
+    assert.deepEqual(result.usage, []);
 });

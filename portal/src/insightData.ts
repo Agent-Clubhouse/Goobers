@@ -78,7 +78,7 @@ export interface InsightGaggleSpend {
 export interface InsightCostRollupSnapshot {
   filters: TelemetryStatsOptions;
   /** Undefined when no model reported a measured cost in this window. */
-  totalCostUSD?: number;
+  totalCostAIC?: number;
   totalCostSamples: number;
   /** Descending by estimated spend (P50 cost × cost samples) — the wire
    * contract totals cost per model, not per gaggle, so a gaggle's own total
@@ -315,10 +315,10 @@ function costRollupFromStats(
   window: InsightWindow,
 ): InsightCostRollupSnapshot {
   const totalCostSamples = stats.models.reduce((sum, model) => sum + model.costSamples, 0);
-  const totalCostUSD =
+  const totalCostAIC =
     totalCostSamples === 0
       ? undefined
-      : stats.models.reduce((sum, model) => sum + (model.costUSD ?? 0), 0);
+      : stats.models.reduce((sum, model) => sum + (model.costAIC ?? 0), 0);
   const byGaggle = stats.gaggles
     .map((gaggle) => ({
       gaggle: gaggle.gaggle,
@@ -326,8 +326,8 @@ function costRollupFromStats(
         (item) => item.scope === "gaggle" && item.gaggle === gaggle.gaggle,
       ),
     }))
-    .sort((left, right) => (right.usage?.costUSD ?? 0) - (left.usage?.costUSD ?? 0));
-  return { filters, totalCostUSD, totalCostSamples, byGaggle, window };
+    .sort((left, right) => (right.usage?.costAIC ?? 0) - (left.usage?.costAIC ?? 0));
+  return { filters, totalCostAIC, totalCostSamples, byGaggle, window };
 }
 
 export function useInsightErrorSignatures(

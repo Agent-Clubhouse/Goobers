@@ -682,13 +682,13 @@ test("isInInsightScope filters by gaggle and workflow identity per scope kind", 
 test("insightUsageForScope matches the usage entry tagged with the scope's own kind and identity", () => {
     const stats = {
         usage: [
-            { scope: "instance", costUSD: 1 },
-            { scope: "gaggle", gaggle: "core", costUSD: 2 },
-            { scope: "gaggle", gaggle: "other", costUSD: 3 },
+            { scope: "instance", costAIC: 100 },
+            { scope: "gaggle", gaggle: "core", costAIC: 200 },
+            { scope: "gaggle", gaggle: "other", costAIC: 300 },
         ],
     };
-    assert.equal(insightUsageForScope(stats, { kind: "instance" }).costUSD, 1);
-    assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "core" }).costUSD, 2);
+    assert.equal(insightUsageForScope(stats, { kind: "instance" }).costAIC, 100);
+    assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "core" }).costAIC, 200);
     assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "missing" }), undefined);
 });
 
@@ -710,8 +710,8 @@ const INSTANCE_STATS_FIXTURE = {
     usage: [
         {
             scope: "instance", totalAttempts: 25, p50Tokens: 1200, p95Tokens: 4300,
-            costUSD: 12.34, p50CostUSD: 0.4, p95CostUSD: 1.1, costSamples: 25,
-            retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostUSD: 0.75,
+            costAIC: 1234, p50CostAIC: 40, p95CostAIC: 110, costSamples: 25,
+            retryWasteAttempts: 2, retryWasteTokens: 900, retryWasteCostAIC: 75,
         },
     ],
     models: [],
@@ -734,12 +734,12 @@ const INSTANCE_STATS_FIXTURE = {
         sampleEverRecorded: true,
     },
     trend: [
-        { since: "2026-01-06T00:00:00Z", until: "2026-01-06T12:00:00Z", usage: [{ scope: "instance", costUSD: 3, p50Tokens: 900, costSamples: 5 }] },
-        { since: "2026-01-06T12:00:00Z", until: "2026-01-07T00:00:00Z", usage: [{ scope: "instance", costUSD: 4, p50Tokens: 1000, costSamples: 6 }] },
-        { since: "2026-01-07T00:00:00Z", until: "2026-01-07T12:00:00Z", usage: [{ scope: "instance", costUSD: 2.5, p50Tokens: 800, costSamples: 4 }] },
-        { since: "2026-01-07T12:00:00Z", until: "2026-01-08T00:00:00Z", usage: [{ scope: "instance", costUSD: 2.85, p50Tokens: 850, costSamples: 5 }] },
+        { since: "2026-01-06T00:00:00Z", until: "2026-01-06T12:00:00Z", usage: [{ scope: "instance", costAIC: 300, p50Tokens: 900, costSamples: 5 }] },
+        { since: "2026-01-06T12:00:00Z", until: "2026-01-07T00:00:00Z", usage: [{ scope: "instance", costAIC: 400, p50Tokens: 1000, costSamples: 6 }] },
+        { since: "2026-01-07T00:00:00Z", until: "2026-01-07T12:00:00Z", usage: [{ scope: "instance", costAIC: 250, p50Tokens: 800, costSamples: 4 }] },
+        { since: "2026-01-07T12:00:00Z", until: "2026-01-08T00:00:00Z", usage: [{ scope: "instance", costAIC: 285, p50Tokens: 850, costSamples: 5 }] },
     ],
-    trendPrevious: { since: "2026-01-06T00:00:00Z", until: "2026-01-07T00:00:00Z", usage: [{ scope: "instance", costUSD: 7 }] },
+    trendPrevious: { since: "2026-01-06T00:00:00Z", until: "2026-01-07T00:00:00Z", usage: [{ scope: "instance", costAIC: 700 }] },
 };
 
 test("renderInsightPanel renders outcome, curation, credit, usage, trend, and stage sections for instance scope", () => {
@@ -756,10 +756,10 @@ test("renderInsightPanel renders outcome, curation, credit, usage, trend, and st
     assert.match(html, /implement/);
     // Usage / tokens and retry waste.
     assert.match(html, /Tokens and retry waste/);
-    assert.match(html, /\$12\.34/);
-    // Cost trend: only the most recent 8 (bucket count for 24h) buckets show, all 4 fixture buckets included here.
-    assert.match(html, /Cost over time/);
-    assert.match(html, /\$3\.00/);
+    assert.match(html, /1,234 AIC/);
+    // AIC trend: only the most recent 8 (bucket count for 24h) buckets show, all 4 fixture buckets included here.
+    assert.match(html, /AIC over time/);
+    assert.match(html, /300 AIC/);
     // Slowest stages.
     assert.match(html, /Slowest stages/);
     assert.match(html, /9\.8s/);
@@ -887,30 +887,30 @@ const COST_STATS_FIXTURE = {
     stages: [],
     usage: [
         {
-            scope: "instance", totalAttempts: 20, costUSD: 15.5, p50CostUSD: 0.7,
-            p95CostUSD: 1.8, costSamples: 18, p50Tokens: 1200, p95Tokens: 4400,
-            retryWasteAttempts: 2, retryWasteCostUSD: 1.25, retryWasteTokens: 900,
+            scope: "instance", totalAttempts: 20, costAIC: 1550, p50CostAIC: 70,
+            p95CostAIC: 180, costSamples: 18, p50Tokens: 1200, p95Tokens: 4400,
+            retryWasteAttempts: 2, retryWasteCostAIC: 125, retryWasteTokens: 900,
         },
         {
-            scope: "gaggle", gaggle: "core", totalAttempts: 12, costUSD: 10,
-            p50CostUSD: 0.6, p95CostUSD: 1.4, costSamples: 10, p50Tokens: 1000, p95Tokens: 3000,
-            retryWasteAttempts: 1, retryWasteCostUSD: 0.5, retryWasteTokens: 400,
+            scope: "gaggle", gaggle: "core", totalAttempts: 12, costAIC: 1000,
+            p50CostAIC: 60, p95CostAIC: 140, costSamples: 10, p50Tokens: 1000, p95Tokens: 3000,
+            retryWasteAttempts: 1, retryWasteCostAIC: 50, retryWasteTokens: 400,
         },
     ],
     trend: [
         {
             since: "2026-01-01T00:00:00Z",
             until: "2026-01-02T00:00:00Z",
-            usage: [{ scope: "instance", costUSD: 7, p50Tokens: 800, costSamples: 8 }],
+            usage: [{ scope: "instance", costAIC: 700, p50Tokens: 800, costSamples: 8 }],
         },
         {
             since: "2026-01-02T00:00:00Z",
             until: "2026-01-03T00:00:00Z",
-            usage: [{ scope: "instance", costUSD: 8.5, p50Tokens: 900, costSamples: 10 }],
+            usage: [{ scope: "instance", costAIC: 850, p50Tokens: 900, costSamples: 10 }],
         },
     ],
     trendPrevious: {
-        usage: [{ scope: "instance", costUSD: 5 }],
+        usage: [{ scope: "instance", costAIC: 500 }],
     },
 };
 
@@ -957,8 +957,8 @@ const COST_RESULT_FIXTURE = {
 test("deriveExternalCostRows normalizes PR and issue cost aggregates", () => {
     const rows = deriveExternalCostRows(COST_RESULT_FIXTURE);
     assert.deepEqual(rows.map((row) => row.label), ["PR #5183", "Issue #99"]);
-    assert.equal(rows[0].native, "$4.20");
-    assert.equal(rows[1].native, "12 credits est.");
+    assert.equal(rows[0].aic, "420 AIC");
+    assert.equal(rows[1].aic, "12 AIC estimated");
     assert.equal(rows[1].lowerBound, true);
     assert.deepEqual(rows[0].runs, ["run-1", "run-2"]);
 });
@@ -966,12 +966,12 @@ test("deriveExternalCostRows normalizes PR and issue cost aggregates", () => {
 test("renderCostPanel renders summary, trend, instance rollup, external breakdown, and lookup result", () => {
     const lookup = { ...COST_RESULT_FIXTURE, scope: "pr", externalId: "5183", issues: [] };
     const html = renderCostPanel(COST_STATS_FIXTURE, COST_RESULT_FIXTURE, { kind: "instance" }, "7d", lookup);
-    assert.match(html, /Cost summary/);
-    assert.match(html, /\$15\.50/);
-    assert.match(html, /Cost trend/);
-    assert.match(html, /Cost by gaggle/);
+    assert.match(html, /AIC summary/);
+    assert.match(html, /1,550 AIC/);
+    assert.match(html, /AIC over time/);
+    assert.match(html, /AIC by gaggle/);
     assert.match(html, /core/);
-    assert.match(html, /Cost by pull request and issue/);
+    assert.match(html, /AIC by pull request and issue/);
     assert.match(html, /PR #5183/);
     assert.match(html, /Issue #99/);
     assert.match(html, /Lookup result/);
@@ -979,7 +979,7 @@ test("renderCostPanel renders summary, trend, instance rollup, external breakdow
     assert.match(html, /Attribution is instance-wide/);
 });
 
-test("renderCostPanel orders mixed native and normalized costs by comparable USD value", () => {
+test("renderCostPanel orders mixed native and normalized costs by AIC value", () => {
     const html = renderCostPanel(COST_STATS_FIXTURE, {
         pullRequests: [{
             provider: "github",
@@ -1007,7 +1007,7 @@ test("renderCostPanel orders mixed native and normalized costs by comparable USD
 
 test("renderCostPanel hides instance rollup outside instance scope and renders empty states", () => {
     const scoped = renderCostPanel(COST_STATS_FIXTURE, { pullRequests: [], issues: [] }, { kind: "gaggle", gaggle: "core" }, "all");
-    assert.doesNotMatch(scoped, /Cost by gaggle/);
+    assert.doesNotMatch(scoped, /AIC by gaggle/);
     assert.match(scoped, /bounded time window/);
     assert.match(scoped, /No pull request or issue cost was attributed/);
 
@@ -1080,7 +1080,7 @@ test("renderCostPanel caps external rows and per-row model details", () => {
     assert.doesNotMatch(html, /PR #1</);
 });
 
-test("renderHtml includes Cost tab controls and inlines every Cost helper", () => {
+test("renderHtml includes AIC tab controls and inlines every cost helper", () => {
     const page = renderHtml("inst-1");
     assert.match(page, /dashboard-tab-cost/);
     assert.match(page, /id="cost-lookup-id"/);
@@ -1129,7 +1129,7 @@ const WORK_ITEM_DETAIL_FIXTURE = {
     externalId: "42",
     url: "https://github.com/acme/app/pull/42",
     cost: {
-        costUSD: 1.25,
+        nanoAIU: 1_250_000_000,
         totalRuns: 2,
         measuredRuns: 1,
         totalAttempts: 3,
@@ -1168,8 +1168,7 @@ test("work item helpers format labels, operations, costs, and local filters", ()
     assert.equal(workItemLabel("", "42"), "#42");
     assert.equal(humanizeWorkItemOperation("request-review"), "Request Review");
     assert.equal(humanizeWorkItemOperation(""), "Provider action");
-    assert.equal(formatWorkItemCost({ costUSD: 1.25 }), "$1.25");
-    assert.equal(formatWorkItemCost({ nanoAIU: 1200 }), "1,200 nano-AIU");
+    assert.equal(formatWorkItemCost({ nanoAIU: 1_250_000_000 }), "1.25 AIC");
     assert.equal(formatWorkItemCost(null), "Not attributed");
     assert.equal(formatWorkItemTimestamp("0001-01-01T00:00:00Z"), "\u2014");
     assert.deepEqual(
@@ -1195,7 +1194,7 @@ test("renderWorkItemList renders rows, metadata, overflow, and explicit empty st
 test("renderWorkItemDetail renders cost coverage, related links, action filtering, and truncation", () => {
     const html = renderWorkItemDetail(WORK_ITEM_DETAIL_FIXTURE, "comment");
     assert.match(html, /acme\/app#42/);
-    assert.match(html, /\$1\.25/);
+    assert.match(html, /1\.25 AIC/);
     assert.match(html, /Lower bound; some usage is unmeasured/);
     assert.match(html, /1\/2 runs/);
     assert.match(html, /Open pull request/);

@@ -1668,12 +1668,12 @@ export interface TelemetryStageStats {
   p50Tokens?: number;
   p95Tokens?: number;
   costSamples: number;
-  p50CostUSD?: number;
-  p95CostUSD?: number;
+  p50CostAIC?: number;
+  p95CostAIC?: number;
   retryWasteAttempts: number;
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
-  retryWasteCostUSD?: number;
+  retryWasteCostAIC?: number;
   // How many of totalAttempts belong to a run that hung and was later
   // aborted (the watchdog's max-duration expiry), excluded from
   // avg/min/maxDurationMs and from p50/p95DurationMs — disclosed rather than
@@ -1695,12 +1695,12 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
-  costUSD?: number;
-  p50CostUSD?: number;
-  p95CostUSD?: number;
+  costAIC?: number;
+  p50CostAIC?: number;
+  p95CostAIC?: number;
   retryWasteAttempts: number;
   retryWasteTokens?: number;
-  retryWasteCostUSD?: number;
+  retryWasteCostAIC?: number;
 }
 
 export interface TelemetryModelStats {
@@ -1713,7 +1713,7 @@ export interface TelemetryModelStats {
   premiumRequestSamples: number;
   copilotPremiumRequests?: number;
   costSamples: number;
-  costUSD?: number;
+  costAIC?: number;
 }
 
 export interface TelemetryErrorSignaturesOptions extends TelemetryStatsOptions {
@@ -1799,6 +1799,7 @@ export interface PortalConfig {
 }
 
 export type WorkItemKind = "pr" | "issue";
+export type WorkItemOutcome = "done" | "in-progress" | "bad-terminal";
 
 export interface WorkItemListOptions {
   provider?: string;
@@ -1812,6 +1813,7 @@ export interface WorkItemSummary {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   actionCount: number;
   lastOperation: string;
   lastActionAt: string;
@@ -1843,6 +1845,7 @@ export interface WorkItemDetail {
   kind: WorkItemKind;
   externalId: string;
   url?: string;
+  outcome: WorkItemOutcome;
   cost?: WorkItemCost;
   relatedPullRequests: RelatedWorkItem[];
   actions: WorkItemAction[];
@@ -1850,7 +1853,6 @@ export interface WorkItemDetail {
 }
 
 export interface WorkItemCost {
-  costUSD?: number;
   nanoAIU?: number;
   totalRuns: number;
   measuredRuns: number;

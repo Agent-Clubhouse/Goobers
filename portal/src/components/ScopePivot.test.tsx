@@ -8,7 +8,7 @@ describe("ScopePivot", () => {
 
     const runsLink = screen.getByRole("link", { name: "View core / implementation in Runs" });
     const insightLink = screen.getByRole("link", { name: "View core / implementation in Insight" });
-    const costLink = screen.getByRole("link", { name: "View core / implementation in Cost" });
+    const costLink = screen.getByRole("link", { name: "View core / implementation in AIC" });
 
     expect(runsLink).toHaveAttribute("href", "#/runs?gaggle=core&workflow=implementation");
     expect(insightLink).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");

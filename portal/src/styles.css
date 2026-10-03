@@ -2074,6 +2074,26 @@ summary:focus-visible {
   grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.2fr) minmax(150px, 1fr) 60px 18px;
 }
 
+.work-item-row-done {
+  border-left: 3px solid var(--success);
+}
+
+.work-item-row-done:hover {
+  background: var(--success-soft);
+}
+
+.work-item-outcome-done {
+  color: var(--success);
+}
+
+.work-item-outcome-in-progress {
+  color: var(--active);
+}
+
+.work-item-outcome-bad-terminal {
+  color: var(--danger);
+}
+
 /* A row whose repository was never recorded has no detail page to open. */
 .work-item-grid:disabled {
   cursor: default;
@@ -2984,7 +3004,7 @@ summary:focus-visible {
 }
 
 .external-cost-table {
-  min-width: 980px;
+  min-width: 820px;
 }
 
 .external-cost-grid {
@@ -2992,7 +3012,7 @@ summary:focus-visible {
   gap: 2px 18px;
   grid-template-columns:
     minmax(180px, 1fr) minmax(80px, 0.45fr) minmax(140px, 0.75fr)
-    minmax(140px, 0.75fr) minmax(280px, 1.8fr);
+    minmax(280px, 1.8fr);
 }
 
 .external-cost-header {
@@ -3002,7 +3022,7 @@ summary:focus-visible {
 
 .external-cost-row {
   align-items: start;
-  grid-template-areas: "item provider values values models";
+  grid-template-areas: "item provider values models";
   padding: 12px 13px;
 }
 
@@ -3026,7 +3046,7 @@ summary:focus-visible {
   display: grid;
   gap: 2px 18px;
   grid-area: values;
-  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  grid-template-columns: minmax(140px, 1fr);
 }
 
 .external-cost-values > small {
