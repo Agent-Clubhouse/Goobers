@@ -598,15 +598,15 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	}
 	if done.P50DurationMs == nil || *done.P50DurationMs != 10 ||
 		done.P95Tokens == nil || *done.P95Tokens != 200 ||
-		done.P50CostUSD == nil || *done.P50CostUSD != 0.5 ||
+		done.P50CostAIC == nil || *done.P50CostAIC != 50 ||
 		done.RetryWasteDurationMs == nil || *done.RetryWasteDurationMs != 10 ||
 		done.RetryWasteTokens == nil || *done.RetryWasteTokens != 100 ||
-		done.RetryWasteCostUSD == nil || *done.RetryWasteCostUSD != 0.5 {
+		done.RetryWasteCostAIC == nil || *done.RetryWasteCostAIC != 50 {
 		t.Fatalf("projected stage distributions = %+v", done)
 	}
 	if len(got.Models) != 1 ||
 		got.Models[0].InputTokens == nil || *got.Models[0].InputTokens != 0 ||
-		got.Models[0].OutputTokens != nil || got.Models[0].CostUSD != nil {
+		got.Models[0].OutputTokens != nil || got.Models[0].CostAIC != nil {
 		t.Fatalf("projected model usage = %+v", got.Models)
 	}
 	if len(got.Usage) != 1 || got.Usage[0].Scope != "workflow" ||
@@ -614,8 +614,8 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 		got.Usage[0].P95Tokens == nil || *got.Usage[0].P95Tokens != 200 ||
 		got.Usage[0].P50CopilotPremiumRequests == nil || *got.Usage[0].P50CopilotPremiumRequests != 0 ||
 		got.Usage[0].P95CopilotPremiumRequests == nil || *got.Usage[0].P95CopilotPremiumRequests != 1 ||
-		got.Usage[0].CostUSD == nil || *got.Usage[0].CostUSD != 1.5 ||
-		got.Usage[0].RetryWasteCostUSD == nil || *got.Usage[0].RetryWasteCostUSD != 0.5 {
+		got.Usage[0].CostAIC == nil || *got.Usage[0].CostAIC != 150 ||
+		got.Usage[0].RetryWasteCostAIC == nil || *got.Usage[0].RetryWasteCostAIC != 50 {
 		t.Fatalf("projected scope usage = %+v", got.Usage)
 	}
 	if got.Curation.Runs != 2 || got.Curation.ReportedRuns != 1 || got.Curation.Ready != 4 {
@@ -652,7 +652,7 @@ func TestTelemetryStatsProjectsFiltersAndUnknownMetrics(t *testing.T) {
 	for _, name := range []string{
 		"successRate", "avgDurationMs", "minDurationMs", "maxDurationMs",
 		"p50DurationMs", "p95DurationMs", "p50Tokens", "p95Tokens",
-		"p50CostUSD", "p95CostUSD", "retryWasteDurationMs", "retryWasteTokens", "retryWasteCostUSD",
+		"p50CostAIC", "p95CostAIC", "retryWasteDurationMs", "retryWasteTokens", "retryWasteCostAIC",
 	} {
 		if _, ok := fields[name]; ok {
 			t.Fatalf("unknown stage metric %q was serialized: %s", name, data)
@@ -739,10 +739,10 @@ func TestTelemetryStatsTrendUsesOneBatchedQueryAndPreservesWindows(t *testing.T)
 		t.Fatalf("trend filters = %+v", store.trendReq.Stats)
 	}
 	if len(got.Trend) != 3 || len(got.Trend[0].Usage) != 1 ||
-		got.Trend[1].Usage[0].CostUSD == nil || *got.Trend[1].Usage[0].CostUSD != 2 ||
-		got.Trend[2].Usage[0].CostUSD == nil || *got.Trend[2].Usage[0].CostUSD != 3 ||
-		got.TrendPrevious == nil || got.TrendPrevious.Usage[0].CostUSD == nil ||
-		*got.TrendPrevious.Usage[0].CostUSD != 4 {
+		got.Trend[1].Usage[0].CostAIC == nil || *got.Trend[1].Usage[0].CostAIC != 200 ||
+		got.Trend[2].Usage[0].CostAIC == nil || *got.Trend[2].Usage[0].CostAIC != 300 ||
+		got.TrendPrevious == nil || got.TrendPrevious.Usage[0].CostAIC == nil ||
+		*got.TrendPrevious.Usage[0].CostAIC != 400 {
 		t.Fatalf("trend projection = %+v, previous = %+v", got.Trend, got.TrendPrevious)
 	}
 }
@@ -1016,7 +1016,7 @@ func TestTelemetryStatsStandalonePreviousTrendPreservesFilters(t *testing.T) {
 		t.Fatalf("standalone previous trend windows = %+v", store.trendReq.Windows)
 	}
 	if got.TrendPrevious == nil || len(got.TrendPrevious.Usage) != 1 ||
-		got.TrendPrevious.Usage[0].CostUSD == nil || *got.TrendPrevious.Usage[0].CostUSD != 4 {
+		got.TrendPrevious.Usage[0].CostAIC == nil || *got.TrendPrevious.Usage[0].CostAIC != 400 {
 		t.Fatalf("standalone previous trend projection = %+v", got.TrendPrevious)
 	}
 }

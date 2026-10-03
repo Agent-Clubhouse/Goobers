@@ -18,7 +18,7 @@ const ROUTES: Record<Route["page"], RouteCase> = {
   runs: { path: "/#/runs", heading: "Runs" },
   errors: { path: "/#/errors", heading: "Matching errors" },
   insight: { path: "/#/insight", heading: "Insight" },
-  cost: { path: "/#/cost", heading: "Cost" },
+  cost: { path: "/#/cost", heading: "AIC" },
   "work-items": { path: "/#/work-items", heading: "Work Items" },
   workflow: { path: "/#/workflow/core/implementation", heading: "Implementation" },
   run: { path: `/#/run/${smokeRunId}`, heading: `Run ${smokeRunId}` },
@@ -30,7 +30,7 @@ const PRIMARY_ROUTES = [
   ["Goobers", "/#/goobers", "Goobers"],
   ["Runs", "/#/runs", "Runs"],
   ["Insight", "/#/insight", "Insight"],
-  ["Cost", "/#/cost", "Cost"],
+  ["AIC", "/#/cost", "AIC"],
 ] as const;
 
 function trackConsoleErrors(page: Page): string[] {
@@ -230,8 +230,8 @@ test("bounds route reads when daemon admission is constrained", async ({ page },
   await page.getByRole("button", { name: "Workflows" }).click();
   await page.getByRole("button", { name: "Runs" }).click();
   await page.getByRole("button", { name: "Insight" }).click();
-  await page.getByRole("button", { name: "Cost" }).click();
-  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "AIC" }).click();
+  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
 
   const result = await page.request.get("/api/v1/test/admission", { headers });
   const stats = (await result.json()) as { peak: number; requests: number };
@@ -245,7 +245,7 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   await expect(page.getByRole("heading", { name: "Active runs" })).toBeVisible();
 
   const primary = page.getByRole("navigation", { name: "Primary" });
-  for (const name of ["Overview", "Workflows", "Goobers", "Runs", "Work Items", "Insight", "Cost"]) {
+  for (const name of ["Overview", "Workflows", "Goobers", "Runs", "Work Items", "Insight", "AIC"]) {
     await expect(primary.getByRole("button", { name })).toBeVisible();
   }
   await expect(primary.getByRole("button", { name: "Overview" })).toHaveAttribute(
@@ -262,15 +262,15 @@ test("keeps the shared shell deliberate and accessible at 320px", async ({ page 
   await expect(support).toBeVisible();
   await expect(support.getByRole("link", { name: "Docs" })).toBeVisible();
 
-  await primary.getByRole("button", { name: "Cost" }).click();
-  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
-  await expect(primary.getByRole("button", { name: "Cost" })).toHaveAttribute(
+  await primary.getByRole("button", { name: "AIC" }).click();
+  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
+  await expect(primary.getByRole("button", { name: "AIC" })).toHaveAttribute(
     "aria-current",
     "page",
   );
 
   for (const control of [
-    primary.getByRole("button", { name: "Cost" }),
+    primary.getByRole("button", { name: "AIC" }),
     more,
     page.getByLabel("Scope"),
     page.getByLabel("Time window"),
@@ -305,7 +305,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   );
 
   const costPivot = page.getByRole("link", {
-    name: "View core / Implementation in Cost",
+    name: "View core / Implementation in AIC",
   });
   await expect(costPivot).toHaveAttribute(
     "href",
@@ -313,7 +313,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   );
   await costPivot.click();
   await expect(page).toHaveURL(/#\/cost\?gaggle=core&workflow=implementation$/);
-  await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIC", exact: true })).toBeVisible();
   await expect(page.getByLabel("Scope")).toHaveValue(
     JSON.stringify(["workflow", "core", "implementation"]),
   );

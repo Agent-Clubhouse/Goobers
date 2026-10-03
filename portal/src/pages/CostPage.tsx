@@ -80,14 +80,14 @@ export function CostPage({
   return (
     <>
       <header className="page-heading">
-        <h1>Cost</h1>
+        <h1>AIC</h1>
         <p>
-          Instance spend, selected-scope AI cost, retry waste, and attributed pull request and
-          issue costs.
+          Instance spend, selected-scope AIC, retry waste, and attributed pull request and
+          issue AIC.
         </p>
       </header>
 
-      <div className="insight-controls" aria-label="Cost filters">
+      <div className="insight-controls" aria-label="AIC filters">
         <label>
           <span>Scope</span>
           <CostScopeSelect
@@ -114,18 +114,18 @@ export function CostPage({
 
       {query.state.status === "stale" && query.state.error && (
         <div className="insight-stale-error" role="alert">
-          Cost telemetry refresh failed. Showing the last successful snapshot for this window.
+          AIC telemetry refresh failed. Showing the last successful snapshot for this window.
         </div>
       )}
 
       {view.usage && (
         <section className="content-section">
           <div className="section-heading">
-            <h2>Cost summary</h2>
+            <h2>AIC summary</h2>
             <span className="section-count">Measured attempts only</span>
           </div>
           <p className="usage-description">
-            Cost measurements are aggregated for the selected scope. Runners that do not report
+            AIC measurements are aggregated for the selected scope. Runners that do not report
             usage remain unmeasured.
           </p>
           <UsageAnalytics filters={view.filters} mode="cost" usage={view.usage} />

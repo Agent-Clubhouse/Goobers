@@ -272,7 +272,7 @@ describe("portal foundation", () => {
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
     { hash: "#/insight", heading: "Insight" },
-    { hash: "#/cost", heading: "Cost" },
+    { hash: "#/cost", heading: "AIC" },
   ])("renders the $hash shell route from daemon fixtures", async ({ hash, heading }) => {
     window.location.hash = hash;
     renderLiveApp();

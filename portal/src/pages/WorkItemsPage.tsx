@@ -295,7 +295,7 @@ function WorkItemDetailView({
             <strong>{item.actions.length}</strong>
           </span>
           <span>
-            <small>Attributed cost to date</small>
+            <small>Attributed AIC to date</small>
             <strong>{formatWorkItemCost(item.cost)}</strong>
             {item.cost?.lowerBound && <em>Lower bound; some usage is unmeasured</em>}
           </span>
@@ -415,16 +415,8 @@ function workItemLabel(repository: string | undefined, externalId: string): stri
 
 function formatWorkItemCost(cost: WorkItemDetail["cost"]): string {
   if (!cost) return "Not attributed";
-  if (cost.costUSD !== undefined) {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4,
-    }).format(cost.costUSD);
-  }
   if (cost.nanoAIU !== undefined) {
-    return `${new Intl.NumberFormat("en-US").format(cost.nanoAIU)} nano-AIU`;
+    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(cost.nanoAIU / 1_000_000_000)} AIC`;
   }
   return "Not measured";
 }

@@ -46,7 +46,7 @@ function client() {
         externalId: "42",
         url: "https://github.com/acme/app/pull/42",
         cost: {
-          costUSD: 1.25,
+          nanoAIU: 1_250_000_000,
           totalRuns: 1,
           measuredRuns: 1,
           totalAttempts: 1,
@@ -165,7 +165,7 @@ describe("WorkItemsPage", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "acme/app#42" })).toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: "Work Items" }));
     expect(navigate).toHaveBeenCalledWith({ page: "work-items", kind: "pr" });
-    expect(screen.getByText("$1.25")).toBeInTheDocument();
+    expect(screen.getByText("1.25 AIC")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open pull request" })).toHaveAttribute(
       "href",
       "https://github.com/acme/app/pull/42",

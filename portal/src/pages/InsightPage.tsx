@@ -655,7 +655,7 @@ export function UsageAnalytics({
     <div className="data-table-shell usage-analytics usage-analytics-split">
       <div aria-hidden="true" className="data-table-header usage-header">
         <span>Scope</span>
-        <span>{mode === "insight" ? "Tokens" : "AI cost"}</span>
+        <span>{mode === "insight" ? "Tokens" : "AIC"}</span>
         <span>Retry waste</span>
       </div>
       <div className="usage-row">
@@ -678,14 +678,14 @@ export function UsageAnalytics({
           />
         ) : (
           <UsagePercentiles
-            ariaLabel={`View AI cost runs behind ${label}: total ${formatMeasuredCost(usage.costUSD)}, ${formatRunCount(usage.costSamples)}, P50 ${formatMeasuredCost(usage.p50CostUSD)}, P95 ${formatMeasuredCost(usage.p95CostUSD)}`}
+            ariaLabel={`View AIC runs behind ${label}: total ${formatMeasuredAIC(usage.costAIC)}, ${formatRunCount(usage.costSamples)}, P50 ${formatMeasuredAIC(usage.p50CostAIC)}, P95 ${formatMeasuredAIC(usage.p95CostAIC)}`}
             countFormatter={formatRunCount}
-            formatter={formatMeasuredCost}
-            label="AI cost"
-            p50={usage.p50CostUSD}
-            p95={usage.p95CostUSD}
+            formatter={formatMeasuredAIC}
+            label="AIC"
+            p50={usage.p50CostAIC}
+            p95={usage.p95CostAIC}
             samples={usage.costSamples}
-            total={usage.costUSD}
+            total={usage.costAIC}
           />
         )}
         <RetryWasteMetric
@@ -768,7 +768,7 @@ function RetryWasteMetric({
       : [
           `${usage.retryWasteAttempts} superseded ${usage.retryWasteAttempts === 1 ? "attempt" : "attempts"}`,
           formatMeasuredTokens(usage.retryWasteTokens),
-          ...(includeCost ? [formatMeasuredCost(usage.retryWasteCostUSD)] : []),
+          ...(includeCost ? [formatMeasuredAIC(usage.retryWasteCostAIC)] : []),
         ].join(", ");
   const content = (
     <>
@@ -795,8 +795,8 @@ function RetryWasteMetric({
           </span>
           {includeCost && (
             <span>
-              <small>Cost</small>
-              <strong>{formatMeasuredCost(usage.retryWasteCostUSD)}</strong>
+              <small>AIC</small>
+              <strong>{formatMeasuredAIC(usage.retryWasteCostAIC)}</strong>
             </span>
           )}
         </span>
@@ -839,7 +839,7 @@ export function CostTrend({
   if (costTrend.status === "loading") {
     return (
       <div className="usage-trend">
-        <SectionQueryStatus loading message="Loading cost trend…" />
+        <SectionQueryStatus loading message="Loading AIC trend…" />
       </div>
     );
   }
@@ -850,8 +850,8 @@ export function CostTrend({
         error
         message={
           unavailable
-            ? "Cost trends are not supported by this daemon. Upgrade Goobers to enable this section."
-            : "Unable to load the cost trend."
+            ? "AIC trends are not supported by this daemon. Upgrade Goobers to enable this section."
+            : "Unable to load the AIC trend."
         }
         retry={unavailable ? undefined : retry}
       />
@@ -872,19 +872,19 @@ export function CostTrend({
           loading={refreshing}
           message={
             costTrend.status === "stale" && costTrend.error
-              ? "Cost trend refresh failed. Showing the last successful read."
-              : "Refreshing cost trend…"
+              ? "AIC trend refresh failed. Showing the last successful read."
+              : "Refreshing AIC trend…"
           }
           retry={retry}
         />
       )}
       <div className="usage-trend-heading">
-        <h3>Cost over time</h3>
+        <h3>AIC over time</h3>
       </div>
       {hasSamples ? (
         <CostTrendSparkline points={points} window={window} />
       ) : (
-        <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
+        <p className="usage-trend-note">No AIC samples across buckets in this scope.</p>
       )}
       <CostTrendComparison current={currentUsage} previous={data.previousUsage} window={window} />
     </div>
@@ -907,11 +907,11 @@ function CostTrendSparkline({
   const chartPoints = points.map((point, index) => {
     const x =
       margin.left + (points.length === 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
-    cumulativeCost += point.usage?.costUSD ?? 0;
+    cumulativeCost += point.usage?.costAIC ?? 0;
     return {
       ...point,
       cumulativeCost,
-      p95: point.usage?.p95CostUSD ?? 0,
+      p95: point.usage?.p95CostAIC ?? 0,
       x,
     };
   });
@@ -949,7 +949,7 @@ function CostTrendSparkline({
             <g className="usage-trend-gridline" key={tick}>
               <line x1={margin.left} x2={width - margin.right} y1={y} y2={y} />
               <text x={margin.left - 10} y={y + 4}>
-                {formatMeasuredCost(tick)}
+                {formatMeasuredAIC(tick)}
               </text>
             </g>
           );
@@ -960,10 +960,10 @@ function CostTrendSparkline({
         {plottedPoints.map((point) => (
           <g key={point.since}>
             <circle className="usage-trend-point usage-trend-point-cumulative" cx={point.x} cy={point.cumulativeY} r="3">
-              <title>{`${formatMeasuredCost(point.cumulativeCost)} · ${formatBucketTick(point.since, window)}`}</title>
+              <title>{`${formatMeasuredAIC(point.cumulativeCost)} · ${formatBucketTick(point.since, window)}`}</title>
             </circle>
             <circle className="usage-trend-point usage-trend-point-p95" cx={point.x} cy={point.p95Y} r="3">
-              <title>{`${formatMeasuredCost(point.p95)} · ${formatBucketTick(point.since, window)}`}</title>
+              <title>{`${formatMeasuredAIC(point.p95)} · ${formatBucketTick(point.since, window)}`}</title>
             </circle>
           </g>
         ))}
@@ -990,8 +990,8 @@ function CostTrendSparkline({
         })}
       </svg>
       <div className="usage-trend-legend" aria-hidden="true">
-        <span><i className="usage-trend-key usage-trend-key-cumulative" />Cumulative cost</span>
-        <span><i className="usage-trend-key usage-trend-key-p95" />P95 run cost</span>
+        <span><i className="usage-trend-key usage-trend-key-cumulative" />Cumulative AIC</span>
+        <span><i className="usage-trend-key usage-trend-key-p95" />P95 run AIC</span>
       </div>
     </div>
   );
@@ -1014,11 +1014,11 @@ function sparklineAriaLabel(
   let cumulativeCost = 0;
   const summary = points
     .map((point) => {
-      cumulativeCost += point.usage?.costUSD ?? 0;
-      return `${formatBucketLabel(point.since, point.until)}: cumulative ${formatMeasuredCost(cumulativeCost)}, P95 ${formatMeasuredCost(point.usage?.p95CostUSD)}`;
+      cumulativeCost += point.usage?.costAIC ?? 0;
+      return `${formatBucketLabel(point.since, point.until)}: cumulative ${formatMeasuredAIC(cumulativeCost)}, P95 ${formatMeasuredAIC(point.usage?.p95CostAIC)}`;
     })
     .join("; ");
-  return `AI cost trend by bucket. ${summary}`;
+  return `AIC trend by bucket. ${summary}`;
 }
 
 function formatBucketLabel(since: string, until: string): string {
@@ -1051,10 +1051,10 @@ function CostTrendComparison({
   return (
     <dl className="usage-trend-comparison">
       <div>
-        <dt>AI cost vs. previous {duration}</dt>
+        <dt>AIC vs. previous {duration}</dt>
         <dd>
-          {formatMeasuredCost(current.p50CostUSD)}
-          <DeltaBadge current={current.p50CostUSD} previous={previous.p50CostUSD} />
+          {formatMeasuredAIC(current.p50CostAIC)}
+          <DeltaBadge current={current.p50CostAIC} previous={previous.p50CostAIC} />
         </dd>
       </div>
       <div>
@@ -1108,7 +1108,7 @@ export function ExternalCostBreakdown({
 }) {
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<"all" | "pr" | "issue">("all");
-  const [sortKey, setSortKey] = useState<ExternalCostSortKey>("native");
+  const [sortKey, setSortKey] = useState<ExternalCostSortKey>("aic");
   const [sortDirection, setSortDirection] = useState<ExternalCostSortDirection>("desc");
   const [openRuns, setOpenRuns] = useState<{
     label: string;
@@ -1195,7 +1195,7 @@ export function ExternalCostBreakdown({
         <p className="inline-empty">No pull request or issue cost was attributed in this window.</p>
       ) : (
         <>
-          <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
+          <div aria-label="AIC work item filters" className="filter-bar external-cost-controls" role="group">
             <label className="filter-search external-cost-filter-field">
               <span>Filter</span>
               <input
@@ -1229,11 +1229,8 @@ export function ExternalCostBreakdown({
                     <span aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Provider", "provider")}
                     </span>
-                    <span aria-sort={sortKey === "native" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
-                      {sortHeading("Provider-native", "native")}
-                    </span>
-                    <span aria-sort={sortKey === "normalized" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
-                      {sortHeading("Normalized estimate", "normalized")}
+                    <span aria-sort={sortKey === "aic" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("AIC", "aic")}
                     </span>
                     <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Runs / models", "runs")}
@@ -1264,8 +1261,7 @@ export function ExternalCostBreakdown({
                       </span>
                       <span className="external-cost-provider" role="cell">{row.provider}</span>
                       <span className="external-cost-values" role="cell">
-                        <strong className="data-table-number">{row.native}</strong>
-                        <strong className="data-table-number">{row.normalized}</strong>
+                        <strong className="data-table-number">{row.aic}</strong>
                         <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
                           {row.coverage}
                         </small>
@@ -1323,7 +1319,7 @@ export function ExternalCostBreakdown({
                         <th scope="col">Status</th>
                         <th scope="col">Started</th>
                         <th scope="col">Attempts</th>
-                        <th scope="col">Provider-native</th>
+                        <th scope="col">AIC</th>
                         <th scope="col">Models</th>
                       </tr>
                     </thead>
@@ -1342,7 +1338,7 @@ export function ExternalCostBreakdown({
                             <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
                           </td>
                           <td>{run.measuredAttempts}/{run.usageAttempts} measured</td>
-                          <td>{formatCostAmounts(run.nativeTotals, "Unmeasured")}</td>
+                          <td>{formatAICAmounts(run.nativeTotals, run.normalizedTotals, "Unmeasured")}</td>
                           <td>
                             {run.models.map((model) => model.model).join(", ") ||
                               run.billingModels.join(", ") ||
@@ -1372,7 +1368,7 @@ function ExternalCostHeading({
   return (
     <div className="section-heading">
       <div>
-        <h2>Cost by pull request and issue</h2>
+        <h2>AIC by pull request and issue</h2>
       </div>
       <div className="section-heading-meta">
         <span className="section-count">
@@ -1430,14 +1426,14 @@ export function InstanceCostRollup({
         />
       )}
       {rankedGaggles.length === 0 ? (
-        <p className="inline-empty">No gaggle has a measured AI cost in this window.</p>
+        <p className="inline-empty">No gaggle has measured AIC in this window.</p>
       ) : (
         <div className="data-table-shell gaggle-spend-table">
           <div aria-hidden="true" className="data-table-header gaggle-spend-header">
             <span>Gaggle</span>
-            <span>Total cost</span>
-            <span>P50 cost</span>
-            <span>P95 cost</span>
+            <span>Total AIC</span>
+            <span>P50 AIC</span>
+            <span>P95 AIC</span>
             <span>Runs</span>
           </div>
           {rankedGaggles.map((entry) => (
@@ -1458,7 +1454,7 @@ function RollupHeading({
 }) {
   return (
     <div className="section-heading">
-      <h2>Cost by gaggle</h2>
+      <h2>AIC by gaggle</h2>
       <div className="section-heading-meta">
         <span className="section-count">All gaggles · {windowDurationLabel(window)}</span>
         {statusMessage && <SectionQueryStatus loading message={statusMessage} />}
@@ -1488,16 +1484,16 @@ function GaggleSpendRow({
   });
   return (
     <a
-      aria-label={`View instance spend for gaggle ${entry.gaggle}: total ${formatMeasuredCost(usage?.costUSD)}, ${formatRunCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredCost(usage?.p50CostUSD)}, P95 ${formatMeasuredCost(usage?.p95CostUSD)}`}
+      aria-label={`View instance AIC for gaggle ${entry.gaggle}: total ${formatMeasuredAIC(usage?.costAIC)}, ${formatRunCount(usage?.costSamples ?? 0)}, P50 ${formatMeasuredAIC(usage?.p50CostAIC)}, P95 ${formatMeasuredAIC(usage?.p95CostAIC)}`}
       className="gaggle-spend-row"
       href={href}
     >
       <span className="distribution-name">
         <strong>{entry.gaggle}</strong>
       </span>
-      <span>{formatMeasuredCost(usage?.costUSD)}</span>
-      <span>{formatMeasuredCost(usage?.p50CostUSD)}</span>
-      <span>{formatMeasuredCost(usage?.p95CostUSD)}</span>
+      <span>{formatMeasuredAIC(usage?.costAIC)}</span>
+      <span>{formatMeasuredAIC(usage?.p50CostAIC)}</span>
+      <span>{formatMeasuredAIC(usage?.p95CostAIC)}</span>
       <span>{formatRunCount(usage?.costSamples ?? 0)}</span>
     </a>
   );
@@ -1507,24 +1503,16 @@ function formatRunCount(value: number): string {
   return `${value.toLocaleString()} ${value === 1 ? "run" : "runs"}`;
 }
 
-function formatCostAmounts(
-  amounts: readonly TelemetryCostAmount[],
+function formatAICAmounts(
+  native: readonly TelemetryCostAmount[],
+  normalized: readonly TelemetryCostAmount[],
   empty: string,
 ): string {
-  if (amounts.length === 0) {
+  const amount = [...native, ...normalized].find((item) => item.unit === "aiCredits");
+  if (!amount) {
     return empty;
   }
-  return amounts
-    .map((amount) => {
-      if (amount.unit === "usd") {
-        return formatMeasuredCost(amount.value);
-      }
-      if (amount.unit === "aiCredits") {
-        return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC`;
-      }
-      return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} ${amount.unit}`;
-    })
-    .join(" · ");
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC${amount.estimated ? " estimated" : ""}`;
 }
 
 function StageDistributions({
@@ -1724,16 +1712,11 @@ function formatMeasuredTokens(value: number | undefined): string {
   return value === undefined ? "Unmeasured" : `${value.toLocaleString("en-US")} tokens`;
 }
 
-function formatMeasuredCost(value: number | undefined): string {
+function formatMeasuredAIC(value: number | undefined): string {
   if (value === undefined) {
     return "Unmeasured";
   }
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(value)} AIC`;
 }
 
 function formatSamples(samples: number): string {

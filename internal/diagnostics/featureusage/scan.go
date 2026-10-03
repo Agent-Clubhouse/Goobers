@@ -16,6 +16,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/safeopen"
+	"github.com/goobers/goobers/internal/safeio"
 )
 
 // Scan limits bound work and retained data per gaggle observation.
@@ -261,28 +262,17 @@ func observeChild(event journal.Event, seen map[string]bool, result map[string]C
 }
 
 func pinnedBytes(dir string, ref journal.Ref, limit int64) ([]byte, error) {
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
+	data, err := safeio.ReadRegularInRoot(dir, ref.Path, limit)
+	if errors.Is(err, safeio.ErrLimitExceededDuringRead) {
+		return nil, errors.New("pinned definition size or digest mismatch")
 	}
-	defer func() { _ = root.Close() }()
-	file, err := safeopen.OpenRegularInRoot(root, ref.Path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > limit {
+	if errors.Is(err, safeio.ErrLimitExceeded) {
 		return nil, errors.New("pinned definition exceeds bounds")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > limit || journal.Digest(data) != ref.Digest {
+	if journal.Digest(data) != ref.Digest {
 		return nil, errors.New("pinned definition size or digest mismatch")
 	}
 	return data, nil
