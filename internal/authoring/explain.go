@@ -15,6 +15,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"github.com/goobers/goobers/api/schemas"
+	"github.com/goobers/goobers/internal/stringpolicy"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -744,15 +745,10 @@ func appendTypeValue(types []string, value any) []string {
 }
 
 func appendUniqueString(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
+	if value == "" {
+		return values
 	}
-	if value != "" {
-		values = append(values, value)
-	}
-	return values
+	return stringpolicy.AppendUnique(values, value)
 }
 
 func projectedTypes(types []string) (any, error) {

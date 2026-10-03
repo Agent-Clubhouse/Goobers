@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -407,17 +408,14 @@ func sharedStrings(a, b []string, prefix string) []string {
 }
 
 func distinctSortedStrings(values []string) []string {
-	seen := make(map[string]bool, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		if value == "" || seen[value] {
-			continue
+		if value != "" {
+			out = append(out, value)
 		}
-		seen[value] = true
-		out = append(out, value)
 	}
-	sort.Strings(out)
-	return out
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func candidateItem(item providers.WorkItem, claimed bool) dedupeCandidateItem {

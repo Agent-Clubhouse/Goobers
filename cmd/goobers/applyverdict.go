@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2077,16 +2078,8 @@ func findingSetDigest(findings []apiv1.Finding) (string, error) {
 	encoded := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		blockers := append([]int(nil), finding.BlockingPRs...)
-		sort.Ints(blockers)
-		if len(blockers) > 1 {
-			unique := blockers[:1]
-			for _, blocker := range blockers[1:] {
-				if blocker != unique[len(unique)-1] {
-					unique = append(unique, blocker)
-				}
-			}
-			blockers = unique
-		}
+		slices.Sort(blockers)
+		blockers = slices.Compact(blockers)
 		data, err := json.Marshal(canonicalFinding{
 			Severity:    finding.Severity,
 			Class:       finding.Class,
@@ -2099,16 +2092,8 @@ func findingSetDigest(findings []apiv1.Finding) (string, error) {
 		}
 		encoded = append(encoded, string(data))
 	}
-	sort.Strings(encoded)
-	if len(encoded) > 1 {
-		unique := encoded[:1]
-		for _, finding := range encoded[1:] {
-			if finding != unique[len(unique)-1] {
-				unique = append(unique, finding)
-			}
-		}
-		encoded = unique
-	}
+	slices.Sort(encoded)
+	encoded = slices.Compact(encoded)
 	data, err := json.Marshal(encoded)
 	if err != nil {
 		return "", fmt.Errorf("marshal canonical finding set: %w", err)
