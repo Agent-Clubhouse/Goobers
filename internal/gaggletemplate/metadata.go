@@ -14,6 +14,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/strictyaml"
 )
 
@@ -172,18 +173,8 @@ func writeJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".template-write-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(data); err != nil {
-		return errors.Join(err, tmp.Close())
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return durability.WriteFileAtomic(path, data, 0o600,
+		durability.WithTempPattern(".template-write-"))
 }
 
 // StatusPath locates runtime status outside the deployed configuration tree.

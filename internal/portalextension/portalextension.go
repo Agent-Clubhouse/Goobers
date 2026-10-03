@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/goobers/goobers/internal/platform/durability"
 )
 
 const (
@@ -638,28 +640,8 @@ func (m *Manager) writeDigestRecord(destination string, manifestData []byte) err
 }
 
 func writeAtomic(destination string, data []byte, mode fs.FileMode) error {
-	file, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".tmp-")
-	if err != nil {
-		return err
-	}
-	temp := file.Name()
-	defer func() { _ = os.Remove(temp) }()
-	if err := file.Chmod(mode); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temp, destination)
+	return durability.WriteFileAtomic(destination, data, mode,
+		durability.WithTempPattern("."+filepath.Base(destination)+".tmp-"))
 }
 
 func sameAssets(left, right []Asset) bool {
