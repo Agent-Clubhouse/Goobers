@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { DaemonUnavailableError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import type { RunSummary } from "../api/types";
+import type { RunList, RunListOptions, RunSummary } from "../api/types";
 import {
   emptyDaemonFixtures,
   largeJournalFixtures,
@@ -235,6 +235,18 @@ describe("runs history page", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
   });
 
+  it("rejects non-RFC3339 timestamps before requesting run history", async () => {
+    window.location.hash = "#/runs?since=2026-09-03";
+    const client = new TimestampRejectingClient();
+    const listRuns = vi.spyOn(client, "listRuns");
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'Invalid since filter "2026-09-03". Enter an RFC3339 timestamp.',
+    );
+    expect(listRuns).not.toHaveBeenCalled();
+  });
+
   it("uses a bounded narrow-screen page while retaining pagination", async () => {
     window.location.hash = "#/runs?status=all";
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 320 });
@@ -353,3 +365,16 @@ describe("runs history page", () => {
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
   });
 });
+
+class TimestampRejectingClient extends FixtureDaemonClient {
+  constructor() {
+    super(populatedDaemonFixtures());
+  }
+
+  override async listRuns(request?: RunListOptions): Promise<RunList> {
+    if (request?.since === "2026-09-03") {
+      throw new Error("daemon rejected non-RFC3339 timestamp");
+    }
+    return super.listRuns(request);
+  }
+}
