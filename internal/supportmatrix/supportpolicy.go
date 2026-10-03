@@ -3,8 +3,9 @@ package supportmatrix
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
+
+	"github.com/goobers/goobers/internal/releaseversion"
 )
 
 const (
@@ -549,31 +550,19 @@ func (v releaseVersion) String() string {
 }
 
 func parseSupportReleaseVersion(value string, allowDevelopment bool) (releaseVersion, error) {
-	if value == initialSupportVersion {
-		if allowDevelopment {
-			return releaseVersion{development: true}, nil
-		}
-		return releaseVersion{}, fmt.Errorf("%q is only valid for the initial pre-release baseline", value)
+	parsed, err := releaseversion.Parse(value, releaseversion.Options{
+		DevelopmentSentinel: initialSupportVersion,
+		AllowDevelopment:    allowDevelopment,
+	})
+	if err != nil {
+		return releaseVersion{}, err
 	}
-	if value != strings.TrimSpace(value) || !strings.HasPrefix(value, "v") {
-		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-	}
-	parts := strings.Split(strings.TrimPrefix(value, "v"), ".")
-	if len(parts) != 3 {
-		return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-	}
-	numbers := make([]uint64, len(parts))
-	for i, part := range parts {
-		if part == "" || (len(part) > 1 && part[0] == '0') {
-			return releaseVersion{}, fmt.Errorf("must use canonical vMAJOR.MINOR.PATCH")
-		}
-		number, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
-			return releaseVersion{}, fmt.Errorf("must use vMAJOR.MINOR.PATCH")
-		}
-		numbers[i] = number
-	}
-	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
+	return releaseVersion{
+		development: parsed.Development,
+		major:       parsed.Major,
+		minor:       parsed.Minor,
+		patch:       parsed.Patch,
+	}, nil
 }
 
 func compareReleaseVersions(left, right releaseVersion) int {

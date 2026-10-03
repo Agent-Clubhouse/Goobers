@@ -679,6 +679,12 @@
       "reason": "No Windows-specific seam identified; runs on the Linux unit shards only."
     },
     {
+      "package": "internal/releaseversion",
+      "coverage": "none",
+      "category": "not-selected",
+      "reason": "Pure canonical-version parsing has no Windows-specific seam; runs on the Linux unit shards only."
+    },
+    {
       "package": "internal/remediation",
       "coverage": "none",
       "category": "not-selected",
