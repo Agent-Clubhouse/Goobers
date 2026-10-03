@@ -38,6 +38,7 @@ import {
     renderCostPanel,
     renderRunDetailSummary,
     renderRunEventItems,
+    normalizeLegacyInsightCosts,
     renderOperatorPanel,
     renderRunRowCells,
     renderSnapshotCard,
@@ -692,6 +693,52 @@ test("insightUsageForScope matches the usage entry tagged with the scope's own k
     assert.equal(insightUsageForScope(stats, { kind: "gaggle", gaggle: "missing" }), undefined);
 });
 
+test("normalizeLegacyInsightCosts converts v0.5 USD aggregates and preserves native AIC", () => {
+    const normalized = normalizeLegacyInsightCosts({
+        stages: [{ p50CostUSD: 1.25, p95CostAIC: 250, p95CostUSD: 999, retryWasteCostUSD: 0.75 }],
+        usage: [{ costUSD: 1.5, p50CostUSD: 1.25, p95CostUSD: 2.5, retryWasteCostUSD: 0.75 }],
+        models: [{ costUSD: 1.5 }],
+        trend: [{ usage: [{ costUSD: 2 }] }],
+        trendPrevious: { usage: [{ costUSD: 1 }] },
+    });
+
+    assert.deepEqual(
+        {
+            stage: normalized.stages[0],
+            usage: normalized.usage[0],
+            model: normalized.models[0],
+            trend: normalized.trend[0].usage[0],
+            previous: normalized.trendPrevious.usage[0],
+        },
+        {
+            stage: {
+                p50CostUSD: 1.25, p50CostAIC: 125,
+                p95CostAIC: 250, p95CostUSD: 999,
+                retryWasteCostUSD: 0.75, retryWasteCostAIC: 75,
+                costAIC: undefined,
+            },
+            usage: {
+                costUSD: 1.5, costAIC: 150,
+                p50CostUSD: 1.25, p50CostAIC: 125,
+                p95CostUSD: 2.5, p95CostAIC: 250,
+                retryWasteCostUSD: 0.75, retryWasteCostAIC: 75,
+            },
+            model: {
+                costUSD: 1.5, costAIC: 150,
+                p50CostAIC: undefined, p95CostAIC: undefined, retryWasteCostAIC: undefined,
+            },
+            trend: {
+                costUSD: 2, costAIC: 200,
+                p50CostAIC: undefined, p95CostAIC: undefined, retryWasteCostAIC: undefined,
+            },
+            previous: {
+                costUSD: 1, costAIC: 100,
+                p50CostAIC: undefined, p95CostAIC: undefined, retryWasteCostAIC: undefined,
+            },
+        },
+    );
+});
+
 // A realistic instance-scope fixture exercising every major TelemetryStatsResult
 // section the panel renders: outcome breakdown, curation/ready-pool health,
 // credit assignment, usage, cost trend, and stage hotspots.
@@ -846,7 +893,7 @@ test("the browser script inlines every Insights helper and render function", () 
     const page = renderHtml("inst-1");
     for (const name of [
         "INSIGHT_WINDOWS", "parseInsightScope", "insightScopeValue", "insightScopeLabel",
-        "insightRequestParams", "isInInsightScope", "renderInsightPanel",
+        "insightRequestParams", "isInInsightScope", "normalizeLegacyInsightCosts", "renderInsightPanel",
     ]) {
         assert.match(page, new RegExp("const " + name + " = "), `${name} was not inlined into the browser script`);
     }
