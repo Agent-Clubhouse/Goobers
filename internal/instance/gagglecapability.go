@@ -2,7 +2,8 @@ package instance
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -155,15 +156,7 @@ func RequiredCapabilities(gaggle apiv1.Gaggle, workflows []apiv1.Workflow) []str
 }
 
 func sortedKeys(set map[string]struct{}) []string {
-	if len(set) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(set))
-	for c := range set {
-		out = append(out, c)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(set))
 }
 
 // CheckCapabilityRequirements reports when a gaggle or stage requires a runner

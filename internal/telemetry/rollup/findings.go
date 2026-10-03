@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -803,10 +805,5 @@ func queryRunIDs(ctx context.Context, db *DB, query string, args []any) ([]Journ
 // for a fixed input (T2's own test-plan requirement) even though Go map
 // iteration order is not.
 func sortedKeys(m map[string][]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }

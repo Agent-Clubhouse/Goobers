@@ -2,6 +2,8 @@ package v30
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -216,10 +218,5 @@ func liveOutputsSignature(live map[string]bool) string {
 }
 
 func sortedOutputKeys(live map[string]bool) []string {
-	keys := make([]string, 0, len(live))
-	for key := range live {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(live))
 }

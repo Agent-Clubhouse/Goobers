@@ -3,9 +3,10 @@ package journal
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"sigs.k8s.io/yaml"
 
@@ -160,10 +161,5 @@ func fsyncDir(dir string) error {
 // sortedKeys returns the keys of m in deterministic order, so input snapshots
 // are pinned to run.yaml in a stable sequence.
 func sortedKeys(m map[string][]byte) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
