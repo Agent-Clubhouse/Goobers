@@ -48,3 +48,22 @@ spec:
   # `netfx@4.8`) are matched at schedule time but not host-probed.
   requiredCapabilities:
     - node@20
+  # Optional health policy. Omission uses the same conservative defaults:
+  # observe all known conditions, notify at warning+, and permit only the
+  # built-in idempotent orphaned-claim repair.
+  health:
+    evaluationInterval: 5m
+    thresholds:
+      triggerSilence: 30m
+      noProgress: 30m
+      flappingWindow: 1h
+      flappingCount: 3
+      prolongedDegradation: 6h
+      evidenceRetention: 720h
+    findings:
+      orphaned-claim:
+        mode: repair
+      prolonged-degradation:
+        mode: escalate
+    notifications:
+      minimumSeverity: warning

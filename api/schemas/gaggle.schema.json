@@ -99,6 +99,7 @@
           "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*/?$"
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Gaggle-level overrides for instance runner safety budgets." },
+        "health": { "$ref": "#/$defs/healthPolicy", "description": "Optional gaggle-health observation, notification, escalation, and hard-safety-bounded repair policy. Omitted uses conservative documented defaults." },
         "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Default absolute local filesystem root (or ~/ path) where workflows additionally mirror durable journal outbox files." },
         "sandbox": {
           "description": "Per-gaggle override of the instance-wide isolation posture for agentic stages (#1305). Omitted inherits the instance posture; the default is disabled (opt-in).",
@@ -219,6 +220,88 @@
         "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
+      }
+    },
+    "healthPolicy": {
+      "type": "object",
+      "description": "Gaggle-scoped health policy. Workflow triggers observe filtered events only; automatic repair authority remains in product hard policy.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": ["boolean", "null"],
+          "description": "Enables periodic health evaluation. Null or omitted defaults to true."
+        },
+        "evaluationInterval": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Positive Go duration between evaluations, from 30s through 1h. Omitted defaults to 5m."
+        },
+        "thresholds": { "$ref": "#/$defs/healthThresholds", "description": "Detector timing and retained-evidence bounds." },
+        "findings": {
+          "type": "object",
+          "description": "Per-code policy overrides. Unknown finding codes are rejected. Omitted codes retain hard product safety policy.",
+          "propertyNames": {
+            "enum": ["trigger-silence", "no-progress", "workflow-flapping", "prolonged-degradation", "orphaned-claim", "projection-drift"]
+          },
+          "additionalProperties": { "$ref": "#/$defs/findingPolicy" }
+        },
+        "notifications": { "$ref": "#/$defs/healthNotifications", "description": "Operator notification and escalation policy." },
+        "eventWorkflow": { "$ref": "#/$defs/healthEventWorkflow", "description": "Filtered health-event workflow notification. This surface cannot authorize repair." }
+      }
+    },
+    "healthThresholds": {
+      "type": "object",
+      "description": "Positive Go-duration detector windows and bounded episode-history retention.",
+      "additionalProperties": false,
+      "properties": {
+        "triggerSilence": { "type": "string", "minLength": 1, "description": "Maximum silence from an enabled trigger before a finding. Defaults to 30m." },
+        "noProgress": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period for an active run before a finding. Defaults to 30m." },
+        "flappingWindow": { "type": "string", "minLength": 1, "description": "Window in which repeated state transitions count as flapping. Defaults to 1h." },
+        "flappingCount": { "type": "integer", "minimum": 2, "maximum": 100, "description": "Transitions in flappingWindow that open an episode. Defaults to 3." },
+        "prolongedDegradation": { "type": "string", "minLength": 1, "description": "Duration before unresolved degradation requires an operator. Defaults to 6h." },
+        "evidenceRetention": { "type": "string", "minLength": 1, "description": "Episode-history retention, at least prolongedDegradation and at most 2160h. Defaults to 720h." }
+      }
+    },
+    "findingPolicy": {
+      "type": "object",
+      "description": "Handling override for one known finding. Repair validates against a non-configurable product allowlist.",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["observe", "repair", "escalate"], "description": "Observe records only, repair requests an allowlisted idempotent repair, and escalate requires operator attention." },
+        "severity": { "type": "string", "enum": ["info", "warning", "error", "critical"], "description": "Optional severity override. It may raise but never lower the finding code's hard minimum." }
+      }
+    },
+    "healthNotifications": {
+      "type": "object",
+      "description": "Bounded operator notification and escalation settings.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": ["boolean", "null"], "description": "Enables operator notifications. Null or omitted defaults to true." },
+        "escalateAfter": { "type": "string", "minLength": 1, "description": "Positive Go duration after which an unresolved finding is escalated. Defaults to 1h." },
+        "minimumSeverity": { "type": "string", "enum": ["info", "warning", "error", "critical"], "description": "Lowest severity delivered to notification channels. Defaults to warning." }
+      }
+    },
+    "healthEventWorkflow": {
+      "type": "object",
+      "description": "Notification-only workflow trigger for bounded health transitions. It grants no remediation authority.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "description": "Enables delivery of matching health transitions." },
+        "workflow": { "type": "string", "minLength": 1, "description": "Workflow name receiving matching transitions; required when enabled." },
+        "eventTypes": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Transition kinds delivered to the workflow. Empty includes all kinds.",
+          "items": { "type": "string", "enum": ["evaluation", "finding-opened", "finding-updated", "repair-started", "repair-finished", "escalation", "finding-resolved"] }
+        },
+        "findingCodes": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Finding codes delivered to the workflow. Empty includes all known codes.",
+          "items": { "type": "string", "enum": ["trigger-silence", "no-progress", "workflow-flapping", "prolonged-degradation", "orphaned-claim", "projection-drift"] }
+        },
+        "minimumSeverity": { "type": "string", "enum": ["info", "warning", "error", "critical"], "description": "Lowest finding severity delivered to the workflow." }
       }
     },
     "backlogRef": {
