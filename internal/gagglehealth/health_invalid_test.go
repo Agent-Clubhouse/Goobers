@@ -100,6 +100,27 @@ func TestRebuildRejectsInvalidJournalTransitions(t *testing.T) {
 			event(1, now, apiv1.GaggleHealthFindingOpened, base),
 			event(2, now, apiv1.GaggleHealthFindingResolved, base),
 		}},
+		{"finding gaggle differs from partition", func() []apiv1.GaggleHealthEvent {
+			candidate := event(1, now, apiv1.GaggleHealthFindingOpened, base)
+			candidate.Gaggle = "beta"
+			return []apiv1.GaggleHealthEvent{candidate}
+		}()},
+		{"episode key differs from identity", func() []apiv1.GaggleHealthEvent {
+			candidate := event(1, now, apiv1.GaggleHealthFindingOpened, base)
+			candidate.Finding.Identity.Run = "another-run"
+			return []apiv1.GaggleHealthEvent{candidate}
+		}()},
+		{"opened with resolved state", func() []apiv1.GaggleHealthEvent {
+			candidate := event(1, now, apiv1.GaggleHealthFindingOpened, base)
+			candidate.Finding.ResolvedAt = &now
+			candidate.Finding.ResolutionEvidence = candidate.Finding.Evidence
+			candidate.Finding.Repair.FollowUp = apiv1.GaggleHealthFollowUpResolved
+			return []apiv1.GaggleHealthEvent{candidate}
+		}()},
+		{"repair started with unchanged disposition", []apiv1.GaggleHealthEvent{
+			event(1, now, apiv1.GaggleHealthFindingOpened, base),
+			event(2, now, apiv1.GaggleHealthRepairStartedEvent, base),
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,10 +147,30 @@ func TestValidateFindingRejectsUnboundedOrUnauthorizedData(t *testing.T) {
 		{"unbounded summary", func(f *apiv1.GaggleHealthFinding) { f.Summary = strings.Repeat("x", MaxSummaryLength+1) }},
 		{"unauthorized repair", func(f *apiv1.GaggleHealthFinding) { f.Repair.PolicyAuthorized = true }},
 		{"invalid confidence", func(f *apiv1.GaggleHealthFinding) { f.Confidence = 2 }},
+		{"oversized identity", func(f *apiv1.GaggleHealthFinding) {
+			f.Identity.Run = strings.Repeat("x", MaxIdentityLength+1)
+			f.EpisodeKey, _ = EpisodeKey(f.Code, f.Identity)
+		}},
+		{"host path identity", func(f *apiv1.GaggleHealthFinding) {
+			f.Identity.Run = `C:\Users\operator\run`
+			f.EpisodeKey, _ = EpisodeKey(f.Code, f.Identity)
+		}},
+		{"malformed evidence digest", func(f *apiv1.GaggleHealthFinding) { f.Evidence[0].Digest = "abc" }},
+		{"oversized evidence kind", func(f *apiv1.GaggleHealthFinding) {
+			f.Evidence[0].Kind = strings.Repeat("x", MaxEvidenceKindLength+1)
+		}},
+		{"oversized idempotency key", func(f *apiv1.GaggleHealthFinding) {
+			f.Repair.IdempotencyKey = strings.Repeat("x", MaxIdentityLength+1)
+		}},
+		{"secret shaped summary", func(f *apiv1.GaggleHealthFinding) {
+			f.Summary = "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := base
+			candidate.Evidence = append([]apiv1.GaggleHealthEvidence(nil), base.Evidence...)
+			candidate.ResolutionEvidence = append([]apiv1.GaggleHealthEvidence(nil), base.ResolutionEvidence...)
 			tc.mutate(&candidate)
 			if err := ValidateFinding(candidate); err == nil {
 				t.Fatal("ValidateFinding() accepted invalid data")
