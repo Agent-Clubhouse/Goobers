@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/planehttp"
 )
 
 // Environment variables that select the HTTP backend in a stage process.
@@ -140,7 +141,8 @@ type Config struct {
 
 // HTTP is the telemetry read plane backend.
 type HTTP struct {
-	cfg Config
+	cfg   Config
+	plane *planehttp.Client
 }
 
 // NewHTTP constructs the plane backend.
@@ -163,10 +165,20 @@ func NewHTTP(cfg Config) (*HTTP, error) {
 	if err := ValidateScopeName("gaggle", cfg.Gaggle); err != nil {
 		return nil, err
 	}
-	if cfg.Client == nil {
-		cfg.Client = &http.Client{Timeout: DefaultTimeout}
+	plane, err := planehttp.New(planehttp.Config{
+		BaseURL:      cfg.BaseURL,
+		Token:        cfg.Token,
+		Client:       cfg.Client,
+		Timeout:      DefaultTimeout,
+		BaseURLError: errors.New("telemetryclient: HTTP backend requires a base URL"),
+		TokenError:   ErrEndpointWithoutToken,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return &HTTP{cfg: cfg}, nil
+	cfg.BaseURL = plane.BaseURL()
+	cfg.Client = plane.HTTPClient()
+	return &HTTP{cfg: cfg, plane: plane}, nil
 }
 
 // ValidateEndpoint refuses a plane endpoint this client will not talk to.
@@ -247,16 +259,15 @@ func (h *HTTP) ImplementationOutcomes(ctx context.Context, since time.Time) ([]I
 	if !since.IsZero() {
 		query.Set("since", since.UTC().Format(time.RFC3339Nano))
 	}
-	target := h.cfg.BaseURL + apicontract.TelemetryImplementationOutcomesPath + "?" + query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	path := apicontract.TelemetryImplementationOutcomesPath + "?" + query.Encode()
+	headers := make(http.Header)
+	headers.Set("Accept", "application/json")
+	response, err := h.plane.DoRaw(ctx, http.MethodGet, path, nil, headers)
 	if err != nil {
-		return nil, fmt.Errorf("telemetryclient: build request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+h.cfg.Token)
-	request.Header.Set("Accept", "application/json")
-
-	response, err := h.cfg.Client.Do(request)
-	if err != nil {
+		var requestErr *planehttp.RequestError
+		if errors.As(err, &requestErr) && requestErr.Op == "build" {
+			return nil, fmt.Errorf("telemetryclient: build request: %w", requestErr.Err)
+		}
 		return nil, fmt.Errorf("telemetryclient: read implementation outcomes: %w", err)
 	}
 	defer func() {
@@ -276,16 +287,11 @@ func (h *HTTP) ImplementationOutcomes(ctx context.Context, since time.Time) ([]I
 // planeError converts a non-200 into the typed refusal, preserving the
 // envelope's code and message when the body carries one.
 func planeError(response *http.Response) error {
-	planeErr := &Error{Status: response.StatusCode, Code: "unknown", Message: http.StatusText(response.StatusCode)}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	body, err := planehttp.ReadBounded(response.Body, 64<<10)
 	if err != nil || len(body) == 0 {
-		return planeErr
+		return &Error{Status: response.StatusCode, Code: "unknown", Message: http.StatusText(response.StatusCode)}
 	}
-	var envelope apicontract.ErrorEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error.Code == "" {
-		return planeErr
-	}
-	planeErr.Code = envelope.Error.Code
-	planeErr.Message = envelope.Error.Message
-	return planeErr
+	return planehttp.DecodeError(response.StatusCode, body, func(status int, code, message string) error {
+		return &Error{Status: status, Code: code, Message: message}
+	}, planehttp.ErrorFallback{Code: "unknown", Message: http.StatusText(response.StatusCode)})
 }
