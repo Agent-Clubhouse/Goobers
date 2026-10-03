@@ -116,6 +116,76 @@ for (const [area, path, heading] of PRIMARY_ROUTES) {
   });
 }
 
+test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed, and desktop layouts", async ({
+  page,
+}) => {
+  const layouts = [
+    { name: "320px", width: 320, height: 800 },
+    { name: "390px", width: 390, height: 844 },
+    { name: "430px", width: 430, height: 844 },
+    { name: "landscape", width: 844, height: 390 },
+    { name: "200% zoom reflow", width: 195, height: 422 },
+    { name: "desktop", width: 1280, height: 800 },
+  ];
+
+  for (const layout of layouts) {
+    await page.setViewportSize({ width: layout.width, height: layout.height });
+
+    await page.goto("/#/insight");
+    const insightHeading = page.getByRole("heading", { name: "Insight", exact: true });
+    const outcome = page.locator(".insight-outcome-row-summary");
+    await expect(insightHeading, `Insight title at ${layout.name}`).toBeVisible();
+    await expect(outcome, `Insight summary at ${layout.name}`).toBeVisible();
+    for (const metric of ["success rate", "successful", "failed", "other", "all"]) {
+      await expect(
+        outcome.getByRole("link", { name: new RegExp(`View .*${metric}`, "i") }),
+        `${metric} outcome at ${layout.name}`,
+      ).toBeVisible();
+    }
+    await outcome.locator(".insight-scope-label strong").evaluate((element) => {
+      element.textContent = "A very long operational scope name that must wrap without overflow";
+    });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - innerWidth),
+      `Insight document overflow at ${layout.name}`,
+    ).toBeLessThanOrEqual(1);
+    if (layout.width === 390 && layout.height === 844) {
+      expect((await outcome.boundingBox())!.y).toBeLessThan(layout.height);
+    }
+
+    await page.goto("/#/cost");
+    const costHeading = page.getByRole("heading", { name: "AIC", exact: true });
+    const summary = page.locator(".usage-analytics").first();
+    await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
+    await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
+    await expect(summary.getByText("Total", { exact: true })).toBeVisible();
+    await expect(summary.getByText("P50", { exact: true })).toBeVisible();
+    await expect(summary.getByText("P95", { exact: true })).toBeVisible();
+    const comparison = page.getByRole("region", { name: "Attributed costs comparison" });
+    await expect(comparison).toBeVisible();
+    await expect(comparison).toHaveAttribute("tabindex", "0");
+    await expect(
+      comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
+    ).toHaveCount(4);
+    await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
+    await expect(page.getByText("Scroll sideways to compare every cost column.")).toBeVisible();
+    if (layout.width <= 430) {
+      expect(
+        await comparison.evaluate((element) => element.scrollWidth > element.clientWidth),
+        `Cost comparison local overflow at ${layout.name}`,
+      ).toBe(true);
+    }
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - innerWidth),
+      `Cost document overflow at ${layout.name}`,
+    ).toBeLessThanOrEqual(1);
+    if (layout.width === 390 && layout.height === 844) {
+      expect((await summary.boundingBox())!.y).toBeLessThan(layout.height);
+    }
+
+  }
+});
+
 test("loads Overview and Workflows and processes an SSE invalidation", async ({ page }) => {
   const consoleErrors = trackConsoleErrors(page);
   let workflowRunReads = 0;

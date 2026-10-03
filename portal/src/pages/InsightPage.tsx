@@ -989,9 +989,9 @@ function CostTrendSparkline({
           ) : null;
         })}
       </svg>
-      <div className="usage-trend-legend" aria-hidden="true">
-        <span><i className="usage-trend-key usage-trend-key-cumulative" />Cumulative AIC</span>
-        <span><i className="usage-trend-key usage-trend-key-p95" />P95 run AIC</span>
+      <div aria-label="Cost chart legend" className="usage-trend-legend" role="list">
+        <span role="listitem"><i className="usage-trend-key usage-trend-key-cumulative" />Cumulative AIC</span>
+        <span role="listitem"><i className="usage-trend-key usage-trend-key-p95" />P95 run AIC</span>
       </div>
     </div>
   );
@@ -1220,9 +1220,19 @@ export function ExternalCostBreakdown({
           {visibleRows.length === 0 ? (
             <p className="inline-empty">No attributed costs match the current filters.</p>
           ) : (
-            <div className="data-table-shell external-cost-table-wrap">
-              <div className="external-cost-table" role="table">
-                <div className="data-table-header external-cost-grid external-cost-header" role="row">
+            <>
+              <p className="local-scroll-affordance" id="external-cost-scroll-hint">
+                Scroll sideways to compare every cost column.
+              </p>
+              <div
+                aria-describedby="external-cost-scroll-hint"
+                aria-label="Attributed costs comparison"
+                className="data-table-shell external-cost-table-wrap"
+                role="region"
+                tabIndex={0}
+              >
+                <div aria-label="Attributed costs" className="external-cost-table" role="table">
+                  <div className="data-table-header external-cost-grid external-cost-header" role="row">
                     <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Work item", "work-item")}
                     </span>
@@ -1235,8 +1245,8 @@ export function ExternalCostBreakdown({
                     <span aria-sort={sortKey === "runs" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Runs / models", "runs")}
                     </span>
-                </div>
-                {visibleRows.map((row) => (
+                  </div>
+                  {visibleRows.map((row) => (
                     <div className="external-cost-grid external-cost-row" key={row.key} role="row">
                       <span className="work-item-identity external-cost-item" role="cell">
                           {row.repository ? (
@@ -1287,9 +1297,10 @@ export function ExternalCostBreakdown({
                           )}
                       </span>
                     </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+            </>
           )}
           {openRuns && (
             <div className="artifact-dialog-backdrop">
@@ -1310,7 +1321,16 @@ export function ExternalCostBreakdown({
                     <Icon name="close" size={16} />
                   </button>
                 </header>
-                <div className="external-cost-run-table-wrap">
+                <p className="local-scroll-affordance" id="external-cost-run-scroll-hint">
+                  Scroll sideways to compare every run column.
+                </p>
+                <div
+                  aria-describedby="external-cost-run-scroll-hint"
+                  aria-label={`${openRuns.label} run comparison`}
+                  className="external-cost-run-table-wrap"
+                  role="region"
+                  tabIndex={0}
+                >
                   <table aria-label={`${openRuns.label} run breakdown`}>
                     <thead>
                       <tr>
@@ -1491,10 +1511,10 @@ function GaggleSpendRow({
       <span className="distribution-name">
         <strong>{entry.gaggle}</strong>
       </span>
-      <span>{formatMeasuredAIC(usage?.costAIC)}</span>
-      <span>{formatMeasuredAIC(usage?.p50CostAIC)}</span>
-      <span>{formatMeasuredAIC(usage?.p95CostAIC)}</span>
-      <span>{formatRunCount(usage?.costSamples ?? 0)}</span>
+      <span data-label="Total AIC">{formatMeasuredAIC(usage?.costAIC)}</span>
+      <span data-label="P50 AIC">{formatMeasuredAIC(usage?.p50CostAIC)}</span>
+      <span data-label="P95 AIC">{formatMeasuredAIC(usage?.p95CostAIC)}</span>
+      <span data-label="Runs">{formatRunCount(usage?.costSamples ?? 0)}</span>
     </a>
   );
 }

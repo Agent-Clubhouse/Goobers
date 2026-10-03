@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -396,7 +397,7 @@ func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinn
 // credentials: grant, and which connector applies varies per stage rather
 // than per gaggle.
 func (s *daemonCredentialService) stageConnectorCredential(ctx context.Context, profile stageProfile, requested []string) (*httpapi.MintedCredential, error) {
-	if profile.externalTelemetryConnector == "" || !containsString(requested, string(capability.TelemetryRead)) {
+	if profile.externalTelemetryConnector == "" || !slices.Contains(requested, string(capability.TelemetryRead)) {
 		return nil, nil
 	}
 	return s.resolveExternalTelemetryConnectorCredential(ctx, profile.externalTelemetryConnector)

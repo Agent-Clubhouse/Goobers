@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -145,7 +146,7 @@ func staleResolution(blocker *Blocker, observation Observation) bool {
 	if observation.ObservedAt.Before(blocker.LastSeenAt) {
 		return true
 	}
-	if len(blocker.BaseSHAs) > 1 && contains(blocker.BaseSHAs[:len(blocker.BaseSHAs)-1], observation.BaseSHA) {
+	if len(blocker.BaseSHAs) > 1 && slices.Contains(blocker.BaseSHAs[:len(blocker.BaseSHAs)-1], observation.BaseSHA) {
 		return true
 	}
 	return false
@@ -175,7 +176,7 @@ func (s *Store) Park(observation Observation, waiter Waiter) (Blocker, error) {
 	}
 	blocker.Resolved = false
 	blocker.LastSeenAt = waiter.ParkedAt
-	if !contains(blocker.BaseSHAs, observation.BaseSHA) {
+	if !slices.Contains(blocker.BaseSHAs, observation.BaseSHA) {
 		blocker.BaseSHAs = append(blocker.BaseSHAs, observation.BaseSHA)
 	}
 	if waiter.Subject != "" {
@@ -299,13 +300,4 @@ func BlockerKey(repo, fingerprint string) string {
 
 func observationKey(repo, baseSHA, command string) string {
 	return repo + "\x00" + baseSHA + "\x00" + command
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
