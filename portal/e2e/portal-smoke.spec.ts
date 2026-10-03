@@ -324,6 +324,16 @@ test("keeps optional Overview diagnostics accessible and exposes capacity warnin
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  let recoveryInventory: Record<string, unknown> | undefined;
+  await page.route("**/api/v1/instance", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    delete body.recoveryInventory;
+    await route.fulfill({
+      response,
+      json: recoveryInventory ? { ...body, recoveryInventory } : body,
+    });
+  });
   await page.goto("/#/overview");
 
   const diagnostics = page.getByText("Diagnostics and capacity", { exact: true });
@@ -332,27 +342,17 @@ test("keeps optional Overview diagnostics accessible and exposes capacity warnin
   await expect(page.getByRole("status", { name: "Retention sweep running" })).toBeVisible();
   await expect(page.getByText("Recovery inventory", { exact: true })).toHaveCount(0);
 
-  await page.route("**/api/v1/instance", async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: {
-        ...body,
-        recoveryInventory: {
-          state: "warning",
-          used: 9,
-          limit: 10,
-          unreadable: 0,
-          overflow: 0,
-          highWaterPercent: 80,
-          inventoryRoot: "C:\\fixture\\recovery",
-          policySource: "instance-config",
-          observedAt: "2026-08-17T08:01:59Z",
-        },
-      },
-    });
-  });
+  recoveryInventory = {
+    state: "warning",
+    used: 9,
+    limit: 10,
+    unreadable: 0,
+    overflow: 0,
+    highWaterPercent: 80,
+    inventoryRoot: "C:\\fixture\\recovery",
+    policySource: "instance-config",
+    observedAt: "2026-08-17T08:01:59Z",
+  };
   await page.reload();
 
   const warning = page.getByRole("alert", { name: "Recovery inventory warning" });
@@ -662,14 +662,10 @@ test("restores the originating instance summary focus and scroll", async ({ page
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/#/overview");
   const origin = page.getByRole("link", { name: "View recovery metadata" });
+  await origin.scrollIntoViewIfNeeded();
   await origin.focus();
-  await page.locator(".portal-main").evaluate((element) => {
-    const spacer = document.createElement("div");
-    spacer.style.height = "600px";
-    element.append(spacer);
-    element.scrollTop = 140;
-  });
   const scrollTop = await page.locator(".portal-main").evaluate((element) => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
 
   await origin.click();
   await expect(page.getByRole("heading", { name: "Recovery metadata", exact: true })).toBeVisible();
