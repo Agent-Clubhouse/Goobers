@@ -25,6 +25,21 @@ import { StatusBadge } from "../ui/StatusBadge";
 import { useFailureReasons, type FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
 
+const attentionSelectionStorageKey = "goobers-overview-attention-selection";
+
+function readAttentionSelection(): ReadonlySet<string> {
+  try {
+    const parsed: unknown = JSON.parse(
+      window.sessionStorage.getItem(attentionSelectionStorageKey) ?? "[]",
+    );
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((value): value is string => typeof value === "string"))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
 export function OverviewPage({
   client,
   configurationWarnings,
@@ -104,7 +119,8 @@ function Overview({
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
   const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
-  const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [selectedRunIds, setSelectedRunIds] =
+    useState<ReadonlySet<string>>(readAttentionSelection);
   const [expandedAttentionGroups, setExpandedAttentionGroups] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -121,6 +137,17 @@ function Overview({
   );
   const allVisibleSelected =
     activeAttention.length > 0 && visibleSelectedRunIds.length === activeAttention.length;
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        attentionSelectionStorageKey,
+        JSON.stringify([...selectedRunIds]),
+      );
+    } catch {
+      // Selection remains available until this page unmounts when storage is unavailable.
+    }
+  }, [selectedRunIds]);
 
   const toggleSelected = (runId: string) => {
     setSelectedRunIds((current) => {
@@ -171,7 +198,7 @@ function Overview({
   };
 
   return (
-    <>
+    <div className="overview-page">
       <header className="page-heading">
         <div className="overview-heading-copy">
           {overview.instance.rootIdentity?.decommissionedAt && (
@@ -216,6 +243,7 @@ function Overview({
         </div>
       </header>
 
+      <div className="overview-notices">
       {/* A failed health or instance refresh falls back to the previous data so
           the page keeps rendering something, but that fallback must say it's
           stale — otherwise degraded daemon health or instance state reads as
@@ -283,6 +311,7 @@ function Overview({
           {incompleteRunPhasesMessage(groups.incomplete)}
         </p>
       )}
+      </div>
 
       <InstanceSummaryPanel
         configurationWarningCount={activeConfigurationWarningCount}
@@ -492,8 +521,9 @@ function Overview({
         </section>
       )}
 
-      {!inventoryLoaded ? null : emptyInstance ? (
-        <section className="empty-state">
+      <div className="overview-activity">
+        {!inventoryLoaded ? null : emptyInstance ? (
+          <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
             <h2>No gaggles configured</h2>
@@ -522,8 +552,8 @@ function Overview({
             <RecoveryCommand command="goobers run <workflow> <instance>" />
           </div>
         </section>
-      ) : (
-        <>
+        ) : (
+          <>
           <RunSection
             ariaLabel="Active runs"
             overview={overview}
@@ -536,11 +566,14 @@ function Overview({
             runs={groups.recent}
             title="Recent outcomes"
           />
-        </>
-      )}
+          </>
+        )}
+      </div>
 
-      <ConfigurationWarnings context="instance" {...configurationWarnings} />
-    </>
+      <div className="overview-configuration">
+        <ConfigurationWarnings context="instance" {...configurationWarnings} />
+      </div>
+    </div>
   );
 }
 
@@ -562,6 +595,15 @@ function InstanceSummaryPanel({
   const maintenance = overview.instance.maintenance;
   const recoveryInventory = overview.instance.recoveryInventory;
   const telemetryRetention = overview.instance.telemetryRetention;
+  const diagnosticsRequireAttention =
+    (recoveryInventory !== undefined && recoveryInventory.state !== "healthy") ||
+    maintenance?.state === "failed";
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(
+    () =>
+      diagnosticsRequireAttention ||
+      typeof window.matchMedia !== "function" ||
+      !window.matchMedia("(max-width: 480px)").matches,
+  );
   const daemonTitle = standalone
     ? overview.health.ready
       ? "Healthy"
@@ -629,60 +671,89 @@ function InstanceSummaryPanel({
             </span>
           </div>
         </dl>
-        <div className="daemon-last-checked">
-          <Icon name="clock" size={20} />
-          <span>
-            <span>Last checked</span>
-            <strong>{tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}</strong>
-            {lastTickAt && <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>}
-          </span>
-          <button aria-label="Refresh instance status" onClick={retry} type="button">
-            <Icon name="refresh" size={22} />
-          </button>
-        </div>
       </div>
 
-      {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
-
-      {maintenance && <MaintenanceSummary maintenance={maintenance} />}
-
-      {telemetryRetention && (
-        <div
-          aria-label={`Telemetry retention ${telemetryRetention.enabled ? "enabled" : "disabled"}`}
-          className="instance-summary-row"
-          role="status"
-        >
-          <div className="instance-summary-kind">
-            <span aria-hidden="true" className="instance-summary-icon">
-              <Icon name="chart" size={24} />
-            </span>
-            <span className="instance-summary-copy">
-              <strong>Telemetry retention</strong>
-              <span>Run history and diagnostics</span>
-            </span>
-          </div>
-          <div className="instance-summary-result">
-            <strong>
-              <span aria-hidden="true" className="result-check"><Icon name="check" size={16} /></span>
-              {telemetryRetention.enabled ? "Enabled" : "Disabled"}
-            </strong>
+      <details
+        className="overview-diagnostics"
+        onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
+        open={diagnosticsRequireAttention || diagnosticsOpen}
+      >
+        <summary>
+          <span>
+            <strong>Diagnostics and capacity</strong>
             <span>
-              {formatRetentionWindow(telemetryRetention.window)} · Max {telemetryRetention.maxRuns} runs
+              {diagnosticsRequireAttention
+                ? "Operator attention required"
+                : "Freshness, recovery, and retention"}
             </span>
-            {telemetryRetention.enabled && telemetryRetention.enforceAt && (
-              <span>Enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
-            )}
-            {telemetryRetention.lastPassAt && (
-              <span>
-                Last pass {telemetryRetention.lastPassMode ?? "completed"} ·{" "}
-                {telemetryRetention.candidateCount} candidates ·{" "}
-                {formatTimestamp(telemetryRetention.lastPassAt)}
+          </span>
+          <Icon name="chevron" size={14} />
+        </summary>
+        <div className="overview-diagnostics-content">
+          <div className="instance-summary-row overview-freshness-row">
+            <div className="instance-summary-kind">
+              <span aria-hidden="true" className="instance-summary-icon">
+                <Icon name="clock" size={20} />
               </span>
-            )}
+              <span className="instance-summary-copy">
+                <strong>Data freshness</strong>
+                <span>{lastTickAt ? formatTimestamp(lastTickAt) : "Latest scheduler tick unavailable"}</span>
+              </span>
+            </div>
+            <div className="daemon-last-checked">
+              <span>
+                <span>Last checked</span>
+                <strong>{tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}</strong>
+                {lastTickAt && <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>}
+              </span>
+              <button aria-label="Refresh instance status" onClick={retry} type="button">
+                <Icon name="refresh" size={22} />
+              </button>
+            </div>
           </div>
-        </div>
-      )}
 
+          {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
+
+          {maintenance && <MaintenanceSummary maintenance={maintenance} />}
+
+          {telemetryRetention && (
+            <div
+              aria-label={`Telemetry retention ${telemetryRetention.enabled ? "enabled" : "disabled"}`}
+              className="instance-summary-row"
+              role="status"
+            >
+              <div className="instance-summary-kind">
+                <span aria-hidden="true" className="instance-summary-icon">
+                  <Icon name="chart" size={24} />
+                </span>
+                <span className="instance-summary-copy">
+                  <strong>Telemetry retention</strong>
+                  <span>Run history and diagnostics</span>
+                </span>
+              </div>
+              <div className="instance-summary-result">
+                <strong>
+                  <span aria-hidden="true" className="result-check"><Icon name="check" size={16} /></span>
+                  {telemetryRetention.enabled ? "Enabled" : "Disabled"}
+                </strong>
+                <span>
+                  {formatRetentionWindow(telemetryRetention.window)} · Max {telemetryRetention.maxRuns} runs
+                </span>
+                {telemetryRetention.enabled && telemetryRetention.enforceAt && (
+                  <span>Enforcement begins {formatTimestamp(telemetryRetention.enforceAt)}</span>
+                )}
+                {telemetryRetention.lastPassAt && (
+                  <span>
+                    Last pass {telemetryRetention.lastPassMode ?? "completed"} ·{" "}
+                    {telemetryRetention.candidateCount} candidates ·{" "}
+                    {formatTimestamp(telemetryRetention.lastPassAt)}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </details>
     </section>
   );
 }
