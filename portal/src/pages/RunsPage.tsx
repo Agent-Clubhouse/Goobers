@@ -112,7 +112,6 @@ function InvalidRunsRoutePage({
           page: "runs",
           filters: Object.values(draft).some(Boolean) ? draft : undefined,
         });
-        return undefined;
       }}
       onOpenFilters={() => setDraft({ ...filters })}
       onResetFilters={clearInvalidFilters}
@@ -431,8 +430,6 @@ function RunsPageContent({
         filterError={filterError}
         filters={renderFilters}
         onApplyFilters={() => {
-          const error = runsFilterError(draft, gaggleOptions, workflowOptions);
-          if (error) return error;
           navigate({
             page: "runs",
             filters: Object.values(draft).some(Boolean) ? draft : undefined,
@@ -440,6 +437,7 @@ function RunsPageContent({
         }}
         onOpenFilters={() => setDraft({ ...filters })}
         onResetFilters={resetFilters}
+        onValidateFilters={() => runsFilterError(draft, gaggleOptions, workflowOptions)}
         title="Runs"
       />
 

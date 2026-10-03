@@ -102,6 +102,24 @@ test("applies, removes, and resets advanced Runs sheet filters", async ({ page }
   await expect(page).toHaveURL(/#\/runs$/);
 });
 
+test("consumes filter sheet history before applying filters", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/overview");
+  await page.getByRole("button", { name: "Runs", exact: true }).click();
+  await expect(page).toHaveURL(/#\/runs$/);
+
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Filters" });
+  await dialog.getByLabel("Draft gaggle filter").selectOption("core");
+  await dialog.getByRole("button", { name: "Apply filters" }).click();
+  await expect(page).toHaveURL(/#\/runs\?gaggle=core$/);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/runs$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/overview$/);
+});
+
 test("cancels invalid-route sheet edits without changing the route", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
   await page.goto("/#/runs?status=surprising");
