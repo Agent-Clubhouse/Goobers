@@ -196,7 +196,7 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
       comparison.getByRole("table", { name: "Attributed costs" }).getByRole("columnheader"),
     ).toHaveCount(4);
     await expect(comparison.getByText("123,456,789.12 AIC").first()).toBeAttached();
-    await expect(page.getByText("Scroll sideways to compare every cost column.")).toBeVisible();
+    await expect(page.getByText("Scroll sideways to compare every cost column.")).toHaveCount(0);
     if (layout.width <= 430) {
       expect(
         await comparison.evaluate((element) => element.scrollWidth > element.clientWidth),
