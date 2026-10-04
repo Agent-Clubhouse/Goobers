@@ -121,18 +121,17 @@ func runRemoteTrigger(
 		pf(stderr, "error: %s: %s\n", apiErr.Code, apiErr.Message)
 		return 1
 	}
+	if response.AcceptanceID == "" && response.RunID == "" {
+		pf(stderr, "error: daemon returned no durable acceptance or run identity; outcome is unknown, retry with --request-id %q\n", requestID)
+		return 2
+	}
 
 	switch {
 	case response.AcceptanceID != "":
 		pf(stdout, "accepted trigger %s (request=%s, workflow=%s, state=%s)\n", response.AcceptanceID, requestID, target.Workflow, response.State)
-	case response.Duplicate && response.RunID == "":
-		pf(stdout, "trigger request %s was already accepted (workflow=%s, dispatched via daemon API); its run is still being minted\n",
-			requestID, target.Workflow)
 	case response.Duplicate:
 		pf(stdout, "trigger request %s already dispatched run %s (workflow=%s, dispatched via daemon API)\n",
 			requestID, response.RunID, target.Workflow)
-	case response.RunID == "":
-		pf(stdout, "accepted trigger request %s (workflow=%s, dispatched via daemon API)\n", requestID, target.Workflow)
 	default:
 		pf(stdout, "created run %s (workflow=%s, dispatched via daemon API)\n", response.RunID, target.Workflow)
 	}

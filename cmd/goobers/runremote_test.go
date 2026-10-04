@@ -121,6 +121,34 @@ func TestRunRemoteTriggerNoWaitSucceedsOnDurableAcceptance(t *testing.T) {
 	}
 }
 
+func TestRunRemoteTriggerRejectsSuccessWithoutDurableIdentity(t *testing.T) {
+	for _, duplicate := range []bool{false, true} {
+		name := "new"
+		if duplicate {
+			name = "duplicate"
+		}
+		t.Run(name, func(t *testing.T) {
+			unsetRunContext(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveRemoteRootFixture(w, r) {
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(httpapi.TriggerResponse{State: "accepted", Duplicate: duplicate})
+			}))
+			t.Cleanup(server.Close)
+
+			code, stdout, stderr := runArgs(t, "run", "example/nightly", "--api", server.URL, "--request-id", "delivery", "--no-wait")
+			if code != 2 || stdout != "" || !strings.Contains(stderr, "no durable acceptance or run identity") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if !strings.Contains(stderr, `retry with --request-id "delivery"`) {
+				t.Fatalf("stderr does not preserve the retry identity: %q", stderr)
+			}
+		})
+	}
+}
+
 func TestRunRemoteTriggerHonorsConfiguredAcceptanceTimeout(t *testing.T) {
 	unsetRunContext(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
