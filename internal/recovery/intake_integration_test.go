@@ -244,3 +244,140 @@ func mustReadFile(t *testing.T, path string) []byte {
 	}
 	return data
 }
+
+func TestIntegrationArchiveIntakeReusesCleanSnapshotAlreadyInCustody(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	source, host, inventory := t.TempDir(), t.TempDir(), t.TempDir()
+	recoveryTestGit(t, source, "init", "--initial-branch=main")
+	recoveryTestGit(t, source, "commit", "--allow-empty", "-m", "base")
+	recoveryTestGit(t, source, "checkout", "-b", "run")
+	writeRestoreFixture(t, source, "implementation", "worker implementation")
+	recoveryTestGit(t, source, "add", "implementation")
+	recoveryTestGit(t, source, "commit", "-m", "work")
+	recoveryTestGit(t, host, "init", "--bare")
+	recoveryTestGit(t, host, "fetch", source, "main")
+
+	template := storageTestRecord()
+	request := RetentionRequest{
+		Repository: host, RepositoryKey: template.RepositoryKey, RunID: template.RunID,
+		IdentityTime: template.CreatedAt, RetainUntil: template.RetainUntil,
+		InventoryRoot: inventory, CleanupRoots: []string{host},
+		MaxSnapshots: 1, MaxArchiveBytes: 1 << 20,
+	}
+	envelope := func(identity time.Time) []byte {
+		t.Helper()
+		archive := t.TempDir()
+		record, err := PrepareRecord(ctx, source, template.RepositoryKey, template.RunID, "main", identity, identity.Add(24*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		retained, err := PublishRetainedState(ctx, source, archive, []string{source}, record, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire bytes.Buffer
+		if err := WriteArchiveEnvelope(ctx, filepath.Join(archive, BundleFileName), retained, 1<<20, &wire); err != nil {
+			t.Fatal(err)
+		}
+		return wire.Bytes()
+	}
+
+	var acknowledgements []Record
+	first, firstPath, err := AcceptArchive(ctx, bytes.NewReader(envelope(template.CreatedAt)), request, retentionJournalFunc(func(event journal.Event) error {
+		records, err := RecordsFromEvents([]journal.Event{event}, request.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acknowledgements = append(acknowledgements, records[0])
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondPath, err := AcceptArchive(ctx, bytes.NewReader(envelope(template.CreatedAt.Add(time.Hour))), request, retentionJournalFunc(func(event journal.Event) error {
+		records, err := RecordsFromEvents([]journal.Event{event}, request.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acknowledgements = append(acknowledgements, records[0])
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("clean duplicate at capacity was not reused: %v", err)
+	}
+	if firstPath == "" || secondPath != firstPath || second != first {
+		t.Fatalf("duplicate intake created a new record: first=%+v %q second=%+v %q", first, firstPath, second, secondPath)
+	}
+	entries, err := ReadInventory(ctx, inventory, 1)
+	if err != nil || len(entries) != 1 || entries[0].Record != first {
+		t.Fatalf("duplicate intake consumed another slot: entries=%+v err=%v", entries, err)
+	}
+	if len(acknowledgements) != 2 || acknowledgements[0] != first || acknowledgements[1] != first {
+		t.Fatalf("duplicate intake acknowledged different custody: %+v", acknowledgements)
+	}
+}
+
+// A clean duplicate whose own pin already exists on the host (an earlier or
+// concurrent publication of the same snapshot) must not be reused: reuse
+// deletes the inspection pin, and that pin is custody this intake never made.
+func TestIntegrationArchiveIntakeReuseKeepsPreexistingSnapshotPin(t *testing.T) {
+	testdep.Require(t, "git")
+	ctx := context.Background()
+	source, host, inventory := t.TempDir(), t.TempDir(), t.TempDir()
+	recoveryTestGit(t, source, "init", "--initial-branch=main")
+	recoveryTestGit(t, source, "commit", "--allow-empty", "-m", "base")
+	recoveryTestGit(t, source, "checkout", "-b", "run")
+	writeRestoreFixture(t, source, "implementation", "worker implementation")
+	recoveryTestGit(t, source, "add", "implementation")
+	recoveryTestGit(t, source, "commit", "-m", "work")
+	recoveryTestGit(t, host, "init", "--bare")
+	recoveryTestGit(t, host, "fetch", source, "main")
+
+	template := storageTestRecord()
+	request := RetentionRequest{
+		Repository: host, RepositoryKey: template.RepositoryKey, RunID: template.RunID,
+		IdentityTime: template.CreatedAt, RetainUntil: template.RetainUntil,
+		InventoryRoot: inventory, CleanupRoots: []string{host},
+		MaxSnapshots: 2, MaxArchiveBytes: 1 << 20,
+	}
+	publish := func(identity time.Time) (Record, string, []byte) {
+		t.Helper()
+		archive := t.TempDir()
+		prepared, err := PrepareRecord(ctx, source, template.RepositoryKey, template.RunID, "main", identity, identity.Add(24*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		retained, err := PublishRetainedState(ctx, source, archive, []string{source}, prepared, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire bytes.Buffer
+		if err := WriteArchiveEnvelope(ctx, filepath.Join(archive, BundleFileName), retained, 1<<20, &wire); err != nil {
+			t.Fatal(err)
+		}
+		return retained, archive, wire.Bytes()
+	}
+	ack := retentionJournalFunc(func(journal.Event) error { return nil })
+	_, _, firstWire := publish(template.CreatedAt)
+	first, _, err := AcceptArchive(ctx, bytes.NewReader(firstWire), request, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondArchive, secondWire := publish(template.CreatedAt.Add(time.Hour))
+	// The host already pins the second snapshot, as an earlier publication of
+	// it would have left behind.
+	if err := ImportSnapshotBundle(ctx, host, filepath.Join(secondArchive, BundleFileName), second, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := AcceptArchive(ctx, bytes.NewReader(secondWire), request, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotSHA == first.SnapshotSHA {
+		t.Fatal("intake reused another record although the incoming snapshot was already pinned")
+	}
+	if pinned := recoveryTestGit(t, host, "rev-parse", "--verify", second.Ref); pinned != second.SnapshotSHA {
+		t.Fatalf("pre-existing pin %s = %q, want %s", second.Ref, pinned, second.SnapshotSHA)
+	}
+}
