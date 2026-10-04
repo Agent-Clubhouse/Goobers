@@ -9,6 +9,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readprobe"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // WorkflowIdentity unambiguously identifies a workflow within its gaggle.
@@ -55,10 +56,16 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		err := visitActiveRunsContext(ctx, runsDir, func(id journal.RunIdentity) {
-			run := reconciledRunFor(id)
-			counts[run.identity]++
+		err := visitActiveRunStatesContext(ctx, runsDir, func(id journal.RunIdentity, rd *journal.Reader) error {
+			run, err := reconciledRunState(ctx, rd, id)
+			if err != nil {
+				return err
+			}
+			if !run.suspended {
+				counts[run.identity]++
+			}
 			runs[id.RunID] = run
+			return nil
 		})
 		if err != nil {
 			return nil, nil, err
@@ -92,14 +99,23 @@ func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowI
 		if err != nil {
 			continue
 		}
-		run := reconciledRunFor(id)
-		counts[run.identity]++
+		run, err := reconciledRunState(ctx, rd, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !run.suspended {
+			counts[run.identity]++
+		}
 		runs[id.RunID] = run
 	}
 	return counts, runs, nil
 }
 
 func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(journal.RunIdentity)) error {
+	return visitActiveRunStatesContext(ctx, runsDir, func(id journal.RunIdentity, _ *journal.Reader) error { visit(id); return nil })
+}
+
+func visitActiveRunStatesContext(ctx context.Context, runsDir string, visit func(journal.RunIdentity, *journal.Reader) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -164,10 +180,31 @@ func visitActiveRunsContext(ctx context.Context, runsDir string, visit func(jour
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		visit(id)
+		if err := visit(id, rd); err != nil {
+			return err
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Parked parents remain owned for cleanup and same-run continuation, but do
+// not consume runnable capacity. Invalid wait markers conservatively retain
+// capacity; the runner refuses their recovery instead of guessing quiescence.
+func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunIdentity) (reconciledRun, error) {
+	run := reconciledRunFor(id)
+	if id.Child != nil {
+		return run, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return run, err
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return run, err
+	}
+	run.suspended = runner.ParkedOnChild(events)
+	return run, ctx.Err()
 }
