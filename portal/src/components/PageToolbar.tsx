@@ -16,6 +16,8 @@ export interface ActivePageFilter {
 }
 
 interface PageToolbarProps {
+  className?: string;
+  inlineSearch?: boolean;
   activeFilters: ActivePageFilter[];
   count: number;
   description: string;
@@ -26,6 +28,7 @@ interface PageToolbarProps {
   onResetFilters: () => void;
   onValidateFilters?: () => string | undefined;
   search?: ReactNode;
+  scope?: ReactNode;
   title: string;
 }
 
@@ -40,15 +43,16 @@ const FOCUSABLE = [
 
 export function PageToolbar({
   activeFilters,
-  count,
+  className,
+  inlineSearch = false,
   description,
   filterError,
   filters,
   onApplyFilters,
   onOpenFilters,
-  onResetFilters,
   onValidateFilters,
   search,
+  scope,
   title,
 }: PageToolbarProps) {
   const [open, setOpen] = useState(false);
@@ -137,16 +141,15 @@ export function PageToolbar({
   };
 
   return (
-    <header className="page-toolbar">
+    <header className={`page-toolbar${className ? ` ${className}` : ""}`}>
       <div className="page-toolbar-heading">
         <div className="page-toolbar-title">
           <h1>{title}</h1>
-          <span aria-label={`${count} records`} className="page-toolbar-count">{count}</span>
         </div>
         <p>{description}</p>
       </div>
-      <div className="page-toolbar-actions">
-        {search}
+      <div className={`page-toolbar-actions${search ? "" : " page-toolbar-actions-empty"}`}>
+        {inlineSearch ? <div className="page-toolbar-mobile-search">{search}</div> : search}
         <button
           aria-label="Filters"
           aria-expanded={open}
@@ -165,29 +168,18 @@ export function PageToolbar({
           )}
         </button>
       </div>
-      <div className="page-toolbar-desktop-filters">{filters(false)}</div>
-      {(activeFilters.length > 0 || filterError) && (
+      {scope && (
+        <div className="insight-controls page-toolbar-scope" aria-label={`${title} scope`}>
+          {scope}
+        </div>
+      )}
+      <div className="page-toolbar-desktop-filters">
+        {filters(false)}
+        {inlineSearch && search}
+      </div>
+      {filterError && (
         <div className="page-toolbar-feedback">
-          {filterError && <p className="page-toolbar-error" role="alert">{filterError}</p>}
-          {activeFilters.length > 0 && (
-            <div aria-label="Active filters" className="page-filter-chips">
-              {activeFilters.map((filter) => (
-                <button
-                  aria-label={`Remove ${filter.label} filter`}
-                  className="page-filter-chip"
-                  key={filter.key}
-                  onClick={filter.onRemove}
-                  type="button"
-                >
-                  {filter.label}
-                  <Icon name="close" size={14} />
-                </button>
-              ))}
-              <button className="page-filter-reset" onClick={onResetFilters} type="button">
-                Reset filters
-              </button>
-            </div>
-          )}
+          <p className="page-toolbar-error" role="alert">{filterError}</p>
         </div>
       )}
       {open && (

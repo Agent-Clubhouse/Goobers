@@ -5,7 +5,7 @@ import {
   UnsupportedSchemaVersionError,
 } from "../api/errors";
 
-export function DaemonLoadingState({ standalone = false }: { standalone?: boolean }) {
+export function DaemonLoadingState(_props: { standalone?: boolean } = {}) {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -21,7 +21,7 @@ export function DaemonLoadingState({ standalone = false }: { standalone?: boolea
     <section aria-live="polite" className="daemon-state" role="status">
       <span aria-hidden="true" className="loading-mark" />
       <div>
-        <h1>{standalone ? "Loading instance data" : "Connecting to Goobers Instance"}</h1>
+        <h1>Loading...</h1>
       </div>
     </section>
   );

@@ -50,10 +50,14 @@ function scopeTree(options: { key: string; label: string }[]): ScopeNode[] {
 }
 
 export function InsightScopePicker({
+  ariaLabel = "Scope",
+  searchPlaceholder = "Find gaggle, workflow, or stage",
   onChange,
   scopes,
   value,
 }: {
+  ariaLabel?: string;
+  searchPlaceholder?: string;
   onChange: (value: string) => void;
   scopes: { key: string; label: string }[];
   value: string;
@@ -131,7 +135,7 @@ export function InsightScopePicker({
         aria-controls={popupId}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label="Scope"
+        aria-label={ariaLabel}
         className="insight-scope-trigger"
         onClick={() => {
           if (open) close();
@@ -157,7 +161,7 @@ export function InsightScopePicker({
             aria-label="Find scope"
             autoFocus
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Find gaggle, workflow, or stage"
+            placeholder={searchPlaceholder}
             type="search"
             value={search}
           />

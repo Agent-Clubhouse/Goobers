@@ -4,6 +4,14 @@ import type { DaemonClient, RunSummary } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
+import { ScopeControl } from "../components/ScopeControl";
+import {
+  insightScopeApiParameters,
+  insightScopeFromKey,
+  insightScopeFromRoute,
+  insightScopeKey,
+  insightScopeOption,
+} from "../insightScope";
 import { manualRunCommand, statusCommand } from "../manualRunCommand";
 import { useOperationalSnapshot } from "../operationalData";
 import {
@@ -17,7 +25,7 @@ import { formatTimestamp } from "../runDetailData";
 import { DataList, DataRow } from "../ui/DataList";
 import { StatusBadge } from "../ui/StatusBadge";
 
-const FILTERS: readonly RunsFilter[] = ["active", "attention", "complete", "all"];
+const FILTERS: readonly RunsFilter[] = ["all", "active", "attention", "complete"];
 const OUTCOMES = ["finished", "terminal", "success", "failure", "other"] as const;
 const POPULATIONS = [
   "attempts",
@@ -73,7 +81,7 @@ function InvalidRunsRoutePage({
   const [draft, setDraft] = useState<RunRouteFilters>({ ...filters });
   const clearInvalidFilters = () => navigate({ page: "runs" });
   const renderFilters = (mobile: boolean) => {
-    const selectedStatus = mobile ? draft.status ?? "active" : "active";
+    const selectedStatus = mobile ? draft.status ?? "all" : "all";
     return (
       <div aria-label="Filter runs" className="filter-bar" role="group">
         {FILTERS.map((option) => (
@@ -84,7 +92,7 @@ function InvalidRunsRoutePage({
               : "filter-button"}
             key={option}
             onClick={() => {
-              const status = option === "active" ? undefined : option;
+              const status = option === "all" ? undefined : option;
               if (mobile) {
                 setDraft({ ...filters, status });
                 return;
@@ -131,14 +139,7 @@ function RunsPageContent({
   navigate: Navigate;
   standalone: boolean;
 }) {
-  const analyticalScope = Boolean(
-    filters?.since ||
-    filters?.until ||
-    filters?.outcome ||
-    filters?.population ||
-    filters?.stage,
-  );
-  const filter = filters?.status ?? (analyticalScope ? "all" : "active");
+  const filter = filters?.status ?? "all";
   const inventoryQuery = useOperationalSnapshot(client);
   // Hides routine no-work schedule ticks by default (#2188): a run whose only
   // stage reported no eligible work, on an instance ticking every ~60s, would
@@ -255,7 +256,7 @@ function RunsPageContent({
         updateFilters(updates);
       }
     };
-    const selectedStatus = values.status ?? "active";
+    const selectedStatus = values.status ?? "all";
     return (
       <div aria-label="Filter runs" className="filter-bar" role="group">
         {FILTERS.map((option) => (
@@ -263,59 +264,13 @@ function RunsPageContent({
             aria-pressed={selectedStatus === option}
             className={selectedStatus === option ? "filter-button filter-button-active" : "filter-button"}
             key={option}
-            onClick={() => change({ status: option === "active" ? undefined : option })}
+            onClick={() => change({ status: option === "all" ? undefined : option })}
             type="button"
           >
             {option === "all" ? "All runs" : option}
           </button>
         ))}
         <div className="run-filter-fields">
-          <label className="filter-select run-filter-field">
-            <span>Gaggle</span>
-            <select
-              aria-label={mobile ? "Draft gaggle filter" : "Filter by gaggle"}
-              onChange={(event) => change({
-                gaggle: event.target.value || undefined,
-                workflow: undefined,
-              })}
-              value={values.gaggle ?? ""}
-            >
-              <option value="">All gaggles</option>
-              {gaggleOptions.map((gaggle) => (
-                <option key={gaggle.name} value={gaggle.name}>{gaggle.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="filter-select run-filter-field">
-            <span>Workflow</span>
-            <select
-              aria-label={mobile ? "Draft workflow filter" : "Filter by workflow"}
-              onChange={(event) => {
-                const [gaggle, workflow] = event.target.value
-                  ? JSON.parse(event.target.value) as [string, string]
-                  : ["", ""];
-                change({
-                  gaggle: workflow ? gaggle : values.gaggle,
-                  workflow: workflow || undefined,
-                });
-              }}
-              value={values.workflow
-                ? JSON.stringify([values.gaggle ?? "", values.workflow])
-                : ""}
-            >
-              <option value="">All workflows</option>
-              {workflowOptions
-                .filter((workflow) => !values.gaggle || workflow.gaggle === values.gaggle)
-                .map((workflow) => (
-                  <option
-                    key={`${workflow.gaggle}/${workflow.name}`}
-                    value={JSON.stringify([workflow.gaggle, workflow.name])}
-                  >
-                    {values.gaggle ? workflow.label : `${workflow.gaggle} / ${workflow.label}`}
-                  </option>
-                ))}
-            </select>
-          </label>
           <label className="filter-toggle run-filter-field">
             <input
               aria-label={mobile ? "Draft show no-work runs" : "Show no-work runs"}
@@ -438,6 +393,28 @@ function RunsPageContent({
         onOpenFilters={() => setDraft({ ...filters })}
         onResetFilters={resetFilters}
         onValidateFilters={() => runsFilterError(draft, gaggleOptions, workflowOptions)}
+        scope={
+          <ScopeControl
+            onChange={(key) => {
+              const selected = insightScopeApiParameters(insightScopeFromKey(key));
+              updateFilters({
+                gaggle: selected.gaggle,
+                workflow: selected.workflow,
+                stage: selected.stage,
+              });
+            }}
+            scopes={[
+              insightScopeOption({ kind: "instance" }),
+              ...gaggleOptions.map(({ name }) =>
+                insightScopeOption({ kind: "gaggle", gaggle: name })),
+              ...workflowOptions.map(({ gaggle, name }) =>
+                insightScopeOption({ kind: "workflow", gaggle, workflow: name })),
+              insightScopeOption(insightScopeFromRoute(filters)),
+            ]}
+            searchPlaceholder="Find gaggle or workflow"
+            value={insightScopeKey(insightScopeFromRoute(filters))}
+          />
+        }
         title="Runs"
       />
 

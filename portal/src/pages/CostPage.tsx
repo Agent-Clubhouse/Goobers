@@ -1,7 +1,7 @@
 import type { DaemonClient, TelemetryUsageStats } from "../api/types";
 import { DaemonErrorState } from "../components/DaemonQueryState";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
-import { InsightScopePicker } from "../components/InsightScopePicker";
+import { InsightFilters } from "../components/InsightFilters";
 import {
   type InsightWindow,
   useInsightCostRollup,
@@ -14,7 +14,6 @@ import {
   deriveInsightViewModel,
   type InsightScope,
   insightScopeApiParameters,
-  insightScopeFromKey,
   insightScopeFromRoute,
   insightScopeKey,
   insightScopeOption,
@@ -26,7 +25,6 @@ import type { ScopeFilters } from "../scope";
 import {
   CostTrend,
   ExternalCostBreakdown,
-  INSIGHT_WINDOWS,
   InstanceCostRollup,
   UsageAnalytics,
 } from "./InsightPage";
@@ -78,6 +76,21 @@ export function CostPage({
   const view = snapshot ? deriveInsightViewModel(requestedScope, snapshot) : undefined;
   const costTrendView = deriveInsightCostTrendState(requestedScope, costTrend.state);
 
+  if (query.state.status === "error") {
+    return (
+      <DaemonErrorState
+        error={query.state.error}
+        retry={() => {
+          query.retry();
+          costTrend.retry();
+          costRollup.retry();
+          externalCosts.retry();
+        }}
+        standalone={standalone}
+      />
+    );
+  }
+
   return (
     <>
       <header className="page-heading">
@@ -106,30 +119,14 @@ export function CostPage({
         </p>
       </header>
 
-      <div className="insight-controls" aria-label="Cost filters">
-        <div className="insight-control">
-          <span>Scope</span>
-          <InsightScopePicker
-            onChange={(key) => setScope(insightScopeFromKey(key))}
-            scopes={scopes}
-            value={insightScopeKey(requestedScope)}
-          />
-        </div>
-        <label>
-          <span>Time window</span>
-          <select
-            aria-label="Time window"
-            onChange={(event) => setWindow(event.target.value as InsightWindow)}
-            value={window}
-          >
-            {INSIGHT_WINDOWS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <InsightFilters
+        label="Cost filters"
+        onScopeChange={setScope}
+        onWindowChange={setWindow}
+        scope={requestedScope}
+        scopes={scopes}
+        window={window}
+      />
 
         <section className="content-section">
           <div className="cost-summary-metrics">
@@ -146,11 +143,6 @@ export function CostPage({
                 <SectionQueryStatus
                   message="No cost measurements in this scope."
                 />
-              </div>
-            )}
-            {query.state.status === "error" && (
-              <div className="cost-summary-status">
-                <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
               </div>
             )}
           </div>

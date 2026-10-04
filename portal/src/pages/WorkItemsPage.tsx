@@ -10,6 +10,8 @@ import type {
 import { DaemonApiError, MissingCapabilityError } from "../api/errors";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { PageToolbar, type ActivePageFilter } from "../components/PageToolbar";
+import { ScopeControl } from "../components/ScopeControl";
+import { insightScopeFromKey, insightScopeKey, insightScopeOption } from "../insightScope";
 import type { Navigate, Route } from "../routing";
 import { routeHash } from "../routing";
 import { formatTimestamp } from "../runDetailData";
@@ -199,7 +201,6 @@ function WorkItemListView({
   ];
   const renderFilters = (mobile: boolean) => {
     const values = mobile ? draft : { kind, gaggle, outcome };
-    const options = gaggleOptions(values.kind);
     const change = (updates: WorkItemFilters) => {
       if (mobile) {
         setDraft((current) => ({ ...current, ...updates }));
@@ -224,8 +225,8 @@ function WorkItemListView({
             {label}
           </button>
         ))}
+        <div className="work-item-filter-controls">
         <label className="filter-select work-item-filter-field">
-          <span>Status</span>
           <select
             aria-label={mobile ? "Draft work item status filter" : "Filter work items by status"}
             onChange={(event) => change({
@@ -236,22 +237,10 @@ function WorkItemListView({
             <option value="">All statuses</option>
             <option value="done">Done</option>
             <option value="in-progress">In progress</option>
-            <option value="bad-terminal">Bad terminal</option>
+            <option value="bad-terminal">Error</option>
           </select>
         </label>
-        <label className="filter-select work-item-filter-field">
-          <span>Gaggle</span>
-          <select
-            aria-label={mobile ? "Draft work item gaggle filter" : "Filter work items by gaggle"}
-            onChange={(event) => change({ gaggle: event.target.value || undefined })}
-            value={values.gaggle ?? ""}
-          >
-            <option value="">All gaggles</option>
-            {options.map((option) => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
-        </label>
+        </div>
       </div>
     );
   };
@@ -259,6 +248,8 @@ function WorkItemListView({
   return (
     <>
       <PageToolbar
+        className="work-items-toolbar"
+        inlineSearch
         activeFilters={activeFilters}
         count={items.length}
         description="Pull requests, issues, and work items changed through a recorded provider operation."
@@ -280,7 +271,7 @@ function WorkItemListView({
         )}
         search={
           <label className="filter-search page-toolbar-search">
-            <span>Find work item</span>
+            <span>Filter</span>
             <input
               aria-label="Search work items"
               onChange={(event) => updateSearch(event.target.value)}
@@ -290,9 +281,26 @@ function WorkItemListView({
             />
           </label>
         }
+        scope={
+          <ScopeControl
+            onChange={(key) => {
+              const selected = insightScopeFromKey(key);
+              updateFilters({ gaggle: selected.kind === "gaggle" ? selected.gaggle : undefined });
+            }}
+            scopes={[
+              insightScopeOption({ kind: "instance" }),
+              ...[...new Set([...gaggleOptions(kind), ...(gaggle ? [gaggle] : [])])]
+                .map((name) => insightScopeOption({ kind: "gaggle", gaggle: name })),
+            ]}
+            searchPlaceholder="Find gaggle"
+            value={insightScopeKey(gaggle
+              ? { kind: "gaggle", gaggle }
+              : { kind: "instance" })}
+          />
+        }
         title="Work Items"
       />
-      <section className="content-section">
+      <section className="content-section work-items-content">
         {items.length === 0 ? (
           <p className="inline-empty">
             No confirmed provider actions match this filter. This page lists only
@@ -302,7 +310,7 @@ function WorkItemListView({
         ) : (
           <div className="data-table data-table-shell work-items-table">
             <div aria-hidden="true" className="data-header data-table-header work-item-grid">
-              <span>Work item</span><span>Outcome</span><span>Workflow</span><span>Actions</span><span />
+              <span>Work item</span><span>Last action</span><span>Gaggle</span><span>Actions</span><span />
             </div>
             {items.map((item) => {
               const label = workItemLabel(item.repository, item.externalId);
@@ -314,6 +322,7 @@ function WorkItemListView({
                       : `${workItemShortKind(item)} #${item.externalId} has no recorded repository`
                   }
                   className={`data-row work-item-grid work-item-row-${item.outcome}`}
+                  data-status={item.outcome}
                   disabled={!item.repository}
                   title={item.repository
                     ? undefined
@@ -332,39 +341,31 @@ function WorkItemListView({
                     <strong className="data-table-primary" title={label}>{label}</strong>
                     <small className="data-table-meta">
                       {item.provider} · {workItemKindLabel(item.provider, item.kind)}
-                      {!item.repository && " · repository unknown"}
                     </small>
+                    <span className="sr-only">{workItemOutcomeLabel(item.outcome, item.kind)}</span>
                   </span>
                   <span className="work-item-last-action">
-                    <strong className={`status-badge work-item-outcome-${item.outcome}`}>
-                      {workItemOutcomeLabel(item.outcome)}
-                    </strong>
+                    <strong>{humanizeOperation(item.lastOperation)}</strong>
                     <small>
-                      Last action: {humanizeOperation(item.lastOperation)} ·{" "}
                       {formatTimestamp(item.lastActionAt)}
                     </small>
+                    <small>{item.workflow || "Unknown workflow"}</small>
                   </span>
-                  <span className="work-item-workflow">
-                    <strong>{item.workflow || "Unknown"}</strong>
-                    <small>{item.gaggle || "No gaggle recorded"}</small>
+                  <span className="work-item-gaggle">
+                    <strong>{item.gaggle || "No gaggle recorded"}</strong>
                   </span>
                   <strong className="work-item-action-count">{item.actionCount}</strong>
                   <span className="work-item-mobile-context">
-                    <span
-                      className={`status-badge work-item-status work-item-outcome-${item.outcome}`}
-                      data-status={item.outcome}
-                    >
-                      {workItemOutcomeLabel(item.outcome)}
-                    </span>
                     <span>
                       Last action: {humanizeOperation(item.lastOperation)} · {item.actionCount}{" "}
                       {item.actionCount === 1 ? "action" : "actions"}
                     </span>
+                    <time dateTime={item.lastActionAt}>{formatTimestamp(item.lastActionAt)}</time>
                     <span>
                       {item.gaggle || "Unknown gaggle"} / {item.workflow || "Unknown workflow"}
                     </span>
                   </span>
-                  <span className="row-arrow"><Icon name="chevron" size={15} /></span>
+                  {item.repository && <span className="row-arrow"><Icon name="chevron" size={15} /></span>}
                 </button>
               );
             })}
@@ -549,7 +550,7 @@ function WorkItemDetailView({
               <span role="cell">{action.runStatus ? humanizeOperation(action.runStatus) : "Unknown"}</span>
               <time dateTime={action.occurredAt} role="cell">{formatTimestamp(action.occurredAt)}</time>
               <span role="cell">
-                <a href={routeHash({ page: "run", id: action.runId })}>View run</a>
+                <a className="text-button run-link-action" href={routeHash({ page: "run", id: action.runId })}>View run</a>
               </span>
             </div>
           ))}
@@ -586,12 +587,12 @@ function workItemLabel(repository: string | undefined, externalId: string): stri
   return repository ? `${repository}#${externalId}` : `#${externalId}`;
 }
 
-function workItemOutcomeLabel(outcome: WorkItemOutcome): string {
+function workItemOutcomeLabel(outcome: WorkItemOutcome, kind?: WorkItemKind): string {
   switch (outcome) {
     case "done":
-      return "Done";
+      return kind === "pr" ? "Merged" : kind === "issue" ? "Closed" : "Done";
     case "bad-terminal":
-      return "Bad terminal";
+      return "Error";
     case "in-progress":
       return "In progress";
   }

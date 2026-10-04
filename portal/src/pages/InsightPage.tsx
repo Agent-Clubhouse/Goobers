@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   DaemonClient,
   TelemetryErrorSignature,
@@ -15,7 +15,7 @@ import { isMissingCostCapability } from "../api/errors";
 import type { QueryState } from "../api/queryState";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { SectionQueryStatus } from "../components/SectionQueryStatus";
-import { InsightScopePicker } from "../components/InsightScopePicker";
+import { InsightFilters } from "../components/InsightFilters";
 import {
   type InsightCostRollupSnapshot,
   type InsightErrorSignaturesSnapshot,
@@ -27,6 +27,7 @@ import {
 } from "../insightData";
 import {
   deriveExternalCostRows,
+  externalCostGaggles,
   filterExternalCostRows,
   sortExternalCostRows,
   type ExternalCostSortDirection,
@@ -39,7 +40,6 @@ import {
   type InsightViewModel,
   insightRunFilters,
   insightScopeApiParameters,
-  insightScopeFromKey,
   insightScopeFromRoute,
   insightScopeKey,
   insightScopeOption,
@@ -56,13 +56,6 @@ import {
 } from "../routing";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
-
-export const INSIGHT_WINDOWS: readonly { label: string; value: InsightWindow }[] = [
-  { label: "Last 24 hours", value: "24h" },
-  { label: "Last 7 days", value: "7d" },
-  { label: "Last 30 days", value: "30d" },
-  { label: "All time", value: "all" },
-];
 
 const INITIAL_DETAIL_ROWS = 5;
 
@@ -118,30 +111,14 @@ export function InsightPage({
         <p>Run outcomes, usage, and latency.</p>
       </header>
 
-      <div className="insight-controls" aria-label="Insight filters">
-        <div className="insight-control">
-          <span>Scope</span>
-          <InsightScopePicker
-            onChange={(key) => setScope(insightScopeFromKey(key))}
-            scopes={scopes}
-            value={insightScopeKey(requestedScope)}
-          />
-        </div>
-        <label>
-          <span>Time window</span>
-          <select
-            aria-label="Time window"
-            onChange={(event) => setWindow(event.target.value as InsightWindow)}
-            value={window}
-          >
-            {INSIGHT_WINDOWS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <InsightFilters
+        label="Insight filters"
+        onScopeChange={setScope}
+        onWindowChange={setWindow}
+        scope={requestedScope}
+        scopes={scopes}
+        window={window}
+      />
 
       {query.state.status === "stale" && query.state.error && (
         <SectionQueryStatus
@@ -1051,6 +1028,38 @@ export function ExternalCostBreakdown({
     label: string;
     runs: TelemetryCostRunAggregate[];
   }>();
+  const runsDialog = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!openRuns) return;
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    runsDialog.current?.querySelector<HTMLButtonElement>(".dialog-close")?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenRuns(undefined);
+      if (event.key !== "Tab") return;
+      const controls = [...(runsDialog.current?.querySelectorAll<HTMLElement>(
+        "button, a[href], [tabindex='0']",
+      ) ?? [])];
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKey);
+      previousFocus?.focus();
+    };
+  }, [openRuns]);
   const rows = useMemo(
     () =>
       costs.status === "ready" || costs.status === "stale"
@@ -1069,7 +1078,7 @@ export function ExternalCostBreakdown({
     }
     setSortKey(nextSortKey);
     setSortDirection(
-      nextSortKey === "work-item" || nextSortKey === "provider" ? "asc" : "desc",
+      nextSortKey === "work-item" || nextSortKey === "gaggle" ? "asc" : "desc",
     );
   };
   const sortHeading = (label: string, key: ExternalCostSortKey) => (
@@ -1132,25 +1141,29 @@ export function ExternalCostBreakdown({
       ) : (
         <>
           <div aria-label="Cost work item filters" className="filter-bar external-cost-controls" role="group">
+            {([
+              ["all", "all"],
+              ["pull requests", "pr"],
+              ["issues", "issue"],
+            ] as const).map(([label, value]) => (
+              <button
+                aria-pressed={kind === value}
+                className={kind === value ? "filter-button filter-button-active" : "filter-button"}
+                key={value}
+                onClick={() => setKind(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
             <label className="filter-search external-cost-filter-field">
               <span>Filter</span>
               <input
                 onChange={(event) => setFilter(event.target.value)}
-                placeholder="PR, issue, provider, model, or run"
+                placeholder="PR, issue, gaggle, model, or run"
                 type="search"
                 value={filter}
               />
-            </label>
-            <label className="filter-select external-cost-filter-field">
-              <span>Type</span>
-              <select
-                onChange={(event) => setKind(event.target.value as "all" | "pr" | "issue")}
-                value={kind}
-              >
-                <option value="all">All work items</option>
-                <option value="pr">Pull requests</option>
-                <option value="issue">Issues</option>
-              </select>
             </label>
           </div>
           {visibleRows.length === 0 ? (
@@ -1168,8 +1181,8 @@ export function ExternalCostBreakdown({
                     <span aria-sort={sortKey === "work-item" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("Work item", "work-item")}
                     </span>
-                    <span aria-sort={sortKey === "provider" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
-                      {sortHeading("Provider", "provider")}
+                    <span aria-sort={sortKey === "gaggle" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
+                      {sortHeading("Gaggle", "gaggle")}
                     </span>
                     <span aria-sort={sortKey === "aic" ? sortDirection === "asc" ? "ascending" : "descending" : "none"} role="columnheader">
                       {sortHeading("AIC", "aic")}
@@ -1201,7 +1214,9 @@ export function ExternalCostBreakdown({
                             {row.provider} · {row.externalKind === "pr" ? "pull request" : "issue"}
                           </small>
                       </span>
-                      <span className="external-cost-provider" role="cell">{row.provider}</span>
+                      <span className="external-cost-gaggle" role="cell">
+                        {externalCostGaggles(row).join(", ") || "Unknown gaggle"}
+                      </span>
                       <span className="external-cost-values" role="cell">
                         <strong className="data-table-number">{row.aic}</strong>
                         <small className={row.lowerBound ? "cost-coverage-warning" : "data-table-meta"}>
@@ -1209,18 +1224,18 @@ export function ExternalCostBreakdown({
                         </small>
                       </span>
                       <span className="external-cost-runs" role="cell">
-                          {row.models.length > 0 && (
+                          {row.models.length > 0 ? (
                             <ul
                               className="external-cost-models"
                               aria-label={`${row.label} model breakdown`}
                             >
                               {row.models.map((model) => <li key={model}>{model}</li>)}
                             </ul>
-                          )}
+                          ) : <small className="data-table-meta">Model not recorded</small>}
                           {row.runs.length > 0 && (
                             <button
                               aria-label={`View ${row.runs.length} run${row.runs.length === 1 ? "" : "s"} for ${row.label}`}
-                              className="text-button external-cost-runs-button"
+                              className="text-button run-link-action external-cost-runs-button"
                               onClick={() => setOpenRuns({ label: row.label, runs: row.runs })}
                               type="button"
                             >
@@ -1235,11 +1250,14 @@ export function ExternalCostBreakdown({
             </>
           )}
           {openRuns && (
-            <div className="artifact-dialog-backdrop">
+            <div className="artifact-dialog-backdrop" onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setOpenRuns(undefined);
+            }}>
               <section
                 aria-labelledby="external-cost-runs-title"
                 aria-modal="true"
                 className="artifact-dialog external-cost-runs-dialog"
+                ref={runsDialog}
                 role="dialog"
               >
                 <header>
@@ -1253,22 +1271,16 @@ export function ExternalCostBreakdown({
                     <Icon name="close" size={16} />
                   </button>
                 </header>
-                <p className="local-scroll-affordance" id="external-cost-run-scroll-hint">
-                  Scroll sideways to compare every run column.
-                </p>
                 <div
-                  aria-describedby="external-cost-run-scroll-hint"
                   aria-label={`${openRuns.label} run comparison`}
-                  className="external-cost-run-table-wrap"
+                  className="data-table-shell external-cost-run-table-wrap"
                   role="region"
                   tabIndex={0}
                 >
-                  <table aria-label={`${openRuns.label} run breakdown`}>
-                    <thead>
+                  <table aria-label={`${openRuns.label} run breakdown`} className="external-cost-run-table">
+                    <thead className="data-table-header">
                       <tr>
                         <th scope="col">Run</th>
-                        <th scope="col">Gaggle / workflow</th>
-                        <th scope="col">Status</th>
                         <th scope="col">Started</th>
                         <th scope="col">Attempts</th>
                         <th scope="col">AIC</th>
@@ -1279,13 +1291,14 @@ export function ExternalCostBreakdown({
                       {openRuns.runs.map((run) => (
                         <tr key={run.runId}>
                           <td>
-                            <a href={routeHash({ page: "run", id: run.runId })}>{run.runId}</a>
+                            <a
+                              aria-label={`Open run ${run.runId}`}
+                              href={routeHash({ page: "run", id: run.runId })}
+                              title={run.runId}
+                            >
+                              {run.runId}
+                            </a>
                           </td>
-                          <td>
-                            <strong>{run.gaggle || "Unknown gaggle"}</strong>
-                            <small className="data-table-meta">{run.workflow || "Workflow unavailable"}</small>
-                          </td>
-                          <td>{run.status || "Status unavailable"}</td>
                           <td>
                             <time dateTime={run.startedAt}>{formatTimestamp(run.startedAt)}</time>
                           </td>
@@ -1293,8 +1306,7 @@ export function ExternalCostBreakdown({
                           <td>{formatAICAmounts(run.nativeTotals, run.normalizedTotals, "Unmeasured")}</td>
                           <td>
                             {run.models.map((model) => model.model).join(", ") ||
-                              run.billingModels.join(", ") ||
-                              "Unavailable"}
+                              "Model not recorded"}
                           </td>
                         </tr>
                       ))}
@@ -1453,7 +1465,7 @@ function formatAICAmounts(
   if (!amount) {
     return empty;
   }
-  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC${amount.estimated ? " estimated" : ""}`;
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(amount.value)} AIC`;
 }
 
 function StageDistributions({
