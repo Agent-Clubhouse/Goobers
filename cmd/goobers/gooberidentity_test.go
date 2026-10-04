@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -95,17 +96,36 @@ func TestLoadGooberInstructionsUsesDefinitionSourceDirectory(t *testing.T) {
 	if err := os.Rename(canonicalDir, sourceDir); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(sourceDir, gooberassets.SourceDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, gooberassets.SourceDir, "notes.txt"), []byte("asset\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	set, report, err := instance.LoadConfigDir(configDir)
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	instructions, err := loadGooberInstructions(configDir, set, goobersByName(set))
+	goobers := goobersByName(set)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		t.Fatalf("loadGooberInstructions: %v", err)
 	}
 	if instructions["coder"] == "" {
 		t.Fatal("coder instructions were not loaded from the goober definition source directory")
+	}
+	// Assets live beside the definition too; the runner and the agentic kit
+	// writer load them through the same resolution.
+	if got := resolvedGooberDefinitionDir(configDir, set, goobers["coder"], "coder"); got != sourceDir {
+		t.Fatalf("resolved goober definition dir = %q, want %q", got, sourceDir)
+	}
+	bundle, err := gooberassets.Load(filepath.Join(resolvedGooberDefinitionDir(configDir, set, goobers["coder"], "coder"), gooberassets.SourceDir))
+	if err != nil {
+		t.Fatalf("load assets: %v", err)
+	}
+	if bundle == nil {
+		t.Fatal("coder assets were not loaded from the goober definition source directory")
 	}
 }
 

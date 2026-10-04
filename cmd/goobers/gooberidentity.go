@@ -60,12 +60,18 @@ func loadGooberInstructions(configDir string, set *instance.ConfigSet, goobers m
 }
 
 func resolvedInstructionsPath(configDir string, set *instance.ConfigSet, spec apiv1.GooberSpec, gooberName string) string {
-	if set != nil {
-		if source, ok := set.GooberSource(gooberName); ok {
-			return filepath.Join(configDir, filepath.Dir(source), spec.Instructions)
-		}
+	return filepath.Join(resolvedGooberDefinitionDir(configDir, set, spec, gooberName), spec.Instructions)
+}
+
+// resolvedGooberDefinitionDir is the directory holding the goober's parsed
+// definition file — the same directory validation resolves spec.instructions
+// and the goober's assets against (#6611). It falls back to the conventional
+// name-derived layout only when no loaded ConfigSet provenance is available.
+func resolvedGooberDefinitionDir(configDir string, set *instance.ConfigSet, spec apiv1.GooberSpec, gooberName string) string {
+	if source, ok := set.GooberSource(gooberName); ok {
+		return filepath.Join(configDir, filepath.Dir(source))
 	}
-	return instructionsPath(configDir, spec, gooberName)
+	return gooberDefinitionDir(configDir, spec, gooberName)
 }
 
 type skillSource struct{ name, gaggle string }

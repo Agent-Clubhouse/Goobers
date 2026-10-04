@@ -334,6 +334,7 @@ func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle st
 		},
 		Layout:               scoped,
 		Config:               cfg,
+		Definitions:          set,
 		Goobers:              goobers,
 		InstructionsByGoober: instructions,
 		SkillPackages:        snapshot.skillPackages[gaggle],
