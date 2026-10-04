@@ -352,6 +352,10 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 	}
 	if err := durability.WriteFileAtomic(path, data, 0o600,
 		durability.WithTempPattern(".surrender-*"),
+		// SurrenderDir lives under the blob store, an Azure Files CIFS mount
+		// (nounix) where chmod returns EPERM (outage 2026-10-04).
+		durability.WithBestEffortMode(),
+		durability.WithChmod(chmodStaged),
 		durability.WithPublishRaceCheck(func(path string) error {
 			_, err := os.Stat(path)
 			return err
@@ -375,3 +379,7 @@ func (d *SurrenderDir) Put(ctx context.Context, runID, stage string, attempt int
 	}
 	return nil
 }
+
+// chmodStaged applies the requested mode to the staged result; tests replace
+// it to simulate CIFS mounts whose chmod always fails.
+var chmodStaged = os.Chmod

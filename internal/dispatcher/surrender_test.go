@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -324,5 +327,22 @@ func TestReadSurrenderedResultAcceptsContractShapes(t *testing.T) {
 		if got.Result.Status != doc.Result.Status {
 			t.Fatalf("document %d status = %q, want %q", i, got.Result.Status, doc.Result.Status)
 		}
+	}
+}
+
+// TestSurrenderDirPutSucceedsWhenChmodUnsupported simulates the CIFS blob
+// share (nounix) where chmod returns EPERM (outage 2026-10-04).
+func TestSurrenderDirPutSucceedsWhenChmodUnsupported(t *testing.T) {
+	old := chmodStaged
+	chmodStaged = func(string, fs.FileMode) error {
+		return &os.PathError{Op: "chmod", Path: "x", Err: syscall.EPERM}
+	}
+	t.Cleanup(func() { chmodStaged = old })
+	plane, err := NewSurrenderDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plane.Put(context.Background(), "run-1", "stage", 1, []byte("result")); err != nil {
+		t.Fatalf("Put with EPERM chmod: %v", err)
 	}
 }
