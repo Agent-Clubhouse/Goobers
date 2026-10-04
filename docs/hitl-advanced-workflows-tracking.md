@@ -306,9 +306,10 @@ fences. Publication from later child epochs remains explicit follow-up work.
 
 Shared provider reads now have an explicit gaggle/binding/generation partition,
 full request-representation isolation, bounded body capture, and an ADO GET
-transport adapter. Stage GitHub reads use the scoped cache. Daemon counter/open-PR
-callers and ADO WIQL/batch hydration remain pending under HAW-EVT-008; no claim of
-complete shared polling is made.
+transport adapter. Stage reads require an explicit host-supplied automation scope; human and unknown
+launches bypass cache reuse. Daemon counter/open-PR callers now use gaggle and
+configuration partitions, including ADO GETs. ADO WIQL/batch hydration remains
+pending under HAW-EVT-008; no claim of complete shared polling is made.
 
 ### Backlog — design prepared, implementation pending
 
