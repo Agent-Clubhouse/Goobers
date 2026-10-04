@@ -125,3 +125,19 @@ publication failure and a writer whose exit cannot be proven. Exact host writer
 markers distinguish model completion from whole-runtime cleanup. These checks do
 not qualify live model, Kubernetes or provider execution. The initial native
 session remains model-only until typed source operations are installed.
+
+
+## Typed backlog read tools
+
+The session runtime can install host-owned `get_backlog_item` and
+`list_backlog_items` tools for explicitly configured backlog sources. Each turn
+gets an ephemeral grant bound to the verified human, session, run and committed
+stage attempt. The tool sees permitted binding names, never provider credentials
+or alternate targets. External MCP configuration cannot add this authority.
+
+Calls are bounded, audited to the exact session run, and store returned source
+material as unapproved data. Closing the turn revokes its grant and joins any
+outstanding read before runtime custody settles. A gaggle with no authorized
+source reader continues with model-only conversation. Native source mutations
+need separately installed durable typed command custody; these read tools grant
+no edit, PR or repository publication capability.
