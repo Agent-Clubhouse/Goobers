@@ -169,3 +169,20 @@ it does not prove this command authored that state. The host must persist comman
 custody before calling the adapter. Manual editing routes and UI remain disabled
 until that host custody and authorization path is installed. Relationships and
 repository PR proposals use separate contracts.
+
+
+## Interactive read service
+
+The shared service selects sources and resolves explicit interactive credentials
+under the same current gaggle policy. It returns bounded native projections to
+both portal and live-session callers. Source metadata reads expose configured
+scope and advisory write allowlists; they expose no credentials or connection
+references. Every provider read rechecks authorization.
+
+Interactive caching shares the existing gaggle/binding/generation store and is
+separate from automation, even if credentials match. Refreshes conditionally
+revalidate with the provider; they never reuse an hour-long scheduler snapshot.
+A live session uses its already-held human lease, checks exact retained source
+configuration, and cancels/joins an active read before changed policy is published.
+The service exists independently of route installation; daemon/API integration
+follows in the next review slices.
