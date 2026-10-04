@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
@@ -87,4 +88,14 @@ func validateRetainedRestartIdentity(plan StageRestartPlan) error {
 		return errors.New("runner: retained restart source has invalid child lineage")
 	}
 	return nil
+}
+
+// MatchesStageRestartRequest checks an exact human command against its accepted
+// snapshot without rereading changed source history or selected guidance.
+func MatchesStageRestartRequest(plan StageRestartPlan, request StageRestartRequest) bool {
+	var manifest stageRestartManifest
+	if json.Unmarshal(plan.Continuation.Inputs[StageRestartInputName], &manifest) != nil {
+		return false
+	}
+	return manifest.EpochID == request.EpochID && manifest.Stage == request.Stage && manifest.Actor == request.PrincipalRef && manifest.SourceTerminalSeq == request.ExpectedTerminalSeq && manifest.Rationale == request.Rationale && slices.Equal(manifest.GuidanceIDs, request.GuidanceIDs)
 }

@@ -46,6 +46,7 @@ func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageSer
 	}
 	if u.setup.InteractiveRestartExecution != nil {
 		adapter := &interactiveStageRestart{layout: u.l, setup: u.setup, service: u.interventions}
+		adapter.installQueue(u.durableTriggers)
 		service.AttachStageRestarts(adapter)
 		if u.setup.ChildRestarts != nil {
 			u.setup.ChildRestarts.restart = adapter.reconcileChildRestart

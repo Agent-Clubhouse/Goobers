@@ -11,6 +11,7 @@ import (
 	"github.com/goobers/goobers/internal/eventexecution"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/restartintent"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -35,6 +36,13 @@ func retainEventGenerationPins(ctx context.Context, layout instance.Layout, pins
 	defer func() { _ = queue.Close() }()
 	if err := retainSessionGenerationPins(ctx, queue, pins); err != nil {
 		return err
+	}
+	restarts, err := (&restartintent.Service{Queue: queue}).Retained(ctx)
+	if err != nil {
+		return err
+	}
+	for generation := range restarts.Generations {
+		pins[generation] = true
 	}
 	dependencies, err := eventexecution.RetainedDependencies(ctx, queue)
 	if err != nil {
@@ -65,7 +73,11 @@ func protectEventJournal(ctx context.Context, queue *triggerqueue.Store, candida
 	if err != nil {
 		return fmt.Errorf("retained event journal custody: %w", err)
 	}
-	if len(dependencies.Runs) == 0 {
+	restarts, err := (&restartintent.Service{Queue: queue}).Retained(ctx)
+	if err != nil {
+		return err
+	}
+	if len(dependencies.Runs) == 0 && len(restarts.Runs) == 0 {
 		return nil
 	}
 	reader, err := journal.OpenReadOnly(candidate.RunDir)
@@ -78,6 +90,9 @@ func protectEventJournal(ctx context.Context, queue *triggerqueue.Store, candida
 	}
 	if id.RunID != candidate.RunID {
 		return errors.New("event retention candidate identity differs")
+	}
+	if restarts.Runs[id.Gaggle][id.RunID] {
+		return fmt.Errorf("human restart retains run %s: %w", id.RunID, retention.ErrCustodyHeld)
 	}
 	if dependencies.Runs[eventexecution.RunRef{Gaggle: id.Gaggle, RunID: id.RunID}] {
 		return fmt.Errorf("event inputs or root budget retain run %s: %w", id.RunID, retention.ErrCustodyHeld)

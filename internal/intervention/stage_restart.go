@@ -41,6 +41,19 @@ type ChildStageRestartService interface{ SupportsChildStageRestart() bool }
 // A dedicated execution resolver is mandatory; the automation runner is never
 // reused as an implicit fallback for a human continuation.
 func (s *Service) LaunchStageRestart(admission, execution context.Context, plan runner.StageRestartPlan, preflight func(context.Context, *runner.StageRestartPlan) ([]localscheduler.ClaimEntry, error)) (StageRestartAcceptance, error) {
+	return s.launchStageRestart(admission, execution, plan, preflight, nil)
+}
+
+// LaunchQueuedStageRestart fences durable queue publication after capacity and
+// claim reservation, immediately before any epoch journal or executor effect.
+func (s *Service) LaunchQueuedStageRestart(admission, execution context.Context, plan runner.StageRestartPlan, preflight func(context.Context, *runner.StageRestartPlan) ([]localscheduler.ClaimEntry, error), beforePublication func(context.Context) error) (StageRestartAcceptance, error) {
+	if beforePublication == nil {
+		return StageRestartAcceptance{}, errors.New("queued restart requires publication fence")
+	}
+	return s.launchStageRestart(admission, execution, plan, preflight, beforePublication)
+}
+
+func (s *Service) launchStageRestart(admission, execution context.Context, plan runner.StageRestartPlan, preflight func(context.Context, *runner.StageRestartPlan) ([]localscheduler.ClaimEntry, error), beforePublication func(context.Context) error) (StageRestartAcceptance, error) {
 	if s.stageRestartExecution == nil {
 		return StageRestartAcceptance{}, interventionConflict("restart_execution_unavailable", "Interactive restart credential wiring is unavailable.")
 	}
@@ -93,7 +106,7 @@ func (s *Service) LaunchStageRestart(admission, execution context.Context, plan 
 	if err != nil {
 		return StageRestartAcceptance{}, err
 	}
-	if err := s.persistRestartEpoch(admission, lease, plan, verifiedClaims, duplicate, candidate.ChildRestart); err != nil {
+	if err := s.persistRestartEpoch(admission, lease, plan, verifiedClaims, duplicate, candidate.ChildRestart, beforePublication); err != nil {
 		return StageRestartAcceptance{}, err
 	}
 	s.executeStageRestart(execution, lease, candidate)
@@ -178,7 +191,7 @@ func restartTerminal(dir string) bool {
 	return err == nil && terminalInterventionPhase(phase)
 }
 
-func (s *Service) persistRestartEpoch(admission context.Context, lease *interventionExecutionLease, plan runner.StageRestartPlan, verifiedClaims []localscheduler.ClaimEntry, duplicate bool, child *ChildStageRestartAdmission) error {
+func (s *Service) persistRestartEpoch(admission context.Context, lease *interventionExecutionLease, plan runner.StageRestartPlan, verifiedClaims []localscheduler.ClaimEntry, duplicate bool, child *ChildStageRestartAdmission, beforePublication func(context.Context) error) error {
 	if child == nil {
 		if err := s.claimRestart(lease, verifiedClaims); err != nil {
 			lease.Close()
@@ -188,6 +201,12 @@ func (s *Service) persistRestartEpoch(admission context.Context, lease *interven
 	if err := admission.Err(); err != nil {
 		lease.Close()
 		return errors.Join(err, lease.releaseReacquiredClaims())
+	}
+	if beforePublication != nil {
+		if err := beforePublication(admission); err != nil {
+			lease.Close()
+			return errors.Join(err, lease.releaseReacquiredClaims())
+		}
 	}
 	if !duplicate {
 		err := child.fence(admission, func() error {
@@ -207,4 +226,24 @@ func (s *Service) persistRestartEpoch(admission context.Context, lease *interven
 		}
 	}
 	return nil
+}
+
+// ObserveStageRestart verifies the exact immutable epoch without launching it.
+func ObserveStageRestart(dir string, plan runner.StageRestartPlan) (bool, error) {
+	found, err := stageRestartReplay(dir, plan)
+	if err != nil || !found {
+		return found, err
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return false, err
+	}
+	id, err := reader.Identity()
+	if err != nil {
+		return false, err
+	}
+	if id.ConfigGeneration != plan.Source.ConfigGeneration || id.Workflow != plan.Source.Workflow {
+		return false, restartKeyConflict()
+	}
+	return true, nil
 }

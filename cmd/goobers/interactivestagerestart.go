@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -14,7 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/interactiveaccess"
 	"github.com/goobers/goobers/internal/intervention"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/restartintent"
 	"github.com/goobers/goobers/internal/runner"
 )
 
@@ -22,6 +21,7 @@ type interactiveStageRestart struct {
 	layout  instance.Layout
 	setup   *schedulerSetup
 	service *intervention.Service
+	queued  *restartintent.Service
 }
 
 func restartRefusal(code, message string) error {
@@ -35,28 +35,7 @@ func (s *interactiveStageRestart) RestartStage(admission, execution context.Cont
 	if plan.Source.Child != nil {
 		return s.restartChildStage(admission, execution, principal, plan)
 	}
-	// A policy reload cannot wait behind an unbounded provider preflight.
-	ctx, cancel := context.WithTimeout(admission, 30*time.Second)
-	defer cancel()
-	var result intervention.StageRestartAcceptance
-	err := s.setup.InteractiveAccess.WithRestartAdmission(ctx, principal, plan.Source.Gaggle, func(ctx context.Context, load interactiveaccess.RestartSourceLoader) error {
-		if err := stampRestartAuthority(s.layout, principal, &plan); err != nil {
-			return err
-		}
-		// The same per-run custody fence used for terminal child snapshots also
-		// prevents a legacy intervention from changing the source during restart.
-		release, exclusive := s.setup.RunnerRegistry.acquireChildCustody(plan.Source.RunID)
-		if !exclusive {
-			return restartRefusal("restart_source_active", "The source still has an execution or custody owner.")
-		}
-		defer release()
-		var err error
-		result, err = s.service.LaunchStageRestart(ctx, execution, plan, func(ctx context.Context, candidate *runner.StageRestartPlan) ([]localscheduler.ClaimEntry, error) {
-			return s.preflight(ctx, candidate, load)
-		})
-		return err
-	})
-	return result, err
+	return s.acceptOrdinaryRestart(admission, principal, plan)
 }
 
 // A retry retains the original verified claim snapshot. Reauthentication can

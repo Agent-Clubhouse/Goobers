@@ -402,3 +402,15 @@ retains the exact canonical input in the same queue database before attempting a
 start. Its separate daemon recovery cursor verifies the actual first history event
 with the configured codec and target; missing history never permits resending an
 uncertain effect. Live Temporal qualification remains outstanding.
+
+### Ordinary human restart queue normalization
+
+HAW-EVT-002 now covers ordinary human affected-stage continuations as well as
+existing child epochs. The typed shared receipt retains exact context before
+capacity, source-occurrence uniqueness, current-policy dispatch, and source/config
+retention. Exact command replay precedes mutable source preparation. A failed
+publication barrier starts no runner; uncertain post-barrier absence cannot
+silently authorize another launch. The composed HTTP acceptance test drives the
+queued receipt through the actual dedicated human Runner.Resume and verifies
+fresh stage allowance, selected scrubbed guidance, pinned identity and recovery.
+Uncertain no-journal repair still requires explicit writer-ownership proof.

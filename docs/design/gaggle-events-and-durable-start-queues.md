@@ -774,3 +774,25 @@ begins a new pass without changing records, run identities, capacity or effect
 claims. Tests cover equal-time ordering after a cursor record leaves the pending
 set and an actual eligible start behind 100 held requests. This closes head-of-line
 starvation; queue inspection/cancellation/deadline policy remains a separate slice.
+
+### Queued ordinary human restart epochs
+
+The ordinary human affected-stage restart now commits a typed shared-ledger
+receipt and bounded immutable context before reserving scheduler capacity.
+The accepted source terminal occurrence and stage can own only one epoch;
+changing a command or selecting another key cannot fork that occurrence.
+Current human permission is checked on receipt lookup and again on dispatch.
+Provider/source checks use the configured interactive credentials, and may
+refuse a changed source but cannot retarget the accepted epoch. Selected guidance,
+principal provenance, generation and history remain exactly as accepted.
+
+Capacity and claim refusal leave the receipt queued. A publication barrier marks
+it dispatching immediately before creating the continuation journal. A matching
+journal transfers custody to the existing pinned human recovery path; a missing
+or mismatched journal after that barrier remains uncertain and retains source,
+context and generation pins. This slice does not infer worker termination from
+journal absence or automatically resend an uncertain attempt. An explicit repair
+that proves publication and writer custody absent remains a queue-lifecycle task.
+HTTP returns accepted/pending and the reserved continuation ID while queued;
+that run becomes navigable after journal publication. Generated-child epochs
+continue through their existing parent/result/cancellation queue custody.

@@ -59,12 +59,15 @@ func (p *humanAcceptanceProcess) Run(ctx context.Context, req harness.ProcessReq
 }
 
 type humanAcceptanceFixture struct {
-	setup   *schedulerSetup
-	pinned  pinnedChildFixture
-	handler http.Handler
-	wg      sync.WaitGroup
-	process *humanAcceptanceProcess
-	log     bytes.Buffer
+	setup         *schedulerSetup
+	pinned        pinnedChildFixture
+	handler       http.Handler
+	wg            sync.WaitGroup
+	process       *humanAcceptanceProcess
+	durable       *durableTriggerService
+	interventions *intervention.Service
+	scheduler     *localscheduler.Scheduler
+	log           bytes.Buffer
 }
 
 func newHumanAcceptanceFixture(t *testing.T) *humanAcceptanceFixture {
@@ -188,8 +191,12 @@ func newHumanAcceptanceFixture(t *testing.T) *humanAcceptanceFixture {
 	if err := session.configureInteractiveAccess(); err != nil {
 		t.Fatal(err)
 	}
+	session.durableTriggers = acceptedService(t, filepath.Join(pinned.layout.SchedulerDir(), "accepted-triggers.db"), newDaemonTriggerService())
+	f.durable = session.durableTriggers
 	session.interventions = newRunInterventionService(pinned.layout, setup, &f.wg, log.New(&f.log, "", 0))
-	session.interventions.AttachScheduler(localscheduler.New([]localscheduler.WorkflowEntry{{Workflow: key.Workflow, Gaggle: key.Gaggle, Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}, instanceLog))
+	f.interventions = session.interventions
+	f.scheduler = localscheduler.New([]localscheduler.WorkflowEntry{{Workflow: key.Workflow, Gaggle: key.Gaggle, Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1}}}, instanceLog)
+	session.interventions.AttachScheduler(f.scheduler)
 	if err := session.configureInteractiveRuns(newDaemonRunJournalService(pinned.layout, instanceLog)); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +221,7 @@ func (f *humanAcceptanceFixture) command(t *testing.T, key string, command apico
 	request.Header.Set("Idempotency-Key", key)
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusOK && response.Code != http.StatusAccepted {
 		t.Fatalf("%s: %d %s", key, response.Code, response.Body)
 	}
 	var result apicontract.InteractiveRunCommandResult
@@ -253,6 +260,12 @@ func TestInteractiveRestartHTTPExecutesPinnedHumanEpoch(t *testing.T) {
 	}
 	command := apicontract.InteractiveRunCommand{Kind: "restart", Stage: "plan", ExpectedSubjectSequence: sequence, GuidanceIDs: []string{saved.Guidance.Request.RequestID}, Rationale: "Use reviewed context"}
 	accepted := f.command(t, "restart-epoch", command)
+	if accepted.Status != "pending" {
+		t.Fatalf("restart bypassed queue: %+v", accepted)
+	}
+	if err := f.durable.Drain(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	f.wg.Wait()
 	if accepted.ContinuationRunID == "" {
 		t.Fatal("no epoch")

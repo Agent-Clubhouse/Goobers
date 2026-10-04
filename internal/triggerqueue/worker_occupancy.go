@@ -59,7 +59,7 @@ func pendingWorkflowStarts(ctx context.Context, q sourceQuerier, limit WorkflowP
  AND NOT EXISTS(SELECT 1 FROM direct_engine_inputs i WHERE i.acceptance_id=triggers.id)
  AND COALESCE(json_extract(payload,'$.target.gaggle'),json_extract(payload,'$.gaggle'),json_extract(payload,'$.request.gaggle'),'') IN (?, '')
  AND COALESCE(json_extract(payload,'$.target.workflow'),json_extract(payload,'$.parentWorkflow'),json_extract(payload,'$.workflow'),json_extract(payload,'$.request.workflow'),'')=?
- AND substr(id,9) NOT IN (SELECT value FROM json_each(?))`, limit.Gaggle, limit.Workflow, string(active)).Scan(&count)
+ AND COALESCE((SELECT epoch FROM human_restart_plans h WHERE h.acceptance_id=triggers.id),substr(id,9)) NOT IN (SELECT value FROM json_each(?))`, limit.Gaggle, limit.Workflow, string(active)).Scan(&count)
 	return count, err
 }
 func checkWorkerOccupancy(ctx context.Context, tx *sql.Tx, b SourceBatch) error {

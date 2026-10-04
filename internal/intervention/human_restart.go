@@ -86,6 +86,16 @@ func (s *HumanService) restartStage(admission, execution context.Context, p http
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, err
 	}
+	request := runner.StageRestartRequest{EpochID: epoch, Stage: input.Stage, PrincipalRef: principalIdentity(p), ExpectedTerminalSeq: input.ExpectedSubjectSequence, GuidanceIDs: input.GuidanceIDs, Rationale: input.Rationale}
+	if replay, ok := (*adapter).(StageRestartReplayService); ok {
+		accepted, found, replayErr := replay.LookupStageRestart(admission, p, resolved.runID, resolved.gaggle, request)
+		if replayErr != nil {
+			return apicontract.InteractiveRunCommandResult{}, replayErr
+		}
+		if found {
+			return stageRestartCommandResult(accepted, epoch, resolved, input)
+		}
+	}
 	prepare := runner.PrepareStageRestart
 	if s.childRestartSupported() {
 		prepare = runner.PrepareChildStageRestart
@@ -97,7 +107,7 @@ func (s *HumanService) restartStage(admission, execution context.Context, p http
 			prepare = runner.PrepareStageRestart
 		}
 	}
-	plan, err := prepare(reader, resolved.machine, runner.StageRestartRequest{EpochID: epoch, Stage: input.Stage, PrincipalRef: principalIdentity(p), ExpectedTerminalSeq: input.ExpectedSubjectSequence, GuidanceIDs: input.GuidanceIDs, Rationale: input.Rationale}, s.scrubber)
+	plan, err := prepare(reader, resolved.machine, request, s.scrubber)
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, interventionConflict("restart_refused", err.Error())
 	}
@@ -105,6 +115,16 @@ func (s *HumanService) restartStage(admission, execution context.Context, p http
 	if err != nil {
 		return apicontract.InteractiveRunCommandResult{}, err
 	}
+	return stageRestartCommandResult(accepted, epoch, resolved, input)
+}
+
+// StageRestartReplayService reads accepted immutable requests before source
+// preparation. Implementations must authorize the current human on every read.
+type StageRestartReplayService interface {
+	LookupStageRestart(context.Context, httpapi.Principal, string, string, runner.StageRestartRequest) (StageRestartAcceptance, bool, error)
+}
+
+func stageRestartCommandResult(accepted StageRestartAcceptance, epoch string, resolved resolvedInterventionRun, input apicontract.InteractiveRunCommand) (apicontract.InteractiveRunCommandResult, error) {
 	if !apiv1.ValidRunID(accepted.RunID) || accepted.RunID != epoch {
 		return apicontract.InteractiveRunCommandResult{}, interventionConflict("restart_receipt_invalid", "The restart receipt did not identify its reserved epoch.")
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/eventing"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/restartintent"
 	"github.com/goobers/goobers/internal/sessioning"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -66,7 +67,7 @@ func acceptedTriggerObserver(layout instance.Layout) func(context.Context, trigg
 }
 
 func (s *durableTriggerService) reconcileObserved(ctx context.Context) error {
-	if s.observe == nil && s.observeChild == nil && s.events == nil && s.ordinary == nil && s.sessions == nil {
+	if s.observe == nil && s.observeChild == nil && s.events == nil && s.ordinary == nil && s.sessions == nil && s.restarts == nil {
 		return nil
 	}
 	records, err := s.queue.Uncertain(ctx, s.reconcileCursor, 100)
@@ -116,6 +117,12 @@ func (s *durableTriggerService) reconcileAcceptedRecord(ctx context.Context, rec
 	}
 	if header.Kind == enginestartintent.Kind {
 		return s.drainDirectEngine(ctx, record)
+	}
+	if header.Kind == restartintent.Kind {
+		if s.restarts == nil {
+			return nil
+		}
+		return s.restarts.Reconcile(ctx, record)
 	}
 	if header.Kind == startintent.Kind {
 		if s.ordinary == nil {

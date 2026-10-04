@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/interactivesession"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/restartintent"
 	"github.com/goobers/goobers/internal/sessioning"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -29,6 +30,7 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	restarts               *restartintent.Service
 	directEngine           *enginestartintent.Service
 	directEngineCursor     string
 	ordinary               *startintent.Service
@@ -171,7 +173,7 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
 	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx), s.sweepSessions(ctx), s.sweepDirectEngine(ctx))
-	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil && s.sessions == nil {
+	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil && s.sessions == nil && s.restarts == nil {
 		return pruneErr
 	}
 	reconcileErr := errors.Join(pruneErr, s.reconcileObserved(ctx), s.reconcileChildren(ctx))
@@ -204,6 +206,12 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	// an envelope also contains an ordinary request. Retain durable custody.
 	if header.Kind == enginestartintent.Kind {
 		return s.drainDirectEngine(ctx, record)
+	}
+	if header.Kind == restartintent.Kind {
+		if s.restarts == nil {
+			return nil
+		}
+		return s.restarts.Dispatch(ctx, s.dispatch.lifecycleContext(ctx), record)
 	}
 	if header.Kind == startintent.Kind {
 		return s.drainOrdinary(ctx, record)
@@ -290,6 +298,9 @@ func acceptedTriggerScope(raw []byte) (bool, string, error) {
 	}
 	if err := json.Unmarshal(raw, &header); err != nil {
 		return false, "", err
+	}
+	if header.Kind == restartintent.Kind {
+		return false, "", nil
 	}
 	if header.Kind == startintent.Kind {
 		e, err := startintent.Parse(raw)
