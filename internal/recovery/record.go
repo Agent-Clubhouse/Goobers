@@ -19,6 +19,13 @@ import (
 // fail-closed.
 var ErrNoMatchingSnapshot = errors.New("no matching recovery snapshot")
 
+// ErrIncompatibleSnapshot reports that a selected retained implementation
+// cannot be restored onto current main: its base is no longer an ancestor, or
+// its patch no longer applies. Nothing has been adopted when it is returned,
+// so a re-claim may start fresh while the retained state stays available for
+// operator recovery.
+var ErrIncompatibleSnapshot = errors.New("retained checkpoint does not apply to current main")
+
 var (
 	runIdentity = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$`)
 	gitObjectID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
