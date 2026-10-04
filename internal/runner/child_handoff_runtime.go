@@ -134,7 +134,7 @@ func (r *Runner) continueChildWait(ctx context.Context, tf *taskFrame, attempt i
 	if err != nil {
 		return err
 	}
-	if err := resumeChildCapacity(ctx, suspension); err != nil {
+	if err := resumeChildCapacity(ctx, suspension, tf, attempt, class); err != nil {
 		if ctx.Err() != nil {
 			return errors.Join(errChildWaitDrain, ctx.Err())
 		}
@@ -200,15 +200,31 @@ func finishChildStageCustody(ctx context.Context, tf *taskFrame) error {
 	return workspace.Remove(ctx)
 }
 
-func resumeChildCapacity(ctx context.Context, suspension ChildParentSuspension) error {
+func resumeChildCapacity(ctx context.Context, suspension ChildParentSuspension, tf *taskFrame, attempt int, class journal.AttemptClass) error {
 	if suspension == nil {
 		return fmt.Errorf("runner: child capacity suspension is missing")
 	}
+	lastReason := ""
 	for {
-		if err := suspension.Resume(ctx); err == nil {
+		err := suspension.Resume(ctx)
+		if err == nil {
 			return nil
 		}
-		timer := time.NewTimer(time.Second)
+		var pending *ChildCapacityWaitError
+		if !errors.As(err, &pending) {
+			return fmt.Errorf("runner: parent continuation cannot reacquire custody: %w", err)
+		}
+		if pending.Reason != lastReason {
+			if err := tf.jr.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: tf.t.Name, Attempt: attempt, AttemptClass: class, Runner: map[string]any{"kind": "child.workflow.capacity-blocked", "reason": boundFailureMessage(pending.Reason), "policyBlocked": pending.PolicyBlocked}}); err != nil {
+				return err
+			}
+			lastReason = pending.Reason
+		}
+		delay := time.Second
+		if pending.PolicyBlocked {
+			delay = 30 * time.Second
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

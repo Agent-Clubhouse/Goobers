@@ -62,6 +62,16 @@ type ChildHandoff interface {
 // ChildParentSuspension reacquires the parent's existing concurrency permit.
 type ChildParentSuspension interface{ Resume(context.Context) error }
 
+// ChildCapacityWaitError identifies a scheduler refusal that can change while
+// the parent remains parked. PolicyBlocked surfaces a durable operator-facing
+// reason and uses a slower retry interval; unknown ownership errors are fatal.
+type ChildCapacityWaitError struct {
+	Reason        string
+	PolicyBlocked bool
+}
+
+func (e *ChildCapacityWaitError) Error() string { return e.Reason }
+
 // ChildParentCapacity releases only concurrency, retaining the accepted start
 // and budget. The initial runner integration supports serial parent graphs.
 type ChildParentCapacity interface {
@@ -145,8 +155,18 @@ func pendingChildWait(events []journal.Event) (*childWaitRecord, journal.Event, 
 // ParkedOnChild reports durable, validated serial parent suspension. Invalid
 // custody is not presented as a safe capacity release; Resume reports its error.
 func ParkedOnChild(events []journal.Event) bool {
+	_, parked, err := ParkedChildRequest(events)
+	return err == nil && parked
+}
+
+// ParkedChildRequest returns the exact validated host receipt currently holding
+// workspace custody. Callers must match the whole receipt before applying effects.
+func ParkedChildRequest(events []journal.Event) (ChildHandoffRequest, bool, error) {
 	pending, _, err := pendingChildWait(events)
-	return err == nil && pending != nil
+	if err != nil || pending == nil {
+		return ChildHandoffRequest{}, false, err
+	}
+	return pending.Request, true, nil
 }
 
 func decodeChildWaitEvent(event, started journal.Event) (*childWaitRecord, error) {

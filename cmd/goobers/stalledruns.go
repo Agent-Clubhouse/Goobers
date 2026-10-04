@@ -423,14 +423,14 @@ func sweepStalledRuns(
 		if phase != journal.PhaseRunning {
 			continue
 		}
-		durationExceeded := runMaxDuration > 0 && identity.StartedAt.Before(now.Add(-runMaxDuration))
+		events, elapsed, elapsedErr := stalledExecutionClock(reader, identity.StartedAt, now)
+		if elapsedErr != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("read run %q execution clock: %w", identity.RunID, elapsedErr))
+			continue
+		}
+		durationExceeded := runMaxDuration > 0 && elapsed > runMaxDuration
 		stallWindow := runTimeout
 		if !durationExceeded {
-			events, eventsErr := reader.Events()
-			if eventsErr != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("read run %q events: %w", identity.RunID, eventsErr))
-				continue
-			}
 			if len(events) == 0 {
 				sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
 				continue
@@ -442,7 +442,7 @@ func sweepStalledRuns(
 			// retried emit or a pod-executed gate's own events can follow
 			// gate.paused. Testing only the last event escalated a run that
 			// was still waiting for a human. See journal.ParkedAtGate.
-			if journal.ParkedAtGate(events) {
+			if journal.ParkedAtGate(events) || runner.ParkedOnChild(events) {
 				continue
 			}
 			lastActivity := events[len(events)-1].Time
@@ -554,4 +554,14 @@ func sweepStalledRuns(
 		}
 	}
 	return boundedagg.Join(sweepErrs...)
+}
+
+// Read once for both the active execution clock and the stall/parking checks.
+func stalledExecutionClock(reader *journal.Reader, startedAt, now time.Time) ([]journal.Event, time.Duration, error) {
+	events, err := reader.Events()
+	if err != nil {
+		return nil, 0, err
+	}
+	elapsed, err := runner.RunExecutionElapsed(events, startedAt, now)
+	return events, elapsed, err
 }

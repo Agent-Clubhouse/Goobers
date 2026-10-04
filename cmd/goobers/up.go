@@ -1083,6 +1083,7 @@ func (u *upSession) configureAPI() int {
 	if err := u.credentialPlane.enableChildWorkflows(u.durableTriggers.queue, u.setup.Definitions); err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize child workflow authority", err)
 	}
+	u.credentialPlane.childDispatch = u.triggerPlane
 	u.credentialPlane.Replace(credentialPlaneDefinitionsFromSet(u.setup.Definitions))
 	u.setup.CredentialPlane = u.credentialPlane
 	// The surrender plane (#3699) rides beside the blob store, under the same

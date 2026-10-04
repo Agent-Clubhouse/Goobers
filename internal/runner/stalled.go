@@ -697,7 +697,22 @@ func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: inspect run %q for duration limit: %w", runID, err)
 	}
-	if phase != journal.PhaseRunning || !startedAt.Before(now.Add(-timeout)) {
+	if phase != journal.PhaseRunning {
+		return Result{Phase: phase}, false, nil
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return Result{}, false, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return Result{}, false, err
+	}
+	elapsed, err := RunExecutionElapsed(events, startedAt, now)
+	if err != nil {
+		return Result{}, false, err
+	}
+	if elapsed <= timeout {
 		return Result{Phase: phase}, false, nil
 	}
 

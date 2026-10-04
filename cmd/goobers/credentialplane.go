@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -114,8 +115,10 @@ type daemonCredentialService struct {
 	// grants signs and admits stage credential-refresh grants (Goobers#6120,
 	// credentialrefresh.go). Nil disables mid-stage refresh: no grant is
 	// minted and the refresh route answers 503.
-	grants   *stageGrantIssuer
-	children *childworkflow.Runtime
+	grants        *stageGrantIssuer
+	children      *childworkflow.Runtime
+	childQueue    *triggerqueue.Store
+	childDispatch *daemonTriggerService
 
 	// buildSources overrides gaggle credential-source construction in tests;
 	// nil uses buildCredentials — the same composition the runner wiring uses.
