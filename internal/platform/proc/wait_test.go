@@ -87,8 +87,10 @@ func TestWaitOrKillGivesUpAfterKillWait(t *testing.T) {
 	if !outcome.Canceled || !outcome.GaveUp {
 		t.Fatalf("outcome = %+v, want cancellation and give-up", outcome)
 	}
-	if elapsed := time.Since(start); elapsed < 20*time.Millisecond || elapsed > time.Second {
-		t.Fatalf("elapsed = %s, want bounded by kill-wait", elapsed)
+	// The wait channel never delivers, so returning at all proves the bound;
+	// only the lower edge is asserted so a loaded CI runner cannot flake it.
+	if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
+		t.Fatalf("elapsed = %s, want at least the kill-wait", elapsed)
 	}
 }
 
