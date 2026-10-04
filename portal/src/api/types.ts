@@ -1,3 +1,4 @@
+import type { PRRepairCommand } from "./prRepairTypes";
 import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
 export type { StartQueuePage, StartQueueItem, StartQueueCancelInput, StartQueueCancellation } from "./startQueueTypes";
 import type { WorkbenchGraph } from "./workbenchGraphTypes";
@@ -1916,6 +1917,8 @@ export interface DaemonClient {
   getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities>;
   patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand>;
   getWorkbenchCommand(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<BacklogEditCommand>;
+  getPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand>;
+  checkPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand>;
   inspectPullRequest(gaggle: string, source: string, pullRequest: string, options?: RequestOptions): Promise<SessionPRRepairInspection>;
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage>;
   getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage>;
@@ -2236,3 +2239,4 @@ export type { MetadataRevision, MetadataChangeRequest, MetadataPreview, Metadata
 export type { MetadataObjectiveRequest, MetadataAliasRequest } from "./workbenchProposalTypes";
 
 export type { SuggestionSelection, SuggestionArtifact, SuggestionInventory, SuggestionEvidence, SuggestionEndpoint, BoundSuggestion, SuggestionCandidate, SuggestionBatch, SuggestionPreviewRequest, SuggestionPreview, SuggestionDecisionRequest, SuggestionReview } from "./workbenchSuggestionTypes";
+export type { PRRepairCommand, PRRepairObservation } from "./prRepairTypes";

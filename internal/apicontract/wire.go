@@ -26,6 +26,7 @@ type wireFixtures struct {
 	SuggestionDecision       SuggestionDecisionRequest `json:"suggestionDecision"`
 	SuggestionReview         SuggestionReview          `json:"suggestionReview"`
 
+	PRRepairCommand            PRRepairCommand          `json:"prRepairCommand"`
 	StartQueue                 StartQueuePage           `json:"startQueue"`
 	StartQueueItem             StartQueueItem           `json:"startQueueItem"`
 	StartQueueCancel           StartQueueCancelInput    `json:"startQueueCancel"`
@@ -113,6 +114,7 @@ var wireFixtureTypes = []struct {
 	{name: "suggestionDecision", scriptType: "SuggestionDecisionRequest"},
 	{name: "suggestionReview", scriptType: "SuggestionReview"},
 
+	{name: "prRepairCommand", scriptType: "PRRepairCommand"},
 	{name: "gaggleEventEnvelope", scriptType: "GaggleEventEnvelope"},
 	{name: "gaggleEventReceipt", scriptType: "GaggleEventReceipt"},
 	{name: "metadataChange", scriptType: "MetadataChangeRequest"},
@@ -508,6 +510,7 @@ func newWireFixtures() wireFixtures {
 	operatorMessageRequest, operatorMessageResponse := operatorMessageWireFixtures(timestamp)
 
 	return withChildWorkflowFixtures(wireFixtures{
+		PRRepairCommand:         prRepairRecoveryFixture(timestamp),
 		TriggerRequest:          TriggerRequest{Workflow: "implement", Gaggle: "goobers", RequestID: "delivery-1", SourceRun: "source-1"},
 		TriggerResponse:         TriggerResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "accepted", Duplicate: true},
 		TriggerStatus:           TriggerStatusResponse{AcceptanceID: "trigger-0123456789abcdef0123456789abcdef", State: "dispatched", RunID: "0123456789abcdef0123456789abcdef", AcceptedAt: timestamp},

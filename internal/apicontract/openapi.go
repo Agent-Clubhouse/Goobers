@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if eventIngressRoute(route.ID) || workbenchSuggestionRoute(route.ID) || workbenchProposalRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if prRepairRecoveryRoute(route.ID) || eventIngressRoute(route.ID) || workbenchSuggestionRoute(route.ID) || workbenchProposalRoute(route.ID) || route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -214,6 +214,9 @@ func routeRequiresIdempotency(id RouteID) bool {
 }
 
 func openAPIRequestBody(route Route) map[string]any {
+	if route.ID == RoutePRRepairCheck {
+		return map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": closedChildObject([]string{}, map[string]any{})}}}
+	}
 	if route.ID == RouteGaggleEventPublish {
 		return map[string]any{"required": true, "content": map[string]any{"application/cloudevents+json": map[string]any{"schema": schemaRef("GaggleEventEnvelope")}, "application/json": map[string]any{"schema": schemaRef("GaggleEventEnvelope")}}}
 	}

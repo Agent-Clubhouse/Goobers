@@ -621,6 +621,7 @@ func (r *Router) ensureAdmission() {
 }
 
 type handlerConfig struct {
+	prRepairRecovery        PRRepairRecoveryService
 	events                  eventSource
 	authenticator           Authenticator
 	interventions           InterventionService
@@ -1253,6 +1254,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerStartQueueRoutes(router, config, errorLog)
 	router.Handle(apicontract.RouteWorkbenchDocuments, workbenchDocumentsHandler(config.workbenchDocuments, errorLog))
 	registerWorkbenchWriteRoutes(router, config, errorLog)
+	registerPRRepairRecovery(router, config, errorLog)
 	registerWorkbenchProposalRoutes(router, config, errorLog)
 	registerWorkbenchSuggestionRoutes(router, config, errorLog)
 	registerRunRoutes(router, reader, errorLog)

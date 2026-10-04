@@ -3,6 +3,28 @@
   "apiVersion": "v1",
   "routes": [
     {
+      "id": "prRepairCommand",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/pr-repairs/{command}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "prRepairCheck",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/pr-repairs/{command}/check",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "discovery",
       "method": "GET",
       "path": "/.well-known/goobers",

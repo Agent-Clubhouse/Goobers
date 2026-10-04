@@ -1,4 +1,5 @@
 import type { SuggestionSelection, SuggestionInventory, SuggestionBatch, SuggestionPreviewRequest, SuggestionPreview, SuggestionDecisionRequest, SuggestionReview } from "./workbenchSuggestionTypes";
+import type { PRRepairCommand } from "./prRepairTypes";
 import type { MetadataChangeRequest, MetadataPreview, MetadataProposalCommand } from "./workbenchProposalTypes";
 import { readMetadataResponse } from "./workbenchProposalTransport";
 import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
@@ -573,6 +574,12 @@ export class HttpDaemonClient implements DaemonClient {
     return this.getJSON(clientRoutes.workbenchCommand, undefined, options, { gaggle, source, command });
   }
 
+  getPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand> {
+    return this.withResponse(clientRoutes.prRepairCommand, undefined, options, "application/json", (response) => readMetadataResponse<PRRepairCommand>(response, 128 << 10), { gaggle, command });
+  }
+  checkPRRepairCommand(gaggle: string, command: string, options?: RequestOptions): Promise<PRRepairCommand> {
+    return this.withResponse(clientRoutes.prRepairCheck, undefined, options, "application/json", (response) => readMetadataResponse<PRRepairCommand>(response, 128 << 10), { gaggle, command }, { body: "{}", headers: { "Content-Type": "application/json" } });
+  }
   inspectPullRequest(gaggle: string, source: string, pullRequest: string, options?: RequestOptions): Promise<import("./types").SessionPRRepairInspection> {
     return this.getJSON(clientRoutes.workbenchPRSelection, undefined, options, { gaggle, source, pullRequest });
   }

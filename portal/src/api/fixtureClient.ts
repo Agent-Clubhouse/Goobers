@@ -1,3 +1,4 @@
+import type { PRRepairCommand } from "./prRepairTypes";
 import {
   DaemonApiError,
   RequestCancelledError,
@@ -129,6 +130,8 @@ export class FixtureDaemonClient implements DaemonClient {
   async getWorkbenchWriteCapabilities(_gaggle: string, _source: string, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogWriteCapabilities> { return { fields: [], relationships: [], revisionSemantics: "timestamp-preflight", maxAssignees: 10, controlLabelChanges: false }; }
   async patchWorkbenchItem(_gaggle: string, _source: string, _item: string, _key: string, _input: import("./types").BacklogPatchInput, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogEditCommand> { throw new Error("Source editing requires a connected daemon."); }
   async getWorkbenchCommand(_gaggle: string, _source: string, _command: string, _options?: import("./types").RequestOptions): Promise<import("./types").BacklogEditCommand> { throw new Error("Command receipts require a connected daemon."); }
+  async getPRRepairCommand(): Promise<PRRepairCommand> { throw new Error("Repair recovery requires a connected daemon."); }
+  async checkPRRepairCommand(): Promise<PRRepairCommand> { throw new Error("Repair recovery requires a connected daemon."); }
   async inspectPullRequest(): Promise<import("./types").SessionPRRepairInspection> { throw new Error("PR inspection requires a connected daemon."); }
   async listWorkbenchSources(): Promise<import("./types").WorkbenchSourcePage> { return { items: [], generation: "fixture" }; }
   async getWorkbenchDocuments(): Promise<import("./types").WorkbenchDocumentPage> { throw new Error("Document browsing requires a connected daemon."); }

@@ -8,6 +8,7 @@ import type {
   SuggestionPreview,
   SuggestionDecisionRequest,
   SuggestionReview,
+  PRRepairCommand,
   GaggleEventEnvelope,
   GaggleEventReceipt,
   MetadataChangeRequest,
@@ -90,6 +91,7 @@ export interface GoWireFixtures {
   suggestionPreview: SuggestionPreview;
   suggestionDecision: SuggestionDecisionRequest;
   suggestionReview: SuggestionReview;
+  prRepairCommand: PRRepairCommand;
   gaggleEventEnvelope: GaggleEventEnvelope;
   gaggleEventReceipt: GaggleEventReceipt;
   metadataChange: MetadataChangeRequest;
@@ -380,6 +382,41 @@ export const goWireFixtures = {
       "nextAction": "Inspect the exact retained effect; do not retry the write."
     },
     "duplicate": false
+  },
+  "prRepairCommand": {
+    "id": "repair-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceBindingId": "code",
+    "state": "observed-applied",
+    "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operationDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "selectedHeadSha": "dddddddddddddddddddddddddddddddddddddddd",
+    "expectedHeadSha": "dddddddddddddddddddddddddddddddddddddddd",
+    "runId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "actor": {
+      "issuer": "https://issuer.example",
+      "subject": "producer"
+    },
+    "acceptedAt": "2026-07-18T12:34:56Z",
+    "attemptedAt": "2026-07-18T12:34:56Z",
+    "completedAt": "2026-07-18T12:34:56Z",
+    "receipt": {
+      "operationDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "outcome": "unknown",
+      "mutationAttempted": true,
+      "providerAcknowledged": false,
+      "observedMatches": false
+    },
+    "observations": [
+      {
+        "checker": {
+          "issuer": "https://issuer.example",
+          "subject": "checker"
+        },
+        "at": "2026-07-18T12:34:56Z",
+        "matches": true,
+        "commitId": "ffffffffffffffffffffffffffffffffffffffff"
+      }
+    ]
   },
   "startQueue": {
     "gaggle": "web",

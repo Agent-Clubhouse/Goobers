@@ -45,6 +45,9 @@ func workbenchResponses(id RouteID) map[string]any {
 	if workbenchSuggestionRoute(id) {
 		return workbenchSuggestionResponses(id)
 	}
+	if prRepairRecoveryRoute(id) {
+		return prRepairRecoveryResponses()
+	}
 	if workbenchProposalRoute(id) {
 		return workbenchProposalResponses(id)
 	}

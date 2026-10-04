@@ -22,6 +22,7 @@ func (u *upSession) configureWorkbenchReads() {
 	}
 	u.installWorkbenchProposals(read, factory.RepositoryProposal)
 	u.installSessionPRRepair(factory.PRRepair)
+	u.installPRRepairRecovery(factory.PRRepair)
 }
 
 func (u *upSession) installWorkbenchReads(service *workbenchservice.Service) {

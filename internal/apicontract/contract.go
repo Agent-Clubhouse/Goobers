@@ -516,6 +516,8 @@ const (
 )
 
 var v1Routes = []Route{
+	{ID: RoutePRRepairCommand, Method: http.MethodGet, Path: PRRepairCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RoutePRRepairCheck, Method: http.MethodPost, Path: PRRepairCheckPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	// Discovery is deliberately reachable before crash recovery completes:
 	// it describes the API transport from immutable build/boot metadata and
 	// the canonical route registry without reading runtime health.
