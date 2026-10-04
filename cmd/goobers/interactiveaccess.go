@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/goobers/goobers/internal/childmonitor"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/interactiveaccess"
@@ -48,5 +49,8 @@ func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageSer
 		u.setup.InteractiveAccess.SetStageRestartAvailable(true)
 	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithInteractiveRuns(service))
+	if u.durableTriggers != nil {
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithChildWorkflowMonitor(&childmonitor.Service{Layout: u.l, Queue: u.durableTriggers.queue, Permissions: u.setup.InteractiveAccess, Scrubber: journal.Chain(u.setup.SharedRegistry, journal.NewPatternScrubber())}))
+	}
 	return nil
 }

@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand {
+		if route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if childWorkflowRoute(route.ID) {
@@ -127,6 +127,9 @@ func openAPIParameters(route Route) []map[string]any {
 			"name": "Last-Event-ID", "in": "header",
 			"schema": map[string]any{"type": "string", "maxLength": 512},
 		})
+	}
+	if route.ID == RouteChildWorkflowMonitor {
+		parameters = append(parameters, map[string]any{"name": "after", "in": "query", "schema": map[string]any{"type": "string", "maxLength": 128}})
 	}
 	if route.ID == RouteRunRecovery || route.ID == RouteRunRecoveryPublish {
 		for _, name := range []string{"repositoryKey", "issue"} {
@@ -275,6 +278,8 @@ func openAPIResponses(route Route) map[string]any {
 	switch route.ID {
 	case RouteInteractiveRun:
 		successSchema = schemaRef("InteractiveRunView")
+	case RouteChildWorkflowMonitor:
+		successSchema = schemaRef("ChildWorkflowPage")
 	case RouteInteractiveRunCommand:
 		successSchema = schemaRef("InteractiveRunCommandResult")
 	case RouteGaggleInteractiveCapabilities:

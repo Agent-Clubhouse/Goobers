@@ -111,6 +111,9 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+	async getChildWorkflows(): Promise<import("./types").ChildWorkflowPage> {
+		throw new Error("Child workflow custody is unavailable in this read-only snapshot.");
+	}
   async getInteractiveRun(): Promise<import("./types").InteractiveRunView> {
     throw new Error("Interactive operations are unavailable in this read-only snapshot.");
   }

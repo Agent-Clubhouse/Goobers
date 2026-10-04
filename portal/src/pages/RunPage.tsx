@@ -10,6 +10,7 @@ import type {
 } from "../api/types";
 import { newestFirst } from "../chronology";
 import { RunInterventionPanel } from "../components/RunInterventionPanel";
+import { ChildWorkflowsPanel } from "../components/ChildWorkflowsPanel";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
 import { ReplayScrubber } from "../components/ReplayScrubber";
@@ -595,6 +596,7 @@ function RunDetailWorkspace({
       )}
 
       {!standalone && <RunInterventionPanel client={client} runId={runId} revision={events.length} />}
+      {!standalone && <ChildWorkflowsPanel key={runId} client={client} runId={runId} />}
 
       {run.escalation && (
         <EscalationPanel

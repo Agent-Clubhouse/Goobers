@@ -22,6 +22,15 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"resultRef": stringSchema(), "workspaceRef": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 	})
 	return map[string]any{
+		"ChildWorkflowPage": closedChildObject([]string{"runId", "gaggle", "children"}, map[string]any{
+			"runId": stringSchema(), "gaggle": stringSchema(), "parent": schemaRef("ChildWorkflowParent"), "nextCursor": map[string]any{"type": "string", "maxLength": 128},
+			"children": map[string]any{"type": "array", "maxItems": 50, "items": schemaRef("ChildWorkflowSummary")},
+		}),
+		"ChildWorkflowParent": closedChildObject([]string{"runId", "workflow", "invocationKey"}, map[string]any{"runId": stringSchema(), "workflow": stringSchema(), "invocationKey": stringSchema()}),
+		"ChildWorkflowSummary": closedChildObject([]string{"childId", "runAvailable", "invocationKey", "sequence", "state", "cancellationRequested", "acknowledged", "expired", "acceptedAt", "updatedAt"}, map[string]any{
+			"childId": stringSchema(), "runId": stringSchema(), "runAvailable": map[string]any{"type": "boolean"}, "stage": stringSchema(), "workflow": stringSchema(), "invocationKey": stringSchema(),
+			"sequence": map[string]any{"type": "integer", "minimum": 1}, "state": custody["state"], "cancellationRequested": map[string]any{"type": "boolean"}, "acknowledged": map[string]any{"type": "boolean"}, "expired": map[string]any{"type": "boolean"}, "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
+		}),
 		"ChildWorkflowSourceRequest": closedChildObject([]string{"source"}, map[string]any{
 			"source": map[string]any{"type": "string", "minLength": 1, "maxLength": MaxChildWorkflowSourceBytes,
 				"x-goobers-max-bytes": MaxChildWorkflowSourceBytes, "description": "UTF-8 Workflow DSL; at most 1 MiB after JSON decoding. No policy or origin is accepted in the request."},

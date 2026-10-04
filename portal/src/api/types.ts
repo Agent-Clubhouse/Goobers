@@ -1888,6 +1888,7 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+	getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<ChildWorkflowPage>;
   getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView>;
   commandInteractiveRun(runId: string, key: string, command: InteractiveRunCommand, options?: RequestOptions): Promise<InteractiveRunCommandResult>;
   connectEvents(
@@ -2060,6 +2061,29 @@ export interface InteractiveActionPermission {
 }
 
 /** Human-only surface; source of authority is the authenticated gaggle policy. */
+export interface ChildWorkflowPage {
+  runId: string;
+  gaggle: string;
+  parent?: { runId: string; workflow: string; invocationKey: string };
+  children: ChildWorkflowSummary[];
+  nextCursor?: string;
+}
+export interface ChildWorkflowSummary {
+  childId: string;
+  runId?: string;
+  runAvailable: boolean;
+  stage?: string;
+  workflow?: string;
+  invocationKey: string;
+  sequence: number;
+  state: "queued" | "running" | "awaiting_human" | "completed" | "failed" | "cancelled";
+  cancellationRequested: boolean;
+  acknowledged: boolean;
+  expired: boolean;
+  acceptedAt: string;
+  updatedAt: string;
+}
+
 export interface InteractiveRunView {
   runId: string;
   gaggle: string;

@@ -501,6 +501,10 @@ export class HttpDaemonClient implements DaemonClient {
     ).then(normalizeLegacyWorkItemCost);
   }
 
+  getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<import("./types").ChildWorkflowPage> {
+    return this.getJSON(clientRoutes.childWorkflowMonitor, after ? { after } : undefined, options, { run: runId });
+  }
+
   getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView> {
     return this.getJSON(clientRoutes.interactiveRun, undefined, options, { run: runId });
   }

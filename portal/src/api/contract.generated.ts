@@ -71,6 +71,7 @@ export const apiRoutes = {
   "journalBranchOwnership": { method: "POST", path: "/api/v1/journal/branch-ownership", actionClass: "workflow-execution" },
   "operatorMessageSubmit": { method: "POST", path: "/api/v1/runs/{run}/operator-messages", actionClass: "workflow-execution" },
   "interactiveRun": { method: "GET", path: "/api/v1/runs/{run}/interactive", actionClass: "read-only-navigation" },
+  "childWorkflowMonitor": { method: "GET", path: "/api/v1/runs/{run}/children", actionClass: "read-only-navigation" },
   "interactiveRunCommand": { method: "POST", path: "/api/v1/runs/{run}/interactive-commands", actionClass: "workflow-execution" },
   "gaggleInteractiveCapabilities": { method: "GET", path: "/api/v1/gaggles/{gaggle}/interactive-capabilities", actionClass: "read-only-navigation" },
   "childWorkflowValidate": { method: "POST", path: "/api/v1/runs/{run}/child-workflows/validate", actionClass: "workflow-execution" },
