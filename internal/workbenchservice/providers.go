@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+
 	"github.com/goobers/goobers/internal/apireadcache"
 	"github.com/goobers/goobers/internal/interactiveaccess"
 	"github.com/goobers/goobers/internal/workbenchprovider"
@@ -21,13 +23,21 @@ type ProviderFactory struct {
 
 // Backlog builds an exact-target provider from the supplied interactive credential.
 func (f ProviderFactory) Backlog(ctx context.Context, binding ReadBinding, credential interactiveaccess.Credential) (workbenchprovider.BacklogClient, error) {
+	return f.provider(ctx, binding, binding.Source.BacklogIdentity, credential)
+}
+
+type sourceProvider interface {
+	workbenchprovider.BacklogClient
+	workbenchprovider.RepositoryClient
+}
+
+func (f ProviderFactory) provider(ctx context.Context, binding ReadBinding, target apiv1.InteractiveRepositoryIdentity, credential interactiveaccess.Credential) (sourceProvider, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if credential.Value == "" || (!credential.ExpiresAt.IsZero() && !credential.ExpiresAt.After(time.Now())) {
 		return nil, interactiveaccess.ErrCredentialUnavailable
 	}
-	target := binding.Source.BacklogIdentity
 	scope := apireadcache.Scope{Gaggle: binding.Scope.GaggleID, Binding: "interactive:" + binding.Source.Spec.Name, Generation: binding.Generation}
 	switch target.Provider {
 	case "github":

@@ -31,6 +31,7 @@ type BacklogFactory func(context.Context, ReadBinding, interactiveaccess.Credent
 type Service struct {
 	Permissions *interactiveaccess.Service
 	Backlog     BacklogFactory
+	Repository  RepositoryFactory
 }
 
 // Get reads one current native locator under the gaggle source policy.
