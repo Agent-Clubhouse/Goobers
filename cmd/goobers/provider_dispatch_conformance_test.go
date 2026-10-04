@@ -28,6 +28,8 @@ type providerDispatchEvidence struct {
 // CONF-8 (#2497) and CONF-9 (#2498) landed before this gate, so their fixed
 // commands are coverage entries rather than stale allowlist entries.
 var providerDispatchCoverage = map[string]providerDispatchEvidence{
+	"advisory-pr-publish":      {test: TestAdvisoryPRPublishRefusesNonGitHubProviders},
+	"advisory-pr-select":       {test: TestAdvisoryPRSelectRefusesNonGitHubProviders},
 	"apply-verdict":            {test: TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass},
 	"backlog-assignment":       {test: TestBacklogAssignmentDispatchesFromCommand},
 	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
@@ -638,6 +640,8 @@ var adoCredentialEvidence = map[string]func(*testing.T){
 // capability but which build no Azure DevOps provider, so no ADO credential
 // is consumed at all.
 var adoCredentialExempt = map[string]string{
+	"advisory-pr-publish":   "Refuses non-GitHub repositories before building a provider (TestAdvisoryPRPublishRefusesNonGitHubProviders).",
+	"advisory-pr-select":    "Refuses non-GitHub repositories before building a provider (TestAdvisoryPRSelectRefusesNonGitHubProviders).",
 	"file-issues":           "Refuses every non-GitHub provider before building one (TestFileIssuesRefusesNonGitHubProviders).",
 	"security-alerts-query": "Refuses every non-GitHub provider before building one (TestSecurityAlertsQueryRefusesNonGitHubProviders).",
 	"telemetry-query":       "Its only provider access is the optional GitHub-only Tutor live-verification format; ordinary telemetry queries are local.",
