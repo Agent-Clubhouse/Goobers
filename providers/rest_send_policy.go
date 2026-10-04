@@ -30,6 +30,7 @@ type restSendPolicy struct {
 }
 
 func sendJSONWithPolicy(ctx context.Context, policy restSendPolicy, method, endpoint string, body interface{}) (*http.Response, error) {
+	policy = nativeMutationPolicy(ctx, method, policy)
 	maxWait := policy.maxRateLimitWait
 	if maxWait <= 0 {
 		maxWait = defaultRateLimitMaxWait
