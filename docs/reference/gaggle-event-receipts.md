@@ -198,8 +198,22 @@ evidence. Human-paused, escalated and interrupted runs retain their inputs.
 Human continuations retain copied inputs and source ancestry but receive their own
 execution identity, clearing the original event-start receipt reference.
 
-Publication is not installed in this slice. Its future adapter must retain all
-represented causal roots when debounce merges different chains, with a bounded
-trusted root set or reference. Until that exists, mixed-root consumer publication
-must refuse before acceptance. Choosing one root or assigning the consumer RunID
-as a fresh root would bypass the transactional 100-start limit.
+Publication transport is not installed in this slice. Its host ancestry helper
+verifies the retained consumer journal, input manifest and original receipt
+membership before deriving a `RootGroupID` and digest of the complete root set.
+The store checks the same gaggle and exact reserved source RunID, derives depth
+from all original members, and refuses root sets larger than 32 or depth above 8.
+The authenticated publication service must also verify the active stage attempt
+and allowed event types; the store helper itself does not authenticate a caller.
+Child and human-continuation publication remain unsupported until their ancestry
+adapters can provide equivalent evidence.
+
+Acceptance copies every represented root into receipt-owned rows and marks each
+workflow producer as a durable root dependency. The root-set digest detects
+changed membership. A descendant still spends the original root allowances after
+its parent's history is pruned or the queue reopens. A known workflow cannot
+replace its recorded roots, and an event consumer cannot use its new RunID to
+start a fresh root. Consumer admission checks all represented allowances before
+charging any, so one exhausted root cannot partially spend another. Intake
+reserves indexed root membership and per-consumer charges within the shared byte
+ceiling. Retry recovers the same receipt and never charges roots again.

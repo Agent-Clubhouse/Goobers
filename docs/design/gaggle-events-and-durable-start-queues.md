@@ -14,8 +14,9 @@ before routing is installed. See [receipt profile and limits](../reference/gaggl
 Public ingress, workflow publication, normalization of all start sources, queue
 fairness/deadlines and engine/Temporal event input transport remain implementation
 work. Workflow root budgets stay retained until a host proves all producers and
-descendants settled. Mixed-root consumers must refuse publication until trusted
-bounded root-set propagation exists; a new consumer RunID cannot reset allowances.
+descendants settled. A journal-verified helper now preserves up to 32 roots across consumer
+publication and refuses over-bound sets before acceptance; actual workflow
+publication transport and child/continuation ancestry adapters remain pending.
 
 ## 1. Intent and confirmed boundaries
 

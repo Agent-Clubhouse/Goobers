@@ -177,30 +177,39 @@ func eventRoot(receipt EventReceipt) string {
 }
 
 func reserveEventRoot(ctx context.Context, tx *sql.Tx, receipt EventReceipt, groupID string) error {
-	root := eventRoot(receipt)
-	if err := retainEventRootSource(ctx, tx, receipt, root); err != nil {
-		return err
-	}
-	var found int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM event_group_roots WHERE gaggle=? AND group_id=? AND root_id=?`, receipt.Producer.Gaggle, groupID, root).Scan(&found); err != nil {
-		return err
-	}
-	if found > 0 {
-		return nil
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE event_roots SET starts=starts+1 WHERE gaggle=? AND root_id=? AND starts<?`, receipt.Producer.Gaggle, root, MaxEventRootStarts)
+	roots, err := receiptRootSet(ctx, tx, receipt)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
+	// Check every represented root before spending any allowance. Partial
+	// consumer refusal must not leak charges into otherwise eligible roots.
+	var pending []string
+	for _, root := range roots {
+		if err := retainEventRootSource(ctx, tx, receipt, root); err != nil {
+			return err
+		}
+		var starts, found int
+		err := tx.QueryRowContext(ctx, `SELECT starts,(SELECT COUNT(*) FROM event_group_roots WHERE gaggle=? AND group_id=? AND root_id=?) FROM event_roots WHERE gaggle=? AND root_id=?`, receipt.Producer.Gaggle, groupID, root, receipt.Producer.Gaggle, root).Scan(&starts, &found)
+		if err != nil {
+			return err
+		}
+		if found > 0 {
+			continue
+		}
+		if starts >= MaxEventRootStarts {
+			return ErrEventChainLimit
+		}
+		pending = append(pending, root)
 	}
-	if count != 1 {
-		return ErrEventChainLimit
+	for _, root := range pending {
+		if _, err := tx.ExecContext(ctx, `UPDATE event_roots SET starts=starts+1 WHERE gaggle=? AND root_id=?`, receipt.Producer.Gaggle, root); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO event_group_roots(gaggle,group_id,root_id) VALUES(?,?,?)`, receipt.Producer.Gaggle, groupID, root); err != nil {
+			return err
+		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO event_group_roots(gaggle,group_id,root_id) VALUES(?,?,?)`, receipt.Producer.Gaggle, groupID, root)
-	return err
+	return nil
 }
 
 func retainEventRootSource(ctx context.Context, tx *sql.Tx, receipt EventReceipt, root string) error {

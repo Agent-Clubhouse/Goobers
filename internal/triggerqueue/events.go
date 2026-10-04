@@ -149,7 +149,11 @@ func (s *Store) AcceptEvent(ctx context.Context, req EventAcceptance, now time.T
 	if !errors.Is(err, sql.ErrNoRows) {
 		return EventReceipt{}, false, err
 	}
-	reserved := eventRoutingReservation(len(req.Plan.Routes))
+	roots, err := acceptedEventRoots(ctx, tx, req.Producer)
+	if err != nil {
+		return EventReceipt{}, false, err
+	}
+	reserved := eventRootReservation(len(req.Plan.Routes), max(1, len(roots)))
 	if err := eventRoutingCapacity(ctx, tx, req.Producer.Gaggle, len(req.Plan.Routes)); err != nil {
 		return EventReceipt{}, false, err
 	}
@@ -168,6 +172,12 @@ func (s *Store) AcceptEvent(ctx context.Context, req EventAcceptance, now time.T
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO event_receipts(id,gaggle,producer,source,event_id,authority,digest,envelope,plan,plan_digest,state,accepted_ns,finished_ns,reserved_bytes,accepted_seq,reserved_starts,root_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, result.ID, result.Producer.Gaggle, result.Producer.Binding, result.Source, result.EventID, authority, result.Digest, result.Envelope, result.Plan, result.PlanDigest, result.State, now.UnixNano(), finished, reserved, result.Sequence, len(req.Plan.Routes), eventRoot(result))
 	if err != nil {
+		return EventReceipt{}, false, err
+	}
+	if len(roots) == 0 {
+		roots = []string{result.ID}
+	}
+	if err = retainReceiptRoots(ctx, tx, result, roots); err != nil {
 		return EventReceipt{}, false, err
 	}
 	if err = tx.Commit(); err != nil {

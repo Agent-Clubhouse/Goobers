@@ -107,6 +107,7 @@ func pruneEventRoots(ctx context.Context, tx *sql.Tx, limit int) (int, error) {
 	result, err := tx.ExecContext(ctx, `DELETE FROM event_roots WHERE rowid IN (SELECT r.rowid FROM event_roots r WHERE r.workflow=0 AND
  NOT EXISTS(SELECT 1 FROM event_group_roots g WHERE g.gaggle=r.gaggle AND g.root_id=r.root_id)
  AND NOT EXISTS(SELECT 1 FROM event_receipts e WHERE e.gaggle=r.gaggle AND e.root_id=r.root_id)
+ AND NOT EXISTS(SELECT 1 FROM event_receipt_roots e WHERE e.gaggle=r.gaggle AND e.root_id=r.root_id)
  ORDER BY r.gaggle,r.root_id LIMIT ?)`, limit)
 	if err != nil {
 		return 0, err

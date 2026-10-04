@@ -18,14 +18,16 @@ const ManifestInputName = "event-consumer-manifest"
 // Producer identifies an authenticated source; it is never parsed from event
 // data or client-selected CloudEvents extension fields.
 type Producer struct {
-	Gaggle      string `json:"gaggle"`
-	Binding     string `json:"binding"`
-	Actor       string `json:"actor"`
-	RunID       string `json:"runId,omitempty"`
-	Stage       string `json:"stage,omitempty"`
-	RootID      string `json:"rootId,omitempty"`
-	CausationID string `json:"causationId,omitempty"`
-	Depth       int    `json:"depth"`
+	Gaggle        string `json:"gaggle"`
+	Binding       string `json:"binding"`
+	Actor         string `json:"actor"`
+	RunID         string `json:"runId,omitempty"`
+	Stage         string `json:"stage,omitempty"`
+	RootID        string `json:"rootId,omitempty"`
+	RootGroupID   string `json:"rootGroupId,omitempty"`
+	RootSetDigest string `json:"rootSetDigest,omitempty"`
+	CausationID   string `json:"causationId,omitempty"`
+	Depth         int    `json:"depth"`
 }
 
 // InputMember preserves the producer of each original member, including inputs
@@ -120,12 +122,15 @@ func (p Producer) Valid() bool {
 	if !boundedText(p.Gaggle, 128) || !boundedText(p.Binding, 256) || !boundedText(p.Actor, 1024) || p.Depth < 0 || p.Depth > 8 {
 		return false
 	}
-	for _, value := range []string{p.RunID, p.Stage, p.RootID, p.CausationID} {
+	for _, value := range []string{p.RunID, p.Stage, p.RootID, p.RootGroupID, p.CausationID} {
 		if value != "" && !boundedText(value, 256) {
 			return false
 		}
 	}
-	return (p.RunID == "") == (p.Stage == "") && (p.CausationID == "") == (p.Depth == 0) && ((p.Depth == 0 && p.RunID == "") || p.RootID != "")
+	if !p.validRootReference() {
+		return false
+	}
+	return (p.RunID == "") == (p.Stage == "") && (p.CausationID == "") == (p.Depth == 0) && ((p.Depth == 0 && p.RunID == "") || p.RootID != "" || p.RootGroupID != "")
 }
 
 func validDigest(value string) bool {
@@ -134,4 +139,11 @@ func validDigest(value string) bool {
 	}
 	_, err := hex.DecodeString(value[7:])
 	return err == nil
+}
+
+func (p Producer) validRootReference() bool {
+	if p.RootGroupID == "" {
+		return p.RootSetDigest == ""
+	}
+	return p.RootID == "" && p.RunID != "" && p.CausationID == p.RootGroupID && p.Depth > 0 && validDigest(p.RootSetDigest)
 }

@@ -179,6 +179,10 @@ func TestEventHostDrainRunsExactArchiveAndSettlesDurableInputs(t *testing.T) {
 				events, _ := rd.Events()
 				t.Fatalf("observed=%v outcome=%s err=%v events=%+v", observed, outcome, err, events)
 			}
+			producer, err := f.service.events.ConsumerProducer(t.Context(), rd, "workflow", "run:"+identity.RunID, "emit")
+			if err != nil || producer.RootID != "" || producer.RootGroupID != start.GroupID || producer.CausationID != start.GroupID || producer.Depth != 1 || producer.RunID != identity.RunID {
+				t.Fatalf("causal producer=%+v err=%v", producer, err)
+			}
 			group, err := f.service.queue.EventGroup(t.Context(), start.Gaggle, start.GroupID)
 			if err != nil || group.SettledAt.IsZero() {
 				t.Fatalf("group=%+v err=%v", group, err)
