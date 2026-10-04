@@ -3356,7 +3356,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	if r.localTaskDenied(tf) {
 		return r.refuseSelfTask(tf)
 	}
-	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch); err != nil {
+	if err := r.prepareRecoveredTaskContext(ctx, &tf, branch, &startAttempt, &firstClass, &resumeAccounting); err != nil {
 		return apiv1.ResultEnvelope{}, nil, err
 	}
 	if tf.workspaceRevision != nil {
@@ -3449,7 +3449,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			policyAttempts++
 		}
 		attemptCtx, span := r.startTaskSpan(stalledAttemptContext(ctx), in, t, branch, int(attempt), string(class))
-		if err := tf.recordTaskStarted(int(attempt), class); err != nil {
+		if err := tf.recordTaskStartedWithRecovery(int(attempt), class, policyBeforeAttempt, infrastructureFailures, cumulativeUsage); err != nil {
 			err = fmt.Errorf("runner: journal stage.started for %q: %w", t.Name, err)
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err

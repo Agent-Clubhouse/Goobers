@@ -205,6 +205,9 @@ func (p *parentStagePod) importRecovery(ctx context.Context, reader *journal.Rea
 	if err = runner.RecordContainedParentRecovery(writer, scope.Event, digest, custody, *retained.Input.Attempt.Envelope, out.Result.Transcript, out.ObservedUsage); err != nil {
 		return err
 	}
+	if err = p.recoverAcceptedWait(ctx, writer, *retained.Input.Attempt.Envelope); err != nil {
+		return err
+	}
 	b := &parentInvocationBlobs{ParentBlobs: store, contract: c, contractDigest: digest, recorder: writer}
 	return b.record(parentPodWriterJoined)
 }

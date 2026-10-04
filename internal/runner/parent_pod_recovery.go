@@ -141,8 +141,11 @@ func restoreContainedParentUsage(tf taskFrame, total *stageUsageTotals, instruct
 	}
 }
 
-func (r *Runner) prepareRecoveredTaskContext(ctx context.Context, tf *taskFrame, branch int) error {
+func (r *Runner) prepareRecoveredTaskContext(ctx context.Context, tf *taskFrame, branch int, start *int32, class *journal.AttemptClass, accounting **resumeRetryAccounting) error {
 	if err := r.restoreContainedParentWorkspace(ctx, tf, branch); err != nil {
+		return err
+	}
+	if err := r.restoreAcceptedParentWait(ctx, tf, start, class, accounting); err != nil {
 		return err
 	}
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
