@@ -54,6 +54,9 @@ func sourceView(source workbench.BoundSource) workbench.SourceView {
 		result.Branch = target.Branch
 	}
 	if source.Spec.Writes != nil {
+		for _, operation := range source.Spec.Writes.Metadata {
+			result.WriteMetadata = append(result.WriteMetadata, string(operation))
+		}
 		for _, field := range source.Spec.Writes.Fields {
 			result.WriteFields = append(result.WriteFields, string(field))
 		}

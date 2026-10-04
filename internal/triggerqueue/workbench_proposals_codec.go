@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workbench"
@@ -34,24 +33,15 @@ func canonicalWorkbenchProposal(input WorkbenchProposalInput) ([]byte, string, e
 }
 
 func validMetadataRequest(scope WorkbenchCommandScope, r workbench.MetadataChangeRequest) bool {
-	if !providers.ValidRepositorySourcePath(r.Path) || !providers.ValidSourceCommit(r.Expected.Commit) || !providers.ValidSourceCommit(r.Expected.BlobID) || !validWorkbenchDigest(r.Expected.ContentDigest) {
-		return false
-	}
+	bindings := map[string]bool{scope.SourceBindingID: true}
 	if r.Relationship != nil {
-		e := r.Relationship
-		if r.Field != "" || r.Value != nil || (e.Action != "add" && e.Action != "remove") || (e.Edge.Kind != "references" && e.Edge.Kind != "contributes-to") {
-			return false
-		}
-		bindingScope := workbench.Scope{GaggleID: scope.Gaggle, Bindings: map[string]bool{scope.SourceBindingID: true, e.Edge.From.SourceBindingID: true, e.Edge.To.SourceBindingID: true}}
-		return bindingScope.ValidateEdge(e.Edge) == nil
+		bindings[r.Relationship.Edge.From.SourceBindingID] = true
+		bindings[r.Relationship.Edge.To.SourceBindingID] = true
 	}
-	if r.Value == nil {
-		return false
+	if r.Alias != nil {
+		bindings[r.Alias.Alias.Target.SourceBindingID] = true
 	}
-	if r.Field == "title" {
-		return validChildText(*r.Value, 512, true)
-	}
-	return r.Field == "description" && len(*r.Value) <= workbench.MaxSourceBytes && utf8.ValidString(*r.Value)
+	return workbench.ValidateMetadataChangeRequest(workbench.Scope{GaggleID: scope.Gaggle, Bindings: bindings}, scope.SourceBindingID, r) == nil
 }
 
 func scanWorkbenchProposal(row scanner) (WorkbenchProposal, error) {
@@ -158,7 +148,11 @@ func proposalValidationSources(input WorkbenchProposalInput, plan WorkbenchPropo
 	n := plan.Native.Repository
 	repository := apiv1.InteractiveRepositoryIdentity{Provider: apiv1.Provider(n.Provider), Owner: n.Owner, Project: n.Project, Name: n.Name}
 	source := workbench.BoundSource{Spec: apiv1.WorkbenchSource{Name: input.Scope.SourceBindingID, Kind: plan.Kind, Repository: &repository, Paths: []string{input.Request.Path}, Writes: &apiv1.WorkbenchWrites{}}, Repository: apiv1.RepoRef{Provider: repository.Provider, Owner: n.Owner, Project: n.Project, Name: n.Name, Branch: plan.Native.BaseBranch}}
-	if input.Request.Relationship != nil {
+	if input.Request.Objective != nil {
+		source.Spec.Writes.Metadata = []apiv1.WorkbenchMetadataOperation{"assign-objective"}
+	} else if input.Request.Alias != nil {
+		source.Spec.Writes.Metadata = []apiv1.WorkbenchMetadataOperation{"aliases"}
+	} else if input.Request.Relationship != nil {
 		source.Spec.Writes.Relationships = []apiv1.WorkbenchRelationship{apiv1.WorkbenchRelationship(input.Request.Relationship.Edge.Kind)}
 	} else {
 		source.Spec.Writes.Fields = []apiv1.WorkbenchField{input.Request.Field}

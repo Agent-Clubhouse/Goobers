@@ -83,6 +83,12 @@ type WorkbenchWrites struct {
 	// +kubebuilder:validation:MaxItems=6
 	// +listType=set
 	Relationships []WorkbenchRelationship `json:"relationships,omitempty" yaml:"relationships,omitempty"`
+	// Metadata permits explicit identity assignment or aliases through reviewed PRs.
+	// Documents allow assign-objective; the owning relationship manifest allows aliases.
+	// +optional
+	// +kubebuilder:validation:MaxItems=2
+	// +listType=set
+	Metadata []WorkbenchMetadataOperation `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // WorkbenchField is a provider-neutral editable node field.
@@ -92,3 +98,7 @@ type WorkbenchField string
 // WorkbenchRelationship excludes journal-derived execution observations.
 // +kubebuilder:validation:Enum=parent-of;blocked-by;contributes-to;references;milestone-member;implemented-by
 type WorkbenchRelationship string
+
+// WorkbenchMetadataOperation permits one source-owned metadata operation.
+// +kubebuilder:validation:Enum=assign-objective;aliases
+type WorkbenchMetadataOperation string

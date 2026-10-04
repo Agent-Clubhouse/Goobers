@@ -13,10 +13,16 @@ func editMetadataDocument(scope Scope, source BoundSource, raw []byte, request M
 	if err != nil {
 		return nil, err
 	}
+	if request.Objective != nil {
+		if doc.Objective != nil {
+			return nil, ErrMetadataEdit
+		}
+		return ProposeObjectiveMetadata(raw, scope, source.Spec.Name, ObjectiveMetadata{SchemaVersion: "objectives/v1", ObjectiveID: request.Objective.ObjectiveID, Title: request.Objective.Title})
+	}
 	if request.Field == "description" {
 		return editMetadataBody(scope, source.Spec.Name, raw, doc, *request.Value)
 	}
-	// This bounded editing surface does not assign new objective identities.
+	// Ordinary field and edge edits require an already assigned objective.
 	if doc.Objective == nil {
 		return nil, ErrMetadataEdit
 	}

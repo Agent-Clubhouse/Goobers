@@ -340,3 +340,40 @@ func TestProposalServiceExpiredReceiptStillRequiresExactConfiguredTarget(t *test
 	_, err = s.Command(t.Context(), p, g.Name, "strategy", command.ID)
 	expectWriteStatus(t, err, http.StatusForbidden)
 }
+
+func TestProposalServiceAssignsSourceOwnedIdentityThroughExactProviderPhases(t *testing.T) {
+	s, f, g, p, request := proposalServiceFixture(t)
+	raw := "# Existing ordinary Markdown\n\nOriginal body remains.\n"
+	blob := proposalBlob(raw)
+	f.responses["/repos/acme/code/git/trees/"+strings.Repeat("b", 40)] = fmt.Sprintf(`{"sha":%q,"tree":[{"path":"plan.md","type":"blob","mode":"100644","sha":%q,"size":%d}]}`, strings.Repeat("b", 40), blob, len(raw))
+	f.responses["/repos/acme/code/git/blobs/"+blob] = fmt.Sprintf(`{"sha":%q,"size":%d,"encoding":"base64","content":%q}`, blob, len(raw), base64.StdEncoding.EncodeToString([]byte(raw)))
+	g.Spec.Workbench.Sources[0].Writes.Metadata = []apiv1.WorkbenchMetadataOperation{"assign-objective"}
+	if err := s.ReadService.Permissions.Apply([]apiv1.Gaggle{g}, nil); err != nil {
+		t.Fatal(err)
+	}
+	request.Field, request.Value = "", nil
+	request.Expected.BlobID = blob
+	request.Expected.ContentDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))
+	request.Objective = &workbench.MetadataObjectiveAssignment{ObjectiveID: "obj-11111111-1111-1111-1111-111111111111", Title: "Assigned source objective"}
+	command, err := s.Submit(t.Context(), p, g.Name, "strategy", "assign-objective", request)
+	if err != nil || command.State != "confirmed" || f.posts != 4 {
+		t.Fatal(command, err, f.posts)
+	}
+	parsed, err := workbench.ParseDocument([]byte(f.content), workbench.Scope{GaggleID: g.Name, Bindings: map[string]bool{"strategy": true}}, "strategy")
+	if err != nil || parsed.Objective == nil || parsed.Objective.ObjectiveID != request.Objective.ObjectiveID || string(parsed.Body) != raw {
+		t.Fatal(parsed, err)
+	}
+	g.Spec.Workbench.Sources[0].Writes.Metadata = nil
+	if err := s.ReadService.Permissions.Apply([]apiv1.Gaggle{g}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Command(t.Context(), p, g.Name, "strategy", command.ID); err != nil {
+		t.Fatal("lost read custody after write removal", err)
+	}
+	if _, err = s.Submit(t.Context(), p, g.Name, "strategy", "new-identity", request); err == nil {
+		t.Fatal("removed metadata grant still authorizes command")
+	}
+	if f.posts != 4 {
+		t.Fatal("extra provider effect")
+	}
+}

@@ -28,14 +28,16 @@ type MetadataFile struct {
 }
 
 // MetadataChangeRequest names one existing declared file and exactly one edit.
-// It cannot create files, move identities, choose a repository/branch, or replace
+// It cannot create files, move existing identities, choose a repository/branch, or replace
 // arbitrary frontmatter. Description edits replace only the Markdown body.
 type MetadataChangeRequest struct {
-	Path         string                    `json:"path"`
-	Expected     MetadataRevision          `json:"expected"`
-	Field        apiv1.WorkbenchField      `json:"field,omitempty"`
-	Value        *string                   `json:"value,omitempty"`
-	Relationship *MetadataRelationshipEdit `json:"relationship,omitempty"`
+	Path         string                       `json:"path"`
+	Expected     MetadataRevision             `json:"expected"`
+	Field        apiv1.WorkbenchField         `json:"field,omitempty"`
+	Value        *string                      `json:"value,omitempty"`
+	Relationship *MetadataRelationshipEdit    `json:"relationship,omitempty"`
+	Objective    *MetadataObjectiveAssignment `json:"objective,omitempty"`
+	Alias        *MetadataAliasEdit           `json:"alias,omitempty"`
 }
 
 // MetadataRelationshipEdit adds or removes one exact, persistently identified
@@ -91,7 +93,7 @@ func PreviewMetadataChange(set SourceSet, binding string, current MetadataFile, 
 	if source.Spec.Kind == "documents" {
 		after, err = editMetadataDocument(set.Scope, source, current.Content, request)
 	} else {
-		after, err = editMetadataManifest(set.Scope, current.Content, *request.Relationship)
+		after, err = editMetadataManifestRequest(set.Scope, current.Content, request)
 	}
 	if err != nil {
 		return MetadataPreview{}, err
@@ -163,28 +165,29 @@ func validateMetadataRevision(current MetadataFile, request MetadataChangeReques
 }
 
 func validateMetadataChange(set SourceSet, source BoundSource, request MetadataChangeRequest) error {
-	if request.Relationship != nil {
-		if request.Field != "" || request.Value != nil {
+	if err := ValidateMetadataChangeRequest(set.Scope, source.Spec.Name, request); err != nil {
+		return err
+	}
+	switch {
+	case request.Objective != nil:
+		if source.Spec.Kind != "documents" || !source.AllowsMetadata("assign-objective") {
 			return ErrMetadataEdit
 		}
+		return nil
+	case request.Alias != nil:
+		owner := Owner{Kind: "manifest", SourceBindingID: source.Spec.Name, Path: request.Path}
+		if source.Spec.Kind != "relationships" || !source.AllowsMetadata("aliases") || set.ManifestOwner == nil || *set.ManifestOwner != owner {
+			return ErrMetadataEdit
+		}
+		return nil
+	case request.Relationship != nil:
 		return validateMetadataRelationship(set, source, request.Path, *request.Relationship)
-	}
-	if request.Value == nil || source.Spec.Kind != "documents" || !source.AllowsField(request.Field) {
-		return ErrMetadataEdit
-	}
-	switch request.Field {
-	case "title":
-		if !textValue(*request.Value, 512) {
-			return ErrMetadataEdit
-		}
-	case "description":
-		if len(*request.Value) > MaxSourceBytes || !utf8.ValidString(*request.Value) {
-			return ErrMetadataEdit
-		}
 	default:
-		return ErrMetadataEdit
+		if source.Spec.Kind != "documents" || !source.AllowsField(request.Field) {
+			return ErrMetadataEdit
+		}
+		return nil
 	}
-	return nil
 }
 
 func validateMetadataRelationship(set SourceSet, source BoundSource, path string, edit MetadataRelationshipEdit) error {

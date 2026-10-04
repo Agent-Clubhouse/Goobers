@@ -52,6 +52,9 @@ func validateSourceWrites(kind string, writes *apiv1.WorkbenchWrites) error {
 		}
 		seen[name] = true
 	}
+	if err := validateMetadataWrites(kind, writes.Metadata); err != nil {
+		return err
+	}
 	return validateRelationshipWrites(kind, writes.Relationships)
 }
 
@@ -89,6 +92,33 @@ func (s BoundSource) AllowsRelationship(kind apiv1.WorkbenchRelationship) bool {
 	if s.Spec.Writes != nil {
 		for _, allowed := range s.Spec.Writes.Relationships {
 			if allowed == kind {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateMetadataWrites(kind string, values []apiv1.WorkbenchMetadataOperation) error {
+	if len(values) > 2 {
+		return errors.New("source metadata write allowlist exceeds bound")
+	}
+	seen := map[apiv1.WorkbenchMetadataOperation]bool{}
+	for _, value := range values {
+		valid := (kind == "documents" && value == "assign-objective") || (kind == "relationships" && value == "aliases")
+		if seen[value] || !valid {
+			return errors.New("source metadata write is unknown, duplicated or unavailable for its source kind")
+		}
+		seen[value] = true
+	}
+	return nil
+}
+
+// AllowsMetadata reports only the declared source metadata allowlist, never authority.
+func (s BoundSource) AllowsMetadata(operation apiv1.WorkbenchMetadataOperation) bool {
+	if s.Spec.Writes != nil {
+		for _, allowed := range s.Spec.Writes.Metadata {
+			if allowed == operation {
 				return true
 			}
 		}

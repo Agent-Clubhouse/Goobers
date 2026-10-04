@@ -13,7 +13,7 @@ func workbenchCoverage() map[string]any {
 func openAPIWorkbenchSchemas() map[string]any {
 	return mergeSchemaProperties(openAPIWorkbenchDocumentSchemas(), map[string]any{
 		"WorkbenchSourceView": closedChildObject([]string{"bindingId", "kind", "provider", "owner"}, map[string]any{
-			"bindingId": sessionString(64), "kind": map[string]any{"type": "string", "enum": []string{"backlog", "documents", "relationships"}}, "provider": map[string]any{"type": "string", "enum": []string{"github", "ado"}}, "owner": sessionString(256), "project": sessionString(256), "repository": sessionString(256), "branch": sessionString(1024), "paths": workbenchStrings(128, 1024), "writeFields": workbenchStrings(5, 32), "writeRelationships": workbenchStrings(6, 32),
+			"bindingId": sessionString(64), "kind": map[string]any{"type": "string", "enum": []string{"backlog", "documents", "relationships"}}, "provider": map[string]any{"type": "string", "enum": []string{"github", "ado"}}, "owner": sessionString(256), "project": sessionString(256), "repository": sessionString(256), "branch": sessionString(1024), "paths": workbenchStrings(128, 1024), "writeFields": workbenchStrings(5, 32), "writeRelationships": workbenchStrings(6, 32), "writeMetadata": workbenchStrings(2, 32),
 		}),
 		"WorkbenchSourcePage": closedChildObject([]string{"items", "generation"}, map[string]any{"items": map[string]any{"type": "array", "maxItems": 32, "items": schemaRef("WorkbenchSourceView")}, "generation": map[string]any{"type": "string", "pattern": "^[0-9a-f]{64}$"}}),
 		"WorkbenchNodeRef": closedChildObject([]string{"gaggleId", "sourceBindingId", "kind", "sourceId"}, map[string]any{

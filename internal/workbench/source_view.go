@@ -13,6 +13,7 @@ type SourceView struct {
 	Paths              []string `json:"paths,omitempty"`
 	WriteFields        []string `json:"writeFields,omitempty"`
 	WriteRelationships []string `json:"writeRelationships,omitempty"`
+	WriteMetadata      []string `json:"writeMetadata,omitempty"`
 }
 
 // SourcePage lists bounded applied source metadata and its configuration digest.

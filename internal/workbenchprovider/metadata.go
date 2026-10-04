@@ -53,7 +53,7 @@ func NewRepositoryProposer(set workbench.SourceSet, binding string, client Repos
 			target := *source.Spec.Repository
 			copySource.Spec.Repository = &target
 			if source.Spec.Writes != nil {
-				copySource.Spec.Writes = &apiv1.WorkbenchWrites{Fields: slices.Clone(source.Spec.Writes.Fields), Relationships: slices.Clone(source.Spec.Writes.Relationships)}
+				copySource.Spec.Writes = &apiv1.WorkbenchWrites{Fields: slices.Clone(source.Spec.Writes.Fields), Relationships: slices.Clone(source.Spec.Writes.Relationships), Metadata: slices.Clone(source.Spec.Writes.Metadata)}
 			}
 		}
 		copySet.Sources = append(copySet.Sources, copySource)

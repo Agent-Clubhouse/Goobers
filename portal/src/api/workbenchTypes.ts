@@ -19,6 +19,6 @@ export interface BacklogPageRequest { cursor?: string; limit?: number }
 export interface BacklogItemRequest { id: string; expectedSourceId?: string }
 export interface SourceView {
   bindingId: string; kind: string; provider: string; owner: string; project?: string; repository?: string;
-  branch?: string; paths?: string[]; writeFields?: string[]; writeRelationships?: string[];
+  branch?: string; paths?: string[]; writeFields?: string[]; writeRelationships?: string[]; writeMetadata?: string[];
 }
 export interface WorkbenchSourcePage { items: SourceView[]; generation: string }

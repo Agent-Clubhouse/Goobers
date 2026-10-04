@@ -128,6 +128,14 @@ func (s *ProposalService) now() time.Time {
 	return time.Now().UTC()
 }
 func copyMetadataRequest(r workbench.MetadataChangeRequest) workbench.MetadataChangeRequest {
+	if r.Objective != nil {
+		value := *r.Objective
+		r.Objective = &value
+	}
+	if r.Alias != nil {
+		value := *r.Alias
+		r.Alias = &value
+	}
 	if r.Value != nil {
 		value := *r.Value
 		r.Value = &value

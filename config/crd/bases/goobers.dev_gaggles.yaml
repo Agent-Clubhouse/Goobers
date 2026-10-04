@@ -1208,6 +1208,20 @@ spec:
                               maxItems: 5
                               type: array
                               x-kubernetes-list-type: set
+                            metadata:
+                              description: |-
+                                Metadata permits explicit identity assignment or aliases through reviewed PRs.
+                                Documents allow assign-objective; the owning relationship manifest allows aliases.
+                              items:
+                                description: WorkbenchMetadataOperation permits one
+                                  source-owned metadata operation.
+                                enum:
+                                - assign-objective
+                                - aliases
+                                type: string
+                              maxItems: 2
+                              type: array
+                              x-kubernetes-list-type: set
                             relationships:
                               description: Relationships permits supported source-owned
                                 edge proposals/mutations.
