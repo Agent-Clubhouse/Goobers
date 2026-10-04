@@ -14,9 +14,10 @@ import (
 // Ordinary runs use the same workflow for both. A generated child charges its
 // immutable parent's bucket even if its display name collides with the catalog.
 type reconciledRun struct {
-	identity  WorkflowIdentity
-	workflow  string
-	suspended bool
+	identity   WorkflowIdentity
+	workflow   string
+	suspended  bool
+	sessionKey string
 }
 
 func reconciledRunFor(id journal.RunIdentity) reconciledRun {
@@ -24,7 +25,12 @@ func reconciledRunFor(id journal.RunIdentity) reconciledRun {
 	if id.Child != nil {
 		identity.Workflow = id.Child.ParentWorkflow
 	}
-	return reconciledRun{identity: identity, workflow: id.Workflow}
+	result := reconciledRun{identity: identity, workflow: id.Workflow}
+	if id.Session != nil {
+		result.identity.Workflow = sessionBudget
+		result.sessionKey = sessionAdmissionKey(id)
+	}
+	return result
 }
 func (a runAdmission) workflowName() string {
 	if a.executionWorkflow != "" {

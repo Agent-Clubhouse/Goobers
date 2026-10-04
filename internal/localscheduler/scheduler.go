@@ -727,6 +727,10 @@ func (s *Scheduler) ReleaseReconciled(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	reconciledWorkflow, ok := s.reconciledRuns[runID]
+	if ok && reconciledWorkflow.identity.Workflow == sessionBudget {
+		s.mu.Unlock()
+		return
+	}
 	if ok && reconciledWorkflow.workflow == workflow {
 		delete(s.reconciledRuns, runID)
 	}
@@ -745,6 +749,10 @@ func (s *Scheduler) ReleaseRun(runID, workflow string) {
 	defer s.admissionMu.Unlock()
 	s.mu.Lock()
 	admission, admitted := s.admittedRuns[runID]
+	if (admitted && admission.identity.Workflow == sessionBudget) || s.reconciledRuns[runID].identity.Workflow == sessionBudget {
+		s.mu.Unlock()
+		return
+	}
 	if admitted && admission.workflowName() == workflow {
 		delete(s.admittedRuns, runID)
 	}

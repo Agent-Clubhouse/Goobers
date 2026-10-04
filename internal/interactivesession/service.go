@@ -31,6 +31,8 @@ type Service struct {
 	Scrubber    journal.Scrubber
 	Pin         ProfilePinner
 	Now         func() time.Time
+	Runtime     *Runtime
+	execution   executionState
 }
 
 func (s *Service) ready() error {

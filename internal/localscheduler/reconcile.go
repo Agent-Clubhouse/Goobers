@@ -194,7 +194,7 @@ func visitActiveRunStatesContext(ctx context.Context, runsDir string, visit func
 // capacity; the runner refuses their recovery instead of guessing quiescence.
 func reconciledRunState(ctx context.Context, rd *journal.Reader, id journal.RunIdentity) (reconciledRun, error) {
 	run := reconciledRunFor(id)
-	if id.Child != nil {
+	if id.Child != nil || id.Session != nil {
 		return run, nil
 	}
 	if err := ctx.Err(); err != nil {
