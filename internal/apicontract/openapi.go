@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor {
+		if route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if childWorkflowRoute(route.ID) {
@@ -187,7 +187,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand:
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand, RouteChildPublicationCheck:
 		return true
 	default:
 		return false
@@ -222,6 +222,8 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("TriggerRequest")
 	case RouteCancelRun:
 		schema = schemaRef("CancelRunRequest")
+	case RouteChildPublicationCheck:
+		schema = schemaRef("ChildPublicationCheckRequest")
 	case RouteInteractiveRunCommand:
 		schema = schemaRef("InteractiveRunCommand")
 	case RouteOperatorMessageSubmit:
@@ -278,6 +280,8 @@ func openAPIResponses(route Route) map[string]any {
 	switch route.ID {
 	case RouteInteractiveRun:
 		successSchema = schemaRef("InteractiveRunView")
+	case RouteChildPublicationCheck:
+		successSchema = schemaRef("ChildPublicationCheckResult")
 	case RouteChildWorkflowMonitor:
 		successSchema = schemaRef("ChildWorkflowPage")
 	case RouteInteractiveRunCommand:

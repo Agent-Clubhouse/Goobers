@@ -775,6 +775,17 @@
       "recoverySafe": false
     },
     {
+      "id": "childPublicationCheck",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/child-publications/check",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "childWorkflowMonitor",
       "method": "GET",
       "path": "/api/v1/runs/{run}/children",

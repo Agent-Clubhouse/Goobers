@@ -5,11 +5,14 @@ import "time"
 // ChildWorkflowPage exposes bounded control-state summaries without generated
 // source, credentials, workspace paths or artifact content.
 type ChildWorkflowPage struct {
-	RunID      string                 `json:"runId"`
-	Gaggle     string                 `json:"gaggle"`
-	Parent     *ChildWorkflowParent   `json:"parent,omitempty"`
-	Children   []ChildWorkflowSummary `json:"children"`
-	NextCursor string                 `json:"nextCursor,omitempty"`
+	Publications              []ChildPublicationSummary `json:"publications,omitempty"`
+	PublicationCheckAvailable bool                      `json:"publicationCheckAvailable,omitempty"`
+	PublicationCheckReason    string                    `json:"publicationCheckReason,omitempty"`
+	RunID                     string                    `json:"runId"`
+	Gaggle                    string                    `json:"gaggle"`
+	Parent                    *ChildWorkflowParent      `json:"parent,omitempty"`
+	Children                  []ChildWorkflowSummary    `json:"children"`
+	NextCursor                string                    `json:"nextCursor,omitempty"`
 }
 
 // ChildWorkflowParent is retained provenance; it does not grant parent access.
@@ -21,6 +24,7 @@ type ChildWorkflowParent struct {
 
 // ChildWorkflowSummary distinguishes queued/terminal custody from run existence.
 type ChildWorkflowSummary struct {
+	PublicationNeedsHuman bool      `json:"publicationNeedsHuman,omitempty"`
 	ChildID               string    `json:"childId"`
 	RunID                 string    `json:"runId,omitempty"`
 	RunAvailable          bool      `json:"runAvailable"`

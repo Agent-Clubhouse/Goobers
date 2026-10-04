@@ -501,6 +501,13 @@ export class HttpDaemonClient implements DaemonClient {
     ).then(normalizeLegacyWorkItemCost);
   }
 
+  checkChildPublication(runId: string, key: string, command: import("./types").ChildPublicationCheckRequest, options?: RequestOptions): Promise<import("./types").ChildPublicationCheckResult> {
+    return this.withResponse(clientRoutes.childPublicationCheck, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as import("./types").ChildPublicationCheckResult; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { run: runId }, { body: JSON.stringify(command), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
   getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<import("./types").ChildWorkflowPage> {
     return this.getJSON(clientRoutes.childWorkflowMonitor, after ? { after } : undefined, options, { run: runId });
   }

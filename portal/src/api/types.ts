@@ -1888,6 +1888,7 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+	checkChildPublication(runId: string, key: string, command: ChildPublicationCheckRequest, options?: RequestOptions): Promise<ChildPublicationCheckResult>;
 	getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<ChildWorkflowPage>;
   getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView>;
   commandInteractiveRun(runId: string, key: string, command: InteractiveRunCommand, options?: RequestOptions): Promise<InteractiveRunCommandResult>;
@@ -2061,7 +2062,27 @@ export interface InteractiveActionPermission {
 }
 
 /** Human-only surface; source of authority is the authenticated gaggle policy. */
+export interface ChildPublicationSummary {
+ action: "branch" | "pr";
+ intentDigest: string;
+ state: "prepared" | "effect_pending" | "confirmed";
+ head: string;
+ base: string;
+ commit: string;
+ pullRequestUrl?: string;
+ pullRequestNumber?: number;
+ needsHuman: boolean;
+ createdAt: string;
+ updatedAt: string;
+ checkedAt?: string;
+ observation: string;
+}
+export interface ChildPublicationCheckRequest { action: "branch" | "pr"; expectedIntentDigest: string }
+export interface ChildPublicationCheckResult { runId: string; requestId: string; publication: ChildPublicationSummary }
 export interface ChildWorkflowPage {
+ publications?: ChildPublicationSummary[];
+ publicationCheckAvailable?: boolean;
+ publicationCheckReason?: string;
   runId: string;
   gaggle: string;
   parent?: { runId: string; workflow: string; invocationKey: string };
@@ -2069,6 +2090,7 @@ export interface ChildWorkflowPage {
   nextCursor?: string;
 }
 export interface ChildWorkflowSummary {
+ publicationNeedsHuman?: boolean;
   childId: string;
   runId?: string;
   runAvailable: boolean;

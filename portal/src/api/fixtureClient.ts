@@ -111,6 +111,9 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+ async checkChildPublication(_runId: string, _key: string, _command: import("./types").ChildPublicationCheckRequest): Promise<import("./types").ChildPublicationCheckResult> {
+  throw new Error("Publication checks are unavailable in this read-only snapshot.");
+ }
 	async getChildWorkflows(): Promise<import("./types").ChildWorkflowPage> {
 		throw new Error("Child workflow custody is unavailable in this read-only snapshot.");
 	}

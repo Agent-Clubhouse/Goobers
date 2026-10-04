@@ -18,6 +18,8 @@ import (
 )
 
 type wireFixtures struct {
+	ChildPublicationCheck    ChildPublicationCheckRequest               `json:"childPublicationCheck"`
+	ChildPublicationResult   ChildPublicationCheckResult                `json:"childPublicationResult"`
 	ChildWorkflowPage        ChildWorkflowPage                          `json:"childWorkflowPage"`
 	InteractiveRun           InteractiveRunView                         `json:"interactiveRun"`
 	InteractiveRunCommand    InteractiveRunCommand                      `json:"interactiveRunCommand"`
@@ -69,6 +71,8 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "childPublicationCheck", scriptType: "ChildPublicationCheckRequest"},
+	{name: "childPublicationResult", scriptType: "ChildPublicationCheckResult"},
 	{name: "childWorkflowPage", scriptType: "ChildWorkflowPage"},
 	{name: "interactiveRun", scriptType: "InteractiveRunView"},
 	{name: "interactiveRunCommand", scriptType: "InteractiveRunCommand"},
@@ -1072,6 +1076,8 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 }
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures.ChildPublicationCheck = ChildPublicationCheckRequest{Action: "pr", ExpectedIntentDigest: "sha256:" + strings.Repeat("a", 64)}
+	fixtures.ChildPublicationResult = ChildPublicationCheckResult{RunID: "child-run", RequestID: "human-one", Publication: ChildPublicationSummary{Action: "pr", IntentDigest: fixtures.ChildPublicationCheck.ExpectedIntentDigest, State: "effect_pending", Head: "goobers/children/child-run", Base: "main", Commit: strings.Repeat("a", 40), NeedsHuman: true, Observation: "not_observed", CreatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}
 	fixtures.ChildWorkflowPage = ChildWorkflowPage{RunID: "parent-run", Gaggle: "web", Children: []ChildWorkflowSummary{{ChildID: "child-one", InvocationKey: "inspect", Sequence: 1, State: "queued", AcceptedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}}
 	fixtures.InteractiveRun = InteractiveRunView{RunID: "0123456789abcdef0123456789abcdef", Gaggle: "web", Phase: "running", Actions: []InteractiveRunAction{{Kind: "approve", Stage: "review", SubjectSequence: 4, Decisions: []string{"pass"}, Available: true}}, Guidance: []apiv1.OperatorMessageRecord{}, RestartReason: "Stage restart is not available."}
 	fixtures.InteractiveRunCommand = InteractiveRunCommand{Kind: "approve", Stage: "review", ExpectedSubjectSequence: 4, Decision: "pass"}

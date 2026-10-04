@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ChildWorkflowPage, ChildWorkflowSummary, DaemonClient } from "../api/types";
 import "../childWorkflows.css";
+import { ChildPublications } from "./ChildPublications";
 
 const stateLabels: Record<ChildWorkflowSummary["state"], string> = {
   queued: "Queued", running: "Running", awaiting_human: "Needs a human",
@@ -33,6 +34,7 @@ export function ChildWorkflowsPanel({ client, runId }: { client: DaemonClient; r
     {loading && <p role="status">Loading child workflows…</p>}
     {error && <p role="status">{error}</p>}
     {page && !loading && <>
+      <ChildPublications client={client} runId={runId} publications={page.publications ?? []} available={page.publicationCheckAvailable ?? false} reason={page.publicationCheckReason} refresh={() => setRefresh((value) => value + 1)} />
       {page.parent && <p>Started by <a href={`#/run/${encodeURIComponent(page.parent.runId)}`}>{page.parent.workflow} · parent run</a> for “{page.parent.invocationKey}”.</p>}
       {page.children.length === 0 ? <p>No child workflows on this page.</p> : <>
         <p>Queue status and returned results are shown separately from execution. A completed child may still await its parent’s decision.</p>
@@ -40,6 +42,7 @@ export function ChildWorkflowsPanel({ client, runId }: { client: DaemonClient; r
           <div><strong>{child.workflow || child.invocationKey}</strong><span>{stateLabels[child.state]}</span></div>
           {child.stage && <p>Parent stage: {child.stage} · invocation {child.sequence}</p>}
           <p>{childProgress(child)}</p>
+          {child.publicationNeedsHuman && <p>Publication needs confirmation. Open the child run to review it.</p>}
           {child.cancellationRequested && <p>{isTerminal(child) ? "Cancellation was requested." : "Cancellation requested; stopping is not yet confirmed."}</p>}
           <small>Accepted {new Date(child.acceptedAt).toLocaleString()} · Updated {new Date(child.updatedAt).toLocaleString()}</small>
           {child.runAvailable && child.runId && <a href={`#/run/${encodeURIComponent(child.runId)}`}>Open child run</a>}

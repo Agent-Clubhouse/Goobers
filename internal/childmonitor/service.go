@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/childpublication"
 	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -20,6 +21,7 @@ const pageSize = 50
 
 // Service reads retained child lineage under the current human gaggle policy.
 type Service struct {
+	Observe     PublicationObservation
 	Layout      instance.Layout
 	Queue       *triggerqueue.Store
 	Permissions httpapi.InteractivePermissionService
@@ -39,6 +41,9 @@ func (s *Service) ListChildWorkflows(ctx context.Context, principal httpapi.Prin
 		return apicontract.ChildWorkflowPage{}, err
 	}
 	result := apicontract.ChildWorkflowPage{RunID: run, Gaggle: id.Gaggle, Children: []apicontract.ChildWorkflowSummary{}}
+	if err := s.publications(ctx, principal, id, &result); err != nil {
+		return result, err
+	}
 	if id.Child != nil {
 		result.Parent = &apicontract.ChildWorkflowParent{RunID: id.Child.ParentRunID, Workflow: id.Child.ParentWorkflow, InvocationKey: s.scrub(id.Child.InvocationKey)}
 	}
@@ -99,6 +104,13 @@ func (s *Service) summarize(ctx context.Context, child triggerqueue.ChildRecord)
 	view := apicontract.ChildWorkflowSummary{ChildID: child.ChildID, RunID: child.RunID, InvocationKey: s.scrub(child.Identity.InvocationKey), Sequence: child.Sequence, State: string(child.State), CancellationRequested: child.CancellationRequested, Acknowledged: !child.AcknowledgedAt.IsZero(), Expired: !child.TombstonedAt.IsZero(), AcceptedAt: child.AcceptedAt, UpdatedAt: child.UpdatedAt}
 	if view.Expired {
 		return view, nil
+	}
+	publications, err := childpublication.Inspect(ctx, s.Queue, child.Identity)
+	if err != nil {
+		return view, err
+	}
+	for _, publication := range publications {
+		view.PublicationNeedsHuman = view.PublicationNeedsHuman || publication.NeedsHuman
 	}
 	start, err := s.Queue.ChildStart(ctx, child.Identity)
 	if err != nil {
