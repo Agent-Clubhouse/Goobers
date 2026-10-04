@@ -28,6 +28,10 @@ const (
 	EventRoutingPending EventState = "routing_pending"
 	EventUnmatched      EventState = "accepted_unmatched"
 	EventRoutingFailed  EventState = "routing_failed"
+	// EventRouted means every matched consumer owns a durable delivery.
+	EventRouted EventState = "routed"
+	// EventRoutingPartial preserves successful and failed consumer deliveries.
+	EventRoutingPartial EventState = "routing_partial"
 )
 
 // EventProducer is derived from authenticated ingress/run ownership. Data and
@@ -68,6 +72,7 @@ type EventReceipt struct {
 	AcceptedAt   time.Time
 	FinishedAt   time.Time
 	TombstonedAt time.Time
+	Sequence     int64
 }
 
 const eventSchema = `
@@ -88,14 +93,14 @@ CREATE INDEX event_retention ON event_receipts(tombstoned_ns,finished_ns,id);
 CREATE INDEX event_scope ON event_receipts(gaggle,tombstoned_ns,accepted_ns,id);
 `
 
-const eventColumns = "id,authority,source,event_id,digest,envelope,plan,plan_digest,state,reason,accepted_ns,finished_ns,tombstoned_ns"
+const eventColumns = "id,authority,source,event_id,digest,envelope,plan,plan_digest,state,reason,accepted_ns,finished_ns,tombstoned_ns,accepted_seq"
 
 func scanEvent(row scanner) (EventReceipt, error) {
 	var result EventReceipt
 	var authority []byte
 	var accepted int64
 	var finished, tombstoned sql.NullInt64
-	err := row.Scan(&result.ID, &authority, &result.Source, &result.EventID, &result.Digest, &result.Envelope, &result.Plan, &result.PlanDigest, &result.State, &result.Reason, &accepted, &finished, &tombstoned)
+	err := row.Scan(&result.ID, &authority, &result.Source, &result.EventID, &result.Digest, &result.Envelope, &result.Plan, &result.PlanDigest, &result.State, &result.Reason, &accepted, &finished, &tombstoned, &result.Sequence)
 	if err != nil {
 		return result, err
 	}
@@ -113,7 +118,7 @@ func scanEvent(row scanner) (EventReceipt, error) {
 }
 
 func verifyEventReceipt(receipt EventReceipt) error {
-	if !validEventProducer(receipt.Producer) {
+	if receipt.Sequence < 1 || !validEventProducer(receipt.Producer) {
 		return errors.New("triggerqueue: invalid retained event authority")
 	}
 	if !receipt.TombstonedAt.IsZero() {
@@ -154,6 +159,9 @@ func (s *Store) AcceptEvent(ctx context.Context, req EventAcceptance, now time.T
 		return EventReceipt{}, false, err
 	}
 	reserved := eventRoutingReservation(len(req.Plan.Routes))
+	if err := eventRoutingCapacity(ctx, tx, req.Producer.Gaggle, len(req.Plan.Routes)); err != nil {
+		return EventReceipt{}, false, err
+	}
 	if err := eventIntakeCapacity(ctx, tx, req.Producer.Gaggle, len(envelope.JSON)+len(plan)+len(authority)+reserved); err != nil {
 		return EventReceipt{}, false, err
 	}
@@ -164,7 +172,10 @@ func (s *Store) AcceptEvent(ctx context.Context, req EventAcceptance, now time.T
 		result.State, result.FinishedAt = EventUnmatched, now.UTC()
 		finished, reserved = now.UnixNano(), 0
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO event_receipts(id,gaggle,producer,source,event_id,authority,digest,envelope,plan,plan_digest,state,accepted_ns,finished_ns,reserved_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, result.ID, result.Producer.Gaggle, result.Producer.Binding, result.Source, result.EventID, authority, result.Digest, result.Envelope, result.Plan, result.PlanDigest, result.State, now.UnixNano(), finished, reserved)
+	if err = tx.QueryRowContext(ctx, `UPDATE event_sequence SET value=value+1 WHERE id=1 RETURNING value`).Scan(&result.Sequence); err != nil {
+		return EventReceipt{}, false, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO event_receipts(id,gaggle,producer,source,event_id,authority,digest,envelope,plan,plan_digest,state,accepted_ns,finished_ns,reserved_bytes,accepted_seq,reserved_starts,root_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, result.ID, result.Producer.Gaggle, result.Producer.Binding, result.Source, result.EventID, authority, result.Digest, result.Envelope, result.Plan, result.PlanDigest, result.State, now.UnixNano(), finished, reserved, result.Sequence, len(req.Plan.Routes), eventRoot(result))
 	if err != nil {
 		return EventReceipt{}, false, err
 	}
@@ -202,7 +213,7 @@ func validEventProducer(p EventProducer) bool {
 			return false
 		}
 	}
-	if (p.RunID == "") != (p.Stage == "") || (p.CausationID == "") != (p.Depth == 0) || (p.Depth > 0 && p.RootID == "") {
+	if (p.RunID == "") != (p.Stage == "") || (p.CausationID == "") != (p.Depth == 0) || ((p.Depth > 0 || p.RunID != "") && p.RootID == "") {
 		return false
 	}
 	return true
@@ -214,7 +225,7 @@ func eventRoutingReservation(consumers int) int {
 	}
 	// Reserve the maximum ordinary start payload and row/index overhead per
 	// consumer plus bounded receipt finalization, before accepting custody.
-	return consumers*(MaxPayloadBytes+4096) + 4096
+	return consumers*eventRouteAllowance + 4096
 }
 
 func eventIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, additional int) error {

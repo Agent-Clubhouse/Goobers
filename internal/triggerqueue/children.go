@@ -354,14 +354,14 @@ func reserveChildOccurrence(ctx context.Context, tx *sql.Tx, identity ChildIdent
 }
 
 func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposalBytes int) error {
-	var starts, lineages, tombstones int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM triggers`).Scan(&starts); err != nil {
+	var lineages, tombstones int
+	if err := triggerSlotCapacity(ctx, tx, 1); err != nil {
 		return err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FILTER(WHERE tombstoned_ns IS NULL),COUNT(*) FILTER(WHERE tombstoned_ns IS NOT NULL) FROM child_lineages WHERE gaggle=?`, gaggle).Scan(&lineages, &tombstones); err != nil {
 		return err
 	}
-	if starts >= MaxRecords || lineages >= MaxChildLineages || tombstones >= MaxChildTombstones {
+	if lineages >= MaxChildLineages || tombstones >= MaxChildTombstones {
 		return ErrFull
 	}
 	return childByteCapacity(ctx, tx, proposalBytes)
@@ -371,7 +371,8 @@ func childByteCapacity(ctx context.Context, tx *sql.Tx, additionalBytes int) err
 	var reserved int64
 	if err := tx.QueryRowContext(ctx, `SELECT
  (SELECT COALESCE(SUM(reserved_bytes),0) FROM child_lineages WHERE tombstoned_ns IS NULL AND acknowledged_ns IS NULL)+
- (SELECT COALESCE(SUM(reserved_bytes),0) FROM event_receipts WHERE state='routing_pending')`).Scan(&reserved); err != nil {
+ (SELECT COALESCE(SUM(reserved_bytes),0) FROM event_receipts WHERE state='routing_pending')+
+ (SELECT COALESCE(SUM(reserved_bytes),0) FROM event_groups WHERE state='open')`).Scan(&reserved); err != nil {
 		return err
 	}
 	var pages, freePages, pageSize int64

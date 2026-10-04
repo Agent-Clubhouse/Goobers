@@ -172,7 +172,7 @@ simulated. Transient sessions, backlog edits, PR repair, paused-stage fresh
 allowances, parallel restarts and sealed-child continuation remain acceptance work. Saved guidance alone is explicitly labeled
 as saved; it is not described as delivered or resumed.
 
-### Events — receipt foundation implemented; routing remains pending
+### Events — receipt and routing store implemented; host integration pending
 
 The agreed event stream still requires all workflow starts to enter durable queues,
 gaggle-local authenticated ingress/emit, configurable consumer debounce, causal
@@ -183,8 +183,15 @@ Internal event receipt custody now uses bounded CloudEvents JSON, explicit gaggl
 and authenticated producer binding, immutable routing snapshots, no-match success,
 shared byte reservations and daemon retention. Restart retries, conflicting
 payloads/actors, concurrent duplicates, scope isolation, corrupt custody and steady
-state cleanup are covered. No public event endpoint or consumer routing is enabled
-by that foundation. See [receipt limits](reference/gaggle-event-receipts.md).
+state cleanup are covered. The routing store now atomically transfers reservations
+into independent `all`/`latest` groups and typed pinned starts, with crash/concurrent
+timer tests, immutable membership, bounded dependency inventories and a persistent
+100-start root-chain budget. Migration refuses missing historical pins rather than
+rematching current configuration. Host ingress, routing sweeps, pinned execution,
+terminal settlement and dependency-aware host pruning remain pending; these APIs
+do not yet enable consumer execution. Workflow root counters remain retained until
+all producers/descendants can be proven settled. See
+[receipt limits](reference/gaggle-event-receipts.md).
 
 ### Backlog — design prepared, implementation pending
 

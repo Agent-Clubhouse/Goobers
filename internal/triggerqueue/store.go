@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, eventGroupSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -155,12 +155,8 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ?", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM triggers").Scan(&count); err != nil {
+	if err = triggerSlotCapacity(ctx, tx, 1); err != nil {
 		return Record{}, false, err
-	}
-	if count >= MaxRecords {
-		return Record{}, false, ErrFull
 	}
 	if err := childByteCapacity(ctx, tx, len(payload)+len(actor)+len(key)); err != nil {
 		return Record{}, false, err

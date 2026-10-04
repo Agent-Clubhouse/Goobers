@@ -1,14 +1,15 @@
-# Gaggle event receipt foundation
+# Gaggle event receipts and durable routing
 
-Status: implementation foundation for HAW-EVT-001 and HAW-EVT-007. Public ingress,
-workflow publication, consumer routing/debounce and normalization of every start
-source remain implementation work. This change does not enable an event endpoint.
+Status: internal store implementation for HAW-EVT-001/003/007 and the HAW-EVT-006
+root budget. Public ingress, workflow publication, host routing sweeps, pinned
+consumer execution and normalization of every start source remain implementation
+work. These store APIs do not enable an event endpoint or execute a consumer.
 
 The existing durable trigger database now accepts internal event receipts. Intake
 commits the authenticated producer binding, gaggle, bounded event envelope and
 matched routing snapshot together. Transport adapters must construct authority
 from authenticated configuration, scrub secrets before intake, and enforce ingress
-quotas and root-chain limits. Payload fields never select a gaggle or producer.
+quotas and derive causal lineage. Payload fields never select a gaggle or producer.
 
 ## Envelope profile
 
@@ -34,30 +35,67 @@ conflicts. Retry an uncertain outcome with the same identity. A new identity is 
 new publication.
 
 An empty matched route snapshot produces `accepted_unmatched`, a successful
-terminal receipt. Matched events retain `routing_pending` custody for the future
-router. The store reserves ordinary start payload and maintenance space for up to
+terminal receipt. Matched events retain `routing_pending` custody. The store
+reserves ordinary start slots, payload and maintenance space for up to
 32 matched consumers before acknowledging intake. Existing manual/child intake
 counts those reservations, so it cannot spend event completion headroom.
 
 Routing that has not completed within one hour becomes `routing_failed` with a
-reason. This is not a failed consumer run. At this implementation stage no router
-creates deliveries or runs. Debounce definitions and already evaluated nonempty
-keys are captured in each matched route; grouping is a subsequent implementation.
+reason. This is not a failed consumer run. `RouteNextEvent` atomically moves one
+receipt's reservations into deliveries, groups and queued starts. Storage failure
+rolls back the whole transaction for retry. A missing debounce key or exhausted
+root budget records a failed delivery while preserving other consumer deliveries.
+
+## Pinned routing and debounce
+
+Routes pin a configuration generation, workflow digest, Goober digest and consumer
+revision. Routing never looks up current subscriptions. Legacy receipts lacking
+generation pins fail visibly instead of being repaired from the current catalog.
+Each consumer has an independent key/window. Server receipt sequence orders
+membership; windows use server receipt times, never event payload times. A group
+closes at its quiet deadline, maximum wait or maximum event count. Due timers wait
+for earlier accepted receipts to route, so delayed routing preserves membership.
+
+`all` exposes every ordered input; `latest` selects the final receipt while keeping
+all suppressed memberships inspectable. Queue payloads contain bounded group
+references, not an inline payload array. `EventMembers` pages at most 100 references;
+`EventInput` requires same-gaggle group membership. `VerifiedEventStart` verifies
+that queued bytes still equal the immutable group and its exact pins. The typed
+`goobers.event-start/v1` request requires a dedicated host launcher; the existing
+generic dispatcher refuses it rather than executing a current-catalog alias.
+
+The transactional root budget permits 100 starts per event chain; a coalesced
+group charges each represented root once. Workflow producers must retain their
+server-derived root ID. Independent external receipts start separate roots.
+External-root budgets can expire with dependent history. Once workflow producers
+join a root, its counter and producer journal references remain until a future
+host acknowledgment proves every producer and descendant settled. Receipt expiry
+cannot reset that budget. Those retained counters share the bounded database and
+can backpressure intake; host root settlement remains required follow-up work.
 
 ## Bounds and maintenance
 
 Full receipts are limited to 10,000 per gaggle, tombstones to 100,000 per gaggle,
+retained deliveries to 50,000 per gaggle and open groups to 1,000 per gaggle.
+Pending reservations count toward group/delivery and shared 10,000-start quotas,
 and all receipts share the existing instance database's 256 MiB hard ceiling and
 20 percent maintenance headroom. Physical colocation does not grant cross-gaggle
 read access. The initial physical byte ceiling is instance-wide, so one gaggle
 can cause intake backpressure for another; per-gaggle fairness remains queue work.
 
 Completed unmatched/failed receipts retain payloads and routes for seven days.
-The daemon then retains identity/digest tombstones for another thirty days. Retry
+Delivered receipts retain those bytes until seven days after the last consumer
+settles. Queue dispatch acknowledgment is insufficient: the host must observe a
+terminal journal or durable start rejection and call `SettleEventGroup` with the
+exact consumer identity. Group, membership and start references conservatively
+remain through the receipt's thirty-day identity/digest tombstone period. Retry
 during that window recovers the tombstone and cannot silently republish. After
 tombstone removal, infinite deduplication is not promised. Full tombstone quotas
 backpressure intake rather than deleting a deduplication promise early. Maintenance
-is bounded to 100 records and a 50 ms context per daemon sweep, including when no
-scheduler is attached. Future delivered receipts must retain their dependency
-graph until the final consumer settles; this foundation only terminalizes receipts
-without delivered consumer dependencies.
+is bounded to 100 custody work units and a 50 ms context per daemon sweep, including when no
+scheduler is attached. `EventDependencyPage` exposes source/consumer journals and
+generation pins from receipt acceptance onward; `EventRootDependencyPage` adds
+long-lived root producer references. The host must successfully collect both
+bounded inventories before pruning those resources. Connecting these inventories
+to journal/configuration-generation pruning remains host integration work. Without
+consumer settlement, accepted inputs and starts remain retained.
