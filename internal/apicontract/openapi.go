@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if route.ID == RouteWorkbenchGraph || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if route.ID == RouteWorkbenchGraph || workbenchWriteRoute(route.ID) || workbenchReadRoute(route.ID) || sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if sessionOperationRoute(route.ID) {
@@ -192,7 +192,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
-	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
+	case RouteWorkbenchPatch, RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
 		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand, RouteChildPublicationCheck, RouteSessionCreate, RouteSessionMessage, RouteSessionClose:
 		return true
 	default:
@@ -219,6 +219,8 @@ func openAPIRequestBody(route Route) map[string]any {
 	}
 	schema := map[string]any{"type": "object", "additionalProperties": true}
 	switch route.ID {
+	case RouteWorkbenchPatch:
+		schema = schemaRef("BacklogPatchInput")
 	case RouteChildWorkflowAccessAcquire, RouteChildWorkflowAccessRevoke:
 		schema = closedChildObject([]string{"contractDigest"}, map[string]any{"contractDigest": map[string]any{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}})
 	case RouteChildWorkflowValidate, RouteChildWorkflowStart:
@@ -263,6 +265,9 @@ func openAPIRequestBody(route Route) map[string]any {
 func openAPIResponses(route Route) map[string]any {
 	if route.ID == RouteWorkbenchGraph {
 		return map[string]any{"200": jsonResponse("Current server-authorized graph; coverage and conflicts remain explicit", schemaRef("WorkbenchGraph")), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
+	}
+	if workbenchWriteRoute(route.ID) {
+		return workbenchWriteResponses(route.ID)
 	}
 	if sessionOperationRoute(route.ID) {
 		return sessionOperationResponses(route.ID)

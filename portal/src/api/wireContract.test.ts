@@ -14,6 +14,7 @@ describe("Go daemon wire contract", () => {
   it("provides typed fixtures for every JSON response consumed by the portal", () => {
     expect(Object.keys(checkedFixtures)).toEqual([
       "workbenchGraph", "workbenchDocuments", "workbenchSources", "workbenchItems", "workbenchItem",
+      "workbenchWriteCapabilities", "workbenchPatch", "workbenchCommand",
       "sessionCreate", "sessionInput", "sessionClose", "session", "sessions", "sessionMessages", "sessionAccepted",
       "childPublicationCheck",
       "childPublicationResult",
@@ -67,6 +68,7 @@ describe("Go daemon wire contract", () => {
     expect(checkedFixtures.workbenchGraph.edges[0].to.resolved).toBe(false);
     expect(checkedFixtures.workbenchGraph.partial).toBe(true);
     expect(checkedFixtures.workbenchGraph).not.toHaveProperty("credentials");
+    expect(checkedFixtures.workbenchCommand).toMatchObject({ state: "unknown", receipt: { providerAcknowledged: false, observedMatches: true } });
     expect(checkedFixtures.workbenchSources.items[0]).toHaveProperty("bindingId");
     expect(checkedFixtures.workbenchItem.ref).toHaveProperty("sourceId");
     expect(checkedFixtures.workbenchItems).toHaveProperty("sourceTargetDigest");

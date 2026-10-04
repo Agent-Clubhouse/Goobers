@@ -3,6 +3,9 @@
 import type {
   WorkbenchDocumentPage,
   WorkbenchGraph,
+  BacklogWriteCapabilities,
+  BacklogPatchInput,
+  BacklogEditCommand,
   WorkbenchSourcePage,
   BacklogPage,
   BacklogItem,
@@ -65,6 +68,9 @@ import type {
 export interface GoWireFixtures {
   workbenchDocuments: WorkbenchDocumentPage;
   workbenchGraph: WorkbenchGraph;
+  workbenchWriteCapabilities: BacklogWriteCapabilities;
+  workbenchPatch: BacklogPatchInput;
+  workbenchCommand: BacklogEditCommand;
   workbenchSources: WorkbenchSourcePage;
   workbenchItems: BacklogPage;
   workbenchItem: BacklogItem;
@@ -460,6 +466,72 @@ export const goWireFixtures = {
     },
     "acceptanceId": "accepted-one",
     "duplicate": false
+  },
+  "workbenchWriteCapabilities": {
+    "fields": [
+      "title",
+      "description"
+    ],
+    "relationships": [],
+    "revisionSemantics": "timestamp-preflight",
+    "maxAssignees": 10,
+    "controlLabelChanges": false
+  },
+  "workbenchPatch": {
+    "sourceId": "987654",
+    "expectedRevision": "2026-10-04T11:59:00Z",
+    "field": "title",
+    "value": "Clarify the human surface"
+  },
+  "workbenchCommand": {
+    "id": "workbench-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "gaggle": "web",
+    "sourceBindingId": "backlog",
+    "actor": {
+      "issuer": "https://identity.example",
+      "subject": "alice"
+    },
+    "itemId": "42",
+    "sourceId": "987654",
+    "field": "title",
+    "state": "unknown",
+    "duplicate": false,
+    "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operationDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "acceptedAt": "2026-10-04T12:00:00Z",
+    "attemptedAt": "2026-10-04T12:00:00Z",
+    "completedAt": "2026-10-04T12:00:00Z",
+    "receipt": {
+      "operationDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "outcome": "unknown",
+      "revisionSemantics": "timestamp-preflight",
+      "providerAcknowledged": false,
+      "observedMatches": true,
+      "observed": {
+        "ref": {
+          "gaggleId": "web",
+          "sourceBindingId": "backlog",
+          "kind": "work-item",
+          "sourceId": "987654"
+        },
+        "locator": {
+          "id": "42",
+          "url": "https://github.com/acme/issues/issues/42"
+        },
+        "revision": "2026-10-04T12:00:00Z",
+        "revisionSemantics": "timestamp-preflight",
+        "type": "Issue",
+        "title": "Reliable processing",
+        "state": "open",
+        "objective": true,
+        "relationshipCoverage": {
+          "parents": "not-loaded",
+          "blockers": "not-loaded",
+          "milestones": "complete"
+        }
+      }
+    },
+    "nextAction": "Inspect the source. Do not retry the write."
   },
   "childPublicationCheck": {
     "action": "pr",

@@ -97,7 +97,9 @@ func (s *WriterService) withWrite(ctx context.Context, p httpapi.Principal, gagg
 	if s == nil || s.ReadService == nil || s.ReadService.Permissions == nil || s.ReadService.Backlog == nil || s.Queue == nil {
 		return readError(http.StatusServiceUnavailable, "workbench_write_unavailable", "Backlog editing is unavailable.")
 	}
-	ctx, cancel := context.WithTimeout(ctx, workbenchprovider.MaxReadDuration)
+	// Reserve three seconds of the eight-second mutation budget for detached
+	// receipt persistence after the provider phase stops.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return s.ReadService.Permissions.WithSourceWrite(ctx, p, gaggle, func(ctx context.Context, g *apiv1.Gaggle, load interactiveaccess.SourceCredentialLoader) error {
 		bound, err := selectBacklog(g, binding)

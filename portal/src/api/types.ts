@@ -4,6 +4,7 @@ import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./work
 export type * from "./workbenchDocumentTypes";
 import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 export type * from "./workbenchTypes";
+export type * from "./workbenchWriteTypes";
 import type { ConfigAuthoringErrorCode } from "./contract.generated";
 
 export const API_VERSION = "v1";

@@ -644,6 +644,7 @@ type handlerConfig struct {
 	workbenchReads          WorkbenchReadService
 	workbenchGraph          WorkbenchGraphService
 	workbenchDocuments      WorkbenchDocumentService
+	workbenchWrites         WorkbenchWriteService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
@@ -1243,6 +1244,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWorkbenchRoutes(router, config, errorLog)
 	registerWorkbenchGraphRoute(router, config, errorLog)
 	router.Handle(apicontract.RouteWorkbenchDocuments, workbenchDocumentsHandler(config.workbenchDocuments, errorLog))
+	registerWorkbenchWriteRoutes(router, config, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)

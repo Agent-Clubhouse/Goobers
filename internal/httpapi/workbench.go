@@ -31,9 +31,10 @@ func WithWorkbenchReads(service WorkbenchReadService) HandlerOption {
 	}
 }
 func registerWorkbenchRoutes(router *Router, config handlerConfig, errorLog *log.Logger) {
-	for _, id := range []apicontract.RouteID{apicontract.RouteWorkbenchSources, apicontract.RouteWorkbenchItems, apicontract.RouteWorkbenchItem} {
+	for _, id := range []apicontract.RouteID{apicontract.RouteWorkbenchSources, apicontract.RouteWorkbenchItems} {
 		router.Handle(id, workbenchHandler(id, config.workbenchReads, errorLog))
 	}
+	router.HandleByMethod(map[string]apicontract.RouteID{http.MethodGet: apicontract.RouteWorkbenchItem, http.MethodPatch: apicontract.RouteWorkbenchPatch}, map[apicontract.RouteID]http.HandlerFunc{apicontract.RouteWorkbenchItem: workbenchHandler(apicontract.RouteWorkbenchItem, config.workbenchReads, errorLog), apicontract.RouteWorkbenchPatch: workbenchWriteHandler(apicontract.RouteWorkbenchPatch, config.workbenchWrites, errorLog)})
 }
 func workbenchHandler(id apicontract.RouteID, service WorkbenchReadService, errorLog *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

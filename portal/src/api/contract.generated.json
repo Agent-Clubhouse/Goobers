@@ -797,6 +797,39 @@
       "recoverySafe": false
     },
     {
+      "id": "workbenchWriteCapabilities",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/write-capabilities",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchPatch",
+      "method": "PATCH",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/items/{item}",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "workbenchCommand",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/commands/{command}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchSources",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources",
