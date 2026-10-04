@@ -265,7 +265,7 @@ Add contracts to the shared API registry and generated portal fixtures. Proposed
 | `GET/POST /api/v1/gaggles/{g}/sessions` | List/create a shared session. |
 | `GET /api/v1/gaggles/{g}/sessions/{s}` | Session summary and linked work; messages are separately paged. |
 | `GET/POST /api/v1/gaggles/{g}/sessions/{s}/messages` | Cursor history or durable ordered submission. |
-| `POST /api/v1/gaggles/{g}/sessions/{s}/commands` | Typed close, interrupt or linked operation; never arbitrary shell text. |
+| `POST /api/v1/gaggles/{g}/sessions/{s}/close` | Implemented transport for typed close, with durable idempotency. Further interrupt/linked commands use separate typed operations; never arbitrary shell text. |
 | `POST /api/v1/gaggles/{g}/operations` | Typed resolve, restart-stage, repair-PR or source-edit request. |
 | `GET /api/v1/gaggles/{g}/operations/{o}` | Durable accepted/running/applied/rejected/partial/unknown outcome and receipts. |
 

@@ -240,9 +240,16 @@ selected model/code/backlog credentials. Recovery reuses that epoch and rechecks
 current policy; ordinary automation runners cannot execute it. Composed HTTP-to-
 runner acceptance covers retries, recovery, duplicate requests, redaction and
 source-journal preservation with only provider transport and model execution
-simulated. Transient sessions, backlog edits, PR repair, paused-stage fresh
-allowances, parallel restarts and sealed-child continuation remain acceptance work. Saved guidance alone is explicitly labeled
-as saved; it is not described as delivered or resumed.
+simulated. The shared-session ledger and portal/API adapter are now implemented:
+accepted messages retain exact human attribution, durable ordering and a queued
+turn; the UI distinguishes queue acceptance, verified run links and confirmed
+closure. Current gaggle permissions gate creation and messaging. Unknown command
+outcomes retry the same key and content; access failures clear the visible
+conversation. Session runtime installation remains outstanding and availability
+stays false until that adapter is connected. See [shared sessions](reference/shared-sessions.md).
+Backlog edits, PR repair, paused-stage fresh allowances, parallel restarts and
+sealed-child continuation remain acceptance work. Saved guidance alone is
+explicitly labeled as saved; it is not described as delivered or resumed.
 
 ### Events — pinned local consumers and typed publication implemented
 

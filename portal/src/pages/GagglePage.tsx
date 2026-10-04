@@ -1,3 +1,4 @@
+import { SharedSessionsPanel } from "../components/SharedSessionsPanel";
 import { RunTiming } from "../components/RunTiming";
 import type {
   DaemonClient,
@@ -193,6 +194,8 @@ function GaggleTopology({
           </div>
         </section>
       )}
+
+      <SharedSessionsPanel key={gaggle.name} client={client} gaggle={gaggle.name} goobers={inventory.goobers} />
 
       <GaggleActivitySections
         activity={activity}

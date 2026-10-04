@@ -265,6 +265,11 @@ const (
 	RunOperatorMessagesPath = RunsPath + "/{run}/operator-messages"
 
 	// GaggleInteractiveCapabilitiesPath reports explicitly configured human authority.
+	// GaggleSessionsPath lists and creates shared human conversations.
+	GaggleSessionsPath  = GagglesPath + "/{gaggle}/sessions"
+	SessionPath         = GaggleSessionsPath + "/{session}"
+	SessionMessagesPath = SessionPath + "/messages"
+	SessionClosePath    = SessionPath + "/close"
 	// InteractiveRunPath inspects the explicitly authorized human surface.
 	InteractiveRunPath = RunsPath + "/{run}/interactive"
 	// ChildWorkflowMonitorPath reads one authorized run's child family.
@@ -396,6 +401,12 @@ const (
 	RouteChildWorkflowResolve          RouteID = "childWorkflowResolve"
 	RouteChildWorkflowAccessAcquire    RouteID = "childWorkflowAccessAcquire"
 	RouteChildWorkflowAccessRevoke     RouteID = "childWorkflowAccessRevoke"
+	RouteSessionList                   RouteID = "sessionList"
+	RouteSessionCreate                 RouteID = "sessionCreate"
+	RouteSessionGet                    RouteID = "sessionGet"
+	RouteSessionMessages               RouteID = "sessionMessages"
+	RouteSessionMessage                RouteID = "sessionMessage"
+	RouteSessionClose                  RouteID = "sessionClose"
 	RouteInteractiveRun                RouteID = "interactiveRun"
 	RouteChildWorkflowMonitor          RouteID = "childWorkflowMonitor"
 	RouteChildPublicationCheck         RouteID = "childPublicationCheck"
@@ -652,6 +663,12 @@ var v1Routes = []Route{
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionList, Method: http.MethodGet, Path: GaggleSessionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionCreate, Method: http.MethodPost, Path: GaggleSessionsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionGet, Method: http.MethodGet, Path: SessionPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionMessages, Method: http.MethodGet, Path: SessionMessagesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteSessionMessage, Method: http.MethodPost, Path: SessionMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionClose, Method: http.MethodPost, Path: SessionClosePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteInteractiveRun, Method: http.MethodGet, Path: InteractiveRunPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteChildPublicationCheck, Method: http.MethodPost, Path: ChildPublicationCheckPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowMonitor, Method: http.MethodGet, Path: ChildWorkflowMonitorPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

@@ -764,6 +764,72 @@
       "recoverySafe": false
     },
     {
+      "id": "sessionList",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/sessions",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionCreate",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/sessions",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionGet",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/sessions/{session}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionMessages",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/sessions/{session}/messages",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionMessage",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/sessions/{session}/messages",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionClose",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/sessions/{session}/close",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "interactiveRun",
       "method": "GET",
       "path": "/api/v1/runs/{run}/interactive",

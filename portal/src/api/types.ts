@@ -1888,6 +1888,14 @@ export interface RelatedWorkItem {
 }
 
 export interface DaemonClient {
+  getInteractiveCapabilities(gaggle: string, options?: RequestOptions): Promise<InteractiveCapabilities>;
+  listSessions(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<SessionPage>;
+  getSession(gaggle: string, session: string, options?: RequestOptions): Promise<InteractiveSession>;
+  getSessionMessages(gaggle: string, session: string, after?: number, options?: RequestOptions): Promise<SessionMessagePage>;
+  createSession(gaggle: string, key: string, input: SessionCreateRequest, options?: RequestOptions): Promise<SessionAcceptance>;
+  sendSessionMessage(gaggle: string, session: string, key: string, input: SessionMessageRequest, options?: RequestOptions): Promise<SessionAcceptance>;
+  closeSession(gaggle: string, session: string, key: string, input: SessionCloseRequest, options?: RequestOptions): Promise<SessionAcceptance>;
+
 	checkChildPublication(runId: string, key: string, command: ChildPublicationCheckRequest, options?: RequestOptions): Promise<ChildPublicationCheckResult>;
 	getChildWorkflows(runId: string, after?: string, options?: RequestOptions): Promise<ChildWorkflowPage>;
   getInteractiveRun(runId: string, options?: RequestOptions): Promise<InteractiveRunView>;
@@ -2157,3 +2165,22 @@ export interface InteractiveRunCommandResult {
   guidance?: OperatorMessageRecord;
   continuationRunId?: string;
 }
+
+
+export interface SessionActor { issuer: string; subject: string }
+export interface SessionCreateRequest { title: string; goober: string }
+export interface SessionMessageRequest { text: string }
+export interface SessionCloseRequest { reason: string }
+export interface InteractiveSession {
+  id: string; gaggle: string; title: string; goober: string; configGeneration: string; gooberDigest: string;
+  state: "idle" | "queued" | "running" | "cancel-requested" | "closed";
+  createdBy: SessionActor; createdAt: string; updatedAt: string; nextSequence: number;
+  activeTurnId?: string; lastOutcome?: string;
+}
+export interface SessionMessage {
+  id: string; sessionId: string; sequence: number; actorKind: "human" | "agent" | "system";
+  actor?: SessionActor; text: string; createdAt: string; turnId?: string; runId?: string; outcome?: string;
+}
+export interface SessionAcceptance { session: InteractiveSession; message?: SessionMessage; acceptanceId?: string; duplicate: boolean }
+export interface SessionPage { items: InteractiveSession[]; nextCursor?: string }
+export interface SessionMessagePage { items: SessionMessage[]; nextCursor?: number }

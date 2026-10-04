@@ -18,6 +18,14 @@ import (
 )
 
 type wireFixtures struct {
+	SessionCreate   SessionCreateRequest  `json:"sessionCreate"`
+	SessionInput    SessionMessageRequest `json:"sessionInput"`
+	SessionClose    SessionCloseRequest   `json:"sessionClose"`
+	Session         InteractiveSession    `json:"session"`
+	Sessions        SessionPage           `json:"sessions"`
+	SessionMessages SessionMessagePage    `json:"sessionMessages"`
+	SessionAccepted SessionAcceptance     `json:"sessionAccepted"`
+
 	ChildPublicationCheck    ChildPublicationCheckRequest               `json:"childPublicationCheck"`
 	ChildPublicationResult   ChildPublicationCheckResult                `json:"childPublicationResult"`
 	ChildWorkflowPage        ChildWorkflowPage                          `json:"childWorkflowPage"`
@@ -71,6 +79,13 @@ var wireFixtureTypes = []struct {
 	name       string
 	scriptType string
 }{
+	{name: "sessionCreate", scriptType: "SessionCreateRequest"},
+	{name: "sessionInput", scriptType: "SessionMessageRequest"},
+	{name: "sessionClose", scriptType: "SessionCloseRequest"},
+	{name: "session", scriptType: "InteractiveSession"},
+	{name: "sessions", scriptType: "SessionPage"},
+	{name: "sessionMessages", scriptType: "SessionMessagePage"},
+	{name: "sessionAccepted", scriptType: "SessionAcceptance"},
 	{name: "childPublicationCheck", scriptType: "ChildPublicationCheckRequest"},
 	{name: "childPublicationResult", scriptType: "ChildPublicationCheckResult"},
 	{name: "childWorkflowPage", scriptType: "ChildWorkflowPage"},
@@ -1076,6 +1091,7 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 }
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
+	fixtures = withSessionFixtures(fixtures)
 	fixtures.ChildPublicationCheck = ChildPublicationCheckRequest{Action: "pr", ExpectedIntentDigest: "sha256:" + strings.Repeat("a", 64)}
 	fixtures.ChildPublicationResult = ChildPublicationCheckResult{RunID: "child-run", RequestID: "human-one", Publication: ChildPublicationSummary{Action: "pr", IntentDigest: fixtures.ChildPublicationCheck.ExpectedIntentDigest, State: "effect_pending", Head: "goobers/children/child-run", Base: "main", Commit: strings.Repeat("a", 40), NeedsHuman: true, Observation: "not_observed", CreatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}
 	fixtures.ChildWorkflowPage = ChildWorkflowPage{RunID: "parent-run", Gaggle: "web", Children: []ChildWorkflowSummary{{ChildID: "child-one", InvocationKey: "inspect", Sequence: 1, State: "queued", AcceptedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}}}

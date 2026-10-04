@@ -111,6 +111,17 @@ interface FixtureRunCursor {
 }
 
 export class FixtureDaemonClient implements DaemonClient {
+
+  async getInteractiveCapabilities(gaggle: string): Promise<import("./types").InteractiveCapabilities> {
+    return { gaggle, policyConfigured: false, viewer: true, operator: false, sourceWriteMode: "pull-request", actions: [] };
+  }
+  async listSessions(): Promise<import("./types").SessionPage> { return { items: [] }; }
+  async getSession(): Promise<import("./types").InteractiveSession> { throw new Error("Sessions are unavailable in the fixture portal."); }
+  async getSessionMessages(): Promise<import("./types").SessionMessagePage> { return { items: [] }; }
+  async createSession(_gaggle: string, _key: string, _input: import("./types").SessionCreateRequest): Promise<import("./types").SessionAcceptance> { throw new Error("Session commands require a connected daemon."); }
+  async sendSessionMessage(_gaggle: string, _session: string, _key: string, _input: import("./types").SessionMessageRequest): Promise<import("./types").SessionAcceptance> { throw new Error("Session commands require a connected daemon."); }
+  async closeSession(_gaggle: string, _session: string, _key: string, _input: import("./types").SessionCloseRequest): Promise<import("./types").SessionAcceptance> { throw new Error("Session commands require a connected daemon."); }
+
  async checkChildPublication(_runId: string, _key: string, _command: import("./types").ChildPublicationCheckRequest): Promise<import("./types").ChildPublicationCheckResult> {
   throw new Error("Publication checks are unavailable in this read-only snapshot.");
  }

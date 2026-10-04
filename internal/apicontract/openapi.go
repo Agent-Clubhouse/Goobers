@@ -32,7 +32,7 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		} else {
 			operation["security"] = []map[string][]string{}
 		}
-		if route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
+		if sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
 		if childWorkflowRoute(route.ID) {
@@ -105,6 +105,7 @@ func openAPIParameters(route Route) []map[string]any {
 		)
 	}
 	parameters = append(parameters, openAPIServiceParameters(route.ID)...)
+	parameters = append(parameters, sessionParameters(route.ID)...)
 	if route.ID == RouteRuns {
 		for _, name := range []string{"gaggle", "workflow", "stage", "outcome", "population", "phase", "trigger"} {
 			parameters = append(parameters, map[string]any{
@@ -187,7 +188,7 @@ func openAPIServiceParameters(id RouteID) []map[string]any {
 func routeRequiresIdempotency(id RouteID) bool {
 	switch id {
 	case RouteApproveStage, RouteOverrideStage, RouteRerunStage, RouteTriggerIngest,
-		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand, RouteChildPublicationCheck:
+		RouteResolveEscalation, RouteCancelRun, RouteOperatorMessageSubmit, RouteChildWorkflowStart, RouteInteractiveRunCommand, RouteChildPublicationCheck, RouteSessionCreate, RouteSessionMessage, RouteSessionClose:
 		return true
 	default:
 		return false
@@ -224,6 +225,12 @@ func openAPIRequestBody(route Route) map[string]any {
 		schema = schemaRef("CancelRunRequest")
 	case RouteChildPublicationCheck:
 		schema = schemaRef("ChildPublicationCheckRequest")
+	case RouteSessionCreate:
+		schema = schemaRef("SessionCreateRequest")
+	case RouteSessionMessage:
+		schema = schemaRef("SessionMessageRequest")
+	case RouteSessionClose:
+		schema = schemaRef("SessionCloseRequest")
 	case RouteInteractiveRunCommand:
 		schema = schemaRef("InteractiveRunCommand")
 	case RouteOperatorMessageSubmit:
@@ -246,6 +253,9 @@ func openAPIRequestBody(route Route) map[string]any {
 }
 
 func openAPIResponses(route Route) map[string]any {
+	if sessionRoute(route.ID) {
+		return sessionResponses(route)
+	}
 	switch route.ID {
 	case RouteChildWorkflowAccessAcquire:
 		return map[string]any{"200": jsonResponse("Secret delivery to an authenticated parent attempt; never cache or persist", closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "format": "password"}})), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}

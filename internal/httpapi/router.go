@@ -639,6 +639,7 @@ type handlerConfig struct {
 	interactiveRuns         InteractiveRunService
 	childMonitor            ChildWorkflowMonitorService
 	childPublicationChecks  ChildPublicationCheckService
+	interactiveSessions     InteractiveSessionService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
@@ -1234,6 +1235,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerInteractiveRunRoutes(router, config, errorLog)
 	registerChildMonitorRoute(router, config, errorLog)
 	registerChildPublicationCheckRoute(router, config, errorLog)
+	registerSessionRoutes(router, config, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)

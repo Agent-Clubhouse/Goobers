@@ -1,0 +1,24 @@
+.shared-sessions { margin: 1.5rem 0; padding: 1.25rem; border: 1px solid var(--border-color, #9ca3af55); border-radius: .75rem; }
+.shared-sessions header, .session-buttons, .new-session { display: flex; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.shared-sessions header { justify-content: space-between; }
+.shared-sessions h2, .shared-sessions h3 { margin-top: 0; }
+.shared-sessions label { display: flex; flex-direction: column; gap: .35rem; }
+.shared-sessions input, .shared-sessions select, .shared-sessions textarea { font: inherit; color: inherit; background: var(--surface, transparent); border: 1px solid var(--border-color, #9ca3af88); border-radius: .35rem; padding: .55rem; max-width: 100%; }
+.shared-sessions button { cursor: pointer; }
+.shared-sessions button:disabled { cursor: default; opacity: .6; }
+.new-session { align-items: end; margin: 1rem 0; }
+.session-layout { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(0, 3fr); gap: 1.5rem; margin-top: 1rem; }
+.session-layout > nav ul { list-style: none; padding: 0; margin: 0 0 1rem; }
+.session-layout > nav li { margin-bottom: .5rem; }
+.session-layout > nav li button { display: flex; flex-direction: column; gap: .3rem; width: 100%; text-align: left; padding: .7rem; overflow-wrap: anywhere; }
+.session-layout > nav button[aria-pressed="true"] { outline: 2px solid currentColor; }
+.session-messages { list-style: none; padding: 0; }
+.session-messages li { border-top: 1px solid var(--border-color, #9ca3af55); padding: 1rem 0; overflow-wrap: anywhere; }
+.session-messages li > div { display: flex; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+.session-messages p { white-space: pre-wrap; }
+.session-messages a { display: block; margin-top: .4rem; }
+.session-messages time, .session-help { font-size: .875rem; }
+.session-detail form { display: flex; flex-direction: column; gap: .65rem; margin: 1rem 0; }
+.session-detail form button { align-self: flex-start; }
+.session-detail textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+@media (max-width: 760px) { .session-layout { grid-template-columns: 1fr; } }

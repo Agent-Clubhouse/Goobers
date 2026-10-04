@@ -26,6 +26,7 @@ import type {
   ArtifactContent,
   AttemptList,
   DaemonClient,
+  InteractiveCapabilities, InteractiveSession, SessionPage, SessionMessagePage, SessionCreateRequest, SessionMessageRequest, SessionCloseRequest, SessionAcceptance,
   InteractiveRunView, InteractiveRunCommand, InteractiveRunCommandResult,
   DaemonEventStream,
   DaemonUpdateEvent,
@@ -499,6 +500,41 @@ export class HttpDaemonClient implements DaemonClient {
       options,
       { provider, kind, id: externalId },
     ).then(normalizeLegacyWorkItemCost);
+  }
+
+  getInteractiveCapabilities(gaggle: string, options?: RequestOptions): Promise<InteractiveCapabilities> {
+    return this.getJSON(clientRoutes.gaggleInteractiveCapabilities, undefined, options, { gaggle });
+  }
+
+  listSessions(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<SessionPage> {
+    return this.getJSON(clientRoutes.sessionList, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle });
+  }
+
+  getSession(gaggle: string, session: string, options?: RequestOptions): Promise<InteractiveSession> {
+    return this.getJSON(clientRoutes.sessionGet, undefined, options, { gaggle, session });
+  }
+
+  getSessionMessages(gaggle: string, session: string, after?: number, options?: RequestOptions): Promise<SessionMessagePage> {
+    return this.getJSON(clientRoutes.sessionMessages, after === undefined ? undefined : { after }, options, { gaggle, session });
+  }
+
+  createSession(gaggle: string, key: string, input: SessionCreateRequest, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.sessionCommand(clientRoutes.sessionCreate, { gaggle }, key, input, options);
+  }
+
+  sendSessionMessage(gaggle: string, session: string, key: string, input: SessionMessageRequest, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.sessionCommand(clientRoutes.sessionMessage, { gaggle, session }, key, input, options);
+  }
+
+  closeSession(gaggle: string, session: string, key: string, input: SessionCloseRequest, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.sessionCommand(clientRoutes.sessionClose, { gaggle, session }, key, input, options);
+  }
+
+  private sessionCommand(route: ApiRoute, path: PathParameters, key: string, input: unknown, options?: RequestOptions): Promise<SessionAcceptance> {
+    return this.withResponse(route, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as SessionAcceptance; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, path, { body: JSON.stringify(input), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
   }
 
   checkChildPublication(runId: string, key: string, command: import("./types").ChildPublicationCheckRequest, options?: RequestOptions): Promise<import("./types").ChildPublicationCheckResult> {
