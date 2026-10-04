@@ -771,7 +771,7 @@ func buildSchedulerDefinitions(
 	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
 		return nil, err
 	}
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), set, goobers)
 	if err != nil {
 		return nil, err
 	}
@@ -840,7 +840,7 @@ func buildSchedulerDefinitions(
 		reportStartupProgress(startupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, hooks, err := buildRuntimeRunner(
-			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
+			scoped, cfg, set, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleBacklogRef(set, gaggle), gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle], backlogLabelsDefaults[gaggle], backlogLabelPredicateDefaults[gaggle], generation,
 		)
@@ -1293,12 +1293,12 @@ func buildRetainedLegacyRunner(
 	}
 	// Legacy retained runtime: no per-gaggle project scoping — a zero project
 	// repo leaves credentials on the first-repo default (unchanged behavior).
-	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
+	instructions, err := loadGooberInstructions(l.ConfigDir(), set, goobers)
 	if err != nil {
 		return nil, nil, err
 	}
 	rn, manager, _, err := buildRuntimeRunner(
-		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
+		l, cfg, set, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
 		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, apiv1.BacklogRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
 		// instance-wide posture can apply (no gaggle override to consult).
@@ -1329,6 +1329,7 @@ func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
 func buildRuntimeRunner(
 	l instance.Layout,
 	cfg *instance.Config,
+	set *instance.ConfigSet,
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
 	tel *telemetry.Client,
@@ -1363,6 +1364,7 @@ func buildRuntimeRunner(
 		ConfigGeneration:     generation,
 		Layout:               l,
 		Config:               cfg,
+		Definitions:          set,
 		Goobers:              goobers,
 		InstructionsByGoober: instructions,
 		Telemetry:            tel,

@@ -314,7 +314,7 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// validates (#124). A config that fails this would also fail to start
 	// the daemon; catching that now, at `validate` time, is the whole point.
 	goobers := goobersByName(set)
-	instructions, err := loadGooberInstructions(configDir, goobers)
+	instructions, err := loadGooberInstructions(configDir, set, goobers)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
 		file := diagnosticFile(root, configDir)
