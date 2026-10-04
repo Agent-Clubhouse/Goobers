@@ -37,6 +37,9 @@ var errChildWaitDrain = errors.New("runner: child wait retained during shutdown"
 // cancels the runtime, then waits for its return and every writer's independent
 // acknowledgement. An MCP response never supplies that acknowledgement.
 func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invocation *gooberInvocation, env apiv1.InvocationEnvelope, workspace *stageWorkspace) (apiv1.ResultEnvelope, error) {
+	if tf.in.Child != nil {
+		return invokeChildAgent(ctx, tf, invocation, env)
+	}
 	if tf.t.ChildWorkflows == nil || r.cfg.ChildHandoff == nil {
 		return invocation.Invoke(ctx, env)
 	}

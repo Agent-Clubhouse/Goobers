@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/invoke"
 )
 
 const (
@@ -89,6 +90,11 @@ func NewTelemetryQueryExecutor(host *externaltelemetry.Host, recorder ArtifactRe
 
 // Run executes one external telemetry query.
 func (e *TelemetryQueryExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	// All local file access and provider work joins before this synchronous
+	// adapter returns; no subprocess receives the inherited repository.
+	if done := invoke.RegisterWorkspaceWriter(ctx); done != nil {
+		defer done(nil)
+	}
 	required := string(capability.TelemetryRead)
 	if !slices.Contains(env.Capabilities, required) {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: kind=%s requires declared capability %q", KindExternalTelemetry, required)

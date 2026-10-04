@@ -950,6 +950,8 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			Summary: fmt.Sprintf("failed to start %q", command[0]),
 		}, nil
 	}
+	stopWriters, joinedWriters := invoke.TrackWorkspaceProcess(runCtx, tree, groupKillWaitDelay)
+	defer joinedWriters()
 	defer e.observeExecutionDeadline(runCtx, env)()
 	// Released only after the stage is fully accounted for: the bound's own
 	// record of whether it fired (the child cgroup's memory.events) has to
@@ -1020,7 +1022,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 		// Kill the whole tree, not just the direct child, so a runaway
 		// subprocess tree can't outlive the stage.
-		_ = tree.Kill()
+		_ = stopWriters()
 		if !waited {
 			select {
 			case waitErr = <-waitDone:

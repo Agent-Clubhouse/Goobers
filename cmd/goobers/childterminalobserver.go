@@ -127,6 +127,13 @@ func (l *queuedChildLauncher) terminalWorkspace(ctx context.Context, coordinator
 	if admission == nil {
 		return nil, nil
 	}
+	events, err := rd.Events()
+	if err != nil {
+		return nil, err
+	}
+	if err := runner.VerifyChildWorkspaceQuiescence(rd, id, events); err != nil {
+		return nil, err
+	}
 	if id.WorkspaceRepository == nil {
 		return nil, childworkflow.ErrAuthorityUnavailable
 	}
