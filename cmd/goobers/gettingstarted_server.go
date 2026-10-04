@@ -83,16 +83,12 @@ func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guide
 	if err != nil {
 		return nil, fmt.Errorf("resolve own executable: %w", err)
 	}
-	currentUser, err := user.Current()
-	if err != nil {
-		return nil, fmt.Errorf("resolve interactive user: %w", err)
-	}
 	return &guidedServer{
 		workdir:         workdir,
 		instancePath:    instancePath,
 		executable:      executable,
 		platform:        runtime.GOOS,
-		runtimeIdentity: currentUser.Username,
+		runtimeIdentity: guidedRuntimeIdentity(),
 		errorLog:        errorLog,
 		completed:       make(chan struct{}),
 	}, nil
@@ -367,9 +363,30 @@ func (s *guidedServer) guidedSupervisorStatus(ctx context.Context, argv []string
 	}
 	var status daemonservice.Status
 	if err := json.Unmarshal([]byte(result.stdout), &status); err != nil {
+		// A status command that failed outright prints nothing on stdout;
+		// surface its own diagnostic rather than a bare JSON decode error.
+		if result.exitCode != 0 && strings.TrimSpace(result.stderr) != "" {
+			return daemonservice.Status{}, fmt.Errorf("`%s` exited %d: %s", strings.Join(argv, " "), result.exitCode, strings.TrimSpace(result.stderr))
+		}
 		return daemonservice.Status{}, fmt.Errorf("decode `%s` output: %w", strings.Join(argv, " "), err)
 	}
 	return status, nil
+}
+
+// guidedRuntimeIdentity names the account the wizard (and a foreground or
+// per-user supervised daemon) runs as. It is display-only, so a host where
+// os/user cannot resolve the current account (no passwd entry, no cgo) falls
+// back to the environment instead of refusing to start guided setup.
+func guidedRuntimeIdentity() string {
+	if current, err := user.Current(); err == nil && current.Username != "" {
+		return current.Username
+	}
+	for _, key := range []string{"USERNAME", "USER"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return "the current user"
 }
 
 func guidedCommand(executable string, args ...string) string {

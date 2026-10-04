@@ -295,6 +295,28 @@ func TestGettingStartedSupervisionPreviewUsesCurrentStatus(t *testing.T) {
 	}
 }
 
+func TestGettingStartedSupervisionPreviewSurfacesStatusCommandFailure(t *testing.T) {
+	server := newCompletionTestServer(t)
+	server.platform = "windows"
+	server.execAction = func(_ context.Context, _ ...string) (guidedExecResult, error) {
+		return guidedExecResult{exitCode: 1, stderr: "error: query scheduled task: access is denied\n"}, nil
+	}
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/supervision")
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "access is denied") || strings.Contains(body, "unexpected end of JSON input") {
+		t.Fatalf("preview failure body = %q, want the status command's own diagnostic", body)
+	}
+}
+
+func TestGuidedRuntimeIdentityIsNeverEmpty(t *testing.T) {
+	if got := guidedRuntimeIdentity(); strings.TrimSpace(got) == "" {
+		t.Fatal("guidedRuntimeIdentity() returned an empty identity")
+	}
+}
+
 func TestGettingStartedCompleteRejectsScheduledTaskOutsideWindows(t *testing.T) {
 	server := newCompletionTestServer(t)
 	server.platform = "linux"
