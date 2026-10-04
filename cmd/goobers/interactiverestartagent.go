@@ -33,7 +33,15 @@ func (e *interactiveRestartExecution) agentic(name string, rec runner.ArtifactRe
 			grants = append(grants, credentials.Grant{Goober: name, Capability: cap, Ref: cap})
 		}
 	}
-	registry, err := buildHarnessRegistry(caps, harness.EnvironmentConfig{}, nil, "", "", true, nil, false)
+	selfBin := ""
+	if e.source.Session != nil {
+		path, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		selfBin = path
+	}
+	registry, err := buildHarnessRegistry(caps, harness.EnvironmentConfig{}, nil, "", selfBin, true, nil, false)
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +101,12 @@ func (a interactiveRestartAdapter) Run(ctx context.Context, req harness.RunReque
 	if req.Sandbox == nil {
 		return harness.Outcome{}, errors.New("interactive restart sandbox unavailable")
 	}
-	if runtime.execution != a.execution || req.ChildWorkflows != nil || len(req.MCPServers) > 0 {
+	if runtime.execution != a.execution || req.ChildWorkflows != nil || req.SessionOperations != nil || len(req.MCPServers) > 0 {
 		return harness.Outcome{}, errors.New("interactive restart agent authority mismatch")
+	}
+	req.SessionOperations, err = sessionOperationsFor(ctx, req.Envelope.RunID)
+	if err != nil {
+		return harness.Outcome{}, err
 	}
 	home, err := os.MkdirTemp(runtime.home, "agent-")
 	if err != nil {

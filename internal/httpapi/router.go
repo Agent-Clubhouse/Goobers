@@ -435,8 +435,8 @@ func RequireRoles() Authorizer {
 			}
 			return errors.New("only an authenticated worker may report config divergence")
 		}
-		if principal.Issuer == ChildWorkflowPrincipalIssuer {
-			return authorizeChildWorkflow(request, principal)
+		if handled, err := authorizeInvocationGrant(request, principal); handled {
+			return err
 		}
 		if principal.Issuer == CredentialGrantPrincipalIssuer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
@@ -640,6 +640,7 @@ type handlerConfig struct {
 	childMonitor            ChildWorkflowMonitorService
 	childPublicationChecks  ChildPublicationCheckService
 	interactiveSessions     InteractiveSessionService
+	sessionOperations       SessionOperationService
 	operatorMessages        OperatorMessageService
 	credentials             CredentialService
 	blobs                   blobstore.Store
@@ -1093,7 +1094,7 @@ func NewHandler(reader readservice.Reader, authorizer Authorizer, errorLog *log.
 			return nil, err
 		}
 	}
-	router, err := newRouter(config.authenticator, authorizer)
+	router, err := newRouter(sessionOperationAuthenticator{service: config.sessionOperations, next: config.authenticator}, authorizer)
 	if err != nil {
 		return nil, err
 	}

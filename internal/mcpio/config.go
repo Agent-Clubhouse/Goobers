@@ -39,6 +39,8 @@ const ReceiptFileName = "input-inspection-receipts.jsonl"
 // human-readable name to a workspace-relative path already materialized by
 // materializeContext.
 type Config struct {
+	// SessionOperations is trusted per-turn access, never authored configuration.
+	SessionOperations *SessionOperationAccess `json:"sessionOperations,omitempty"`
 	// ChildWorkflows is delivered by the trusted stage launcher, never DSL input.
 	ChildWorkflows       *ChildWorkflowAccess `json:"childWorkflows,omitempty"`
 	Workspace            string               `json:"workspace"`
@@ -65,6 +67,11 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.Workspace == "" {
 		return Config{}, fmt.Errorf("mcpio: config %s declares no workspace", path)
 	}
+	if cfg.SessionOperations != nil {
+		if err := cfg.SessionOperations.Validate(cfg.RunID); err != nil {
+			return Config{}, err
+		}
+	}
 	if cfg.ChildWorkflows != nil {
 		if err := cfg.ChildWorkflows.Validate(cfg.RunID); err != nil {
 			return Config{}, err
@@ -77,6 +84,11 @@ func LoadConfig(path string) (Config, error) {
 // Called from the harness side (internal/harness), not by this server
 // itself. See WriteJSON for the symlink-safety rationale.
 func WriteConfig(root, rel string, cfg Config) (string, error) {
+	if cfg.SessionOperations != nil {
+		if err := cfg.SessionOperations.Validate(cfg.RunID); err != nil {
+			return "", err
+		}
+	}
 	if cfg.ChildWorkflows != nil {
 		if err := cfg.ChildWorkflows.Validate(cfg.RunID); err != nil {
 			return "", err

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/sessioning"
+	"github.com/goobers/goobers/internal/sessionops"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
@@ -54,7 +55,7 @@ func (r *daemonSessionRuntime) prepare(e *interactiveRestartExecution, t trigger
 		if !ok {
 			return nil, errors.New("interactive session host journal writer missing")
 		}
-		return sessionGoober{Goober: delegate, writer: writer, identity: e.source, directory: filepath.Join(e.layout.RunsDir(), e.source.RunID)}, nil
+		return sessionGoober{Goober: delegate, writer: writer, identity: e.source, actor: *t.Message.Actor, operations: r.operations, readers: r.setup.SessionBacklogReader, directory: filepath.Join(e.layout.RunsDir(), e.source.RunID)}, nil
 	}
 	driver, err := base.ForSessionExecution(e.source, factory)
 	if err != nil {
@@ -85,9 +86,12 @@ type sessionEventRecorder interface {
 }
 type sessionGoober struct {
 	invoke.Goober
-	writer    sessionEventRecorder
-	identity  journal.RunIdentity
-	directory string
+	writer     sessionEventRecorder
+	identity   journal.RunIdentity
+	directory  string
+	actor      sessioning.Actor
+	operations *sessionops.Bridge
+	readers    sessionops.ReaderFactory
 }
 
 func (g sessionGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -114,11 +118,17 @@ func (g sessionGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope)
 	note := func(kind string, refs []journal.Ref) error {
 		return g.writer.Append(journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Attempt: int(env.Attempt), Branch: started.Branch, Artifacts: refs, Runner: map[string]any{"kind": kind, "stageSequence": started.Seq, "inputDigest": g.identity.Session.InputDigest}})
 	}
+	ctx, closeOperations, err := g.openOperations(ctx, env, started)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	defer closeOperations()
 	if err = note(journal.SessionWriterStarted, nil); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	ctx, proof := invoke.WithWorkspaceQuiescence(ctx)
 	result, runErr := g.Goober.Invoke(ctx, env)
+	closeOperations()
 	if err = proof.VerifyIdle(); err != nil {
 		return result, errors.Join(runErr, err)
 	}

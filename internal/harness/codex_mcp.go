@@ -191,7 +191,7 @@ func writeCodexStringArray(config *strings.Builder, name string, values []string
 
 // Preserve ordinary registration exactly; opted-in sessions pin their expanded list.
 func childCodexTools(req RunRequest, tools []string) []string {
-	if req.ChildWorkflows == nil {
+	if req.ChildWorkflows == nil && req.SessionOperations == nil {
 		return nil
 	}
 	return tools

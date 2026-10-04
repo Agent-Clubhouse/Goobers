@@ -8,7 +8,8 @@ import (
 
 // Only launcher-supplied access expands the built-in server's ordinary tools.
 func goobersIOToolsFor(req RunRequest) []string {
-	return append(append([]string(nil), goobersIOTools...), mcpio.ChildWorkflowToolNames(req.ChildWorkflows, req.Envelope.RunID)...)
+	names := append(append([]string(nil), goobersIOTools...), mcpio.ChildWorkflowToolNames(req.ChildWorkflows, req.Envelope.RunID)...)
+	return append(names, mcpio.SessionOperationToolNames(req.SessionOperations, req.Envelope.RunID)...)
 }
 
 func prefixedGoobersIOTools(req RunRequest, prefix string) []string {

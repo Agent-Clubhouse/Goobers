@@ -764,6 +764,28 @@
       "recoverySafe": false
     },
     {
+      "id": "sessionBacklogRead",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/get_backlog_item",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionBacklogList",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/list_backlog_items",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "sessionList",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/sessions",

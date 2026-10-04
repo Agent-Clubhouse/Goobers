@@ -31,13 +31,19 @@ const maxGrepMatches = 200
 // artifact I/O stays workspace-scoped; optional child operations use only the
 // trusted endpoint and grant captured at startup.
 type Toolset struct {
-	cfg            Config
-	childTransport http.RoundTripper
+	cfg              Config
+	childTransport   http.RoundTripper
+	sessionTransport http.RoundTripper
 }
 
 // NewToolset builds a Toolset from an already-loaded, already-validated
 // Config.
 func NewToolset(cfg Config) *Toolset {
+	if cfg.SessionOperations != nil {
+		access := *cfg.SessionOperations
+		access.BacklogSources = append([]string(nil), access.BacklogSources...)
+		cfg.SessionOperations = &access
+	}
 	if cfg.ChildWorkflows != nil {
 		access := *cfg.ChildWorkflows
 		cfg.ChildWorkflows = &access

@@ -70,6 +70,8 @@ export const apiRoutes = {
   "journalMergeAuthority": { method: "POST", path: "/api/v1/journal/merge-authority", actionClass: "workflow-execution" },
   "journalBranchOwnership": { method: "POST", path: "/api/v1/journal/branch-ownership", actionClass: "workflow-execution" },
   "operatorMessageSubmit": { method: "POST", path: "/api/v1/runs/{run}/operator-messages", actionClass: "workflow-execution" },
+  "sessionBacklogRead": { method: "POST", path: "/api/v1/runs/{run}/session-operations/get_backlog_item", actionClass: "workflow-execution" },
+  "sessionBacklogList": { method: "POST", path: "/api/v1/runs/{run}/session-operations/list_backlog_items", actionClass: "workflow-execution" },
   "sessionList": { method: "GET", path: "/api/v1/gaggles/{gaggle}/sessions", actionClass: "read-only-navigation" },
   "sessionCreate": { method: "POST", path: "/api/v1/gaggles/{gaggle}/sessions", actionClass: "workflow-execution" },
   "sessionGet": { method: "GET", path: "/api/v1/gaggles/{gaggle}/sessions/{session}", actionClass: "read-only-navigation" },

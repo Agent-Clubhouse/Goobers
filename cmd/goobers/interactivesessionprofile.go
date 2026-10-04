@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync/atomic"
 
+	"github.com/goobers/goobers/internal/sessionops"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/harness"
@@ -22,6 +24,7 @@ type daemonSessionRuntime struct {
 	setup      *schedulerSetup
 	generation atomic.Pointer[string]
 	process    harness.ProcessRunner
+	operations *sessionops.Bridge
 }
 
 func (r *daemonSessionRuntime) replaceGeneration(generation string) { r.generation.Store(&generation) }

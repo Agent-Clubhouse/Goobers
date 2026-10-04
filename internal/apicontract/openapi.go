@@ -35,6 +35,10 @@ func OpenAPIDocument(authenticated bool, optionalRoutes ...Route) ([]byte, error
 		if sessionRoute(route.ID) || route.ID == RouteGaggleInteractiveCapabilities || route.ID == RouteInteractiveRun || route.ID == RouteInteractiveRunCommand || route.ID == RouteChildWorkflowMonitor || route.ID == RouteChildPublicationCheck {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 		}
+		if sessionOperationRoute(route.ID) {
+			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
+			operation["x-goobers-session-grant"] = "live-turn"
+		}
 		if childWorkflowRoute(route.ID) {
 			operation["security"] = []map[string][]string{{"bearerAuth": {}}}
 			operation["x-goobers-stage-grant"] = "goobers-child"
@@ -196,6 +200,9 @@ func routeRequiresIdempotency(id RouteID) bool {
 }
 
 func openAPIRequestBody(route Route) map[string]any {
+	if sessionOperationRoute(route.ID) {
+		return sessionOperationBody(route.ID)
+	}
 	if route.Method == http.MethodGet || route.Method == http.MethodHead {
 		return nil
 	}
@@ -253,6 +260,9 @@ func openAPIRequestBody(route Route) map[string]any {
 }
 
 func openAPIResponses(route Route) map[string]any {
+	if sessionOperationRoute(route.ID) {
+		return sessionOperationResponses(route.ID)
+	}
 	if sessionRoute(route.ID) {
 		return sessionResponses(route)
 	}

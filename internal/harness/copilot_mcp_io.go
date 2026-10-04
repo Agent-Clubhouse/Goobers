@@ -172,6 +172,7 @@ func goobersIOPromptSection(req RunRequest) string {
 		b.WriteString("Use `list_inputs`, `grep_input`, and `read_input` to examine the upstream content listed under Context above, instead of opening those files directly. Prefer `grep_input` to search a large input, or `read_input` with a line range around a match, rather than reading a large input in one call.\n\n")
 	}
 	writeChildWorkflowPrompt(&b, req)
+	writeSessionOperationPrompt(&b, req)
 	return b.String()
 }
 

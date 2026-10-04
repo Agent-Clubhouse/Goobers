@@ -38,3 +38,12 @@ func (s *Service) BeginSessionExecution(ctx context.Context, p httpapi.Principal
 
 // SetSessionsAvailable advertises an installed host runtime, never permission.
 func (s *Service) SetSessionsAvailable(available bool) { s.sessionsAvailable.Store(available) }
+
+// RequireSessionScope binds host tool authority and audit attribution to the
+// exact human and gaggle that own this still-live session execution lease.
+func (l *ExecutionLease) RequireSessionScope(gaggle, issuer, subject string) error {
+	if l == nil || l.ctx.Err() != nil || l.gaggle.Name != gaggle || l.principal.Issuer != issuer || l.principal.Subject != subject {
+		return ErrDenied
+	}
+	return authorize(l.principal, l.gaggle, "session.message")
+}

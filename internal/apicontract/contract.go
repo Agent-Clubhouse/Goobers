@@ -401,6 +401,8 @@ const (
 	RouteChildWorkflowResolve          RouteID = "childWorkflowResolve"
 	RouteChildWorkflowAccessAcquire    RouteID = "childWorkflowAccessAcquire"
 	RouteChildWorkflowAccessRevoke     RouteID = "childWorkflowAccessRevoke"
+	RouteSessionBacklogRead            RouteID = "sessionBacklogRead"
+	RouteSessionBacklogList            RouteID = "sessionBacklogList"
 	RouteSessionList                   RouteID = "sessionList"
 	RouteSessionCreate                 RouteID = "sessionCreate"
 	RouteSessionGet                    RouteID = "sessionGet"
@@ -663,6 +665,8 @@ var v1Routes = []Route{
 	{ID: RouteJournalMergeAuthority, Method: http.MethodPost, Path: JournalMergeAuthorityPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteJournalBranchOwnership, Method: http.MethodPost, Path: JournalBranchOwnershipPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOperatorMessageSubmit, Method: http.MethodPost, Path: RunOperatorMessagesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogRead, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionBacklogList, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/list_backlog_items", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionList, Method: http.MethodGet, Path: GaggleSessionsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteSessionCreate, Method: http.MethodPost, Path: GaggleSessionsPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionGet, Method: http.MethodGet, Path: SessionPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

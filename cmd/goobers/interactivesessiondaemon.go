@@ -16,6 +16,9 @@ func (u *upSession) configureInteractiveSessions() error {
 	}
 	runtime := &daemonSessionRuntime{setup: u.setup}
 	runtime.replaceGeneration(u.setup.SessionGeneration)
+	if err := u.configureSessionOperations(runtime); err != nil {
+		return err
+	}
 	service := &interactivesession.Service{Queue: u.durableTriggers.queue, Permissions: u.setup.InteractiveAccess, Scrubber: journal.Chain(u.setup.SharedRegistry, journal.NewPatternScrubber()), Pin: runtime.pin, Now: time.Now}
 	service.Runtime = &interactivesession.Runtime{Build: runtime.build, Observe: runtime.observe, Reserve: func(ctx context.Context, id journal.RunIdentity, now time.Time) (func(), error) {
 		scheduler := u.triggerPlane.sched.Load()
