@@ -107,9 +107,9 @@ function ScopedMetadataEditor({ client, gaggle, source, sources, file }: EditorP
     {error && <p role="alert">{error}</p>}
     {pending && <p>Request key: <code>{pending.key}</code></p>}
     {command && <MetadataProposalReceipt command={command} source={source} />}
-    {pending && !command && <button type="button" disabled={busy} onClick={() => void action("submit", pending)}>Check same command</button>}
+    {pending && !command && <><p>This keeps the same request key. If the server has not accepted it, retrying may begin the proposal.</p><button type="button" disabled={busy} onClick={() => void action("submit", pending)}>Retry same proposal request</button></>}
     {command && <button type="button" disabled={busy} onClick={() => void action("receipt")}>Refresh proposal receipt</button>}
-    {command && ["unknown", "attempting", "blocked"].includes(command.state) && <button type="button" disabled={busy} onClick={() => void action("check")}>Check provider state</button>}
+    {command && ["unknown", "attempting"].includes(command.state) && <button type="button" disabled={busy} onClick={() => void action("check")}>Check provider state</button>}
     {command && ["accepted", "prepared"].includes(command.state) && <button type="button" disabled={busy} onClick={() => void action("continue")}>Continue retained proposal</button>}
     {busy && <p role="status">Waiting for the proposal service…</p>}
   </section>;

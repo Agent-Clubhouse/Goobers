@@ -393,7 +393,9 @@ Bounded metadata previews, source-bound GitHub/ADO draft-PR phase adapters and
 durable custody are installed through the daemon API. Every phase checks current
 interactive source authority; receipt reads and explicit observations require read
 authority and cannot repeat a write. Lost replies retain the original command key
-and phase history. The portal editor remains the next integration slice.
+and phase history. The installed portal editor supports inert reviewed diffs,
+explicit draft-PR submission, same-key recovery, separate provider observation and
+explicit continuation, plus retained command lookup after a browser reload.
 
 The versioned, bounded relationship-suggestion artifact now binds actual producer
 provenance, deduplicates source evidence and holds provisional item references

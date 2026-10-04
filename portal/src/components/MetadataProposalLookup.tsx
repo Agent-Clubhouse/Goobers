@@ -41,7 +41,7 @@ export function MetadataProposalLookup({ client, gaggle, source, path }: { clien
     <form onSubmit={(event) => { event.preventDefault(); void load("read"); }}><label>Proposal command ID<input value={id} required maxLength={42} pattern="workbench-[a-f0-9]{32}" disabled={busy} onChange={(event) => { setId(event.target.value); setCommand(undefined); setCanCheck(false); setCanContinue(false); setError(""); }} /></label><button type="submit" disabled={busy}>Load retained proposal</button></form>
     {error && <p role="alert">{error}</p>}
     {command && <MetadataProposalReceipt command={command} source={source} />}
-    {command && canCheck && ["unknown", "attempting", "blocked"].includes(command.state) && <button type="button" disabled={busy} onClick={() => void load("check")}>Check retained provider state</button>}
+    {command && canCheck && ["unknown", "attempting"].includes(command.state) && <button type="button" disabled={busy} onClick={() => void load("check")}>Check retained provider state</button>}
     {command && canContinue && ["accepted", "prepared"].includes(command.state) && <button type="button" disabled={busy} onClick={() => void load("continue")}>Continue this retained proposal</button>}
   </details>;
 }

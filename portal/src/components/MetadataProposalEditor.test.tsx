@@ -77,7 +77,7 @@ describe("governed metadata proposal editor", () => {
     await submit(); await screen.findByRole("alert");
     expect(client.submitMetadataProposal).toHaveBeenCalledTimes(1);
     const first = vi.mocked(client.submitMetadataProposal).mock.calls[0];
-    fireEvent.click(screen.getByRole("button", { name: "Check same command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry same proposal request" }));
     await screen.findByText("Draft PR confirmed");
     expect(vi.mocked(client.submitMetadataProposal).mock.calls[1].slice(0, 4)).toEqual(first.slice(0, 4));
   });
@@ -108,7 +108,7 @@ describe("governed metadata proposal editor", () => {
     const { client } = setup(); vi.mocked(client.submitMetadataProposal).mockResolvedValueOnce({ ...receipt, gaggle: "foreign" });
     await submit(); await screen.findByRole("alert"); expect(screen.queryByRole("region", { name: "Metadata proposal receipt" })).not.toBeInTheDocument();
     vi.mocked(client.submitMetadataProposal).mockRejectedValueOnce(new DaemonAuthError(403));
-    fireEvent.click(screen.getByRole("button", { name: "Check same command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry same proposal request" }));
     await screen.findByText(/Repository proposals are unavailable/);
     expect(screen.queryByRole("region", { name: "Source change preview" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Request key:/)).not.toBeInTheDocument();
