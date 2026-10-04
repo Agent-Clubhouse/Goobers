@@ -22,6 +22,7 @@ type Observation struct {
 	Found, Absent, Terminal, WritersJoined bool
 	Identity                               journal.RunIdentity
 	Outcome, Text                          string
+	TerminalAt                             time.Time
 }
 
 // PreparedTurn contains immutable compiled source and its generation pin.
@@ -50,6 +51,7 @@ type executionOwner struct {
 	lease                          *interactiveaccess.ExecutionLease
 	releaseCapacity, releaseSource func()
 	done                           bool
+	cancelRequested                bool
 }
 type executionState struct {
 	mu      sync.Mutex

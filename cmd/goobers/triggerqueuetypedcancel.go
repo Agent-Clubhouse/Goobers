@@ -7,9 +7,13 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
-// Typed adapters replace this conservative placeholder once their existing
-// source owners can request and observe cancellation of this exact invocation.
-func (s *durableTriggerService) cancelTypedQueueStart(_ context.Context, c triggerqueue.StartControl) (startcontrol.CancellationObservation, bool, error) {
+// The caller holds current queue.cancel authority. Source adapters must not
+// reenter that policy lock or infer termination from cancellation delivery.
+func (s *durableTriggerService) cancelTypedQueueStart(ctx context.Context, c triggerqueue.StartControl) (startcontrol.CancellationObservation, bool, error) {
+	if c.Scope.Source == "session" && s.sessions != nil {
+		observation, err := s.sessions.CancelQueuedTurn(ctx, c.Scope.Gaggle, c.Record.ID)
+		return observation, true, err
+	}
 	if c.Scope.Source == "child" || c.Scope.Source == "session" {
 		return startcontrol.CancellationObservation{State: startcontrol.CancellationRequested}, true, nil
 	}

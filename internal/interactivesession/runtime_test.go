@@ -93,10 +93,20 @@ func (h *sessionTestHost) observe(ctx context.Context, t triggerqueue.SessionTur
 	if phase == journal.PhaseAborted {
 		outcome = "cancelled"
 	}
+	events, err := rd.Events()
+	if err != nil {
+		return Observation{}, err
+	}
+	var terminalAt time.Time
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished && event.Status == string(phase) {
+			terminalAt = event.Time
+		}
+	}
 	h.mu.Lock()
 	joined, response := h.joined, h.response
 	h.mu.Unlock()
-	return Observation{Found: true, Identity: id, Terminal: phase != journal.PhaseRunning, WritersJoined: joined, Outcome: outcome, Text: response}, nil
+	return Observation{Found: true, Identity: id, Terminal: phase != journal.PhaseRunning, TerminalAt: terminalAt, WritersJoined: joined, Outcome: outcome, Text: response}, nil
 }
 func queuedTurn(t *testing.T, s *Service) (sessioning.Acceptance, triggerqueue.SessionTurn) {
 	t.Helper()

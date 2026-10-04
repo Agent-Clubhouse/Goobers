@@ -17,6 +17,10 @@ func (s *Service) Reconcile(ctx context.Context, record triggerqueue.Record, all
 	}
 	s.execution.mu.Lock()
 	defer s.execution.mu.Unlock()
+	return s.reconcileTurnLocked(ctx, record, allowAbsentReplay)
+}
+
+func (s *Service) reconcileTurnLocked(ctx context.Context, record triggerqueue.Record, allowAbsentReplay bool) error {
 	t, err := s.Queue.SessionTurn(ctx, record.ID)
 	if err != nil {
 		return err
@@ -82,7 +86,7 @@ func (s *Service) reconcileAbsent(ctx context.Context, t triggerqueue.SessionTur
 	}
 	if owner != nil && owner.done {
 		outcome, text := "rejected", "The turn could not start. Submit another message to retry."
-		if t.Session.State == sessioning.CancelRequested {
+		if t.Session.State == sessioning.CancelRequested || owner.cancelRequested {
 			outcome, text = "cancelled", "The turn was cancelled before execution."
 		}
 		if err := s.Queue.CompleteSessionTurn(ctx, t.Record.ID, triggerqueue.SessionCompletion{Outcome: outcome, Text: text}, s.Now()); err != nil {

@@ -924,3 +924,18 @@ human restart commands cancelled or expired before execution return that termina
 receipt and no continuation link. Releasing their source-occurrence slot for an
 explicit new restart is a separate required follow-up; the original key must never
 revive a cancelled acceptance.
+
+
+### Installed shared-turn cancellation adapter
+
+Queue cancellation of an attempted shared agent turn now signals only that turn's
+actual execution owner. It leaves the session and later queued messages open.
+Current `queue.cancel` authority surrounds the operation; a busy execution lock
+leaves the request pending, avoiding an inversion with concurrent policy reload.
+
+Confirmation requires the source observer to verify the exact retained turn,
+actual journal terminal time and joined writers. A natural completion is shown
+as already terminal, and unknown writers keep their execution/capacity custody.
+A joined owner with verified absence can settle a cancellation before journal
+publication without inventing a run. Parent/child attempted cancellation remains
+an independently installed source adapter.

@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/sessioning"
+	"github.com/goobers/goobers/internal/startcontrol"
 	"github.com/goobers/goobers/internal/telemetry/retention"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -214,6 +215,40 @@ func TestSessionPortalAcceptanceRunsPinnedModelOnlyGoober(t *testing.T) {
 	}
 	if _, err = f.up.setup.RunnerRegistry.executionGeneration(t.Context(), id); err == nil {
 		t.Fatal("session fell through automation recovery")
+	}
+	assertNativeSessionQueueCancellation(t, f, turn)
+}
+
+func assertNativeSessionQueueCancellation(t *testing.T, f *conversationFixture, turn triggerqueue.SessionTurn) {
+	t.Helper()
+	queue := f.up.durableTriggers.queue
+	meta, err := startcontrol.Describe(t.Context(), queue, turn.Record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = queue.PinStartControl(t.Context(), turn.Record.ID, meta.Scope); err != nil {
+		t.Fatal(err)
+	}
+	control, _, err := queue.RequestStartCancellation(t.Context(), "example", turn.Record.ID, triggerqueue.StartCancellation{RequestID: "stop", Actor: "human", Reason: "Stop this turn", Authority: []byte(`{"issuer":"issuer","subject":"human"}`)}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissions := f.up.durableTriggers.sessions.Permissions
+	gaggle := f.up.setup.Definitions.Gaggles[0].DeepCopy()
+	gaggle.Spec.InteractiveAccess.Actions = append(gaggle.Spec.InteractiveAccess.Actions, "queue.cancel")
+	if err = permissions.Apply([]apiv1.Gaggle{*gaggle}, nil); err != nil {
+		t.Fatal(err)
+	}
+	principal := httpapi.Principal{Issuer: "issuer", Subject: "human", Roles: []httpapi.Role{httpapi.RoleOperate}}
+	err = permissions.WithQueueCancellation(t.Context(), principal, "example", func(ctx context.Context) error {
+		observed, handled, observeErr := f.up.durableTriggers.cancelTypedQueueStart(ctx, control)
+		if !handled || observed.State != startcontrol.CancellationAlreadyTerminal {
+			t.Fatalf("native terminal observation = %+v, handled=%v, error=%v", observed, handled, observeErr)
+		}
+		return observeErr
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

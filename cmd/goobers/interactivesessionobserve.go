@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/instance"
@@ -58,7 +59,19 @@ func (r *daemonSessionRuntime) observe(ctx context.Context, t triggerqueue.Sessi
 			text = string(raw)
 		}
 	}
-	return interactivesession.Observation{Found: true, Identity: id, Terminal: phase != journal.PhaseRunning, WritersJoined: joined && sessionRuntimeWasClosed(events, id), Outcome: outcome, Text: text}, ctx.Err()
+	return interactivesession.Observation{Found: true, Identity: id, Terminal: phase != journal.PhaseRunning, TerminalAt: sessionTerminalTime(events, phase), WritersJoined: joined && sessionRuntimeWasClosed(events, id), Outcome: outcome, Text: text}, ctx.Err()
+}
+
+func sessionTerminalTime(events []journal.Event, phase journal.RunPhase) time.Time {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == journal.EventRunFinished {
+			if events[i].Status == string(phase) && events[i].Seq > 0 {
+				return events[i].Time
+			}
+			break
+		}
+	}
+	return time.Time{}
 }
 func verifySessionJournalInputs(reader *journal.Reader, id journal.RunIdentity, inputs sessioning.ExecutionInputs) error {
 	if id.Session == nil || id.ValidateSessionLineage() != nil {
