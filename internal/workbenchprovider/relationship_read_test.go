@@ -133,3 +133,44 @@ func TestSelectedRelationshipsCancellationCannotEscapeReadOwner(t *testing.T) {
 		t.Fatal("cancelled authority returned completed relation read")
 	}
 }
+
+func TestSelectedGitHubRelationshipsKeepAmbiguousEvidencePartial(t *testing.T) {
+	for _, test := range []struct {
+		name, body, link string
+		status           int
+		complete         bool
+	}{
+		{"empty-array", "[]", "", 200, true},
+		{"no-content", "", "", 204, false}, {"null", "null", "", 200, false},
+		{"trailing-value", "[] {}", "", 200, false}, {"trailing-garbage", "[] ?", "", 200, false},
+		{"malformed-pagination", "[]", "malformed", 200, false},
+		{"unknown-pagination", "[]", `<https://api.github.com/other>; rel="mystery"`, 200, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				switch {
+				case strings.HasSuffix(request.URL.Path, "/parent"):
+					return response(`{"id":202,"number":8,"state":"open","html_url":"https://github.com/org/repo/issues/8"} {}`), nil
+				case strings.HasSuffix(request.URL.Path, "/blocked_by"):
+					result := response(test.body)
+					result.StatusCode = test.status
+					if test.link != "" {
+						result.Header.Set("Link", test.link)
+					}
+					return result, nil
+				default:
+					return response(`{"id":101,"number":7,"state":"open","html_url":"https://github.com/org/repo/issues/7"}`), nil
+				}
+			})}
+			scope, bound := source(apiv1.ProviderGitHub)
+			reader, err := NewBacklogReader(scope, bound, providers.NewGitHubProvider("human", providers.WithHTTPClient(client)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			item, err := reader.GetWithRelationships(t.Context(), workbench.BacklogItemRequest{ID: "7"})
+			if err != nil || item.RelationshipCoverage.Parents != "partial" || (item.RelationshipCoverage.Blockers == "complete") != test.complete || len(item.Relationships) != 0 {
+				t.Fatal("ambiguous relation response became authoritative", item, err)
+			}
+		})
+	}
+}

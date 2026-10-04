@@ -13,6 +13,8 @@ func (p *GitHubProvider) ReadWorkItemRelationships(ctx context.Context, repo Rep
 	if !githubAttentionOwns(repo, item) || !nativePositiveID(item.ID) || !nativePositiveID(item.StableID) {
 		return result, ErrAttentionChanged
 	}
+	ctx, cancel := attentionContext(ctx)
+	defer cancel()
 	result.Parents, result.ParentsComplete = p.selectedParent(ctx, repo, item.ID)
 	if err := ctx.Err(); err != nil {
 		return result, err
@@ -40,7 +42,11 @@ func (p *GitHubProvider) selectedParent(ctx context.Context, repo RepositoryRef,
 		return nil, false
 	}
 	var raw githubIssue
-	if err = p.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
+	response, err := p.send(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, false
+	}
+	if err = readAttentionJSON(response, endpoint, '{', &raw); err != nil {
 		return nil, false
 	}
 	parent := mapGitHubIssue(raw)

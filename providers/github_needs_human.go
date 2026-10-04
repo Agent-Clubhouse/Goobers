@@ -37,9 +37,9 @@ func (p *GitHubProvider) InspectNeedsHuman(ctx context.Context, repo RepositoryR
 	if err != nil {
 		return result, err
 	}
-	more := parseNextLink(response.Header.Get("Link")) != ""
-	var comments []restComment
-	if err = readJSONResponse(response, http.MethodGet, endpoint, &comments); err != nil {
+	more := !attentionFirstPageComplete(response.Header)
+	comments, err := readAttentionArray[restComment](response, endpoint)
+	if err != nil {
 		return result, err
 	}
 	if len(comments) > MaxAttentionComments {
@@ -69,9 +69,9 @@ func (p *GitHubProvider) attentionBlockers(ctx context.Context, repo RepositoryR
 	if err != nil {
 		return nil, false, err
 	}
-	complete := parseNextLink(response.Header.Get("Link")) == ""
-	var issues []githubIssue
-	if err = readJSONResponse(response, http.MethodGet, endpoint, &issues); err != nil {
+	complete := attentionFirstPageComplete(response.Header)
+	issues, err := readAttentionArray[githubIssue](response, endpoint)
+	if err != nil {
 		return nil, false, err
 	}
 	if len(issues) > MaxAttentionBlockers {
