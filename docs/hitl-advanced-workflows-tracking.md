@@ -17,6 +17,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-events-design` | HITL design | HAW-EVT-001–009 | Draft design, indexed and link-checked |
 | `codex/haw-backlog-design` | events design | HAW-BKL-001–009 | Draft design, indexed and link-checked |
 | `codex/haw-child-admission` | backlog design | HAW-CHD-001 | Policy/schema/compiler checks and explicit runtime refusals; focused tests and `make verify-fast` pass |
+| `codex/haw-child-proposals` | child admission | HAW-CHD-002 foundation | Strict proposal parsing, pinned policy checks, normal compilation and runner placement; validator race tests pass |
+| `codex/haw-child-authority` | child proposals | HAW-CHD-003 authority foundation | Separate signed stage credentials and exact route confinement; focused auth race tests and package lint pass |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
@@ -49,8 +51,30 @@ and configuration-inventory checks passed. The complete gate remains required. T
 DeepCopy output under the current toolchain; only the relevant generated policy,
 Task, and CRD additions are retained, with their behavior checked directly.
 
-Next: finish and integrate proposal validation (HAW-CHD-002), same-transaction
-lineage/start/cancellation custody (HAW-CHD-003), and workspace fork/reconciliation
+Proposal validation now checks exact source and canonical digests, the pinned
+gaggle/catalog/policy, existing Goober and capability subsets, one plain manual
+trigger, no generated-child recursion, normal compilation, provider requirements,
+and executable placement. It is advisory until the durable submission path repeats
+those checks. An author-facing CLI and its real command-path tests are in progress.
+
+Stage authority uses a separate signed credential bound to gaggle, parent run,
+stage occurrence, current attempt, and config/policy digests. It has no general
+pod or human permissions and cannot fall back to human authentication. Enabling
+its verifier is explicit. The service must still check current attempt/policy
+authority before every operation; signatures alone do not admit execution.
+Its 24-hour credential lifetime does not set a child-wait deadline: the launcher
+must renew/rebind active work after a longer durable wait. No launcher or child
+route is enabled by this foundation alone.
+
+Focused authorization tests cover cross-key and cross-token-domain use,
+tampering, expiry, wrong parent, missing origin claims, and every existing API
+route. The complete podauth/httpapi suites also contain socket-listener tests;
+the sandbox refuses those listeners, so those complete suites have not passed.
+Package lint found and fixed three initial policy formatting/comment issues;
+the affected policy, engine, podauth and httpapi packages now report zero issues.
+
+Next: integrate same-transaction lineage/start/cancellation custody
+(HAW-CHD-003), and workspace fork/reconciliation
 (HAW-CHD-004). Helper tests alone do not complete those items: the agent-facing
 production service and recovery path must exercise them before enabling children.
 

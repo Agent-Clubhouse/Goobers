@@ -83,7 +83,9 @@ func operatorMessagePlanePath(path string) bool {
 
 // Principal is the identity established by an Authenticator.
 type Principal struct {
-	Subject string
+	// ChildWorkflow is populated only by the stage-grant authenticator.
+	ChildWorkflow *ChildWorkflowPrincipal
+	Subject       string
 	// Issuer identifies the trust domain that authenticated Subject.
 	Issuer string
 	// Name is a human-readable display claim when the issuer provides one.
@@ -421,6 +423,9 @@ func RequireRoles() Authorizer {
 				return nil
 			}
 			return errors.New("only an authenticated worker may report config divergence")
+		}
+		if principal.Issuer == ChildWorkflowPrincipalIssuer {
+			return authorizeChildWorkflow(request, principal)
 		}
 		if principal.Issuer == CredentialGrantPrincipalIssuer {
 			if request.Method == http.MethodPost && request.URL.Path == apicontract.CredentialRefreshPath {
