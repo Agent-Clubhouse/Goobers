@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/recovery"
 	"github.com/goobers/goobers/internal/triggerqueue"
@@ -128,6 +129,46 @@ func TestIntegrationWorkspaceCoordinatorRetainsFirstYieldedCapture(t *testing.T)
 	}
 	if _, err := coordinator.Prepare(t.Context(), submission.Child, parent+"/other"); err == nil {
 		t.Fatal("repository binding changed")
+	}
+	// A terminal result must return commits as well as dirty child work. Its
+	// prerequisite stays the original fork, so committed changes are not lost.
+	childSnapshotGit(t, adopted.Path, "add", "main.txt")
+	childSnapshotGit(t, adopted.Path, "commit", "-m", "child commit")
+	childSnapshotWrite(t, adopted.Path, "later.txt", "uncommitted child work")
+	childSnapshotWrite(t, adopted.Path, ".goobers/token", "must remain private")
+	childWorkspace := yielded
+	childWorkspace.Path = adopted.Path
+	terminal := TerminalResultInput{State: triggerqueue.ChildCompleted, FinishedAt: submission.Child.AcceptedAt.Add(time.Hour), Summary: "Updated implementation", References: []string{"artifact:summary"}}
+	result, err := coordinator.CaptureResult(t.Context(), submission.Child, &childWorkspace, terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Snapshot == nil || result.Snapshot.Record.BaseSHA != admission.ForkSHA || result.ResultRef == "" || result.WorkspaceRef == "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := childSnapshotGit(t, adopted.Path, "show", result.Snapshot.Record.SnapshotSHA+":main.txt"); got != "child progress" {
+		t.Fatalf("committed result=%q", got)
+	}
+	if got := childSnapshotGit(t, adopted.Path, "show", result.Snapshot.Record.SnapshotSHA+":later.txt"); got != "uncommitted child work" {
+		t.Fatalf("dirty result=%q", got)
+	}
+	if got := childSnapshotGit(t, adopted.Path, "ls-tree", "--name-only", result.Snapshot.Record.SnapshotSHA, "--", ".goobers"); got != "" {
+		t.Fatal("captured private runtime")
+	}
+	childSnapshotWrite(t, adopted.Path, "later.txt", "changed after result")
+	repeated, err := coordinator.CaptureResult(t.Context(), submission.Child, &childWorkspace, terminal)
+	if err != nil || repeated.ResultRef != result.ResultRef {
+		t.Fatalf("result recaptured: %+v %v", repeated, err)
+	}
+	storedResult, err := service.Queue.ChildResult(t.Context(), submission.Child.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := importChildCarrier(t.Context(), parent, *result.Snapshot, storedResult.Bundle); err != nil {
+		t.Fatal(err)
+	}
+	if got := childSnapshotGit(t, parent, "diff", "--name-only", admission.ForkSHA, result.Snapshot.Record.SnapshotSHA); !strings.Contains(got, "main.txt") || !strings.Contains(got, "later.txt") {
+		t.Fatalf("result delta lost commits or dirty work: %s", got)
 	}
 	if _, err := submissionDB(t, databasePath).Exec(`DELETE FROM child_snapshots`); err != nil {
 		t.Fatal(err)
