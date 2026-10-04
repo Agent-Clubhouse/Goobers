@@ -962,6 +962,19 @@ func (r *Router) HandleByMethod(routeIDsByMethod map[string]apicontract.RouteID,
 	})
 }
 
+// Wire contract of the crash-recovery gate (#5019). Clients branch on the code
+// to wait out a daemon restart instead of reporting a failure (#5897), so it is
+// a stable string like the seam codes in mutability.go.
+const (
+	// CodeRecovering is the error code every route that is not recovery-safe
+	// answers with, as HTTP 503, until startup crash recovery completes.
+	CodeRecovering = "recovering"
+
+	// NotReadyRetryAfterSeconds is the Retry-After hint sent with a 503 that
+	// means only that the daemon has not finished starting yet.
+	NotReadyRetryAfterSeconds = 2
+)
+
 // serve runs the per-request pipeline shared by every registered route —
 // authenticate, authorize, admit, bound — then calls handler. Factored out of
 // Handle so HandleByMethod's multi-method dispatch reuses it exactly rather
@@ -973,7 +986,8 @@ func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http
 	// reaches a handler whose subsystems have not opened yet, regardless of
 	// whether it would otherwise have authenticated.
 	if r.recoveryGate != nil && !route.RecoverySafe && !r.recoveryGate() {
-		writeError(w, http.StatusServiceUnavailable, "recovering", "daemon is completing crash recovery")
+		w.Header().Set(HeaderRetryAfterSeconds, strconv.Itoa(NotReadyRetryAfterSeconds))
+		writeError(w, http.StatusServiceUnavailable, CodeRecovering, "daemon is completing crash recovery")
 		return
 	}
 	principal, err := r.authenticator.Authenticate(request)
