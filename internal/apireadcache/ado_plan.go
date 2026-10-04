@@ -99,5 +99,18 @@ func validADOPlanResponse(req *http.Request, body []byte) bool {
 		field = "workItems"
 	}
 	raw := strings.TrimSpace(string(envelope[field]))
-	return strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]")
+	if !strings.HasPrefix(raw, "[") {
+		return false
+	}
+	// A syntactically valid array can still fail the provider's typed decoder.
+	// Null batch entries represent omissions and remain valid; scalar members or
+	// incompatible IDs must never become a replayable successful response.
+	var rows []*struct {
+		ID        int                        `json:"id"`
+		URL       string                     `json:"url"`
+		Rev       int                        `json:"rev"`
+		Fields    map[string]json.RawMessage `json:"fields"`
+		Relations []json.RawMessage          `json:"relations"`
+	}
+	return json.Unmarshal([]byte(raw), &rows) == nil
 }

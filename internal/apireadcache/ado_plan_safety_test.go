@@ -91,7 +91,7 @@ func TestADOPlanFailuresAndExplicitFreshRequestsAreNeverReplayed(t *testing.T) {
 		name   string
 		status int
 		body   string
-	}{{"rate-limit", 429, `{"message":"slow down"}`}, {"unauthorized", 403, `{"message":"denied"}`}, {"malformed", 200, `not json`}} {
+	}{{"rate-limit", 429, `{"message":"slow down"}`}, {"unauthorized", 403, `{"message":"denied"}`}, {"malformed", 200, `not json`}, {"scalar-members", 200, `{"workItems":["invalid"]}`}, {"invalid-id", 200, `{"workItems":[{"id":"invalid"}]}`}} {
 		t.Run(failure.name, func(t *testing.T) {
 			dir := t.TempDir()
 			scope := Scope{Gaggle: "team", Binding: "automation:backlog", Generation: "generation-a"}
