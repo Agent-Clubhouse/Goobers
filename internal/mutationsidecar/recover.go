@@ -88,11 +88,11 @@ func RecoverBeforeCleanup(ctx context.Context, workspace, worktreeID, ownerRunID
 }
 
 func recoveryEvent(fact Fact) journal.Event {
-	return journal.WithMutationOutcome(journal.Event{
+	return journal.WithSemanticMutation(journal.WithMutationOutcome(journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{Provider: fact.Provider, Kind: fact.Kind, ID: fact.ID, URL: fact.URL},
 		Runner:      providers.MutationReceiptRunnerFields(fact.ReceiptID, fact.Operation, fact.MergeConfirmation, fact.QueueAdmission, fact.LandingIntent),
-	}, fact.RunID, fact.Outcome, fact.ErrorCode, fact.ProviderRunID)
+	}, fact.RunID, fact.Outcome, fact.ErrorCode, fact.ProviderRunID), fact.SemanticMutation)
 }
 
 func mutationFingerprint(event journal.Event) (string, error) {
@@ -104,11 +104,15 @@ func mutationFingerprint(event journal.Event) (string, error) {
 		case "contention":
 			event.Type = journal.EventRunnerAnnotation
 		default:
-			event.Type = journal.EventRefTouched
+			if event.ExternalRef == nil && event.Runner["semanticMutation"] != nil {
+				event.Type = journal.EventRunnerAnnotation
+			} else {
+				event.Type = journal.EventRefTouched
+			}
 		}
 	}
 	fields := map[string]any{}
-	for _, key := range []string{"operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId", "provider", "kind", "itemId", "annotation"} {
+	for _, key := range []string{"semanticMutation", "operation", "mergeConfirmation", "queueAdmission", "landingIntent", "claimRunId", "outcome", "providerRunId", "provider", "kind", "itemId", "annotation"} {
 		if value, ok := event.Runner[key]; ok {
 			fields[key] = value
 		}
@@ -161,7 +165,8 @@ func missingRecoveryEvents(facts []Fact, recorded []journal.Event, worktreeID st
 		outcome, _ := event.Runner["outcome"].(string)
 		isContentionReceipt := outcome == "contention" &&
 			(event.Type == journal.EventRunnerAnnotation || event.Type == journal.EventRunnerMutationRecovered)
-		if !isContentionReceipt &&
+		isSemanticReceipt := event.Runner["semanticMutation"] != nil && (event.Type == journal.EventRunnerAnnotation || event.Type == journal.EventRunnerMutationRecovered)
+		if !isContentionReceipt && !isSemanticReceipt &&
 			(event.ExternalRef == nil || (event.Type != journal.EventRefTouched && event.Type != journal.EventError && event.Type != journal.EventRunnerMutationRecovered)) {
 			continue
 		}

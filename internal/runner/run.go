@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mutationreceipt"
 	"github.com/goobers/goobers/internal/mutationsidecar"
 	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -3188,11 +3189,11 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 		// The external mutation cannot be rolled back, but its projection
 		// must not silently disappear. Stop on a failed append (which may
 		// have torn the log), preserving the other attempt failures too.
-		if err := jr.Append(journal.WithMutationOutcome(journal.Event{
+		if err := jr.Append(journal.WithSemanticMutation(journal.WithMutationOutcome(journal.Event{
 			Type: journal.EventRefTouched, Stage: stage, Attempt: attempt, AttemptClass: class,
 			ExternalRef: &journal.ExternalRef{Provider: m.Provider, Kind: m.Kind, ID: m.ID, URL: externalURL},
 			Runner:      providers.MutationReceiptRunnerFields(m.ReceiptID, m.Operation, m.MergeConfirmation, m.QueueAdmission, m.LandingIntent),
-		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID)); err != nil {
+		}, m.RunID, m.Outcome, m.ErrorCode, m.ProviderRunID), m.SemanticMutation)); err != nil {
 			return fmt.Errorf("runner: journal provider mutation for %q: %w", stage, errors.Join(err, heartbeatErr, removeErr))
 		}
 	}
@@ -4332,6 +4333,8 @@ type mutationFact struct {
 	Outcome           string                       `json:"outcome,omitempty"`
 	ErrorCode         string                       `json:"errorCode,omitempty"`
 	ProviderRunID     string                       `json:"providerRunId,omitempty"`
+
+	SemanticMutation *mutationreceipt.Receipt `json:"semanticMutation,omitempty"`
 }
 
 // readMutationSidecar reads and parses mutationsSidecarFile from workspace,

@@ -291,3 +291,8 @@ github.com/goobers/goobers/internal/decisiongate.Observer.Dropped # Unwired unti
 github.com/goobers/goobers/internal/decisiongate.Observer.Wait # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/decisiongate.Tally.Add # Unwired until the enforce-mode workflow step lands; test-exercised only (#6073).
 github.com/goobers/goobers/internal/artifactset.AsHandoffError # Unwired until handoffs call the validator; test-exercised only (#6325, #6073).
+
+# #6356 PR1 is capture/lineage plumbing only; no production mutation skipping or
+# capture activation before all three approved slices land. Remove on activation.
+github.com/goobers/goobers/internal/mutationreceipt.New # Inert semantic identity constructor for #6356 provider reconciliation wiring; exercised by capture, transport and lineage tests. expires=2026-11-01
+github.com/goobers/goobers/internal/mutationreceipt.Capture # Inert durable capture boundary for #6356; fake-action crash tests verify intent-before-action and unknown outcomes. expires=2026-11-01
