@@ -907,6 +907,8 @@ type StartInput struct {
 	GooberDigest string
 	// Gaggle is the gaggle this run belongs to.
 	Gaggle string
+	// Child is immutable generated-run provenance, verified before journal creation.
+	Child *journal.ChildLineage
 	// Trigger is what started the run (manual/schedule/signal/item).
 	Trigger journal.Trigger
 	// RepoRef is the target repository every stage worktree branches from.
@@ -1005,6 +1007,10 @@ func boundFailureMessage(s string) string {
 func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	in.instanceID = r.cfg.InstanceID
 	in.configGeneration = r.cfg.ConfigGeneration
+	if in.Child != nil {
+		child := *in.Child
+		in.Child = &child
+	}
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
 	}
@@ -1081,6 +1087,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		GooberDigest:        in.GooberDigest,
 		ConfigGeneration:    in.configGeneration,
 		Gaggle:              in.Gaggle,
+		Child:               in.Child,
 		RunControls:         &pinnedControls,
 		Trigger:             in.Trigger,
 		WorkspaceBranch:     in.WorkspaceBranch,

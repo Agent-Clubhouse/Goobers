@@ -33,6 +33,53 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "child": {
+      "description": "Immutable same-gaggle generated child lineage and exact queue proposal reference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gaggle",
+        "parentRunId",
+        "stageOccurrence",
+        "invocationKey",
+        "acceptanceId",
+        "sourceDigest",
+        "envelopeDigest"
+      ],
+      "properties": {
+        "gaggle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stageOccurrence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "invocationKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parentRunId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "acceptanceId": {
+          "type": "string",
+          "pattern": "^trigger-[0-9a-f]{32}$"
+        },
+        "sourceDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "envelopeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
     "continuedFromRunId": {
       "description": "The terminal source run this continuation was created from.",
       "type": "string",

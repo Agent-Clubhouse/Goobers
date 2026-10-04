@@ -146,6 +146,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 			Machine:          in.Machine,
 			GooberDigest:     in.GooberDigest,
 			Gaggle:           id.Gaggle,
+			Child:            id.Child,
 			Trigger:          id.Trigger,
 			RepoRef:          in.RepoRef,
 			Item:             item,

@@ -258,6 +258,9 @@ func Create(runsDir string, id RunIdentity, inputs map[string][]byte, opts ...Op
 	if !apiv1.ValidRunID(id.RunID) {
 		return nil, fmt.Errorf("journal: invalid run id %q", id.RunID)
 	}
+	if err := id.ValidateChildLineage(); err != nil {
+		return nil, err
+	}
 	cfg := newConfig(opts...)
 	finalDir := filepath.Join(runsDir, id.RunID)
 	runsDir = filepath.Dir(finalDir)
