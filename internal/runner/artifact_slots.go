@@ -7,6 +7,19 @@ import (
 
 func (tf *taskFrame) recordTaskStarted(attempt int, class journal.AttemptClass) error {
 	started := taskStartedEvent(tf.t, attempt, class)
+	if tf.t.Type == apiv1.TaskAgentic && tf.t.ChildWorkflows != nil {
+		if len(tf.t.ArtifactSlots) > 0 {
+			// The atomic journal operation fills the actual committed sequence.
+			started.Runner["artifactVisit"] = uint64(0)
+		}
+		continuation := attempt > 1 || class == journal.AttemptHuman || class == journal.AttemptInfra
+		sequence, origin, err := tf.jr.AppendChildStageStarted(started, continuation)
+		if err != nil {
+			return err
+		}
+		tf.artifactVisit, tf.childOrigin = sequence, origin
+		return nil
+	}
 	if len(tf.t.ArtifactSlots) > 0 {
 		tf.artifactVisit = tf.jr.Seq() + 1
 		if started.Runner == nil {
@@ -19,6 +32,11 @@ func (tf *taskFrame) recordTaskStarted(attempt int, class journal.AttemptClass) 
 
 func (tf taskFrame) pinPublicationAuthority(env *apiv1.InvocationEnvelope, attempt int) {
 	t := tf.t
+	if tf.childOrigin != nil && t.Type == apiv1.TaskAgentic && t.ChildWorkflows != nil {
+		origin := *tf.childOrigin
+		env.ChildWorkflowOrigin = &origin
+		env.Goober = t.Goober
+	}
 	env.MinimumIntegrity = t.MinimumIntegrity
 	if len(t.ArtifactSlots) > 0 {
 		env.ArtifactPublication = &apiv1.ArtifactPublication{Stage: t.Name, Visit: tf.artifactVisit, Slots: append([]apiv1.ArtifactSlot(nil), t.ArtifactSlots...)}

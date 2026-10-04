@@ -245,6 +245,7 @@ type journalAppender interface {
 
 type executionJournal interface {
 	journalAppender
+	AppendChildStageStarted(journal.Event, bool) (uint64, *apiv1.ChildWorkflowOrigin, error)
 	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 	AppendBatchIfAbsent(context.Context, []journal.Event, func(journal.Event) string) (int, error)
 	Dir() string
@@ -3252,6 +3253,7 @@ func completeTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage s
 // field (#4235) — the same reason walk takes a *walkState.
 type taskFrame struct {
 	artifactVisit   uint64
+	childOrigin     *apiv1.ChildWorkflowOrigin
 	jr              executionJournal
 	in              StartInput
 	ex              *executors
