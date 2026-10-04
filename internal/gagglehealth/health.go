@@ -1,3 +1,7 @@
+// Package gagglehealth defines the versioned gaggle-health contract: policy
+// defaults and validation, structured findings and their episode identity,
+// deterministic aggregate-state precedence, and journal replay into per-gaggle
+// health snapshots. Detection and repair live in later consumers (#4423).
 package gagglehealth
 
 import (
@@ -17,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/secretpattern"
 )
 
+// Wire bounds for finding text, evidence, history, and identity fields.
 const (
 	MaxSummaryLength            = 1024
 	MaxEvidenceAssessmentLength = 1024
@@ -31,6 +36,7 @@ const (
 
 var findingTextScrubber = secretpattern.NewScrubber()
 
+// Stable finding codes understood by the hard safety policy.
 const (
 	FindingTriggerSilence       = "trigger-silence"
 	FindingNoProgress           = "no-progress"
@@ -142,7 +148,23 @@ func ResolvePolicy(config *apiv1.GaggleHealthPolicy) (apiv1.GaggleHealthPolicy, 
 	return resolved, nil
 }
 
+// ValidatePolicy rejects invalid thresholds, unknown finding policies, unsafe
+// remediation modes, severity downgrades, and malformed notification or
+// event-workflow settings.
 func ValidatePolicy(policy apiv1.GaggleHealthPolicy) error {
+	if err := validatePolicyThresholds(policy); err != nil {
+		return err
+	}
+	if err := validateFindingPolicies(policy.Findings); err != nil {
+		return err
+	}
+	if err := validateNotificationPolicy(policy.Notifications); err != nil {
+		return err
+	}
+	return validateEventWorkflowPolicy(policy.EventWorkflow)
+}
+
+func validatePolicyThresholds(policy apiv1.GaggleHealthPolicy) error {
 	interval, err := duration("evaluationInterval", policy.EvaluationInterval, 5*time.Minute)
 	if err != nil {
 		return err
@@ -154,35 +176,30 @@ func ValidatePolicy(policy apiv1.GaggleHealthPolicy) error {
 	if policy.Thresholds != nil {
 		thresholds = policy.Thresholds
 	}
-	triggerSilence, err := duration("thresholds.triggerSilence", thresholds.TriggerSilence, 30*time.Minute)
-	if err != nil {
-		return err
+	windows := []struct {
+		field    string
+		value    string
+		fallback time.Duration
+	}{
+		{"thresholds.triggerSilence", thresholds.TriggerSilence, 30 * time.Minute},
+		{"thresholds.noProgress", thresholds.NoProgress, 30 * time.Minute},
+		{"thresholds.flappingWindow", thresholds.FlappingWindow, time.Hour},
+		{"thresholds.prolongedDegradation", thresholds.ProlongedDegradation, 6 * time.Hour},
 	}
-	noProgress, err := duration("thresholds.noProgress", thresholds.NoProgress, 30*time.Minute)
-	if err != nil {
-		return err
-	}
-	flappingWindow, err := duration("thresholds.flappingWindow", thresholds.FlappingWindow, time.Hour)
-	if err != nil {
-		return err
-	}
-	prolonged, err := duration("thresholds.prolongedDegradation", thresholds.ProlongedDegradation, 6*time.Hour)
-	if err != nil {
-		return err
+	var prolonged time.Duration
+	for _, window := range windows {
+		value, err := duration(window.field, window.value, window.fallback)
+		if err != nil {
+			return err
+		}
+		if value < interval {
+			return fmt.Errorf("%s must be at least evaluationInterval", window.field)
+		}
+		prolonged = value // last window is prolongedDegradation
 	}
 	retention, err := duration("thresholds.evidenceRetention", thresholds.EvidenceRetention, 30*24*time.Hour)
 	if err != nil {
 		return err
-	}
-	for field, value := range map[string]time.Duration{
-		"thresholds.triggerSilence":       triggerSilence,
-		"thresholds.noProgress":           noProgress,
-		"thresholds.flappingWindow":       flappingWindow,
-		"thresholds.prolongedDegradation": prolonged,
-	} {
-		if value < interval {
-			return fmt.Errorf("%s must be at least evaluationInterval", field)
-		}
 	}
 	count := thresholds.FlappingCount
 	if count == 0 {
@@ -194,8 +211,11 @@ func ValidatePolicy(policy apiv1.GaggleHealthPolicy) error {
 	if retention < prolonged || retention > 90*24*time.Hour {
 		return fmt.Errorf("thresholds.evidenceRetention must be at least prolongedDegradation and no more than 2160h")
 	}
+	return nil
+}
 
-	for code, configured := range policy.Findings {
+func validateFindingPolicies(findings map[string]apiv1.GaggleFindingPolicy) error {
+	for code, configured := range findings {
 		rule, ok := findingRules[code]
 		if !ok {
 			return fmt.Errorf("findings.%s is not a known finding policy", code)
@@ -207,43 +227,54 @@ func ValidatePolicy(policy apiv1.GaggleHealthPolicy) error {
 		if mode == apiv1.GaggleHealthRepairMode && !rule.safeRepair {
 			return fmt.Errorf("findings.%s.mode repair is not authorized by hard safety policy", code)
 		}
-		if configured.Severity != "" {
-			override := apiv1.GaggleHealthSeverity(configured.Severity)
-			if severityRank(override) == 0 {
-				return fmt.Errorf("findings.%s.severity is invalid", code)
-			}
-			if severityRank(override) < severityRank(rule.severity) {
-				return fmt.Errorf("findings.%s.severity cannot lower the hard minimum %s", code, rule.severity)
-			}
+		if configured.Severity == "" {
+			continue
+		}
+		override := apiv1.GaggleHealthSeverity(configured.Severity)
+		if severityRank(override) == 0 {
+			return fmt.Errorf("findings.%s.severity is invalid", code)
+		}
+		if severityRank(override) < severityRank(rule.severity) {
+			return fmt.Errorf("findings.%s.severity cannot lower the hard minimum %s", code, rule.severity)
 		}
 	}
-	if policy.Notifications != nil {
-		if _, err := duration("notifications.escalateAfter", policy.Notifications.EscalateAfter, time.Hour); err != nil {
-			return err
-		}
-		if policy.Notifications.MinimumSeverity != "" &&
-			severityRank(apiv1.GaggleHealthSeverity(policy.Notifications.MinimumSeverity)) == 0 {
-			return fmt.Errorf("notifications.minimumSeverity is invalid")
+	return nil
+}
+
+func validateNotificationPolicy(notifications *apiv1.GaggleHealthNotifications) error {
+	if notifications == nil {
+		return nil
+	}
+	if _, err := duration("notifications.escalateAfter", notifications.EscalateAfter, time.Hour); err != nil {
+		return err
+	}
+	if notifications.MinimumSeverity != "" &&
+		severityRank(apiv1.GaggleHealthSeverity(notifications.MinimumSeverity)) == 0 {
+		return fmt.Errorf("notifications.minimumSeverity is invalid")
+	}
+	return nil
+}
+
+func validateEventWorkflowPolicy(trigger *apiv1.GaggleHealthEventWorkflow) error {
+	if trigger == nil {
+		return nil
+	}
+	if trigger.Enabled && strings.TrimSpace(trigger.Workflow) == "" {
+		return fmt.Errorf("eventWorkflow.workflow is required when eventWorkflow.enabled is true")
+	}
+	for _, code := range trigger.FindingCodes {
+		if _, ok := findingRules[code]; !ok {
+			return fmt.Errorf("eventWorkflow.findingCodes contains unknown finding code %q", code)
 		}
 	}
-	if trigger := policy.EventWorkflow; trigger != nil {
-		if trigger.Enabled && strings.TrimSpace(trigger.Workflow) == "" {
-			return fmt.Errorf("eventWorkflow.workflow is required when eventWorkflow.enabled is true")
+	for _, eventType := range trigger.EventTypes {
+		if !validEventType(apiv1.GaggleHealthEventType(eventType)) {
+			return fmt.Errorf("eventWorkflow.eventTypes contains unknown event type %q", eventType)
 		}
-		for _, code := range trigger.FindingCodes {
-			if _, ok := findingRules[code]; !ok {
-				return fmt.Errorf("eventWorkflow.findingCodes contains unknown finding code %q", code)
-			}
-		}
-		for _, eventType := range trigger.EventTypes {
-			if !validEventType(apiv1.GaggleHealthEventType(eventType)) {
-				return fmt.Errorf("eventWorkflow.eventTypes contains unknown event type %q", eventType)
-			}
-		}
-		if trigger.MinimumSeverity != "" &&
-			severityRank(apiv1.GaggleHealthSeverity(trigger.MinimumSeverity)) == 0 {
-			return fmt.Errorf("eventWorkflow.minimumSeverity is invalid")
-		}
+	}
+	if trigger.MinimumSeverity != "" &&
+		severityRank(apiv1.GaggleHealthSeverity(trigger.MinimumSeverity)) == 0 {
+		return fmt.Errorf("eventWorkflow.minimumSeverity is invalid")
 	}
 	return nil
 }
@@ -312,6 +343,9 @@ func ExtendEpisode(current, observed apiv1.GaggleHealthFinding) (apiv1.GaggleHea
 	return observed, ValidateFinding(observed)
 }
 
+// ValidateFinding enforces the finding contract: a known code and schema, an
+// episode key derived from code and identity, hard severity and repair-safety
+// minimums, bounded redacted text and evidence, and a consistent repair record.
 func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	rule, ok := findingRules[finding.Code]
 	if !ok {
@@ -320,6 +354,28 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	if finding.SchemaVersion != apiv1.GaggleHealthSchemaVersion {
 		return fmt.Errorf("unsupported finding schemaVersion %q", finding.SchemaVersion)
 	}
+	if err := validateFindingEpisode(finding); err != nil {
+		return err
+	}
+	if err := validateFindingClassification(finding, rule); err != nil {
+		return err
+	}
+	if err := validateFindingText(finding); err != nil {
+		return err
+	}
+	if err := validateFindingEvidence(finding); err != nil {
+		return err
+	}
+	if err := validateFindingRepair(finding.Repair, rule); err != nil {
+		return err
+	}
+	if finding.ResolvedAt != nil && len(finding.ResolutionEvidence) == 0 {
+		return errors.New("resolved finding requires resolution evidence")
+	}
+	return nil
+}
+
+func validateFindingEpisode(finding apiv1.GaggleHealthFinding) error {
 	if finding.Identity.Gaggle == "" || finding.EpisodeKey == "" {
 		return errors.New("finding gaggle and episodeKey are required")
 	}
@@ -333,18 +389,26 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 	if err := validateIdentity(finding.Identity); err != nil {
 		return err
 	}
+	if finding.ObservationCount == 0 || finding.FirstObserved.After(finding.LastObserved) {
+		return errors.New("finding observation timestamps or count are invalid")
+	}
+	return nil
+}
+
+func validateFindingClassification(finding apiv1.GaggleHealthFinding, rule findingRule) error {
 	if severityRank(finding.Severity) < severityRank(rule.severity) {
 		return fmt.Errorf("finding severity is below the hard minimum %s", rule.severity)
 	}
 	if stateRank(finding.Contribution) == 0 || finding.Contribution == apiv1.GaggleHealthHealthy {
 		return errors.New("finding contribution must be an unhealthy or recovering state")
 	}
-	if finding.ObservationCount == 0 || finding.FirstObserved.After(finding.LastObserved) {
-		return errors.New("finding observation timestamps or count are invalid")
-	}
 	if finding.Confidence < 0 || finding.Confidence > 1 {
 		return errors.New("finding confidence must be between 0 and 1")
 	}
+	return nil
+}
+
+func validateFindingText(finding apiv1.GaggleHealthFinding) error {
 	if utf8.RuneCountInString(finding.Summary) > MaxSummaryLength ||
 		utf8.RuneCountInString(finding.EvidenceAssessment) > MaxEvidenceAssessmentLength ||
 		utf8.RuneCountInString(finding.Repair.RecommendedAction) > MaxActionLength ||
@@ -355,13 +419,17 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 		finding.Repair.RecommendedAction == "" || len(finding.Evidence) == 0 {
 		return errors.New("finding requires a summary, evidence assessment, recommended action, and evidence")
 	}
-	if len(finding.Evidence) > MaxEvidencePerFinding || len(finding.ResolutionEvidence) > MaxEvidencePerFinding {
-		return errors.New("finding contains too many evidence references")
-	}
 	for _, text := range []string{finding.Summary, finding.EvidenceAssessment, finding.Repair.RecommendedAction, finding.Repair.ResultSummary} {
 		if err := validateRedactedText(text); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateFindingEvidence(finding apiv1.GaggleHealthFinding) error {
+	if len(finding.Evidence) > MaxEvidencePerFinding || len(finding.ResolutionEvidence) > MaxEvidencePerFinding {
+		return errors.New("finding contains too many evidence references")
 	}
 	for _, evidence := range append(append([]apiv1.GaggleHealthEvidence{}, finding.Evidence...), finding.ResolutionEvidence...) {
 		if evidence.Kind == "" || utf8.RuneCountInString(evidence.Kind) > MaxEvidenceKindLength ||
@@ -378,41 +446,49 @@ func ValidateFinding(finding apiv1.GaggleHealthFinding) error {
 			}
 		}
 	}
-	if utf8.RuneCountInString(finding.Repair.IdempotencyKey) > MaxIdentityLength {
+	return nil
+}
+
+func validateFindingRepair(repair apiv1.GaggleHealthRepair, rule findingRule) error {
+	if utf8.RuneCountInString(repair.IdempotencyKey) > MaxIdentityLength {
 		return errors.New("finding repair idempotencyKey exceeds the wire bound")
 	}
-	if err := validateIdentifier("repair idempotencyKey", finding.Repair.IdempotencyKey, false); err != nil {
+	if err := validateIdentifier("repair idempotencyKey", repair.IdempotencyKey, false); err != nil {
 		return err
 	}
-	if finding.Repair.PolicyAuthorized && !rule.safeRepair {
+	if repair.PolicyAuthorized && !rule.safeRepair {
 		return errors.New("finding repair authorization violates hard safety policy")
 	}
-	switch finding.Repair.Disposition {
+	if err := validateRepairDisposition(repair); err != nil {
+		return err
+	}
+	switch repair.FollowUp {
+	case apiv1.GaggleHealthFollowUpNone, apiv1.GaggleHealthFollowUpVerifying,
+		apiv1.GaggleHealthFollowUpResolved, apiv1.GaggleHealthFollowUpEscalated:
+		return nil
+	default:
+		return errors.New("finding repair follow-up state is invalid")
+	}
+}
+
+func validateRepairDisposition(repair apiv1.GaggleHealthRepair) error {
+	switch repair.Disposition {
 	case apiv1.GaggleHealthRepairNotAttempted:
-		if finding.Repair.AttemptedAt != nil || finding.Repair.CompletedAt != nil || finding.Repair.IdempotencyKey != "" {
+		if repair.AttemptedAt != nil || repair.CompletedAt != nil || repair.IdempotencyKey != "" {
 			return errors.New("not-attempted repair cannot contain attempt state")
 		}
 	case apiv1.GaggleHealthRepairStarted:
-		if finding.Repair.AttemptedAt == nil || finding.Repair.CompletedAt != nil || finding.Repair.IdempotencyKey == "" {
+		if repair.AttemptedAt == nil || repair.CompletedAt != nil || repair.IdempotencyKey == "" {
 			return errors.New("started repair requires attemptedAt and idempotencyKey but no completedAt")
 		}
 	case apiv1.GaggleHealthRepairSucceeded, apiv1.GaggleHealthRepairFailed:
-		if finding.Repair.AttemptedAt == nil || finding.Repair.CompletedAt == nil ||
-			finding.Repair.IdempotencyKey == "" || finding.Repair.ResultSummary == "" {
+		if repair.AttemptedAt == nil || repair.CompletedAt == nil ||
+			repair.IdempotencyKey == "" || repair.ResultSummary == "" {
 			return errors.New("finished repair requires attempt, completion, idempotency, and result")
 		}
 	case apiv1.GaggleHealthRepairRefused:
 	default:
 		return errors.New("finding repair disposition is invalid")
-	}
-	switch finding.Repair.FollowUp {
-	case apiv1.GaggleHealthFollowUpNone, apiv1.GaggleHealthFollowUpVerifying,
-		apiv1.GaggleHealthFollowUpResolved, apiv1.GaggleHealthFollowUpEscalated:
-	default:
-		return errors.New("finding repair follow-up state is invalid")
-	}
-	if finding.ResolvedAt != nil && len(finding.ResolutionEvidence) == 0 {
-		return errors.New("resolved finding requires resolution evidence")
 	}
 	return nil
 }
@@ -565,61 +641,12 @@ func rebuild(gaggle string, events []apiv1.GaggleHealthEvent, retention time.Dur
 	active := map[string]apiv1.GaggleHealthFinding{}
 	var previous uint64
 	for _, event := range events {
-		if event.SchemaVersion != apiv1.GaggleHealthSchemaVersion || event.Gaggle != gaggle {
-			return apiv1.GaggleHealthSnapshot{}, errors.New("health event schema or gaggle does not match projection")
-		}
-		if event.Sequence <= previous {
-			return apiv1.GaggleHealthSnapshot{}, errors.New("health event sequence is not strictly increasing")
+		if err := validateReplayEvent(gaggle, previous, event); err != nil {
+			return apiv1.GaggleHealthSnapshot{}, err
 		}
 		previous = event.Sequence
-		if !validEventType(event.Type) {
-			return apiv1.GaggleHealthSnapshot{}, fmt.Errorf("unknown health event type %q", event.Type)
-		}
-		if event.Type == apiv1.GaggleHealthEvaluated {
-			if event.Finding != nil || event.EpisodeKey != "" {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("health evaluation must not contain a finding or episode key")
-			}
-		} else {
-			if event.Finding == nil || event.EpisodeKey == "" || event.Finding.EpisodeKey != event.EpisodeKey {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("health transition requires a matching finding snapshot")
-			}
-			if event.Finding.Identity.Gaggle != event.Gaggle {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("health transition finding belongs to another gaggle")
-			}
-			if err := ValidateFinding(*event.Finding); err != nil {
-				return apiv1.GaggleHealthSnapshot{}, err
-			}
-			if err := validateTransition(event); err != nil {
-				return apiv1.GaggleHealthSnapshot{}, err
-			}
-		}
-		switch event.Type {
-		case apiv1.GaggleHealthEvaluated:
-		case apiv1.GaggleHealthFindingOpened:
-			if _, exists := active[event.EpisodeKey]; exists {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("finding-opened duplicates an active episode")
-			}
-			active[event.EpisodeKey] = *event.Finding
-		case apiv1.GaggleHealthFindingUpdated, apiv1.GaggleHealthRepairStartedEvent,
-			apiv1.GaggleHealthRepairFinishedEvent, apiv1.GaggleHealthEscalated:
-			if _, exists := active[event.EpisodeKey]; !exists {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("finding transition references an inactive episode")
-			}
-			active[event.EpisodeKey] = *event.Finding
-		case apiv1.GaggleHealthFindingResolved:
-			if _, exists := active[event.EpisodeKey]; !exists {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("finding-resolved references an inactive episode")
-			}
-			if event.Finding.ResolvedAt == nil {
-				return apiv1.GaggleHealthSnapshot{}, errors.New("finding-resolved requires resolvedAt")
-			}
-			delete(active, event.EpisodeKey)
-			if retention == 0 || !event.Finding.ResolvedAt.Before(now.Add(-retention)) {
-				snapshot.History = append(snapshot.History, *event.Finding)
-			}
-			if len(snapshot.History) > MaxHistoryFindings {
-				snapshot.History = snapshot.History[len(snapshot.History)-MaxHistoryFindings:]
-			}
+		if err := applyReplayEvent(&snapshot, active, event, retention, now); err != nil {
+			return apiv1.GaggleHealthSnapshot{}, err
 		}
 		snapshot.UpdatedAt = event.OccurredAt
 		snapshot.LastSequence = event.Sequence
@@ -632,6 +659,69 @@ func rebuild(gaggle string, events []apiv1.GaggleHealthEvent, retention time.Dur
 	})
 	snapshot.State = AggregateState(snapshot.Active)
 	return snapshot, nil
+}
+
+// validateReplayEvent checks one journal event's envelope, ordering, and
+// finding snapshot before it is applied to the projection.
+func validateReplayEvent(gaggle string, previous uint64, event apiv1.GaggleHealthEvent) error {
+	if event.SchemaVersion != apiv1.GaggleHealthSchemaVersion || event.Gaggle != gaggle {
+		return errors.New("health event schema or gaggle does not match projection")
+	}
+	if event.Sequence <= previous {
+		return errors.New("health event sequence is not strictly increasing")
+	}
+	if !validEventType(event.Type) {
+		return fmt.Errorf("unknown health event type %q", event.Type)
+	}
+	if event.Type == apiv1.GaggleHealthEvaluated {
+		if event.Finding != nil || event.EpisodeKey != "" {
+			return errors.New("health evaluation must not contain a finding or episode key")
+		}
+		return nil
+	}
+	if event.Finding == nil || event.EpisodeKey == "" || event.Finding.EpisodeKey != event.EpisodeKey {
+		return errors.New("health transition requires a matching finding snapshot")
+	}
+	if event.Finding.Identity.Gaggle != event.Gaggle {
+		return errors.New("health transition finding belongs to another gaggle")
+	}
+	if err := ValidateFinding(*event.Finding); err != nil {
+		return err
+	}
+	return validateTransition(event)
+}
+
+// applyReplayEvent folds one validated transition into the active episode set
+// and the retention-bounded resolved history.
+func applyReplayEvent(snapshot *apiv1.GaggleHealthSnapshot, active map[string]apiv1.GaggleHealthFinding, event apiv1.GaggleHealthEvent, retention time.Duration, now time.Time) error {
+	switch event.Type {
+	case apiv1.GaggleHealthFindingOpened:
+		if _, exists := active[event.EpisodeKey]; exists {
+			return errors.New("finding-opened duplicates an active episode")
+		}
+		active[event.EpisodeKey] = *event.Finding
+	case apiv1.GaggleHealthFindingUpdated, apiv1.GaggleHealthRepairStartedEvent,
+		apiv1.GaggleHealthRepairFinishedEvent, apiv1.GaggleHealthEscalated:
+		if _, exists := active[event.EpisodeKey]; !exists {
+			return errors.New("finding transition references an inactive episode")
+		}
+		active[event.EpisodeKey] = *event.Finding
+	case apiv1.GaggleHealthFindingResolved:
+		if _, exists := active[event.EpisodeKey]; !exists {
+			return errors.New("finding-resolved references an inactive episode")
+		}
+		if event.Finding.ResolvedAt == nil {
+			return errors.New("finding-resolved requires resolvedAt")
+		}
+		delete(active, event.EpisodeKey)
+		if retention == 0 || !event.Finding.ResolvedAt.Before(now.Add(-retention)) {
+			snapshot.History = append(snapshot.History, *event.Finding)
+		}
+		if len(snapshot.History) > MaxHistoryFindings {
+			snapshot.History = snapshot.History[len(snapshot.History)-MaxHistoryFindings:]
+		}
+	}
+	return nil
 }
 
 func validateTransition(event apiv1.GaggleHealthEvent) error {

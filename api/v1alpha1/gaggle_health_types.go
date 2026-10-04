@@ -2,10 +2,15 @@ package v1alpha1
 
 import "time"
 
+// GaggleHealthSchemaVersion versions every gaggle-health wire payload.
 const GaggleHealthSchemaVersion = "goobers.dev/gaggle-health/v1alpha1"
 
+// GaggleHealthState is a gaggle's aggregate health, or one finding's
+// contribution to it.
 type GaggleHealthState string
 
+// Aggregate health states, in ascending precedence from healthy to
+// operator-required.
 const (
 	GaggleHealthHealthy          GaggleHealthState = "healthy"
 	GaggleHealthDegraded         GaggleHealthState = "degraded"
@@ -15,8 +20,10 @@ const (
 	GaggleHealthOperatorRequired GaggleHealthState = "operator-required"
 )
 
+// GaggleHealthSeverity ranks a finding's urgency.
 type GaggleHealthSeverity string
 
+// Finding severities, in ascending order.
 const (
 	GaggleHealthSeverityInfo     GaggleHealthSeverity = "info"
 	GaggleHealthSeverityWarning  GaggleHealthSeverity = "warning"
@@ -24,16 +31,21 @@ const (
 	GaggleHealthSeverityCritical GaggleHealthSeverity = "critical"
 )
 
+// GaggleHealthRemediationMode selects how a finding code is handled.
 type GaggleHealthRemediationMode string
 
+// Per-finding remediation modes; repair is only valid for codes the hard
+// safety policy classifies as idempotent.
 const (
 	GaggleHealthObserve    GaggleHealthRemediationMode = "observe"
 	GaggleHealthRepairMode GaggleHealthRemediationMode = "repair"
 	GaggleHealthEscalate   GaggleHealthRemediationMode = "escalate"
 )
 
+// GaggleHealthRepairDisposition records whether and how a repair ran.
 type GaggleHealthRepairDisposition string
 
+// Repair dispositions.
 const (
 	GaggleHealthRepairNotAttempted GaggleHealthRepairDisposition = "not-attempted"
 	GaggleHealthRepairStarted      GaggleHealthRepairDisposition = "started"
@@ -42,8 +54,10 @@ const (
 	GaggleHealthRepairRefused      GaggleHealthRepairDisposition = "refused"
 )
 
+// GaggleHealthFollowUpState tracks what happens after a repair decision.
 type GaggleHealthFollowUpState string
 
+// Repair follow-up states.
 const (
 	GaggleHealthFollowUpNone      GaggleHealthFollowUpState = "none"
 	GaggleHealthFollowUpVerifying GaggleHealthFollowUpState = "verifying"
@@ -75,6 +89,8 @@ type GaggleHealthEvidence struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// GaggleHealthRepair separates the recommended action and its policy
+// authorization from the attempted repair and its observed result.
 type GaggleHealthRepair struct {
 	RecommendedAction string                        `json:"recommendedAction,omitempty"`
 	PolicyAuthorized  bool                          `json:"policyAuthorized"`
@@ -107,8 +123,10 @@ type GaggleHealthFinding struct {
 	ResolutionEvidence []GaggleHealthEvidence `json:"resolutionEvidence,omitempty"`
 }
 
+// GaggleHealthEventType names one journaled health transition.
 type GaggleHealthEventType string
 
+// Journaled health transitions.
 const (
 	GaggleHealthEvaluated           GaggleHealthEventType = "evaluation"
 	GaggleHealthFindingOpened       GaggleHealthEventType = "finding-opened"
@@ -142,6 +160,7 @@ type GaggleHealthSnapshot struct {
 	LastSequence  uint64                `json:"lastSequence"`
 }
 
+// GaggleHealthResponse is the read-API envelope for one gaggle's health.
 type GaggleHealthResponse struct {
 	SchemaVersion string               `json:"schemaVersion"`
 	Health        GaggleHealthSnapshot `json:"health"`
