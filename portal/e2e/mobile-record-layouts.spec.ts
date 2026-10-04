@@ -216,7 +216,12 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await page.goto("/#/runs");
 
-    await expectTouchTargets(page.locator(".filter-bar :is(button, select, .filter-toggle)"));
+    const runFilters = page.getByRole("button", { name: "Filters", exact: true });
+    await expectTouchTargets(runFilters);
+    await runFilters.click();
+    const runDialog = page.getByRole("dialog", { name: "Filters" });
+    await expectTouchTargets(runDialog.locator(".filter-bar :is(button, select, .filter-toggle)"));
+    await runDialog.getByRole("button", { name: "Cancel filter changes" }).click();
     await expectTouchTargets(page.getByRole("link", { name: /^Open run / }));
     await page.locator(".content-section").evaluate((section) => {
       const loadMore = document.createElement("button");
@@ -227,7 +232,12 @@ for (const viewport of [
     await expectTouchTargets(page.getByRole("button", { name: "Load more runs" }));
 
     await page.goto("/#/work-items");
-    await expectTouchTargets(page.locator(".filter-bar :is(button, select, input)"));
+    const workItemFilters = page.getByRole("button", { name: "Filters", exact: true });
+    await expectTouchTargets(workItemFilters);
+    await workItemFilters.click();
+    const workItemDialog = page.getByRole("dialog", { name: "Filters" });
+    await expectTouchTargets(workItemDialog.locator(".filter-bar :is(button, select, input)"));
+    await workItemDialog.getByRole("button", { name: "Cancel filter changes" }).click();
     await expectTouchTargets(page.locator(".work-item-grid.data-row"));
     await page.locator(".content-section").evaluate((section) => {
       const retry = document.createElement("button");
