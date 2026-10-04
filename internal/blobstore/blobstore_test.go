@@ -245,3 +245,37 @@ func TestPutSucceedsWhenChmodUnsupported(t *testing.T) {
 		t.Fatalf("Get = %q, %v", got, err)
 	}
 }
+
+// TestPutSucceedsWhenChmodAndLinkUnsupported simulates the CIFS blob share
+// (nounix) rejecting both chmod and hard links with EPERM.
+func TestPutSucceedsWhenChmodAndLinkUnsupported(t *testing.T) {
+	oldChmod, oldLink := chmodStaged, linkStaged
+	chmodStaged = func(string, fs.FileMode) error { return &os.PathError{Op: "chmod", Err: syscall.EPERM} }
+	linkStaged = func(a, b string) error { return &os.LinkError{Op: "link", Old: a, New: b, Err: syscall.EPERM} }
+	t.Cleanup(func() { chmodStaged, linkStaged = oldChmod, oldLink })
+
+	dir, err := NewDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	data := []byte("cifs blob without links")
+	digest := digestOf(data)
+	for i := 0; i < 2; i++ { // second Put is the idempotent path
+		if err := dir.Put(ctx, digest, data); err != nil {
+			t.Fatalf("Put %d: %v", i, err)
+		}
+	}
+	got, err := dir.Get(ctx, digest)
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("Get = %q, %v", got, err)
+	}
+	blobPath, err := dir.pathFor(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(blobPath), ".put-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("staged files remain: %v", leftovers)
+	}
+}
