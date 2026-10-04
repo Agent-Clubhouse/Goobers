@@ -1,5 +1,6 @@
 import type { MetadataChangeRequest, MetadataPreview, MetadataProposalCommand } from "./workbenchProposalTypes";
 import { readMetadataResponse } from "./workbenchProposalTransport";
+import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
 import type { WorkbenchGraph } from "./workbenchGraphTypes";
 import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
 import type { BacklogWriteCapabilities, BacklogPatchInput, BacklogEditCommand } from "./workbenchWriteTypes";
@@ -552,6 +553,19 @@ export class HttpDaemonClient implements DaemonClient {
 
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {
     return this.getJSON(clientRoutes.workbenchSources, undefined, options, { gaggle });
+  }
+
+  getStartQueue(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<StartQueuePage> {
+    return this.getJSON(clientRoutes.startQueue, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle });
+  }
+  getStartQueueItem(gaggle: string, acceptance: string, options?: RequestOptions): Promise<StartQueueItem> {
+    return this.getJSON(clientRoutes.startQueueItem, undefined, options, { gaggle, acceptance });
+  }
+  cancelQueuedStart(gaggle: string, acceptance: string, input: StartQueueCancelInput, options?: RequestOptions): Promise<StartQueueItem> {
+    return this.withResponse(clientRoutes.startQueueCancel, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as StartQueueItem; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { gaggle, acceptance }, { body: JSON.stringify(input), headers: { "Content-Type": "application/json" } });
   }
 
   getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage> {

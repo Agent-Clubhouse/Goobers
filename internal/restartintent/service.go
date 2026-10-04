@@ -117,7 +117,7 @@ func (s *Service) Dispatch(ctx, execution context.Context, record triggerqueue.R
 	if s.Launch == nil {
 		return errors.New("restartintent: execution unavailable")
 	}
-	err = s.Launch(ctx, execution, plan, func(ctx context.Context) error { return s.Queue.BeginDispatch(ctx, record.ID) })
+	err = s.Launch(ctx, execution, plan, func(ctx context.Context) error { return s.Queue.BeginDispatchAt(ctx, record.ID, s.Now()) })
 	if err != nil {
 		return err
 	}
@@ -147,7 +147,7 @@ func (s *Service) finish(ctx context.Context, record triggerqueue.Record, plan r
 		return nil
 	}
 	if current.State == triggerqueue.Accepted {
-		if err = s.Queue.BeginDispatch(ctx, current.ID); err != nil {
+		if err = s.Queue.BeginDispatchAt(ctx, current.ID, s.Now()); err != nil {
 			return err
 		}
 	}

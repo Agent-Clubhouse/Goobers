@@ -16,6 +16,15 @@
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
+        "startQueue": {
+          "type": "object",
+          "description": "Pending deadlines captured from the accepted generation; attempted effects and generated child lifetime never expire here.",
+          "additionalProperties": false,
+          "properties": {
+            "pendingDeadlineSeconds": {"type": "integer", "minimum": 1, "maximum": 7776000, "description": "Unattempted ordinary, event, session and human continuation deadline in seconds; omission uses 604800 (seven days)."},
+            "scheduledDeadlineSeconds": {"type": "integer", "minimum": 1, "maximum": 7776000, "description": "Unattempted scheduled worker occurrence deadline in seconds; omission uses 3600 (one hour)."}
+          }
+        },
         "workbench": {
           "type": "object",
           "description": "Source-owned backlog/objective workbench. Omission adds no reads or authority. Provider access requires explicit interactive policy.",
@@ -802,7 +811,7 @@
             "actions": {
               "type": "array",
               "description": "Closed operation allowlist; implementation support is checked separately.",
-              "maxItems": 10,
+              "maxItems": 11,
               "items": {
                 "type": "string",
                 "minLength": 1,
@@ -817,7 +826,8 @@
                   "run.intervene",
                   "run.restartStage",
                   "pr.repair",
-                  "source.proposeChange"
+                  "source.proposeChange",
+                  "queue.cancel"
                 ]
               },
               "uniqueItems": true

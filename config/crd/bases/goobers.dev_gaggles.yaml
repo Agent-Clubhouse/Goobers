@@ -545,8 +545,9 @@ spec:
                       - run.restartStage
                       - pr.repair
                       - source.proposeChange
+                      - queue.cancel
                       type: string
-                    maxItems: 10
+                    maxItems: 11
                     type: array
                     x-kubernetes-list-type: set
                   credentials:
@@ -1067,6 +1068,28 @@ spec:
                   - project
                   type: object
                 type: array
+              startQueue:
+                description: |-
+                  StartQueue bounds waiting time captured by durable starts. Child invocations
+                  retain parent-owned lifetime and have no default pending expiry.
+                properties:
+                  pendingDeadlineSeconds:
+                    description: |-
+                      PendingDeadlineSeconds bounds unattempted ordinary, event, session and human
+                      continuation starts. Omission uses seven days from durable acceptance.
+                    format: int32
+                    maximum: 7776000
+                    minimum: 1
+                    type: integer
+                  scheduledDeadlineSeconds:
+                    description: |-
+                      ScheduledDeadlineSeconds bounds an unattempted scheduled worker occurrence.
+                      Omission uses one hour; it does not change the scheduler's nominal fire time.
+                    format: int32
+                    maximum: 7776000
+                    minimum: 1
+                    type: integer
+                type: object
               workbench:
                 description: |-
                   Workbench names source-owned backlog/objective material for interactive

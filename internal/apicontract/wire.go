@@ -18,6 +18,9 @@ import (
 )
 
 type wireFixtures struct {
+	StartQueue                 StartQueuePage           `json:"startQueue"`
+	StartQueueItem             StartQueueItem           `json:"startQueueItem"`
+	StartQueueCancel           StartQueueCancelInput    `json:"startQueueCancel"`
 	GaggleEventEnvelope        GaggleEventEnvelope      `json:"gaggleEventEnvelope"`
 	GaggleEventReceipt         GaggleEventReceipt       `json:"gaggleEventReceipt"`
 	MetadataChange             MetadataChangeRequest    `json:"metadataChange"`
@@ -102,6 +105,9 @@ var wireFixtureTypes = []struct {
 	{name: "metadataPreview", scriptType: "MetadataPreview"},
 	{name: "metadataProposal", scriptType: "MetadataProposalCommand"},
 	{name: "workbenchDocuments", scriptType: "WorkbenchDocumentPage"},
+	{name: "startQueue", scriptType: "StartQueuePage"},
+	{name: "startQueueItem", scriptType: "StartQueueItem"},
+	{name: "startQueueCancel", scriptType: "StartQueueCancelInput"},
 	{name: "workbenchGraph", scriptType: "WorkbenchGraph"},
 	{name: "workbenchWriteCapabilities", scriptType: "BacklogWriteCapabilities"},
 	{name: "workbenchPatch", scriptType: "BacklogPatchInput"},
@@ -1122,6 +1128,7 @@ func childWorkflowWireFixture() ChildWorkflowResponse {
 
 func withChildWorkflowFixtures(fixtures wireFixtures) wireFixtures {
 	fixtures = withEventIngressFixtures(fixtures)
+	fixtures = withStartQueueFixtures(fixtures)
 	fixtures = withSessionFixtures(fixtures)
 	fixtures = withWorkbenchFixtures(fixtures)
 	fixtures.WorkbenchGraph = workbenchGraphFixture()

@@ -3,7 +3,7 @@ package v1alpha1
 // InteractiveAction is an explicitly permitted human operation. Configuration
 // grants authority; a route must separately implement the operation before
 // advertising it as available.
-// +kubebuilder:validation:Enum=session.create;session.message;backlog.read;backlog.edit;backlog.resolve;repository.read;run.intervene;run.restartStage;pr.repair;source.proposeChange
+// +kubebuilder:validation:Enum=session.create;session.message;backlog.read;backlog.edit;backlog.resolve;repository.read;run.intervene;run.restartStage;pr.repair;source.proposeChange;queue.cancel
 type InteractiveAction string
 
 // InteractiveAccessPolicy opts one gaggle into authenticated human operations.
@@ -15,7 +15,7 @@ type InteractiveAccessPolicy struct {
 	// Actions is the closed operation allowlist. Empty permits policy inspection
 	// only; it does not enable a provider-backed read.
 	// +optional
-	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:MaxItems=11
 	// +listType=set
 	Actions []InteractiveAction `json:"actions,omitempty" yaml:"actions,omitempty"`
 	// Credentials selects named instance interactiveCredentials entries. There

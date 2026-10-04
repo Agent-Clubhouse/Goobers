@@ -84,7 +84,7 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 		return err
 	}
 	if !e.Deadline.IsZero() && !s.Now().Before(e.Deadline) {
-		if err = s.Queue.BeginDispatch(admission, record.ID); err != nil {
+		if err = s.Queue.BeginDispatchAt(admission, record.ID, s.Now()); err != nil {
 			return err
 		}
 		return s.Queue.Finish(admission, record.ID, triggerqueue.Rejected, "", "accepted trigger expired before execution admission", s.Now())
@@ -116,7 +116,7 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 	if observed, err := s.Observe(admission, record); err != nil || observed {
 		return errors.Join(err, errors.New("startintent: published run requires reconciliation"))
 	}
-	if err = s.Queue.BeginDispatch(admission, record.ID); err != nil {
+	if err = s.Queue.BeginDispatchAt(admission, record.ID, s.Now()); err != nil {
 		return err
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")

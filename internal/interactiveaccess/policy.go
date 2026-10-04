@@ -20,7 +20,7 @@ var ErrDenied = errors.New("interactive operation is not authorized")
 // ErrCredentialUnavailable indicates that the explicitly selected target has no usable source.
 var ErrCredentialUnavailable = errors.New("interactive credential is not configured for this target")
 
-var actions = []apiv1.InteractiveAction{"session.create", "session.message", "backlog.read", "backlog.edit", "backlog.resolve", "repository.read", "run.intervene", "run.restartStage", "pr.repair", "source.proposeChange"}
+var actions = []apiv1.InteractiveAction{"session.create", "session.message", "backlog.read", "backlog.edit", "backlog.resolve", "repository.read", "run.intervene", "run.restartStage", "pr.repair", "source.proposeChange", "queue.cancel"}
 
 func human(p httpapi.Principal) bool {
 	return p.Subject != "" && p.Issuer != "" && !strings.HasPrefix(p.Issuer, "goobers/") && p.HasRole(httpapi.RoleView)

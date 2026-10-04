@@ -11,6 +11,10 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // this worker's RBAC access to it before polling or dispatching any work
 // (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
 type GaggleSpec struct {
+	// StartQueue bounds waiting time captured by durable starts. Child invocations
+	// retain parent-owned lifetime and have no default pending expiry.
+	// +optional
+	StartQueue *StartQueuePolicy `json:"startQueue,omitempty" yaml:"startQueue,omitempty"`
 	// Workbench names source-owned backlog/objective material for interactive
 	// browsing. Omission creates no new provider reads, polling or write authority.
 	// +optional

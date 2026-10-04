@@ -20,7 +20,7 @@ func (s *Store) RetainedPage(ctx context.Context, after string, limit int) ([]Re
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("triggerqueue: invalid retained page limit")
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM (SELECT "+columns+" FROM triggers WHERE state IN ('accepted','dispatching') UNION ALL SELECT 'demand-'||id AS id,id AS key,'scheduler' AS actor,payload,'accepted' AS state,'' AS run_id,'' AS reason,accepted_ns FROM schedule_demands) WHERE id>? ORDER BY id LIMIT ?", after, limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+" FROM (SELECT "+columns+" FROM triggers WHERE state IN ('accepted','dispatching') OR EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='') UNION ALL SELECT 'demand-'||id AS id,id AS key,'scheduler' AS actor,payload,'accepted' AS state,'' AS run_id,'' AS reason,accepted_ns FROM schedule_demands) WHERE id>? ORDER BY id LIMIT ?", after, limit)
 	if err != nil {
 		return nil, err
 	}

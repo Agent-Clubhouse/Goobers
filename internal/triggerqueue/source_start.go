@@ -180,7 +180,7 @@ func prepareSourceBatch(ctx context.Context, tx *sql.Tx, b SourceBatch, now time
 	if _, err := tx.ExecContext(ctx, `DELETE FROM source_start_receipts WHERE accepted_ns<? AND NOT EXISTS (SELECT 1 FROM json_each(acceptance_ids) ids JOIN triggers t ON t.id=ids.value WHERE t.finished_ns IS NULL)`, now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns<? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='')`, now.Add(-ReplayRetention).UnixNano()); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns<? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='')`, now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return err
 	}
 	if err := triggerSlotCapacity(ctx, tx, len(b.Starts)+1); err != nil {

@@ -128,6 +128,9 @@ func stageRestartCommandResult(accepted StageRestartAcceptance, epoch string, re
 	if !apiv1.ValidRunID(accepted.RunID) || accepted.RunID != epoch {
 		return apicontract.InteractiveRunCommandResult{}, interventionConflict("restart_receipt_invalid", "The restart receipt did not identify its reserved epoch.")
 	}
+	if accepted.Disposition == "cancelled" || accepted.Disposition == "expired" {
+		return apicontract.InteractiveRunCommandResult{Status: accepted.Disposition, Accepted: true, RunID: resolved.runID, JournalSequence: input.ExpectedSubjectSequence, Phase: string(resolved.phase)}, nil
+	}
 	status := "started"
 	if accepted.Queued {
 		status = "pending"

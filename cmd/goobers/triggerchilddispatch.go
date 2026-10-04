@@ -102,7 +102,7 @@ func (s *durableTriggerService) drainChild(ctx context.Context, record triggerqu
 	if err = s.auditChildDispatch(record, ref); err != nil {
 		return err
 	}
-	if err = s.queue.BeginDispatch(ctx, record.ID); err != nil {
+	if err = s.queue.BeginDispatchAt(ctx, record.ID, s.dispatch.now()); err != nil {
 		if errors.Is(err, triggerqueue.ErrTransition) {
 			return nil
 		}

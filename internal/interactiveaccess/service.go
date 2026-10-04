@@ -33,6 +33,7 @@ type Service struct {
 	executions              map[*ExecutionLease]struct{}
 	executionDrainTimeout   time.Duration
 	stageRestartAvailable   atomic.Bool
+	queueCancelAvailable    atomic.Bool
 	sessionsAvailable       atomic.Bool
 	backlogReadAvailable    atomic.Bool
 	backlogEditAvailable    atomic.Bool
@@ -195,6 +196,8 @@ func (s *Service) permission(p httpapi.Principal, g *apiv1.Gaggle, action apiv1.
 
 func (s *Service) operationAvailable(g *apiv1.Gaggle, action apiv1.InteractiveAction) bool {
 	switch action {
+	case "queue.cancel":
+		return s.queueCancelAvailable.Load()
 	case "run.intervene":
 		return true
 	case "run.restartStage":

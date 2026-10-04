@@ -61,7 +61,10 @@ func (s *interactiveStageRestart) acceptOrdinaryRestart(ctx context.Context, p h
 		if err != nil {
 			return err
 		}
-		accepted = intervention.StageRestartAcceptance{RunID: plan.Continuation.RunID, Duplicate: duplicate, Queued: record.State != triggerqueue.Dispatched, PendingReason: restartPendingReason(record)}
+		accepted, err = s.restartControlAcceptance(ctx, record, plan.Continuation.RunID, duplicate)
+		if err != nil {
+			return err
+		}
 		return nil
 	})
 	if errors.Is(err, triggerqueue.ErrConflict) {
@@ -104,7 +107,10 @@ func (s *interactiveStageRestart) LookupStageRestart(ctx context.Context, p http
 			return restartRefusal("idempotency_key_reused", "This restart key belongs to a different command.")
 		}
 		found = true
-		accepted = intervention.StageRestartAcceptance{RunID: plan.Continuation.RunID, Duplicate: true, Queued: record.State != triggerqueue.Dispatched, PendingReason: restartPendingReason(record)}
+		accepted, err = s.restartControlAcceptance(ctx, record, plan.Continuation.RunID, true)
+		if err != nil {
+			return err
+		}
 		return nil
 	})
 	return accepted, found, err
@@ -147,4 +153,22 @@ func (s *interactiveStageRestart) launchOrdinaryRestart(ctx, execution context.C
 		}, before)
 		return err
 	})
+}
+
+func (s *interactiveStageRestart) restartControlAcceptance(ctx context.Context, record triggerqueue.Record, epoch string, duplicate bool) (intervention.StageRestartAcceptance, error) {
+	result := intervention.StageRestartAcceptance{RunID: epoch, Duplicate: duplicate, Queued: record.State != triggerqueue.Dispatched, PendingReason: restartPendingReason(record)}
+	if record.State != triggerqueue.Rejected {
+		return result, nil
+	}
+	control, err := s.queued.Queue.PinnedStartControl(ctx, record.ID)
+	if err != nil {
+		return result, err
+	}
+	if control.Disposition != "cancelled" && control.Disposition != "expired" {
+		return result, triggerqueue.ErrTransition
+	}
+	result.Disposition = control.Disposition
+	result.Queued = false
+	result.PendingReason = ""
+	return result, nil
 }

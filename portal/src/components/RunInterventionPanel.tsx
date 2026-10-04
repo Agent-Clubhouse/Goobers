@@ -73,14 +73,14 @@ function HumanActionForm({ action, guidance, client, runId, refresh }: { action:
       const result = await client.commandInteractiveRun(runId, request.current.key, request.current.command, { signal: controller.signal });
       if (controller.signal.aborted) return;
       if (result.runId !== runId) throw new Error("Command result identity changed");
-      if (result.continuationRunId) setContinuation(result.continuationRunId);
+      setContinuation(result.continuationRunId ?? "");
       if (result.status === "pending") {
         setPending(true); setNotice(result.accepted && result.continuationRunId
           ? `Restart queued. ${result.pendingReason ?? "Check the same request for admission; its execution will be available after it starts."}`
           : "The outcome is still pending. Check the same request before issuing another command.");
       } else {
         request.current = undefined; setPending(false); setText("");
-        setNotice(result.status === "started" ? "Restart accepted as a linked execution. Open it to follow progress." : result.status === "failed" ? "The intervention failed. Review the run journal before issuing a new command." : result.status === "saved" ? "Guidance saved. It has not been delivered to an agent." : "Decision applied to the journal.");
+        setNotice(result.status === "cancelled" || result.status === "expired" ? `Restart ${result.status} before execution. Its original receipt is retained.` : result.status === "started" ? "Restart accepted as a linked execution. Open it to follow progress." : result.status === "failed" ? "The intervention failed. Review the run journal before issuing a new command." : result.status === "saved" ? "Guidance saved. It has not been delivered to an agent." : "Decision applied to the journal.");
         refresh();
       }
     } catch (error) {

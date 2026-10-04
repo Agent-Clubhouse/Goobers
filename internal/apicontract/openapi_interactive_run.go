@@ -15,7 +15,7 @@ func openAPIInteractiveRunSchemas() map[string]any {
 			"kind": kinds, "stage": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "expectedSubjectSequence": sequence, "decision": stringSchema(), "rationale": map[string]any{"type": "string", "maxLength": 4096}, "guidance": map[string]any{"type": "string", "maxLength": 65536}, "guidanceIds": map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}},
 		}),
 		"InteractiveRunCommandResult": closedChildObject([]string{"status", "accepted", "runId", "journalSequence", "phase"}, map[string]any{
-			"status": map[string]any{"type": "string", "enum": []string{"applied", "saved", "pending", "failed", "started"}}, "accepted": map[string]any{"type": "boolean"}, "runId": stringSchema(), "journalSequence": map[string]any{"type": "integer", "minimum": 0}, "phase": stringSchema(), "guidance": schemaRef("OperatorMessageRecord"), "continuationRunId": stringSchema(), "pendingReason": sessionString(256),
+			"status": map[string]any{"type": "string", "enum": []string{"applied", "saved", "pending", "failed", "started", "cancelled", "expired"}}, "accepted": map[string]any{"type": "boolean"}, "runId": stringSchema(), "journalSequence": map[string]any{"type": "integer", "minimum": 0}, "phase": stringSchema(), "guidance": schemaRef("OperatorMessageRecord"), "continuationRunId": stringSchema(), "pendingReason": sessionString(256),
 		}),
 	}
 }

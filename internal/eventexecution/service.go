@@ -95,7 +95,7 @@ func (s *Service) Dispatch(admission, execution context.Context, record triggerq
 	if observed, _, err := s.Observe(admission, record); err != nil || observed {
 		return errors.Join(err, errors.New("eventexecution: published run must be reconciled"))
 	}
-	if err = s.Queue.BeginDispatch(admission, record.ID); err != nil {
+	if err = s.Queue.BeginDispatchAt(admission, record.ID, s.Now()); err != nil {
 		return err
 	}
 	runID := strings.TrimPrefix(record.ID, "trigger-")

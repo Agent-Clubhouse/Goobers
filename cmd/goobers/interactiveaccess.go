@@ -59,6 +59,7 @@ func (u *upSession) configureInteractiveRuns(messages httpapi.OperatorMessageSer
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithChildWorkflowMonitor(monitor), httpapi.WithChildPublicationChecks(monitor))
 	}
 	u.configureEventIngress()
+	u.configureStartQueue()
 	u.configureWorkbenchReads()
 	return u.configureInteractiveSessions()
 }

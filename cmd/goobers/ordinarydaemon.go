@@ -18,6 +18,7 @@ func (s *schedulerSetup) installOrdinaryStarts(layout instance.Layout, triggers 
 	if s.Generations == nil || s.OrdinaryRuntime == nil || triggers == nil {
 		return errors.New("ordinary durable admission unavailable")
 	}
+	triggers.startControls = newStartQueueControls(layout, triggers.queue, triggers.dispatch.now)
 	catalog := &ordinaryStartCatalog{generation: s.EventCatalog.generation, entries: append([]localscheduler.WorkflowEntry(nil), s.Entries...), store: s.Generations.Store}
 	s.OrdinaryCatalog = catalog
 	engine := s.EngineRuntime
@@ -89,6 +90,9 @@ func ordinaryAcceptanceError(err error) error {
 }
 
 func (s *durableTriggerService) drainOrdinary(ctx context.Context, record triggerqueue.Record) error {
+	if ready, err := s.prepareQueuedStart(ctx, record); err != nil || !ready {
+		return err
+	}
 	if s.ordinary == nil {
 		return nil
 	}

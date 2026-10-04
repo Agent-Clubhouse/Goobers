@@ -645,6 +645,7 @@ type handlerConfig struct {
 	workbenchGraph          WorkbenchGraphService
 	workbenchDocuments      WorkbenchDocumentService
 	gaggleEvents            GaggleEventService
+	startQueue              StartQueueService
 	workbenchWrites         WorkbenchWriteService
 	workbenchProposals      WorkbenchProposalService
 	operatorMessages        OperatorMessageService
@@ -1246,6 +1247,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerWorkbenchRoutes(router, config, errorLog)
 	registerWorkbenchGraphRoute(router, config, errorLog)
 	registerGaggleEventRoutes(router, config, errorLog)
+	registerStartQueueRoutes(router, config, errorLog)
 	router.Handle(apicontract.RouteWorkbenchDocuments, workbenchDocumentsHandler(config.workbenchDocuments, errorLog))
 	registerWorkbenchWriteRoutes(router, config, errorLog)
 	registerWorkbenchProposalRoutes(router, config, errorLog)

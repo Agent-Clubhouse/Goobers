@@ -1,3 +1,5 @@
+import type { StartQueuePage, StartQueueItem, StartQueueCancelInput } from "./startQueueTypes";
+export type { StartQueuePage, StartQueueItem, StartQueueCancelInput, StartQueueCancellation } from "./startQueueTypes";
 import type { WorkbenchGraph } from "./workbenchGraphTypes";
 export type * from "./workbenchGraphTypes";
 import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
@@ -1902,6 +1904,9 @@ export interface DaemonClient {
   checkMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
   continueMetadataProposal(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<import("./workbenchProposalTypes").MetadataProposalCommand>;
 
+  getStartQueue(gaggle: string, request?: PageRequest, options?: RequestOptions): Promise<StartQueuePage>;
+  getStartQueueItem(gaggle: string, acceptance: string, options?: RequestOptions): Promise<StartQueueItem>;
+  cancelQueuedStart(gaggle: string, acceptance: string, input: StartQueueCancelInput, options?: RequestOptions): Promise<StartQueueItem>;
   getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph>;
   getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities>;
   patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand>;
@@ -2084,7 +2089,7 @@ export interface InteractiveCapabilities {
 }
 
 export interface InteractiveActionPermission {
-  action: "session.create" | "session.message" | "backlog.read" | "backlog.edit" | "backlog.resolve" | "repository.read" | "run.intervene" | "run.restartStage" | "pr.repair" | "source.proposeChange";
+  action: "session.create" | "session.message" | "backlog.read" | "backlog.edit" | "backlog.resolve" | "repository.read" | "run.intervene" | "run.restartStage" | "pr.repair" | "source.proposeChange" | "queue.cancel";
   authorized: boolean;
   credentialConfigured: boolean;
   available: boolean;
@@ -2182,7 +2187,7 @@ export interface InteractiveRunCommand {
 }
 export interface InteractiveRunCommandResult {
  pendingReason?: string;
-  status: "applied" | "saved" | "pending" | "failed" | "started";
+  status: "applied" | "saved" | "pending" | "failed" | "started" | "cancelled" | "expired";
   accepted: boolean;
   runId: string;
   journalSequence: number;

@@ -84,7 +84,7 @@ func (s *Store) PruneEvents(ctx context.Context, now time.Time, limit int) (Even
 }
 
 func pruneEventGroups(ctx context.Context, tx *sql.Tx, now time.Time, limit int) (int, error) {
-	ids, err := childPruneIDs(ctx, tx, `SELECT g.id FROM event_groups g WHERE g.settled_ns<=? AND NOT EXISTS(SELECT 1 FROM event_outbox o WHERE o.source_group=g.id) AND NOT EXISTS(SELECT 1 FROM event_deliveries d WHERE d.group_id=g.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=g.acceptance_id AND sc.cancel_ns IS NOT NULL AND sc.disposition='') ORDER BY g.settled_ns,g.id LIMIT ?`, now.Add(-EventRetention).UnixNano(), limit)
+	ids, err := childPruneIDs(ctx, tx, `SELECT g.id FROM event_groups g WHERE g.settled_ns<=? AND NOT EXISTS(SELECT 1 FROM event_outbox o WHERE o.source_group=g.id) AND NOT EXISTS(SELECT 1 FROM event_deliveries d WHERE d.group_id=g.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=g.acceptance_id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='') ORDER BY g.settled_ns,g.id LIMIT ?`, now.Add(-EventRetention).UnixNano(), limit)
 	if err != nil {
 		return 0, err
 	}

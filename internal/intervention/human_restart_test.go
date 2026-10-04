@@ -156,3 +156,13 @@ func TestHumanRestartLaunchesOneEpochAfterLostAcknowledgement(t *testing.T) {
 		})
 	}
 }
+
+func TestCancelledRestartReceiptDoesNotClaimAnExecution(t *testing.T) {
+	for _, disposition := range []string{"cancelled", "expired"} {
+		epoch := "0123456789abcdef0123456789abcdef"
+		result, err := stageRestartCommandResult(StageRestartAcceptance{RunID: epoch, Disposition: disposition}, epoch, resolvedInterventionRun{runID: "source"}, apicontract.InteractiveRunCommand{})
+		if err != nil || result.Status != disposition || !result.Accepted || result.ContinuationRunID != "" {
+			t.Fatal(result, err)
+		}
+	}
+}

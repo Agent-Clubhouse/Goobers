@@ -875,3 +875,52 @@ and cancelled/failed result before the parent can acknowledge its slot. A queue
 receipt never fabricates a child execution or result reference.
 Actual execution cancellation and observed terminal acknowledgement remain host
 work, not claims made by storing a cancellation request.
+
+### Installed start queue controls
+
+The daemon now inventories typed accepted starts into the existing trigger
+ledger's control rows, validating each source receipt and its exact archived
+configuration before recording gaggle, source, workflow and reserved execution
+identity. It never retargets through a current named workflow. Pre-upgrade legacy
+requests without immutable scope keep their existing dispatch behavior and are
+not exposed through a guessed gaggle.
+
+`Gaggle.spec.startQueue.pendingDeadlineSeconds` defaults to 604800 (seven days);
+`scheduledDeadlineSeconds` defaults to 3600 (one hour). Explicit values are whole
+seconds from 1 through 7776000 (90 days). These values are captured from the
+accepted configuration, and an earlier source deadline still wins. Only proven
+unattempted custody expires. Initial generated child starts have no implicit
+queue deadline: their parent owns their lifetime. Child human continuation epochs
+remain represented by the child monitor's epoch custody; the original child queue
+receipt never changes to point at a later epoch.
+
+GET `.../gaggles/{gaggle}/start-queue` and GET `.../start-queue/{acceptance}` require
+current explicit gaggle visibility. POST `.../start-queue/{acceptance}/cancel`
+requires the new explicit `queue.cancel` operator action plus the instance role.
+Bodies contain only bounded `requestId` and `reason`; verified principal claims
+are retained separately by the host and current gaggle authority is rechecked
+before each attempted stop. Anonymous loopback and scoped execution tokens do
+not acquire human authority. All responses are no-store and omit source payloads,
+credentials and retained authority. The portal exposes explicit windows of up to
+25 receipts, refresh/next controls, and a same-command retry after unknown replies.
+
+Unattempted cancellation/expiry rejects the accepted start transactionally;
+there is no execution link. Attempted cancellation remains a request until the
+source-qualified adapter observes termination. Ordinary, event and human restart
+local execution use durable existing cancel receipts, exact source identity,
+exclusive registry/journal custody, and completed/failed/aborted terminal evidence;
+pending contained worker custody prevents confirmation. An already-terminal run
+is distinguished from a later confirmed abort. The queue never requeues an
+uncertain launch, and confirmation alone does not release that launch's custody.
+Unconfirmed cancellation requests retain both receipt and generation pins.
+Confirmed cancellation observations retain the normal replay window before
+rebuildable history can be pruned.
+
+Typed child/session pre-start settlement must be composed with its source adapter
+before rollout; the isolated host branch keeps their fallback request-only.
+Attempted direct-engine cancellation remains request-only pending an exact pinned
+Temporal cancellation adapter; it never uses the local journal adapter. Original
+human restart commands cancelled or expired before execution return that terminal
+receipt and no continuation link. Releasing their source-occurrence slot for an
+explicit new restart is a separate required follow-up; the original key must never
+revive a cancelled acceptance.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/enginestartintent"
@@ -17,7 +18,8 @@ import (
 var dialDirectEngine = temporaldial.Dial
 
 func directEngineService(layout instance.Layout, queue *triggerqueue.Store, cfg *instance.Config) *enginestartintent.Service {
-	return &enginestartintent.Service{Queue: queue, Capture: func(ctx context.Context, r enginestartintent.Request) (engine.RunInput, func(), error) {
+	controls := newStartQueueControls(layout, queue, time.Now)
+	return &enginestartintent.Service{Queue: queue, BeforeDispatch: controls.BeforeDispatch, Capture: func(ctx context.Context, r enginestartintent.Request) (engine.RunInput, func(), error) {
 		return pinnedDirectEngineInput(ctx, layout, cfg, r.Gaggle, r.Workflow, r.DedupeKey, r.LiveJournal)
 	}, Open: func(ctx context.Context, r enginestartintent.Request) (enginestartintent.Backend, error) {
 		tls, dc, err := enginestartintent.Transport(cfg, r)

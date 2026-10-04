@@ -48,12 +48,14 @@ type StartCancellation struct {
 // StartControl preserves durable queue disposition independently of run state.
 // A cancellation request does not establish that an attempted execution stopped.
 type StartControl struct {
-	Record            Record
-	Scope             StartScope
-	Cancellation      *StartCancellation
-	CancelRequestedAt time.Time
-	Disposition       string
-	DisposedAt        time.Time
+	CancellationOutcome    string
+	CancellationObservedAt time.Time
+	Record                 Record
+	Scope                  StartScope
+	Cancellation           *StartCancellation
+	CancelRequestedAt      time.Time
+	Disposition            string
+	DisposedAt             time.Time
 }
 
 func (s StartScope) valid(record Record) bool {
@@ -129,8 +131,8 @@ func readStartControl(ctx context.Context, q sourceQuerier, gaggle, id string) (
 	var c StartControl
 	c.Record.ID = id
 	var scope, cancel []byte
-	var deadline, cancelNS, disposed sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT scope,deadline_ns,cancellation,cancel_ns,disposition,disposed_ns FROM start_controls WHERE gaggle=? AND acceptance_id=? AND length(scope)>0`, gaggle, id).Scan(&scope, &deadline, &cancel, &cancelNS, &c.Disposition, &disposed)
+	var deadline, cancelNS, disposed, observed sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT scope,deadline_ns,cancellation,cancel_ns,disposition,disposed_ns,cancel_outcome,cancel_observed_ns FROM start_controls WHERE gaggle=? AND acceptance_id=? AND length(scope)>0`, gaggle, id).Scan(&scope, &deadline, &cancel, &cancelNS, &c.Disposition, &disposed, &c.CancellationOutcome, &observed)
 	if err != nil {
 		return c, err
 	}
@@ -156,7 +158,10 @@ func readStartControl(ctx context.Context, q sourceQuerier, gaggle, id string) (
 	if disposed.Valid {
 		c.DisposedAt = time.Unix(0, disposed.Int64).UTC()
 	}
-	if !c.validDisposition() {
+	if observed.Valid {
+		c.CancellationObservedAt = time.Unix(0, observed.Int64).UTC()
+	}
+	if !c.validDisposition() || !c.validCancellationOutcome() {
 		return c, ErrConflict
 	}
 	return c, nil
@@ -239,4 +244,43 @@ func (s *Store) StartControlPage(ctx context.Context, gaggle, after string, limi
 		result = append(result, c)
 	}
 	return result, nil
+}
+
+// PinnedStartControl is an internal host lookup. User-facing callers must first
+// authorize the returned gaggle; no actor/source claims come from wire bodies.
+func (s *Store) PinnedStartControl(ctx context.Context, id string) (StartControl, error) {
+	var gaggle string
+	if err := s.db.QueryRowContext(ctx, `SELECT gaggle FROM start_controls WHERE acceptance_id=? AND length(scope)>0`, id).Scan(&gaggle); err != nil {
+		return StartControl{}, err
+	}
+	return s.StartControl(ctx, gaggle, id)
+}
+
+// StartControlInventory bounds scope indexing and pending maintenance. Terminal
+// controls with a recorded disposition do not consume repeated sweep work.
+func (s *Store) StartControlInventory(ctx context.Context, after string, limit int) ([]Record, error) {
+	if limit < 1 || limit > 100 || len(after) > 128 {
+		return nil, ErrTransition
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT "+columns+` FROM triggers JOIN start_controls c ON c.acceptance_id=id WHERE id>? AND (length(c.scope)=0 OR state='accepted' OR (c.cancel_ns IS NOT NULL AND c.disposition='' AND c.cancel_outcome='')) ORDER BY id LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var records []Record
+	for rows.Next() {
+		r, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+func (c StartControl) validCancellationOutcome() bool {
+	if c.CancellationOutcome == "" {
+		return c.CancellationObservedAt.IsZero()
+	}
+	return c.Cancellation != nil && !c.CancellationObservedAt.IsZero() && !c.CancellationObservedAt.Before(c.CancelRequestedAt) && c.Disposition == "" && (c.CancellationOutcome == "confirmed" || c.CancellationOutcome == "already-terminal")
 }

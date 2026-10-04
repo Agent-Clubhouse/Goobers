@@ -25,10 +25,11 @@ type Backend interface {
 // Service captures only from trusted host compilation. Open resolves the current
 // credentials for the accepted binding before the durable attempted marker.
 type Service struct {
-	Queue   *triggerqueue.Store
-	Capture func(context.Context, Request) (engine.RunInput, func(), error)
-	Open    func(context.Context, Request) (Backend, error)
-	Now     func() time.Time
+	BeforeDispatch func(context.Context, triggerqueue.Record) (bool, error)
+	Queue          *triggerqueue.Store
+	Capture        func(context.Context, Request) (engine.RunInput, func(), error)
+	Open           func(context.Context, Request) (Backend, error)
+	Now            func() time.Time
 }
 
 func (s *Service) now() time.Time {
@@ -83,6 +84,13 @@ func (s *Service) Dispatch(ctx context.Context, record triggerqueue.Record) erro
 	if record.State == triggerqueue.Dispatched {
 		return nil
 	}
+	if s.BeforeDispatch != nil {
+		if ready, err := s.BeforeDispatch(ctx, record); err != nil {
+			return err
+		} else if !ready {
+			return triggerqueue.ErrTransition
+		}
+	}
 	e, input, err := s.load(ctx, record)
 	if err != nil {
 		return err
@@ -96,7 +104,7 @@ func (s *Service) Dispatch(ctx context.Context, record triggerqueue.Record) erro
 	}
 	defer backend.Close()
 	if record.State == triggerqueue.Accepted {
-		if err = s.Queue.BeginDispatch(ctx, record.ID); err != nil {
+		if err = s.Queue.BeginDispatchAt(ctx, record.ID, s.now()); err != nil {
 			return err
 		}
 		if err = backend.Start(ctx, input, e.InputDigest); err != nil {

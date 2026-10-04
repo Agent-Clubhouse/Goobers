@@ -70,7 +70,7 @@ var migrations = []string{`CREATE TABLE IF NOT EXISTS triggers (
 	state TEXT NOT NULL CHECK(state IN ('accepted','dispatching','dispatched','rejected')),
 	run_id TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
 	accepted_ns INTEGER NOT NULL, finished_ns INTEGER
-)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, eventGroupSchema, eventRootSetSchema, childPublicationSchema, eventOutboxSchema, eventPublicationRetentionSchema, childRestartSchema, sessionSchema, sourceStartSchema, sessionInputSchema, childPublicationExecutionSchema, scheduleDemandSchema, workbenchCommandSchema, directEngineSchema, humanRestartSchema, needsHumanCommandSchema, workbenchProposalSchema, startControlSchema, sessionRepairTargetSchema}
+)`, childSchema, childAuthoritySchema, childProposalSchema, childSnapshotSchema, childResultSchema, childDispositionSchema, childStorageSchema, eventSchema, childDispositionHistorySchema, childBlobSchema, childBlobReadSchema, eventGroupSchema, eventRootSetSchema, childPublicationSchema, eventOutboxSchema, eventPublicationRetentionSchema, childRestartSchema, sessionSchema, sourceStartSchema, sessionInputSchema, childPublicationExecutionSchema, scheduleDemandSchema, workbenchCommandSchema, directEngineSchema, humanRestartSchema, needsHumanCommandSchema, workbenchProposalSchema, startControlSchema, sessionRepairTargetSchema, startControlOutcomeSchema}
 
 // Open opens a private database beneath a daemon-owned directory. DELETE
 // journaling avoids a WAL that a long reader could retain indefinitely; FULL
@@ -152,7 +152,7 @@ func (s *Store) Accept(ctx context.Context, key, actor string, payload []byte, n
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='')", now.Add(-ReplayRetention).UnixNano()); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='')", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
 	if err = triggerSlotCapacity(ctx, tx, 1); err != nil {

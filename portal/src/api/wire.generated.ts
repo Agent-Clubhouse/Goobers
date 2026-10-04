@@ -9,6 +9,9 @@ import type {
   MetadataPreview,
   MetadataProposalCommand,
   WorkbenchDocumentPage,
+  StartQueuePage,
+  StartQueueItem,
+  StartQueueCancelInput,
   WorkbenchGraph,
   BacklogWriteCapabilities,
   BacklogPatchInput,
@@ -81,6 +84,9 @@ export interface GoWireFixtures {
   metadataPreview: MetadataPreview;
   metadataProposal: MetadataProposalCommand;
   workbenchDocuments: WorkbenchDocumentPage;
+  startQueue: StartQueuePage;
+  startQueueItem: StartQueueItem;
+  startQueueCancel: StartQueueCancelInput;
   workbenchGraph: WorkbenchGraph;
   workbenchWriteCapabilities: BacklogWriteCapabilities;
   workbenchPatch: BacklogPatchInput;
@@ -145,6 +151,35 @@ export interface GoWireFixtures {
 }
 
 export const goWireFixtures = {
+  "startQueue": {
+    "gaggle": "web",
+    "items": [
+      {
+        "acceptanceId": "trigger-0123456789abcdef0123456789abcdef",
+        "gaggle": "web",
+        "workflow": "repair",
+        "source": "manual",
+        "generation": "sha256:1234",
+        "acceptedAt": "2026-10-04T12:00:00Z",
+        "state": "accepted",
+        "waitingReason": "Waiting for workflow capacity or budget."
+      }
+    ]
+  },
+  "startQueueItem": {
+    "acceptanceId": "trigger-0123456789abcdef0123456789abcdef",
+    "gaggle": "web",
+    "workflow": "repair",
+    "source": "manual",
+    "generation": "sha256:1234",
+    "acceptedAt": "2026-10-04T12:00:00Z",
+    "state": "accepted",
+    "waitingReason": "Waiting for workflow capacity or budget."
+  },
+  "startQueueCancel": {
+    "requestId": "request-1",
+    "reason": "No longer needed"
+  },
   "gaggleEventEnvelope": {
     "specversion": "1.0",
     "id": "change-1",

@@ -962,6 +962,39 @@
       "recoverySafe": false
     },
     {
+      "id": "startQueue",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/start-queue",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "startQueueItem",
+      "method": "GET",
+      "path": "/api/v1/gaggles/{gaggle}/start-queue/{acceptance}",
+      "actionClass": "read-only-navigation",
+      "remoteInvocable": false,
+      "cost": "bounded",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "startQueueCancel",
+      "method": "POST",
+      "path": "/api/v1/gaggles/{gaggle}/start-queue/{acceptance}/cancel",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "gaggleEventPublish",
       "method": "POST",
       "path": "/api/v1/gaggles/{gaggle}/events",

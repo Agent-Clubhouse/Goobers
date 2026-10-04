@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/restartintent"
 	"github.com/goobers/goobers/internal/sessioning"
+	"github.com/goobers/goobers/internal/startcontrol"
 	"github.com/goobers/goobers/internal/startintent"
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
@@ -30,6 +31,7 @@ import (
 // durableTriggerService separates HTTP acceptance from scheduler availability.
 // Only the daemon sweep calls Drain, after startup admission has opened.
 type durableTriggerService struct {
+	startControls          *startcontrol.Coordinator
 	restarts               *restartintent.Service
 	directEngine           *enginestartintent.Service
 	directEngineCursor     string
@@ -180,7 +182,7 @@ func (s *durableTriggerService) drainWithin(ctx context.Context, budget time.Dur
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}
-	pruneErr = errors.Join(pruneErr, s.sweepEvents(ctx), s.sweepSessions(ctx), s.sweepDirectEngine(ctx))
+	pruneErr = errors.Join(pruneErr, s.sweepStartControls(ctx), s.sweepEvents(ctx), s.sweepSessions(ctx), s.sweepDirectEngine(ctx))
 	if s.dispatch.triggerer() == nil && s.children == nil && s.events == nil && s.sessions == nil && s.restarts == nil {
 		return pruneErr
 	}
@@ -203,6 +205,9 @@ func (s *durableTriggerService) drainWithin(ctx context.Context, budget time.Dur
 }
 
 func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueue.Record) error {
+	if ready, err := s.prepareQueuedStart(ctx, record); err != nil || !ready {
+		return err
+	}
 	var header struct {
 		Kind string `json:"kind"`
 	}
@@ -252,7 +257,7 @@ func (s *durableTriggerService) drainOne(ctx context.Context, record triggerqueu
 	if err := s.auditDispatch(record, payload.Request); err != nil {
 		return err
 	}
-	if err := s.queue.BeginDispatch(ctx, record.ID); err != nil {
+	if err := s.queue.BeginDispatchAt(ctx, record.ID, s.dispatch.now()); err != nil {
 		if errors.Is(err, triggerqueue.ErrTransition) {
 			return nil
 		}
