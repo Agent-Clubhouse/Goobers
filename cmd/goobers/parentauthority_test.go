@@ -140,6 +140,11 @@ func TestParentAuthorityHTTPGrantAndAttemptCustody(t *testing.T) {
 	if _, err := f.service.grants.key.VerifyChildWorkflowGrant(access.BearerToken); err != nil {
 		t.Fatal(err)
 	}
+
+	replay := f.request(http.MethodPost, path, body)
+	if replay.Code != 200 || !bytes.Equal(replay.Body.Bytes(), out.Body.Bytes()) {
+		t.Fatalf("uncertain grant delivery changed: %d %s", replay.Code, replay.Body)
+	}
 	wrong, _ := json.Marshal(map[string]string{"contractDigest": journal.Digest([]byte("other"))})
 	if out = f.request(http.MethodPost, path, wrong); out.Code != 400 {
 		t.Fatal("foreign contract accepted", out.Code)
@@ -203,6 +208,14 @@ func TestParentAuthorityHTTPJournalAndSurrenderStayInAttempt(t *testing.T) {
 	refRaw, _ := json.Marshal(refEmit)
 	if out := f.request(http.MethodPost, path, refRaw); out.Code == 200 {
 		t.Fatal("journal adopted a shared artifact outside the attempt")
+	}
+
+	for _, kind := range []string{"isolated.parent.writer.started", "isolated.parent.writer.joined"} {
+		control := livejournal.EmitRequest{RunID: run, Gaggle: f.contract.Identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "forged/" + kind, Time: time.Now(), Event: &journal.Event{Type: journal.EventRunnerAnnotation, Stage: stage, Attempt: 1, Runner: map[string]any{"kind": kind}}}}}
+		controlRaw, _ := json.Marshal(control)
+		if out := f.request(http.MethodPost, path, controlRaw); out.Code == 200 {
+			t.Fatal("pod forged host writer custody", kind)
+		}
 	}
 	digest := journal.Digest(data)
 	if _, err := f.scoped.Get(t.Context(), digest); err != nil {
@@ -293,5 +306,20 @@ func TestParentAuthorityHTTPCredentialsStopAtCancellation(t *testing.T) {
 	}
 	if len(resolved) != 1 {
 		t.Fatal("cancelled parent reached secret source")
+	}
+}
+
+func TestParentJournalAcceptsOnlyOwnHarnessTaskAlias(t *testing.T) {
+	f := newParentAuthorityFixture(t)
+	a := parentAttemptCustody{contract: f.contract, digest: f.digest}
+	task := f.contract.Identity.RunID + ":" + f.contract.Stage
+	req := livejournal.EmitRequest{RunID: f.contract.Identity.RunID, Gaggle: f.contract.Identity.Gaggle, Ops: []livejournal.Op{{Kind: livejournal.OpAppend, Key: "alias", Event: &journal.Event{Type: journal.EventRunnerAnnotation, Stage: task}}}}
+	normalized, err := parentJournalRequest(a, req)
+	if err != nil || normalized.Ops[0].Event.Stage != f.contract.Stage || normalized.Ops[0].Event.Attempt != 1 || req.Ops[0].Event.Stage != task || req.Ops[0].Event.Attempt != 0 {
+		t.Fatalf("own alias: %+v %v", normalized, err)
+	}
+	req.Ops[0].Event.Stage = "other-run:" + f.contract.Stage
+	if _, err = parentJournalRequest(a, req); err == nil {
+		t.Fatal("foreign task alias accepted")
 	}
 }

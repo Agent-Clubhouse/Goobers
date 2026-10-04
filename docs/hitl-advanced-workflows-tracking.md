@@ -9,50 +9,72 @@ after the related design or item merges; do not invent closing references.
 All work is unmerged. The integration branch is `codex/hitl-advanced-workflows`,
 forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
-| Head | Base | Scope | Current evidence |
-|---|---|---|---|
-| `codex/haw-program-design` | integration branch | Program and stable task convention | Design/status and Markdown link checks pass |
-| `codex/haw-child-design` | program design | HAW-CHD-001–009 | Draft design, indexed and link-checked |
-| `codex/haw-hitl-design` | child design | HAW-HITL-001–012 | Draft design, indexed and link-checked |
-| `codex/haw-events-design` | HITL design | HAW-EVT-001–009 | Draft design, indexed and link-checked |
-| `codex/haw-backlog-design` | events design | HAW-BKL-001–009 | Draft design, indexed and link-checked |
-| `codex/haw-child-admission` | backlog design | HAW-CHD-001 | Policy/schema/compiler checks and explicit runtime refusals; focused tests and `make verify-fast` pass |
-| `codex/haw-child-proposals` | child admission | HAW-CHD-002 foundation | Strict proposal parsing, pinned policy checks, normal compilation and runner placement; validator race tests pass |
-| `codex/haw-child-authority` | child proposals | HAW-CHD-003 authority foundation | Separate signed stage credentials and exact route confinement; focused auth race tests and package lint pass |
-| `codex/haw-child-lineage` | child authority | HAW-CHD-003 custody | Atomic lineage/start receipt/cancellation fence, slot and count limits, production retention; queue race tests pass |
-| `codex/haw-child-workspace` | child lineage | HAW-CHD-004 mechanics | Filtered snapshots, isolated forks and merge/replace/discard preparation; Git integration tests pass |
-| `codex/haw-child-validation-cli` | child workspace | HAW-CHD-002 author surface | Real `workflow validate-child` command, trusted configured parent selection, diagnostics and read-only command tests |
-| `codex/haw-child-attempt-custody` | child validation CLI | HAW-CHD-003 revocation | Durable current-attempt binding, transactional acceptance fence, bounded retention; race tests and lint pass |
-| `codex/haw-child-submission` | child attempt custody | HAW-CHD-002/003 service | Live trusted authority, repeated validation, atomic exact-source custody and status; integrated race tests pass |
-| `codex/haw-child-http` | child submission | HAW-CHD-003 transport | Closed bounded request bodies, exact signed-origin routes and unavailable-service refusal; focused HTTP tests pass |
-| `codex/haw-child-origin` | child HTTP | HAW-CHD-003 attempt identity | Atomic stage-start sequence binds occurrence and attempt across retry/recovery; journal and runner tests pass |
-| `codex/haw-child-service-adapter` | child origin | HAW-CHD-003 service adapter | Real signed credential, router and SQLite submission path; in-process HTTP race tests pass |
-| `codex/haw-child-run-identity` | child service adapter | HAW-CHD-003 execution identity | Closed journal lineage contract, stable child run identity and resume propagation; journal/runner tests pass |
-| `codex/haw-child-mcp` | child run identity | HAW-CHD-002/003 agent tools | Conditional validate/start/status tools with safe file reads and private runtime credentials; MCP/harness tests and lint pass |
-| `codex/haw-child-stage-grants` | child MCP | HAW-CHD-003 credential lifetime | Launcher grant acquisition, durable ownership/revocation and harness cleanup; focused race tests and lint pass |
-| `codex/haw-child-dispatch` | child stage grants | HAW-CHD-003 execution custody | Typed dispatch, retained-source recompilation and journal reconciliation; queue recovery tests pass; launcher installation remains pending |
-
-| `codex/haw-child-capacity` | `codex/haw-child-daemon` | HAW-CHD-003/005 | Scheduler race tests; normal budget and concurrency limits |
-| `codex/haw-child-snapshot-custody` | `codex/haw-child-capacity` | HAW-CHD-004 | SQLite reopen, corruption, retention and Git integration tests |
-| `codex/haw-child-runtime-acceptance` | `codex/haw-child-snapshot-custody` | HAW-CHD-003 | Configured archive-to-harness acceptance and concurrent reload race tests |
-| `codex/haw-child-results` | `codex/haw-child-runtime-acceptance` | HAW-CHD-004 | Committed and dirty child changes retained against original fork; bounded family retention |
-| `codex/haw-child-parent-suspension` | `codex/haw-child-results` | HAW-CHD-005 | Scheduler capacity and restart ownership race tests |
-| `codex/haw-child-writer-custody` | `codex/haw-child-parent-suspension` | HAW-CHD-004/005 | Process-owner proof tests; sandbox verifies fail-closed Darwin inventory refusal |
-| `codex/haw-child-disposition-apply` | `codex/haw-child-writer-custody` | HAW-CHD-004 | Git/race tests for merge, replace, discard, partial application, intervening edits and slot release |
-| `codex/haw-child-disposition-tools` | `codex/haw-child-disposition-apply` | HAW-CHD-002/004 | Signed HTTP request-to-host-ack test, conditional MCP tools, Go/TS wire contract tests |
-| `codex/haw-child-launcher` | `codex/haw-child-disposition-tools` | HAW-CHD-003/005 | Real queue-to-Runner publication, cancellation barrier and capacity race tests |
-| `codex/haw-child-lifecycle` | `codex/haw-child-launcher` | HAW-CHD-003/004/005 | Journal-only crash recovery, cancellation, source pins, terminal result and registry custody tests |
-| `codex/haw-interactive-policy` | `codex/haw-child-lifecycle` | HAW-HITL-001/002 | Per-gaggle authorization, verified groups, exact credential scope, reload fencing, daemon route and portal contract tests |
-| `codex/haw-child-parent-continuation` | `codex/haw-interactive-policy` | HAW-CHD-005 | Serial runner wait/continuation and Git workspace recovery tests; adapter installation pending |
-
-| `codex/haw-child-storage-reservations` | `codex/haw-stack-review-status` | HAW-CHD-003/005 | Maximum-size completion survives intake saturation; reserved capacity is shared |
-| `codex/haw-child-startup-suspension` | `codex/haw-child-storage-reservations` | HAW-CHD-005 | Validated waiting parents restore without a runnable permit |
-| `codex/haw-child-recovery-deferral` | `codex/haw-child-startup-suspension` | HAW-CHD-005 | Refused generated recovery remains visible without blocking ordinary daemon startup |
-| `codex/haw-interactive-interventions` | `codex/haw-child-recovery-deferral` | HAW-HITL-002/003 | Actual human API/daemon/portal decisions and saved shared guidance; focused race and portal tests pass |
-| `codex/haw-event-receipts` | `codex/haw-interactive-interventions` | HAW-EVT-001/007 foundation | Scoped receipts, immutable route snapshots, no-match success, reservations and production pruning; race/steady-state tests pass |
-| `codex/haw-child-handoff-adapter` | `codex/haw-event-receipts` | HAW-CHD-004/005 | Real daemon handoff, credential path exclusion, retained policy, wait deadline accounting and capacity block tests |
-| `codex/haw-child-shared-wait-projection` | `codex/haw-child-handoff-adapter` | HAW-CHD-005 | Journal-owned bounded projection removes scheduler/runner integration import cycle |
-| `codex/haw-child-process-evidence` | `codex/haw-child-shared-wait-projection` | HAW-CHD-004/005 | Actual generated task/reviewer/shell writer scopes retain join evidence; native process containment is still insufficient |
+| Head | Base | Slice |
+|---|---|---|
+| `codex/haw-program-design` | `codex/hitl-advanced-workflows` | Scope human operations and advanced workflows |
+| `codex/haw-child-design` | `codex/haw-program-design` | Design agent-authored child workflows |
+| `codex/haw-hitl-design` | `codex/haw-child-design` | Design interactive factory operations |
+| `codex/haw-events-design` | `codex/haw-hitl-design` | Design gaggle events and durable start queues |
+| `codex/haw-backlog-design` | `codex/haw-events-design` | Design source-owned backlog and objective workbench |
+| `codex/haw-child-admission` | `codex/haw-backlog-design` | docs: track the local design and child admission stack |
+| `codex/haw-child-proposals` | `codex/haw-child-admission` | feat(childworkflow): validate generated proposals against pinned parent policy |
+| `codex/haw-child-authority` | `codex/haw-child-proposals` | feat(auth): isolate stage grants for child workflow operations |
+| `codex/haw-child-lineage` | `codex/haw-child-authority` | refactor(triggerqueue): simplify child custody transactions |
+| `codex/haw-child-workspace` | `codex/haw-child-lineage` | Add isolated child workspace snapshots and disposition preparation |
+| `codex/haw-child-validation-cli` | `codex/haw-child-workspace` | feat(cli): validate child proposals against configured parent policy |
+| `codex/haw-child-attempt-custody` | `codex/haw-child-validation-cli` | feat(triggerqueue): fence child acceptance by active stage grant |
+| `codex/haw-child-submission` | `codex/haw-child-attempt-custody` | docs: record child custody and implementation review stack |
+| `codex/haw-child-http` | `codex/haw-child-submission` | refactor(recovery): remove obsolete snapshot wrappers |
+| `codex/haw-child-origin` | `codex/haw-child-http` | Bind child workflow origins to durable stage attempts |
+| `codex/haw-child-service-adapter` | `codex/haw-child-origin` | feat(childworkflow): connect signed HTTP operations to durable custody |
+| `codex/haw-child-run-identity` | `codex/haw-child-service-adapter` | feat(journal): pin generated child invocation lineage |
+| `codex/haw-child-mcp` | `codex/haw-child-run-identity` | feat(mcpio): expose scoped child workflow tools to opted-in stages |
+| `codex/haw-child-stage-grants` | `codex/haw-child-mcp` | feat(childworkflow): bind stage grants to harness invocation lifetime |
+| `codex/haw-child-dispatch` | `codex/haw-child-stage-grants` | feat(queue): add typed child dispatch and journal reconciliation |
+| `codex/haw-child-parent-budget` | `codex/haw-child-dispatch` | feat(childworkflow): pin parent workflow admission identity |
+| `codex/haw-child-workspace-adoption` | `codex/haw-child-parent-budget` | runner: adopt trusted child forks without resetting workspace state |
+| `codex/haw-child-journal-authority` | `codex/haw-child-workspace-adoption` | feat(childworkflow): expose pinned effective policy digest |
+| `codex/haw-child-pinned-admission` | `codex/haw-child-journal-authority` | feat(childworkflow): load pinned stage authority from applied configuration |
+| `codex/haw-child-daemon` | `codex/haw-child-pinned-admission` | feat(childworkflow): wire daemon authority and policy revocation |
+| `codex/haw-child-capacity` | `codex/haw-child-daemon` | Reserve generated children against parent budgets |
+| `codex/haw-child-snapshot-custody` | `codex/haw-child-capacity` | Retain bounded parent snapshots for isolated launch |
+| `codex/haw-child-runtime-acceptance` | `codex/haw-child-snapshot-custody` | Exercise actual harness authority and reload fencing |
+| `codex/haw-child-results` | `codex/haw-child-runtime-acceptance` | Retain verified terminal workspace results |
+| `codex/haw-child-parent-suspension` | `codex/haw-child-results` | Suspend waiting parent concurrency without refunding budgets |
+| `codex/haw-child-writer-custody` | `codex/haw-child-parent-suspension` | Require writer termination evidence before handoff |
+| `codex/haw-child-disposition-apply` | `codex/haw-child-writer-custody` | Persist and recover parent workspace dispositions |
+| `codex/haw-child-disposition-tools` | `codex/haw-child-disposition-apply` | Expose durable child disposition requests |
+| `codex/haw-child-launcher` | `codex/haw-child-disposition-tools` | Launch queued children through pinned runtime and shared admission |
+| `codex/haw-child-lifecycle` | `codex/haw-child-launcher` | Reconcile family custody, retained recovery and terminal results |
+| `codex/haw-interactive-policy` | `codex/haw-child-lifecycle` | Add explicit gaggle human policy and credential selection |
+| `codex/haw-child-parent-continuation` | `codex/haw-interactive-policy` | Retain durable child waits and resume exact parent custody |
+| `codex/haw-stack-review-status` | `codex/haw-child-parent-continuation` | docs: record child continuation and interactive policy review progress |
+| `codex/haw-child-storage-reservations` | `codex/haw-stack-review-status` | Reserve completion storage when accepting a generated child |
+| `codex/haw-child-startup-suspension` | `codex/haw-child-storage-reservations` | Restore parked parents without holding their child execution slot |
+| `codex/haw-child-recovery-deferral` | `codex/haw-child-startup-suspension` | Keep refused generated recovery actionable without blocking daemon startup |
+| `codex/haw-interactive-interventions` | `codex/haw-child-recovery-deferral` | Add authorized run decisions and shared guidance in the portal |
+| `codex/haw-event-receipts` | `codex/haw-interactive-interventions` | Retain scoped event receipts with replay and bounded maintenance |
+| `codex/haw-child-handoff-adapter` | `codex/haw-event-receipts` | Wire child handoff to daemon workspace custody and capacity |
+| `codex/haw-child-shared-wait-projection` | `codex/haw-child-handoff-adapter` | Share durable child wait projection without scheduler runner import cycle |
+| `codex/haw-child-process-evidence` | `codex/haw-child-shared-wait-projection` | Retain process join evidence for generated workspace writers |
+| `codex/haw-integrated-progress` | `codex/haw-child-process-evidence` | Track integrated human actions and event receipt progress |
+| `codex/haw-restart-source-access` | `codex/haw-integrated-progress` | Fence restart source checks under explicit interactive identity |
+| `codex/haw-child-credential-ceiling` | `codex/haw-restart-source-access` | Bind child credential delegation to accepted source and current policy |
+| `codex/haw-child-disposition-recovery` | `codex/haw-child-credential-ceiling` | Recover child disposition requests with exact revision checks |
+| `codex/haw-stage-restart` | `codex/haw-child-disposition-recovery` | Restore affected stages in immutable human restart epochs |
+| `codex/haw-child-production-launcher` | `codex/haw-stage-restart` | Install daemon child launcher and isolated execution driver |
+| `codex/haw-restart-authority` | `codex/haw-child-production-launcher` | Retain authenticated human identity with restart epochs |
+| `codex/haw-restart-admission` | `codex/haw-restart-authority` | Admit human restarts with current source policy |
+| `codex/haw-child-scoped-blobs` | `codex/haw-restart-admission` | Bound generated child artifact custody |
+| `codex/haw-child-isolated-pod` | `codex/haw-child-scoped-blobs` | Execute isolated child stages and return verified trees |
+| `codex/haw-child-retained-kit` | `codex/haw-child-isolated-pod` | Compose generated execution kits from retained source |
+| `codex/haw-child-blob-plane` | `codex/haw-child-retained-kit` | Scope pod artifact access to authenticated child lineage |
+| `codex/haw-child-cancellation` | `codex/haw-child-blob-plane` | Preserve isolated child workspace custody through cancellation |
+| `codex/haw-restart-recovery` | `codex/haw-child-cancellation` | Recover human restart epochs with current interactive authority |
+| `codex/haw-contained-pod-tokens` | `codex/haw-restart-recovery` | Separate contained pod authority from ordinary run tokens |
+| `codex/haw-interactive-execution` | `codex/haw-contained-pod-tokens` | Execute and recover human restarts with interactive credentials |
+| `codex/haw-parent-authority` | `codex/haw-interactive-execution` | Bind contained parent authority and execution custody |
+| `codex/haw-contained-launcher` | `codex/haw-parent-authority` | Install contained child factories and recover parent secret delivery |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
@@ -94,10 +116,12 @@ Recovery adopts the held checkout across a crash; watchdogs recognize child wait
 
 **General child opt-in execution remains refused.** Remaining delivery gates:
 
-- Finish production launcher installation with a supported isolated execution backend.
-  The daemon handoff and startup reconciliation now exist. Process-tree census
-  alone cannot prove that a reparented process stopped; exact pod containment and
-  terminal evidence are being implemented before enabling child writes.
+- Complete contained parent admission and crash reconciliation. The child factory
+  now builds retained kits and dispatches isolated Linux worker pods through the
+  existing Temporal transport. Signed parent contracts, scoped HTTP planes and
+  returned-workspace import are implemented. General opt-in remains gated while
+  exact child attempt isolation and parent recovery are connected. See
+  [contained attempt contract](reference/contained-workflow-attempts.md).
 - Verify explicit PR publication delegation against the actual credential surface,
   including ambient credentials and model credentials that also authorize GitHub.
 - Allow safe disposal after execution policy narrows and changing a conflicted
@@ -131,9 +155,15 @@ callbacks against reload. New actions are not advertised as usable until their
 handlers exist. The shared portal now exposes sequence-bound approval, override
 and denial decisions plus saved shared guidance, attributed to the authenticated
 human. Real daemon-to-runner and portal-client tests cover those actions.
-Fresh affected-stage allowances and executable settled-run continuations are in
-progress. Transient sessions, backlog edits, PR repair and continuation of sealed
-child results remain acceptance work. Saved guidance alone is explicitly labeled
+The daemon now installs a dedicated interactive restart driver for supported local
+DSL 3.1 agent/reviewer stages. A restart uses the selected saved guidance, a new
+linked execution, fresh affected-stage retry/repass allowances and independently
+selected model/code/backlog credentials. Recovery reuses that epoch and rechecks
+current policy; ordinary automation runners cannot execute it. Composed HTTP-to-
+runner acceptance covers retries, recovery, duplicate requests, redaction and
+source-journal preservation with only provider transport and model execution
+simulated. Transient sessions, backlog edits, PR repair, paused-stage fresh
+allowances, parallel restarts and sealed-child continuation remain acceptance work. Saved guidance alone is explicitly labeled
 as saved; it is not described as delivered or resumed.
 
 ### Events — receipt foundation implemented; routing remains pending
@@ -169,9 +199,10 @@ package-audit DNS and existing socket-listener tests are restricted in this sess
 Darwin process inventory is also restricted, so that integration fixture verifies
 refusal and writer cleanup; successful native capture needs an unrestricted host.
 
-Before publication, add the required unique command-growth justification to each
-older affected review branch and recheck the stack bases. The legacy baseline file
-must not be repinned for normal growth. Local draft descriptions and recovery
+The earlier branches have been restacked with unique command-growth declarations;
+the first 58 review gates passed. New slices include their own declarations and
+are checked against their intended bases. The complexity gate remains at the
+existing 185-function budget; its baseline has not been widened. Local draft descriptions and recovery
 bundles are maintained separately; no remote PR exists yet.
 
 ## Publication mapping

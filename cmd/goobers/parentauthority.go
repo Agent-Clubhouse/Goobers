@@ -100,7 +100,7 @@ func (s *daemonCredentialService) AcquireChildWorkflowAccess(ctx context.Context
 	if err != nil {
 		return httpapi.ChildWorkflowAccessResponse{}, err
 	}
-	access, revoke, err := s.children.Acquire(ctx, env, s.shared)
+	access, revoke, err := s.children.AcquireForContainedPod(ctx, env, s.shared)
 	if err != nil {
 		return httpapi.ChildWorkflowAccessResponse{}, err
 	}

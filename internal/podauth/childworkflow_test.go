@@ -158,3 +158,21 @@ func TestChildGrantReservedPrefixNeverFallsBack(t *testing.T) {
 		t.Fatal("expired child grant reached fallback or authenticated")
 	}
 }
+
+func TestChildGrantRecoveryRetainsExactExpiryAndNonce(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	key := grantKey(t, 7, &now)
+	token, grant, err := key.MintChildWorkflowGrant(childGrantFixture(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	recovered, err := key.RecoverChildWorkflowGrant(grant)
+	if err != nil || recovered != token {
+		t.Fatalf("recovery changed bearer: %v", err)
+	}
+	now = grant.ExpiresAt
+	if _, err = key.RecoverChildWorkflowGrant(grant); err == nil {
+		t.Fatal("expired grant recovered")
+	}
+}

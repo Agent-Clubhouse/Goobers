@@ -19,8 +19,10 @@ supply a different policy, actor or parent occurrence.
 with `Cache-Control: no-store`. The token is registered for redaction before
 return. `DELETE` on the same route revokes that occurrence's matching attempt.
 An old attempt cannot revoke its replacement. The pod closes access when its
-harness returns. Failed or uncertain acquire responses are not an instruction
-to start another child; the durable occurrence remains authoritative.
+harness returns. Retrying an uncertain exchange recovers the same live grant
+nonce and expiry after checking current authority; it does not extend the grant.
+Revoked, cancelled or replaced attempts cannot recover it. No bearer is stored
+at rest. The durable occurrence remains authoritative for child invocation.
 
 The parent credential resolver reconstructs its archived task and current gaggle
 policy. The initial contained lane delivers model credentials only. Provider,

@@ -79,6 +79,22 @@ func (s *SignedKey) MintChildWorkflowGrant(grant ChildWorkflowGrant, ttl time.Du
 	return ChildWorkflowGrantPrefix + payload + "." + s.sign(childWorkflowMACDomain+payload), grant, nil
 }
 
+// RecoverChildWorkflowGrant signs trusted retained claims without changing their
+// nonce or expiry. The caller must verify live durable ownership before delivery.
+// This supports a lost HTTP delivery without storing bearer tokens at rest.
+func (s *SignedKey) RecoverChildWorkflowGrant(grant ChildWorkflowGrant) (string, error) {
+	nonce, err := base64.RawURLEncoding.DecodeString(grant.ID)
+	if err != nil || len(nonce) != 16 || !validChildWorkflowClaims(grant) || !grant.ExpiresAt.After(s.now()) || grant.ExpiresAt.After(s.now().Add(MaxChildWorkflowGrantTTL)) || !grant.ExpiresAt.Equal(grant.ExpiresAt.Truncate(time.Second)) {
+		return "", ErrInvalidChildWorkflowGrant
+	}
+	raw, err := json.Marshal(childWorkflowPayload{ChildWorkflowGrant: grant, Exp: grant.ExpiresAt.Unix()})
+	if err != nil {
+		return "", err
+	}
+	payload := base64.RawURLEncoding.EncodeToString(raw)
+	return ChildWorkflowGrantPrefix + payload + "." + s.sign(childWorkflowMACDomain+payload), nil
+}
+
 // VerifyChildWorkflowGrant authenticates bounded, closed claims. It does not
 // check the live occurrence lease, cancellation fence or current authorization.
 func (s *SignedKey) VerifyChildWorkflowGrant(token string) (ChildWorkflowGrant, error) {

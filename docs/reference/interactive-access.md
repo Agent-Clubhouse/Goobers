@@ -5,8 +5,8 @@ sources. The two sources resolve independently through their named interactive
 credentials; repository access never supplies a missing backlog identity. The
 callback may verify source state and accept a restart while policy is stable.
 Asynchronous execution needs its own interactive credential binding and must not
-retain these callback-scoped credentials. This prerequisite does not itself
-enable the Restart action.
+retain these callback-scoped credentials. The daemon also installs the dedicated execution and recovery adapters for the
+supported local backend described below.
 
 Interactive access is opt-in per gaggle. Existing monitoring retains its instance
 role behavior. New interactive sessions, provider-backed browsing and writes
@@ -17,8 +17,8 @@ use the interactive permission route.
 The current implementation provides policy authorization, named credential
 selection, `GET /api/v1/gaggles/{gaggle}/interactive-capabilities`, and a shared
 portal surface for local run gate decisions and saved guidance. Sessions, live
-agent steering and source editing remain unavailable. Stage restart requires
-an installed interactive execution adapter; its daemon capability defaults off. The permission response separates `authorized`,
+agent steering and source editing remain unavailable. The daemon installs stage restart support with its dedicated interactive execution
+adapter when the runner registry is available; unsupported targets are refused. The permission response separates `authorized`,
 `credentialConfigured` and `available`; `run.intervene` is implemented. `run.restartStage` is advertised only after the
 daemon installs its execution adapter. The run service checks target support.
 

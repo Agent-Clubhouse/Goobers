@@ -75,6 +75,9 @@ func (s *GrantIssuer) Acquire(ctx context.Context, env apiv1.InvocationEnvelope)
 		err = ErrAuthorityChanged
 	}
 	if err == nil {
+		err = s.Queue.CheckChildParentOpen(ctx, binding.ChildParent)
+	}
+	if err == nil {
 		err = ctx.Err()
 	}
 	if err != nil {

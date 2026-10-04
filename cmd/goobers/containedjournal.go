@@ -61,6 +61,7 @@ func parentJournalRequest(a parentAttemptCustody, req livejournal.EmitRequest) (
 	}
 	req.Ops = append([]livejournal.Op(nil), req.Ops...)
 	for i, op := range req.Ops {
+		op = normalizeContainedJournalStage(op, a.contract.Identity.RunID, a.contract.Stage, a.contract.Attempt)
 		if err := parentJournalOp(a, op); err != nil {
 			return req, err
 		}
@@ -79,6 +80,41 @@ func parentJournalRequest(a parentAttemptCustody, req livejournal.EmitRequest) (
 		req.Ops[i] = op
 	}
 	return req, nil
+}
+
+// Harness observations use either the task ID or bare stage. Only the exact
+// contract run prefix is normalized; another run's task ID remains invalid.
+func normalizeContainedJournalStage(op livejournal.Op, run, stage string, attempt int) livejournal.Op {
+	normalize := func(value string) string {
+		if value == run+":"+stage {
+			return stage
+		}
+		return value
+	}
+	if op.Event != nil {
+		copy := *op.Event
+		copy.Stage = normalize(copy.Stage)
+		if copy.Attempt == 0 {
+			copy.Attempt = attempt
+		}
+		op.Event = &copy
+	}
+	if op.Artifact != nil {
+		copy := *op.Artifact
+		copy.Stage = normalize(copy.Stage)
+		op.Artifact = &copy
+	}
+	if op.Span != nil {
+		copy := *op.Span
+		copy.Stage = normalize(copy.Stage)
+		op.Span = &copy
+	}
+	if op.Checkpoint != nil {
+		copy := *op.Checkpoint
+		copy.Stage = normalize(copy.Stage)
+		op.Checkpoint = &copy
+	}
+	return op
 }
 
 func parentJournalOp(a parentAttemptCustody, op livejournal.Op) error {
