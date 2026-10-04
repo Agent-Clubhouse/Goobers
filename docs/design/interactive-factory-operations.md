@@ -303,8 +303,19 @@ are explicitly unsupported. GitHub `createCommitOnBranch.expectedHeadOid` and AD
 `refUpdates.oldObjectId` provide atomic head comparison. PR-open status is checked before
 that call; neither native primitive atomically compares PR-open status with branch update.
 Provider acknowledgement and a later exact commit observation remain distinct receipt
-facts. These primitives and structured selection alone do not enable repair until the
-shared command ledger, current execution lease, host tools and portal are installed.
+facts. The shared command ledger, current execution lease and private session tools
+now connect to local daemon custody. The host holds `claims.lock`, an admission barrier
+and sorted repository-manager locks through the bounded provider effect and receipt.
+A matching PR-locator claim (including expired or ambiguous claims), active automation,
+retained branch occupancy or an unknown historical worktree root blocks repair.
+Inventory is capped at 4,096 journals/claims and 64 roots; incomplete inventory refuses.
+This first host adapter supports one local daemon with per-stage worktrees. Temporal,
+shared claims, pinned workspaces and custom provider endpoints require a qualified
+ownership adapter and remain refused. It does not fence independent external processes.
+Actual Git integration exercises local branch custody; GitHub/ADO transport tests use
+controlled native HTTP responses. Live provider qualification remains outstanding.
+The human portal picker supplies structured selection separately; the host tools never
+infer repair authority from prose or expose provider credentials to the model.
 Unsupported delivery, denied access, stale revision, expired wait and budget exhaustion
 have distinct typed results and do not degrade into success-shaped responses.
 

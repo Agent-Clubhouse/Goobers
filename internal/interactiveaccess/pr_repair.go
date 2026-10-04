@@ -19,3 +19,6 @@ func (l *ExecutionLease) AuthorizePRRepair(repository apiv1.InteractiveRepositor
 	_, err := selectSource(l.gaggle, l.service.sources, Target{Kind: "repository", Repository: repository})
 	return err
 }
+
+// SetPRRepairAvailable advertises installed host repair custody, never permission.
+func (s *Service) SetPRRepairAvailable(available bool) { s.prRepairAvailable.Store(available) }

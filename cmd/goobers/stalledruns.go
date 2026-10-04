@@ -125,6 +125,7 @@ func cleanDaemonDowntime(events []journal.Event) []daemonDowntime {
 // swapping the configured fallback runners during config reload.
 type daemonRunnerRegistry struct {
 	childCustody                 map[string]chan struct{}
+	prRepairAdmission            chan struct{}
 	reconcileContained           func(context.Context, journal.RunIdentity) error
 	resolveGeneration            executionGenerationResolver
 	resolveChildGeneration       executionGenerationResolver

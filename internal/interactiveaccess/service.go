@@ -40,6 +40,7 @@ type Service struct {
 	backlogResolveAvailable atomic.Bool
 	repositoryReadAvailable atomic.Bool
 	sourceProposalAvailable atomic.Bool
+	prRepairAvailable       atomic.Bool
 	mu                      sync.RWMutex
 	gaggles                 map[string]*apiv1.Gaggle
 	sources                 map[string]instance.InteractiveCredential
@@ -212,6 +213,8 @@ func (s *Service) operationAvailable(g *apiv1.Gaggle, action apiv1.InteractiveAc
 		return s.backlogResolveAvailable.Load() && s.sessionsAvailable.Load() && workbenchResolvableBacklog(g)
 	case "source.proposeChange":
 		return s.sourceProposalAvailable.Load() && workbenchProposableSource(g)
+	case "pr.repair":
+		return s.prRepairAvailable.Load() && s.sessionsAvailable.Load() && (workbenchSourceKind(g, "documents") || workbenchSourceKind(g, "relationships"))
 	case "repository.read":
 		return s.repositoryReadAvailable.Load() && (workbenchSourceKind(g, "documents") || workbenchSourceKind(g, "relationships"))
 	}

@@ -12,7 +12,7 @@ func (r *daemonRunnerRegistry) acquireChildCustody(runID string) (func(), bool) 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.owners[runID].owner != nil || r.childCustody[runID] != nil {
+	if r.owners[runID].owner != nil || r.childCustody[runID] != nil || r.prRepairAdmission != nil {
 		return func() {}, false
 	}
 	if r.childCustody == nil {
@@ -30,6 +30,9 @@ func (r *daemonRunnerRegistry) lockRunTracking(runID string, compatible bool) bo
 	for {
 		r.mu.Lock()
 		done := r.childCustody[runID]
+		if r.prRepairAdmission != nil {
+			done = r.prRepairAdmission
+		}
 		if done == nil {
 			return true
 		}

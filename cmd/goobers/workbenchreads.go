@@ -21,6 +21,7 @@ func (u *upSession) configureWorkbenchReads() {
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithPRSelection(selection))
 	}
 	u.installWorkbenchProposals(read, factory.RepositoryProposal)
+	u.installSessionPRRepair(factory.PRRepair)
 }
 
 func (u *upSession) installWorkbenchReads(service *workbenchservice.Service) {
