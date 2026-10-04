@@ -39,3 +39,28 @@ func TestSourceSchemasMatchClosedTypedMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestSuggestionSchemaIsClosedAndDoesNotAcceptProducerAuthority(t *testing.T) {
+	v, err := validate.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := workbench.RelationshipSuggestions{SchemaVersion: workbench.SuggestionSchemaVersion, Suggestions: []workbench.RelationshipSuggestion{{
+		Kind: "parent-of", Rationale: "Proposed decomposition for review.",
+		From: workbench.SuggestionEndpoint{Creation: &workbench.SuggestionCreation{SourceBindingID: "backlog", RequestID: "parent"}},
+		To:   workbench.SuggestionEndpoint{Creation: &workbench.SuggestionCreation{SourceBindingID: "backlog", RequestID: "child"}},
+	}}}
+	raw, _ := json.Marshal(artifact)
+	if err := v.ValidateJSON("relationship-suggestions.schema.json", raw); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["origin"] = map[string]any{"runId": "claimed", "stageId": "claimed"}
+	raw, _ = json.Marshal(payload)
+	if err := v.ValidateJSON("relationship-suggestions.schema.json", raw); err == nil {
+		t.Fatal("schema accepted model-authored producer attribution")
+	}
+}

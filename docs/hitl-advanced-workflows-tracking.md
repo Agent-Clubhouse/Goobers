@@ -385,6 +385,11 @@ Bounded metadata previews and source-bound GitHub/ADO draft-PR phase adapters ar
 implemented locally. Their durable custody/service and portal submission path are
 still being installed; provider adapters alone do not publish a portal edit.
 
+The versioned, bounded relationship-suggestion artifact now binds actual producer
+provenance, deduplicates source evidence and holds provisional item references
+until their exact creation receipt exists. Its review storage/portal/command
+installation remains outstanding; suggestions do not become graph edges.
+
 Remaining workbench delivery includes governed repository metadata PRs, supported
 native relationship edits and creation/curation relationship suggestions. Sources
 may reside in any configured gaggle repository. Repository mutations use policy-governed PRs;

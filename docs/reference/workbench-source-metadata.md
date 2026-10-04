@@ -339,3 +339,29 @@ These adapters are not yet an installed portal publication path. Durable proposa
 custody, current-policy checks at each phase, review/submission controls and receipt
 inspection follow in the next slice. The current portal continues to offer source
 reads and native field commands while that installation is completed.
+
+
+## Agent relationship proposal artifact
+
+The embedded `relationship-suggestions` schema and pure parser accept a bounded
+`relationship-suggestions/v1` JSON artifact: at most 100 proposed additions and
+256 KiB. Each proposal names a distinct relationship kind, qualified endpoints, a
+rationale and the source target/revision evidence for each existing endpoint.
+Document evidence pins the configured path, commit, blob and content digest.
+These are claims to check against fresh authorized source reads before acceptance.
+
+The host binds actual run, stage, attempt, artifact path and digest separately;
+model output cannot claim that provenance. Identical relationships and evidence
+deduplicate across runs independently of rationale text. A changed evidence revision
+creates a new review candidate without changing the eventual relationship ID.
+
+A provisional work item names a creation request in the producing execution
+occurrence. It cannot become a source node until the host supplies a confirmed
+creation receipt for that exact request and occurrence. No guessed issue number,
+URL or model-supplied receipt resolves it. Rejection is a review decision and never
+removes an existing edge.
+
+This slice provides the artifact contract and pure binding/materialization helpers.
+Workflow ingestion, retained review decisions, portal accept/reject and source
+command submission remain separate installation work. Suggestions are not input
+to the authoritative graph projector and grant no source permission.

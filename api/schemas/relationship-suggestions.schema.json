@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/relationship-suggestions.schema.json",
+  "title": "RelationshipSuggestions",
+  "description": "Bounded agent proposals. Source observations are claims to revalidate; producer identity comes from the host artifact journal. No proposal is an accepted graph edge.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "relationship-suggestions/v1"
+    },
+    "suggestions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/suggestion"
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "suggestions"
+  ],
+  "$defs": {
+    "endpoint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ref": {
+              "$ref": "workbench-source.schema.json#/$defs/node"
+            },
+            "evidence": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "sourceTargetDigest": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "nativeRevision": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "required": [
+                    "sourceTargetDigest",
+                    "nativeRevision"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "sourceTargetDigest": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    },
+                    "repositoryRevision": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "commit": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{40}$"
+                        },
+                        "blobId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{40}$"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "required": [
+                        "commit",
+                        "blobId",
+                        "contentDigest"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sourceTargetDigest",
+                    "path",
+                    "repositoryRevision"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "ref",
+            "evidence"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "creation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sourceBindingId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+                },
+                "requestId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "sourceBindingId",
+                "requestId"
+              ]
+            }
+          },
+          "required": [
+            "creation"
+          ]
+        }
+      ]
+    },
+    "suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "parent-of",
+            "blocked-by",
+            "contributes-to",
+            "references",
+            "milestone-member",
+            "implemented-by"
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "to": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "kind",
+        "from",
+        "to",
+        "rationale"
+      ]
+    }
+  }
+}
