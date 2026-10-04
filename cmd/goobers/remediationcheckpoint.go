@@ -1784,26 +1784,46 @@ func (env *remediationCheckpointRunEnv) collectStructuralCollisions() ([]structu
 	return collisions, 0, true
 }
 
+// observeOnce is stabilize's single-read path for providers whose live reads
+// do not need re-validation: one digest (unless forced) plus the comment thread.
+func (env *remediationCheckpointRunEnv) observeOnce(mode remediationCheckpointMode) (remediationCheckpointObservation, int, bool) {
+	var observation remediationCheckpointObservation
+	if !mode.forced {
+		digest, _, code, ok := env.checkoutAndDigest(mode, false, false, false)
+		if !ok {
+			return observation, code, false
+		}
+		observation.digest = digest
+	}
+	comments, err := env.transport.ListComments(env.ctx)
+	if err != nil {
+		return observation, failProviderStage(env.stderr, fmt.Sprintf("list %s on PR #%d", env.features.CommentNoun, env.selectedNumber), err, ""), false
+	}
+	observation.comments = comments
+	return observation, 0, true
+}
+
+// refreshEvaluatedBaseSHA re-resolves the live-base fallback after a stabilize
+// read and reports whether it moved. A rebase-provided base is fixed for the
+// cycle and forced checkpoints never compare digests, so neither re-resolves.
+func (env *remediationCheckpointRunEnv) refreshEvaluatedBaseSHA(mode remediationCheckpointMode) (bool, int, bool) {
+	if mode.forced || env.evaluatedBaseFixed {
+		return false, 0, true
+	}
+	previous := env.evaluatedBaseSHA
+	if code, ok := env.resolveEvaluatedBaseSHA(mode); !ok {
+		return false, code, false
+	}
+	return env.evaluatedBaseSHA != previous, 0, true
+}
+
 // stabilize reads the checkpoint's inputs (branch digest, structural
 // collisions, comment thread) and re-reads them until the PR's head and base
 // stop moving underneath the read, so the recorded state pairs one head/base
 // with the digest actually computed for it.
 func (env *remediationCheckpointRunEnv) stabilize(mode remediationCheckpointMode) (remediationCheckpointObservation, int, bool) {
 	if !env.features.StabilizeLiveReads {
-		var observation remediationCheckpointObservation
-		if !mode.forced {
-			digest, _, code, ok := env.checkoutAndDigest(mode, false, false, false)
-			if !ok {
-				return observation, code, false
-			}
-			observation.digest = digest
-		}
-		comments, err := env.transport.ListComments(env.ctx)
-		if err != nil {
-			return observation, failProviderStage(env.stderr, fmt.Sprintf("list %s on PR #%d", env.features.CommentNoun, env.selectedNumber), err, ""), false
-		}
-		observation.comments = comments
-		return observation, 0, true
+		return env.observeOnce(mode)
 	}
 
 	const maxCheckpointRefreshes = 3
@@ -1852,13 +1872,9 @@ func (env *remediationCheckpointRunEnv) stabilize(mode remediationCheckpointMode
 		headChanged := lateCurrent.Head != env.current.Head || lateCurrent.HeadSHA != env.current.HeadSHA
 		baseChanged := lateCurrent.Base != env.current.Base || lateCurrent.BaseSHA != env.current.BaseSHA
 		env.current = &lateCurrent
-		evaluatedBaseChanged := false
-		if !mode.forced && !env.evaluatedBaseFixed {
-			previousEvaluatedBaseSHA := env.evaluatedBaseSHA
-			if code, ok := env.resolveEvaluatedBaseSHA(mode); !ok {
-				return observation, code, false
-			}
-			evaluatedBaseChanged = env.evaluatedBaseSHA != previousEvaluatedBaseSHA
+		evaluatedBaseChanged, code, ok := env.refreshEvaluatedBaseSHA(mode)
+		if !ok {
+			return observation, code, false
 		}
 		if !mode.forced && (headChanged || baseChanged || evaluatedBaseChanged) {
 			forceHeadRefresh = headChanged
