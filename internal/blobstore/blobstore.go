@@ -157,6 +157,10 @@ func (d *Dir) Has(ctx context.Context, digest string) (bool, error) {
 // to simulate filesystems (CIFS nounix) whose chmod always fails.
 var chmodStaged = os.Chmod
 
+// linkStaged is the hard-link primitive for the no-clobber publish; tests
+// replace it to simulate mounts without hard links (CIFS nounix).
+var linkStaged = os.Link
+
 // Put writes data under digest, or does nothing if it is already present.
 //
 // The write is staged and renamed rather than written in place. Two workers on
@@ -192,7 +196,7 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	// Best-effort mode: the production store is an Azure Files CIFS mount
 	// (nounix) where chmod always returns EPERM. Blobs are content-addressed
 	// and not secret-bearing, and never chmodded before the durable writer.
-	options := []durability.Option{durability.WithTempPattern(".put-*"), durability.WithBestEffortMode(), durability.WithChmod(chmodStaged)}
+	options := []durability.Option{durability.WithTempPattern(".put-*"), durability.WithBestEffortMode(), durability.WithChmod(chmodStaged), durability.WithLink(linkStaged)}
 	if !repairCorrupt {
 		options = append(options, durability.WithPublishRaceCheck(func(string) error {
 			_, err := d.Get(ctx, digest)
