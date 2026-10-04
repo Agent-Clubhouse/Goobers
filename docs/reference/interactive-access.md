@@ -231,3 +231,10 @@ before publication. Publication is refused if the bounded drain cannot prove
 that execution returned; cancellation alone is not treated as revocation
 completion. Recovery must rebuild this dedicated human driver from the durable
 verified principal and current policy, and never select an automation runner.
+
+On daemon recovery, a retained human restart marker selects only the dedicated
+interactive driver. Recovery uses the epoch's immutable context and existing
+allowance; it does not prepare another continuation. The current human gaggle
+permission and workflow enablement are checked again. A refused continuation
+remains inspectable, releases its reconstructed execution permit, and does not
+prevent unrelated gaggles from starting.

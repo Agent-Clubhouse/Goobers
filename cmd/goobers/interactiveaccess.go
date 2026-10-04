@@ -14,6 +14,14 @@ func (u *upSession) configureInteractiveAccess() error {
 		return err
 	}
 	u.setup.InteractiveAccess = service
+	if u.setup.RunnerRegistry != nil {
+		if u.setup.InteractiveRestartExecution == nil {
+			u.setup.InteractiveRestartExecution = u.setup.buildInteractiveRestartExecution
+		}
+		if u.setup.InteractiveRestartRecovery == nil {
+			u.setup.InteractiveRestartRecovery = u.setup.buildInteractiveRestartIdentity
+		}
+	}
 	if u.setup.InteractiveRestartRecovery != nil && u.setup.RunnerRegistry != nil {
 		u.setup.RunnerRegistry.setInteractiveGenerationResolver(interactiveGenerationResolver(u.l, u.setup, u.setup.InteractiveRestartRecovery))
 	}

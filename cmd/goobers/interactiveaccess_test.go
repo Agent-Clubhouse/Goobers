@@ -82,3 +82,14 @@ func TestInteractiveDaemonAssemblyPermissionRouteAndCredential(t *testing.T) {
 		t.Fatalf("reload permission=%+v", result)
 	}
 }
+
+func TestInteractiveRestartProductionAssemblyInstallsDedicatedBuilders(t *testing.T) {
+	session := &upSession{}
+	session.setup = &schedulerSetup{Config: &instance.Config{}, Definitions: &instance.ConfigSet{}, SharedRegistry: journal.NewRegistryScrubber(), RunnerRegistry: newDaemonRunnerRegistry()}
+	if err := session.configureInteractiveAccess(); err != nil {
+		t.Fatal(err)
+	}
+	if session.setup.InteractiveRestartExecution == nil || session.setup.InteractiveRestartRecovery == nil || session.setup.RunnerRegistry.resolveInteractiveGeneration == nil {
+		t.Fatal("dedicated restart and recovery builders were not installed")
+	}
+}
