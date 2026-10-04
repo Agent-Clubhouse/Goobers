@@ -38,3 +38,13 @@
 .workbench-map-diagram p, .workbench-map-relations small { font-size: .8rem; }
 .workbench-map-relations li { margin: .8rem 0; }
 .workbench-map-relations small { display: block; margin-top: .25rem; }
+.workbench-editor { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.workbench-editor fieldset { display: grid; gap: .75rem; border: 0; padding: 0; min-width: 0; }
+.workbench-editor label { display: grid; gap: .4rem; font-weight: 600; }
+.workbench-editor textarea, .workbench-editor select { width: 100%; box-sizing: border-box; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: .35rem; padding: .55rem; }
+.workbench-editor textarea { resize: vertical; }
+.workbench-editor fieldset button { justify-self: start; }
+.workbench-editor > button { margin: .5rem .5rem 0 0; }
+.workbench-command { padding: .75rem; margin-top: 1rem; border: 1px solid var(--line); border-radius: .4rem; }
+.workbench-command h5 { font-size: 1rem; margin: 0 0 .5rem; }
+.workbench-command code, .workbench-editor code { overflow-wrap: anywhere; }

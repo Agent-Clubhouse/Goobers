@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
+import { WorkbenchItemEditor } from "./WorkbenchItemEditor";
 import type { BacklogItem, DaemonClient, NativeRelationship, RelationshipCoverageState, SourceView } from "../api/types";
 
 type ItemSelection = Pick<BacklogItem, "ref" | "locator">;
 
 export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavailable }: { client: DaemonClient; gaggle: string; selected: BacklogItem; sources: SourceView[]; unavailable: () => void }) {
   const [item, setItem] = useState<BacklogItem>();
+  const [editableItem, setEditableItem] = useState<BacklogItem>();
   const [revision, setRevision] = useState(0);
   const [related, setRelated] = useState<ItemSelection>();
   useEffect(() => {
@@ -13,7 +15,7 @@ export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavail
     void client.getWorkbenchItem(gaggle, selected.ref.sourceBindingId, { id: selected.locator.id, expectedSourceId: selected.ref.sourceId }, { signal: controller.signal }).then((value) => {
       if (controller.signal.aborted) return;
       if (value.ref.gaggleId !== gaggle || value.ref.sourceBindingId !== selected.ref.sourceBindingId || value.ref.sourceId !== selected.ref.sourceId || value.ref.kind !== "work-item") { unavailable(); return; }
-      setItem(value);
+      setItem(value); setEditableItem(value);
     }).catch(() => { if (!controller.signal.aborted) unavailable(); });
     return () => controller.abort();
     // The selection component is keyed by immutable identity; caller callback changes do not restart reads.
@@ -34,6 +36,7 @@ export function WorkbenchItemDetail({ client, gaggle, selected, sources, unavail
       <ul className="workbench-relations">{item.relationships?.map((relation, index) => <Relationship key={index} relationship={relation} gaggle={gaggle} sources={sources} open={setRelated} />)}</ul>
       {related && <WorkbenchRelatedItem key={`${related.ref.sourceBindingId}:${related.ref.sourceId}`} client={client} gaggle={gaggle} selected={related} close={() => setRelated(undefined)} unavailable={unavailable} />}
     </>}
+    {editableItem && <WorkbenchItemEditor client={client} item={editableItem} refreshed={(value) => { setItem(value); setEditableItem(value); }} />}
   </section>;
 }
 function Relationship({ relationship, gaggle, sources, open }: { relationship: NativeRelationship; gaggle: string; sources: SourceView[]; open: (item: ItemSelection) => void }) {

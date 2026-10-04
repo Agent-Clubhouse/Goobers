@@ -1,5 +1,6 @@
 import type { WorkbenchGraph } from "./workbenchGraphTypes";
 import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
+import type { BacklogWriteCapabilities, BacklogPatchInput, BacklogEditCommand } from "./workbenchWriteTypes";
 import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 import {
   DaemonApiError,
@@ -507,6 +508,21 @@ export class HttpDaemonClient implements DaemonClient {
 
   getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph> {
     return this.getJSON(clientRoutes.workbenchGraph, undefined, options, { gaggle });
+  }
+
+  getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities> {
+    return this.getJSON(clientRoutes.workbenchWriteCapabilities, undefined, options, { gaggle, source });
+  }
+
+  patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand> {
+    return this.withResponse(clientRoutes.workbenchPatch, undefined, options, "application/json", async (response) => {
+      try { return JSON.parse(await response.text()) as BacklogEditCommand; }
+      catch (error) { throw new MalformedResponseError(undefined, { cause: error }); }
+    }, { gaggle, source, item }, { body: JSON.stringify(input), headers: { "Content-Type": "application/json", "Idempotency-Key": key } });
+  }
+
+  getWorkbenchCommand(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<BacklogEditCommand> {
+    return this.getJSON(clientRoutes.workbenchCommand, undefined, options, { gaggle, source, command });
   }
 
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {

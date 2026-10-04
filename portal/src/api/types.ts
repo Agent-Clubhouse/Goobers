@@ -2,6 +2,7 @@ import type { WorkbenchGraph } from "./workbenchGraphTypes";
 export type * from "./workbenchGraphTypes";
 import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
 export type * from "./workbenchDocumentTypes";
+import type { BacklogWriteCapabilities, BacklogPatchInput, BacklogEditCommand } from "./workbenchWriteTypes";
 import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 export type * from "./workbenchTypes";
 export type * from "./workbenchWriteTypes";
@@ -1896,6 +1897,9 @@ export interface RelatedWorkItem {
 
 export interface DaemonClient {
   getWorkbenchGraph(gaggle: string, options?: RequestOptions): Promise<WorkbenchGraph>;
+  getWorkbenchWriteCapabilities(gaggle: string, source: string, options?: RequestOptions): Promise<BacklogWriteCapabilities>;
+  patchWorkbenchItem(gaggle: string, source: string, item: string, key: string, input: BacklogPatchInput, options?: RequestOptions): Promise<BacklogEditCommand>;
+  getWorkbenchCommand(gaggle: string, source: string, command: string, options?: RequestOptions): Promise<BacklogEditCommand>;
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage>;
   getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage>;
   getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage>;
