@@ -78,6 +78,7 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-contained-recovery` | `codex/haw-contained-launcher` | Contained serial parent routing, exact child attempt authority, and durable replacement refusal |
 | `codex/haw-event-subscriptions` | `codex/haw-contained-recovery` | Pin bounded subscriptions and transactionally route debounce groups into durable starts |
 | `codex/haw-worker-reconciliation` | `codex/haw-event-subscriptions` | Retain exact worker attempts, rejoin without launch, and replay the original workspace application plan |
+| `codex/haw-event-configuration` | `codex/haw-worker-reconciliation` | Declare gaggle subscriptions and compile immutable same-gaggle target revisions |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
