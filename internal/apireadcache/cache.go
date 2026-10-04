@@ -30,6 +30,7 @@ package apireadcache
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -66,15 +67,17 @@ var apiReadCacheLocks = newAPIReadCacheLockManager(apiReadCacheMaxLockAcquisitio
 
 // apiReadCacheEntry is one (token-scope, URL)'s cached conditional-GET result.
 type apiReadCacheEntry struct {
-	Continuation string `json:"continuation,omitempty"`
-	ETag         string `json:"etag,omitempty"`
-	LastModified string `json:"lastModified,omitempty"`
-	Link         string `json:"link,omitempty"`        // replayed so pagination survives a 304
-	Type         string `json:"contentType,omitempty"` // replayed Content-Type
-	Body         []byte `json:"body,omitempty"`        // response body; persisted separately from metadata
-	BodyRef      string `json:"bodyRef,omitempty"`
-	Stored       int64  `json:"storedAtUnix"`
-	Snapshot     string `json:"snapshot,omitempty"`
+	ReadProcess       string `json:"readProcess,omitempty"`
+	CompletedSequence uint64 `json:"completedSequence,omitempty"`
+	Continuation      string `json:"continuation,omitempty"`
+	ETag              string `json:"etag,omitempty"`
+	LastModified      string `json:"lastModified,omitempty"`
+	Link              string `json:"link,omitempty"`        // replayed so pagination survives a 304
+	Type              string `json:"contentType,omitempty"` // replayed Content-Type
+	Body              []byte `json:"body,omitempty"`        // response body; persisted separately from metadata
+	BodyRef           string `json:"bodyRef,omitempty"`
+	Stored            int64  `json:"storedAtUnix"`
+	Snapshot          string `json:"snapshot,omitempty"`
 }
 
 func (e apiReadCacheEntry) storedAt() time.Time { return time.Unix(e.Stored, 0) }
@@ -228,9 +231,14 @@ func InvalidateSnapshot(schedulerDir, snapshotID string) error {
 	return cache.withDisk(func(store *apireadstore.Store) error { return store.InvalidateSnapshot(snapshotID) })
 }
 
-// Do implements providers.HTTPClient. Only idempotent GETs are cached; every
-// other method and any error path is a straight pass-through.
+// Do implements providers.HTTPClient. GETs and explicitly declared ADO list
+// reads may share responses; other methods stay on the normal transport path.
 func (c *apiReadCache) Do(req *http.Request) (*http.Response, error) {
+	if c != nil && c.schedulerDir != "" && c.partition != "" && c.provider == providers.ProviderADO {
+		if digest, ok := providers.ADOReadPlanDigest(req); ok {
+			return c.readADOPlan(req, digest)
+		}
+	}
 	if c == nil || c.schedulerDir == "" || req == nil || req.Method != http.MethodGet {
 		return c.do(req)
 	}
@@ -406,8 +414,15 @@ func acquireAPIReadCacheLock(lockPath string, timeout time.Duration, acquire fun
 }
 
 func (m *apiReadCacheLockManager) acquire(lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
+	return m.acquireContext(context.Background(), lockPath, timeout, acquire)
+}
+
+func (m *apiReadCacheLockManager) acquireContext(ctx context.Context, lockPath string, timeout time.Duration, acquire func(string) (*lock.Handle, error)) (*lock.Handle, error) {
 	deadline := time.Now().Add(timeout)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
@@ -424,6 +439,12 @@ func (m *apiReadCacheLockManager) acquire(lockPath string, timeout time.Duration
 			if !owner {
 				continue
 			}
+		case <-ctx.Done():
+			timer.Stop()
+			if owner {
+				attempt.abandon()
+			}
+			return nil, ctx.Err()
 		case <-timer.C:
 			if owner {
 				attempt.abandon()
@@ -440,7 +461,13 @@ func (m *apiReadCacheLockManager) acquire(lockPath string, timeout time.Duration
 		if delay <= 0 {
 			return nil, fmt.Errorf("api read cache lock %q: acquisition timed out after %s", lockPath, timeout)
 		}
-		time.Sleep(delay)
+		timer = time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 

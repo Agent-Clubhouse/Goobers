@@ -124,8 +124,9 @@ func (p *ADOProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReques
 			return nil, err
 		}
 	}
+	ctx = context.WithValue(ctx, adoListReadKey{}, true)
 	var wiql adoWIQLResponse
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &wiql); err != nil {
+	if err := p.do(ctx, http.MethodPost, endpoint, adoWIQLReadRequest{Query: query}, &wiql); err != nil {
 		return nil, err
 	}
 	refs := wiql.WorkItems

@@ -31,7 +31,7 @@ func (s Scope) key() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ScopedClient shares bounded GET snapshots only within one gaggle/source/policy
+// ScopedClient shares bounded GET and declared ADO list-read snapshots within one gaggle/source/policy
 // partition. Provider endpoint, credentials and all representation headers further
 // partition each entry. Missing scope is a pass-through, never a global cache.
 func ScopedClient(directory, snapshot string, scope Scope, provider providers.ProviderKind, inner providers.HTTPClient) providers.HTTPClient {
@@ -94,7 +94,11 @@ func (c *apiReadCache) listRequest(req *http.Request) bool {
 }
 
 func scopedCacheable(req *http.Request) bool {
-	if req.URL == nil || req.URL.User != nil || (req.Body != nil && req.Body != http.NoBody) {
+	return (req.Body == nil || req.Body == http.NoBody) && scopedCacheableHeaders(req)
+}
+
+func scopedCacheableHeaders(req *http.Request) bool {
+	if req.URL == nil || req.URL.User != nil {
 		return false
 	}
 	for _, name := range []string{"Range", "If-None-Match", "If-Modified-Since", "If-Match", "Cache-Control", "Pragma"} {

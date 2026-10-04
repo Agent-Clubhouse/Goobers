@@ -12,9 +12,10 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// ProviderFactory reuses the shared conditional read cache. Interactive reads
-// always revalidate against the provider; they never reuse an hour-long scheduler
-// evaluation snapshot. Authorization precedes this factory on every call.
+// ProviderFactory reuses the shared scoped read cache. Sequential interactive
+// reads revalidate against the provider; concurrent identical ADO list reads may
+// join a live read. They never reuse scheduler evaluation snapshots. Current
+// authorization precedes this factory on every call.
 type ProviderFactory struct {
 	SchedulerDirectory string
 	Client             providers.HTTPClient

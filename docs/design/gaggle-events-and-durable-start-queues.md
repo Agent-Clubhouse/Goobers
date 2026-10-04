@@ -720,5 +720,43 @@ Their GitHub and ADO credentials are still resolved/scrubbed on each provider
 operation; quota decorators and conditional refresh behavior remain intact.
 Tests exercise actual configured ADO auth, credential rotation, retained scheduler
 pins, ordinary shell launch, and no cross-gaggle in-memory refresher reuse.
-ADO WIQL read-plan coordination and batch hydration remain follow-up work. This
-slice does not claim every provider read is centralized.
+ADO list read-plan coordination is delivered by the typed path described below.
+This cache does not centralize every provider operation.
+
+### Delivered ADO list read plans (HAW-EVT-008)
+
+`ADOProvider.ListWorkItems` declares its exact WIQL query and typed batch
+hydration through a private request context. Only these provider-authored list
+reads enter the shared `ScopedClient` path. A URL suffix, HTTP header, or caller
+JSON flag cannot opt an arbitrary POST into caching. Marker scans, create
+idempotency probes, parent lookups, and mutations keep their existing transport
+behavior. Query literals, project routing, API version, candidate limit, cursor,
+batch IDs, expansion, and omission policy remain part of the exact plan.
+
+The existing bounded SQLite response store and per-request locks coordinate
+these reads. Keys include gaggle, binding, generation, exact endpoint, complete
+credential and representation headers, and the request-body digest. Only whole
+bounded successful response envelopes are stored. Hydration preserves omitted
+members and WIQL order; the cache never merges batches or fills missing IDs from
+another response. Errors, rate limits, malformed responses, and explicit fresh
+reads are not replayed. Existing provider retry and Retry-After handling remains
+outside the cache.
+
+An explicit evaluation snapshot permits reuse across ordinary stage processes.
+Without a snapshot, only overlapping requests in the same process may share a
+live read. A process nonce and monotonic sequence prevent completed-response
+reuse on sequential interactive refresh, clock adjustment, or process restart.
+Waiters and bodies are bounded. The caller that owns an HTTP request also owns
+its cancellation; another caller's cancellation cannot cancel it. An owner
+canceled before its response completes does not seed a reusable response or leave
+a background provider request.
+Snapshot invalidation also applies when a provider wrapper is reused.
+
+Production ordinary ADO stage clients and currently authorized workbench/session
+source readers already use this shared wrapper. Each interactive read still
+passes current human policy and resolves its configured source credential before
+cache lookup. Tests exercise the actual ADO provider and interactive service,
+concurrent request counts, source/generation/credential separation, partial
+hydration, fresh reads, revocation, cancellation, and 429 feedback. Existing ADO
+backlog/refill counters remain unsupported; ADO remediation demand intentionally
+remains unsized. This change does not alter those scheduler eligibility rules.
