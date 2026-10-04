@@ -803,11 +803,8 @@ func additionalRepoPaths(workspaces []apiv1.AdditionalWorkspace) map[string]stri
 //complexitygate:allow #4273 guarded-credential-path refusal, see above
 func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun) (outcome apiv1.ResultEnvelope, retErr error) {
 	defer func() { outcome = workspacerevision.NormalizeDeterministicResult(outcome) }()
-	if env.Workspace == "" {
-		// exec.Cmd treats Dir == "" as "run in the daemon's own working
-		// directory" — a silent, surprising fallback (#122) rather than the
-		// fail-closed misconfiguration error an unset workspace should be.
-		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
+	if err := validateShellChildWorkspace(ctx, env); err != nil {
+		return apiv1.ResultEnvelope{}, err
 	}
 	command, commandEnv, cleanup, err := DeterministicCommand(run)
 	if err != nil {

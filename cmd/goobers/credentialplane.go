@@ -102,9 +102,11 @@ func credentialPlaneDefinitionsFromSet(set *instance.ConfigSet) credentialPlaneD
 // daemonCredentialService is the credential plane over the daemon's own
 // credential wiring. It implements httpapi.CredentialService.
 type daemonCredentialService struct {
-	layout instance.Layout
-	config *instance.Config
-	stores credentials.StoreResolver
+	// Installed before serving. Current child authority lease spans materialization.
+	childCredentials func(context.Context, journal.RunIdentity) (*childCredentialLease, error)
+	layout           instance.Layout
+	config           *instance.Config
+	stores           credentials.StoreResolver
 	// shared is the instance-global exact-value scrubber registry. Every
 	// value the plane materializes is registered here (the Injector registers
 	// each value before returning it), which is what makes later journal/log
@@ -214,6 +216,11 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 		return stageResolution{}, err
 	}
 	defer pinned.release()
+	ctx, childLease, err := s.applyChildCredentialCeiling(ctx, pinned)
+	if err != nil {
+		return stageResolution{}, err
+	}
+	defer childLease.release()
 	if mode.deterministicOnly && !pinned.profile.deterministic {
 		return stageResolution{}, credentialPlaneError(http.StatusForbidden, "credential_refresh_agentic_stage",
 			fmt.Sprintf("stage %q is not a deterministic task; mid-stage credential refresh serves deterministic stages only", request.Stage))
@@ -235,6 +242,9 @@ func (s *daemonCredentialService) resolveStage(ctx context.Context, request http
 	}
 	resolved, err := s.mintStageCredentials(ctx, pinned, requested)
 	if err != nil {
+		return stageResolution{}, err
+	}
+	if err := childLease.finish(ctx); err != nil {
 		return stageResolution{}, err
 	}
 	if err := s.journalResolution(pinned, request, mode, requested, resolved.materialized); err != nil {
@@ -364,6 +374,7 @@ func gateRequestedCapabilities(profile stageProfile, request httpapi.CredentialR
 // registered with the shared scrubber registry inside Materialize, BEFORE
 // this returns.
 func (s *daemonCredentialService) mintStageCredentials(ctx context.Context, pinned pinnedStage, requested []string) (stageResolution, error) {
+	requested = credentials.FilterChildCredentialKeys(ctx, requested)
 	connectorCredential, err := s.stageConnectorCredential(ctx, pinned.profile, requested)
 	if err != nil {
 		return stageResolution{}, err

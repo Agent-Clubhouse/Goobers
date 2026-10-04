@@ -47,12 +47,20 @@ func invokeChildWriter[T any](ctx context.Context, required bool, jr journalAppe
 }
 
 func invokeChildDeterministic(ctx context.Context, tf taskFrame, det invoke.Deterministic, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	ctx, err := childCredentialContext(ctx, tf.in)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	return invokeChildWriter(ctx, childWorkspaceWriterRequired(tf.in, tf.t.EffectiveWorkspace()), tf.jr, env, func(owned context.Context) (apiv1.ResultEnvelope, error) {
 		return det.Run(owned, env, *tf.t.Run)
 	})
 }
 
 func invokeChildAgent(ctx context.Context, tf taskFrame, invocation *gooberInvocation, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	ctx, err := childCredentialContext(ctx, tf.in)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
 	return invokeChildWriter(ctx, childWorkspaceWriterRequired(tf.in, tf.t.EffectiveWorkspace()), tf.jr, env, func(owned context.Context) (apiv1.ResultEnvelope, error) {
 		return invocation.Invoke(owned, env)
 	})

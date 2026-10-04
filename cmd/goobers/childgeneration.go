@@ -11,7 +11,6 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/triggerqueue"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -22,31 +21,16 @@ func (l *queuedChildLauncher) resolveGeneration(ctx context.Context, id journal.
 	if id.Child == nil || l.build == nil {
 		return executionGenerationRuntime{}, childworkflow.ErrAuthorityUnavailable
 	}
-	identity := triggerqueue.ChildIdentity{ChildParent: triggerqueue.ChildParent{Gaggle: id.Gaggle, ParentRunID: id.Child.ParentRunID}, StageOccurrence: id.Child.StageOccurrence, InvocationKey: id.Child.InvocationKey}
-	receipt, err := l.queue.ChildStart(ctx, identity)
+	ref, err := l.retainedChildIdentity(ctx, id)
 	if err != nil {
 		return executionGenerationRuntime{}, err
-	}
-	if receipt.State != triggerqueue.Dispatching && receipt.State != triggerqueue.Dispatched {
-		return executionGenerationRuntime{}, errors.New("generated recovery has no claimed start")
-	}
-	service := durableTriggerService{queue: l.queue}
-	ref, err := service.childReference(ctx, receipt)
-	if err != nil {
-		return executionGenerationRuntime{}, err
-	}
-	if ref.Child.RunID != id.RunID || ref.Lineage != *id.Child || ref.Envelope.WorkflowDigest != id.WorkflowDigest || ref.Envelope.Workflow != id.Workflow || ref.Envelope.ConfigGeneration != id.ConfigGeneration {
-		return executionGenerationRuntime{}, errors.New("generated recovery identity differs from accepted source")
-	}
-	if ref.Child.CancellationRequested || ref.Child.State.Terminal() {
-		return executionGenerationRuntime{}, triggerqueue.ErrParentCancelled
 	}
 	a, release, err := l.acquire(ctx, ref.Envelope)
 	if err != nil {
 		return executionGenerationRuntime{}, err
 	}
 	defer release()
-	source, err := l.queue.ChildProposal(ctx, identity)
+	source, err := l.queue.ChildProposal(ctx, ref.Child.Identity)
 	if err != nil {
 		return executionGenerationRuntime{}, err
 	}

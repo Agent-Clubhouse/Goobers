@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/bandit"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
@@ -911,6 +912,8 @@ type StartInput struct {
 	Gaggle string
 	// Child is immutable generated-run provenance, verified before journal creation.
 	Child *journal.ChildLineage
+	// ChildCredentials is host-derived delegation, pinned with the accepted source.
+	ChildCredentials *credentials.ChildCeiling
 	// ChildWorkspace selects a launcher-provisioned managed fork. It is
 	// trusted admission metadata, never a workflow input or arbitrary path.
 	ChildWorkspace *ChildWorkspaceAdmission
@@ -3197,12 +3200,13 @@ func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, st
 }
 
 type gateHeartbeatGoober struct {
-	goober      invoke.Goober
-	runner      *Runner
-	journal     gateHeartbeatJournal
-	stage       string
-	attempt     int
-	childWriter bool
+	goober           invoke.Goober
+	runner           *Runner
+	journal          gateHeartbeatJournal
+	stage            string
+	attempt          int
+	childCredentials *credentials.ChildCeiling
+	childWriter      bool
 }
 
 type gateHeartbeatJournal interface {
@@ -3223,9 +3227,7 @@ func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnv
 		class = journal.AttemptPolicy
 	}
 	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, int(env.Attempt), class)
-	verdict, reviewErr := invokeChildWriter(ctx, g.childWriter, g.journal, env, func(owned context.Context) (apiv1.Verdict, error) {
-		return g.goober.Review(owned, env)
-	})
+	verdict, reviewErr := g.reviewChildCredentials(ctx, env)
 	heartbeatErr := heartbeat.Stop()
 	if heartbeatErr != nil {
 		if repairErr := g.journal.RepairAppendBoundary(); repairErr != nil {
@@ -4755,12 +4757,13 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 			reviewerAttempt := gateEval.Attempts[g.Name] + 1
 			agentInvocation = newGooberInvocation(ag, workspace.ActivateAssetPathGuard, jr, in.RunID, g.Name, reviewerAttempt, gooberName)
 			gateEval.Reviewer = &gate.ReviewerEvaluator{Goober: gateHeartbeatGoober{
-				goober:      agentInvocation,
-				runner:      r,
-				journal:     jr,
-				stage:       g.Name,
-				attempt:     reviewerAttempt,
-				childWriter: childWorkspaceWriterRequired(in, g.EffectiveWorkspace()),
+				goober:           agentInvocation,
+				runner:           r,
+				journal:          jr,
+				stage:            g.Name,
+				attempt:          reviewerAttempt,
+				childCredentials: in.ChildCredentials,
+				childWriter:      childWorkspaceWriterRequired(in, g.EffectiveWorkspace()),
 			}}
 		}
 	}

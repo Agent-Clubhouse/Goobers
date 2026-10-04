@@ -45,6 +45,9 @@ func (a ChildWorkspaceAdmission) validate() error {
 }
 
 func (r *Runner) prepareChildWorkspaceStart(ctx context.Context, in *StartInput, inputs map[string][]byte, integrity map[string]apiv1.Integrity) error {
+	if err := pinChildCredentials(in, inputs, integrity); err != nil {
+		return err
+	}
 	if err := r.validateChildWorkspacePlan(*in); err != nil {
 		return err
 	}
@@ -188,6 +191,9 @@ func PinnedChildWorkspaceAdmission(reader *journal.Reader, id journal.RunIdentit
 }
 
 func (r *Runner) restoreChildWorkspace(ctx context.Context, reader *journal.Reader, id journal.RunIdentity, in *StartInput) error {
+	if err := restoreChildCredentials(reader, id, in); err != nil {
+		return err
+	}
 	admission, err := PinnedChildWorkspaceAdmission(reader, id)
 	if err != nil {
 		return err

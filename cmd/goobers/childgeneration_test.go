@@ -64,7 +64,8 @@ func publishInterruptedChild(t *testing.T, f *actualChildFixture) journal.RunIde
 	defer runtime.release()
 	// Simulate a crash at the exact durable journal handoff boundary. No stage
 	// ran; resume must recover this identity, not allocate another child RunID.
-	_, err = runtime.runner.Start(t.Context(), runner.StartInput{RunID: ref.Child.RunID, Gaggle: ref.Envelope.Gaggle, Machine: proposal.Machine, GooberDigest: runtime.gooberDigest, Child: &ref.Lineage, OnJournalPublished: func() error { return errors.New("simulated handoff crash") }})
+	ceiling := proposal.CredentialCeiling()
+	_, err = runtime.runner.Start(t.Context(), runner.StartInput{RunID: ref.Child.RunID, Gaggle: ref.Envelope.Gaggle, Machine: proposal.Machine, GooberDigest: runtime.gooberDigest, Child: &ref.Lineage, ChildCredentials: &ceiling, OnJournalPublished: func() error { return errors.New("simulated handoff crash") }})
 	if err == nil {
 		t.Fatal("expected interrupted publication")
 	}

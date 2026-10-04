@@ -184,8 +184,9 @@ func (l *queuedChildLauncher) handoff(ctx context.Context, start childExecutionS
 				defer releaseRuntime()
 			}
 			defer untrack()
+			ceiling := start.Proposal.CredentialCeiling()
 			_, runErr := runtime.runner.Start(launchCtx, runner.StartInput{RunID: start.Child.RunID, Machine: runtime.machine, GooberDigest: runtime.gooberDigest,
-				Gaggle: start.Envelope.Gaggle, Child: &start.Lineage, ChildWorkspace: workspace, RepoRef: runtime.repoRef, RunControls: runtime.controls,
+				Gaggle: start.Envelope.Gaggle, Child: &start.Lineage, ChildWorkspace: workspace, ChildCredentials: &ceiling, RepoRef: runtime.repoRef, RunControls: runtime.controls,
 				RequiredCapabilities: runtime.entry.RequiredCapabilities, Trigger: journal.Trigger{Kind: journal.TriggerSignal, Ref: start.Child.AcceptanceID},
 				OnJournalPublished: func() error { close(published); return <-permission },
 			})
