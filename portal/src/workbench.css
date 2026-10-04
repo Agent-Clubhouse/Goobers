@@ -20,3 +20,5 @@
 .workbench-relations button, .workbench-relations a { display: block; margin-top: .4rem; }
 .workbench-detail aside { border: 1px solid var(--border-color, #9ca3af55); padding: 1rem; margin-top: 1rem; }
 @media (max-width: 760px) { .workbench-layout { grid-template-columns: 1fr; } }
+
+.workbench-document-text { font: inherit; overflow-wrap: anywhere; }

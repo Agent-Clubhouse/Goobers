@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DaemonClient, WorkbenchSourcePage } from "../api/types";
 import { WorkbenchBrowser } from "./WorkbenchBrowser";
+import { WorkbenchDocuments } from "./WorkbenchDocuments";
 import "../workbench.css";
 
 export function WorkbenchPanel({ client, gaggle }: { client: DaemonClient; gaggle: string }) {
@@ -31,7 +32,7 @@ function WorkbenchSources({ client, gaggle }: { client: DaemonClient; gaggle: st
       {source && <>
         <p className="workbench-source">{source.owner}{source.project ? ` / ${source.project}` : ""}{source.repository ? ` / ${source.repository}` : ""}{source.branch ? ` · ${source.branch}` : ""}</p>
         {(source.paths?.length ?? 0) > 0 && <p>Configured paths: {source.paths?.join(", ")}</p>}
-        {source.kind === "backlog" ? <WorkbenchBrowser key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} refresh={() => setRevision((value) => value + 1)} /> : <p>Repository source configured. Document browsing is not available in this view yet.</p>}
+        {source.kind === "backlog" ? <WorkbenchBrowser key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} refresh={() => setRevision((value) => value + 1)} /> : source.kind === "documents" || source.kind === "relationships" ? <WorkbenchDocuments key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} refresh={() => setRevision((value) => value + 1)} /> : <p>This source kind is not supported in this view.</p>}
       </>}
     </>}
   </section>;

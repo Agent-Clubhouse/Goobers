@@ -1,3 +1,4 @@
+import type { WorkbenchDocumentPage, WorkbenchDocumentPageRequest } from "./workbenchDocumentTypes";
 import type { BacklogItem, BacklogPage, BacklogItemRequest, BacklogPageRequest, WorkbenchSourcePage } from "./workbenchTypes";
 import {
   DaemonApiError,
@@ -505,6 +506,10 @@ export class HttpDaemonClient implements DaemonClient {
 
   listWorkbenchSources(gaggle: string, options?: RequestOptions): Promise<WorkbenchSourcePage> {
     return this.getJSON(clientRoutes.workbenchSources, undefined, options, { gaggle });
+  }
+
+  getWorkbenchDocuments(gaggle: string, source: string, request?: WorkbenchDocumentPageRequest, options?: RequestOptions): Promise<WorkbenchDocumentPage> {
+    return this.getJSON(clientRoutes.workbenchDocuments, request && { cursor: request.cursor, limit: request.limit }, options, { gaggle, source });
   }
 
   getWorkbenchItems(gaggle: string, source: string, request?: BacklogPageRequest, options?: RequestOptions): Promise<BacklogPage> {

@@ -8,7 +8,7 @@ import { WorkbenchPanel } from "./WorkbenchPanel";
 const sources: WorkbenchSourcePage = { generation: "generation-a", items: [
   { bindingId: "planning", kind: "backlog", provider: "github", owner: "acme", repository: "factory" },
   { bindingId: "roadmap", kind: "backlog", provider: "ado", owner: "acme", project: "Tools" },
-  { bindingId: "strategy", kind: "repository", provider: "github", owner: "acme", repository: "strategy", branch: "main", paths: ["objectives/"] },
+  { bindingId: "strategy", kind: "documents", provider: "github", owner: "acme", repository: "strategy", branch: "main", paths: ["objectives/plan.md"] },
 ] };
 const item: BacklogItem = {
   ref: { gaggleId: "team", sourceBindingId: "planning", kind: "work-item", sourceId: "stable-101" },
@@ -99,7 +99,7 @@ describe("WorkbenchPanel", () => {
     await screen.findByText("Loading item details…");
     await selectSource("strategy");
     resolveOld(item);
-    await screen.findByText(/Document browsing is not available/);
+    await screen.findByText(/Documents are unavailable/);
     expect(screen.queryByText(item.description!)).not.toBeInTheDocument();
   });
   it("discards a stale locator response and a changed source target", async () => {
