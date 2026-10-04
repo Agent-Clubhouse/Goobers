@@ -18,7 +18,8 @@ import (
 // below, so each one lives here once, parameterized by the HTTP seam the
 // calling provider satisfies (#4234). Keeping a per-provider copy meant a fix
 // to one backend had no mechanism that reached the other, and the two drifted
-// by omission.
+// by omission. Pull-request DTOs stay provider-owned; shared projection builders
+// preserve their identity, draft, and mergeability signals.
 
 // restSender is the raw request seam: one attempt plus the provider's own
 // retry/rate-limit policy, with the response body still open.
@@ -600,6 +601,85 @@ func closeRESTPullRequest(ctx context.Context, c restMutationRecorder, kind Prov
 	}
 	c.recordExternalRef(ctx, ExternalRef{Provider: kind, Ref: issueRef(req.Repository, req.PullID), URL: out.HTMLURL, Operation: operation, Fields: fields})
 	return ClosePullRequestResult{Number: out.Number, Merged: out.Merged, State: state}, nil
+}
+
+type restPRProjection struct {
+	Number             int
+	Title              string
+	URL                string
+	Author             string
+	Assignees          []string
+	RequestedReviewers []string
+	State              string
+	Merged             bool
+	MergedAt           *time.Time
+	Mergeable          *bool
+	MergeableState     string
+	Draft              bool
+	Labels             []string
+	Head               string
+	HeadRepository     *RepositoryRef
+	Base               string
+	HeadSHA            string
+	BaseSHA            string
+	MergeSHA           string
+	UpdatedAt          time.Time
+	Body               string
+}
+
+func pullSummaryFromProjection(pr restPRProjection, checkState CheckState) PullRequestSummary {
+	return PullRequestSummary{
+		ID:                 strconv.Itoa(pr.Number),
+		Number:             pr.Number,
+		URL:                pr.URL,
+		Author:             pr.Author,
+		Assignees:          pr.Assignees,
+		RequestedReviewers: pr.RequestedReviewers,
+		State:              pr.State,
+		Merged:             pr.Merged || pr.MergedAt != nil,
+		Head:               pr.Head,
+		Base:               pr.Base,
+		HeadSHA:            pr.HeadSHA,
+		BaseSHA:            pr.BaseSHA,
+		MergeSHA:           pr.MergeSHA,
+		Draft:              pr.Draft,
+		Labels:             pr.Labels,
+		CheckState:         checkState,
+		UpdatedAt:          pr.UpdatedAt,
+		Body:               pr.Body,
+		Integrity:          apiintegrity.Unapproved,
+	}
+}
+
+// Polling preserves the raw merged flag; summaries also infer it from MergedAt.
+func pullPollResultFromProjection(pr restPRProjection, decision ReviewDecision, requestedChanges int, checkState CheckState, checks []CheckDetail, comments []PullRequestComment) PullRequestPollResult {
+	return PullRequestPollResult{
+		Number:             pr.Number,
+		Title:              pr.Title,
+		Author:             pr.Author,
+		Assignees:          pr.Assignees,
+		RequestedReviewers: pr.RequestedReviewers,
+		State:              pr.State,
+		Merged:             pr.Merged,
+		MergedAt:           pr.MergedAt,
+		Mergeable:          pr.Mergeable,
+		MergeableState:     pr.MergeableState,
+		Draft:              pr.Draft,
+		Labels:             pr.Labels,
+		HeadBranch:         pr.Head,
+		HeadRepository:     pr.HeadRepository,
+		HeadSHA:            pr.HeadSHA,
+		BaseSHA:            pr.BaseSHA,
+		BaseBranch:         pr.Base,
+		Body:               pr.Body,
+		ReviewDecision:     decision,
+		RequestedChanges:   requestedChanges,
+		CheckState:         checkState,
+		Checks:             checks,
+		CommentsSince:      comments,
+		URL:                pr.URL,
+		Integrity:          apiintegrity.Unapproved,
+	}
 }
 
 func restPullRequestFiles(ctx context.Context, c restPager, baseURL string, repo RepositoryRef, pullID string, includePatch bool) ([]ChangedFile, error) {
