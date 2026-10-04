@@ -36,6 +36,7 @@ type interactiveRestartExecution struct {
 	skills       map[string][]workflow.SkillFile
 	assets       map[string]*gooberassets.Bundle
 	models       map[string]func(context.Context) (string, error)
+	process      harness.ProcessRunner
 }
 
 // buildInteractiveRestartExecution performs only offline pin/backend validation.
@@ -47,6 +48,12 @@ func (s *schedulerSetup) buildInteractiveRestartExecution(ctx context.Context, p
 }
 
 func (s *schedulerSetup) buildInteractiveRestartIdentity(ctx context.Context, id journal.RunIdentity) (intervention.Execution, error) {
+	return s.buildInteractiveRestartWithProcess(ctx, id, nil)
+}
+
+// The optional process dependency preserves the real adapter, credentials and
+// sandbox composition while allowing acceptance tests without a model process.
+func (s *schedulerSetup) buildInteractiveRestartWithProcess(ctx context.Context, id journal.RunIdentity, process harness.ProcessRunner) (intervention.Execution, error) {
 	if s == nil || s.Config == nil || s.InteractiveAccess == nil {
 		return intervention.Execution{}, errors.New("interactive restart execution unavailable")
 	}
@@ -54,6 +61,7 @@ func (s *schedulerSetup) buildInteractiveRestartIdentity(ctx context.Context, id
 	if err != nil {
 		return intervention.Execution{}, err
 	}
+	execution.process = process
 	base, _ := s.RunnerRegistry.Resolve("", id.Gaggle, s.Runners[id.Gaggle])
 	if base == nil {
 		return intervention.Execution{}, errors.New("interactive restart has no configured local runner")

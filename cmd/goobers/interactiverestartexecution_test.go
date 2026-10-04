@@ -17,9 +17,9 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-func interactiveExecutionFixture(t *testing.T) (*schedulerSetup, pinnedChildFixture) {
+func interactiveExecutionFixture(t *testing.T, edits ...func(string)) (*schedulerSetup, pinnedChildFixture) {
 	t.Helper()
-	f := newPinnedChildFixture(t, func(root string) {
+	prepare := func(root string) {
 		file := filepath.Join(root, "config/gaggles/example/workflows/default-implement.yaml")
 		workflow := strings.Split(childValidationParent, "      childWorkflows:")[0] + "      workspace: scratch\n"
 		if err := os.WriteFile(file, []byte(workflow), 0600); err != nil {
@@ -34,12 +34,13 @@ func interactiveExecutionFixture(t *testing.T) (*schedulerSetup, pinnedChildFixt
 		if err := os.WriteFile(file, raw, 0600); err != nil {
 			t.Fatal(err)
 		}
-	})
+	}
+	f := newPinnedChildFixture(t, append([]func(string){prepare}, edits...)...)
 	f.cfg.Sandbox = &instance.SandboxConfig{Agentic: "enforced"}
 	f.cfg.Credentials = []instance.CredentialGrant{{Capability: "agent:model", Harness: "claude-code", Token: instance.TokenRef{Env: "HUMAN_MODEL"}}}
 	shared := journal.NewRegistryScrubber()
 	gaggle := f.applied.Gaggles[0].DeepCopy()
-	gaggle.Spec.InteractiveAccess = &apiv1.InteractiveAccessPolicy{Humans: apiv1.InteractiveHumanGrants{Operators: []apiv1.InteractiveHumanGrant{{Issuer: "issuer", Subject: "human"}}}, Actions: []apiv1.InteractiveAction{"run.restartStage", "repository.read", "pr.repair", "backlog.read"}, Credentials: apiv1.InteractiveCredentialBindings{Backlog: "backlog", Repositories: []apiv1.InteractiveRepositoryCredential{{Repository: interactiveRepository(gaggle.Spec.Project), CredentialRef: "repo"}}}}
+	gaggle.Spec.InteractiveAccess = &apiv1.InteractiveAccessPolicy{Humans: apiv1.InteractiveHumanGrants{Operators: []apiv1.InteractiveHumanGrant{{Issuer: "issuer", Subject: "human"}}}, Actions: []apiv1.InteractiveAction{"run.intervene", "run.restartStage", "repository.read", "pr.repair", "backlog.read"}, Credentials: apiv1.InteractiveCredentialBindings{Backlog: "backlog", Repositories: []apiv1.InteractiveRepositoryCredential{{Repository: interactiveRepository(gaggle.Spec.Project), CredentialRef: "repo"}}}}
 	repo := gaggle.Spec.Project
 	sources := []instance.InteractiveCredential{{Name: "repo", Provider: "github", Owner: repo.Owner, Repository: repo.Name, Token: instance.TokenRef{Env: "HUMAN_REPO"}}, {Name: "backlog", Provider: "github", Owner: repo.Owner, Repository: repo.Name, Token: instance.TokenRef{Env: "HUMAN_BACKLOG"}}}
 	access, err := interactiveaccess.New([]apiv1.Gaggle{*gaggle}, sources, interactiveaccess.Dependencies{Registrar: shared})
@@ -54,7 +55,8 @@ func interactiveExecutionFixture(t *testing.T) (*schedulerSetup, pinnedChildFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	setup := &schedulerSetup{Root: f.layout.Root, Config: f.cfg, InteractiveAccess: access, SharedRegistry: shared, Runners: map[string]*runner.Runner{"example": base}}
+	f.cfg.InteractiveCredentials = sources
+	setup := &schedulerSetup{Root: f.layout.Root, Config: f.cfg, Definitions: &instance.ConfigSet{Gaggles: []apiv1.Gaggle{*gaggle}}, InteractiveAccess: access, SharedRegistry: shared, Runners: map[string]*runner.Runner{"example": base}, WorktreesByGaggle: map[string]*worktree.Manager{"example": manager}}
 	return setup, f
 }
 

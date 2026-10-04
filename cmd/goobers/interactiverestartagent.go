@@ -44,8 +44,10 @@ func (e *interactiveRestartExecution) agentic(name string, rec runner.ArtifactRe
 	switch a := adapter.(type) {
 	case *harness.ClaudeAdapter:
 		a.OptionalCredentialCapabilities = nil
+		a.Runner = e.process
 	case *harness.CodexAdapter:
 		a.OptionalCredentialCapabilities = nil
+		a.Runner = e.process
 	}
 	restricted := harness.NewRegistry()
 	if err = restricted.RegisterAs(string(spec.Harness), interactiveRestartAdapter{Adapter: adapter, execution: e}); err != nil {
