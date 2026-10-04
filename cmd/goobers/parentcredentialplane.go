@@ -10,7 +10,7 @@ import (
 func (s *daemonCredentialService) applyContainedCredentialCeiling(ctx context.Context, pinned pinnedStage, request httpapi.CredentialResolveRequest) (context.Context, *childCredentialLease, error) {
 	p, ok := httpapi.PrincipalFromContext(ctx)
 	if !ok || !p.WorkflowParent {
-		return s.applyChildCredentialCeiling(ctx, pinned)
+		return s.applyChildCredentialCeiling(ctx, pinned, request.Stage)
 	}
 	a, err := s.parentAttempt(ctx)
 	if err != nil || a.contract.Identity.RunID != request.RunID || a.contract.Stage != request.Stage || !sameParentCredentialIdentity(a, pinned) || s.children == nil {

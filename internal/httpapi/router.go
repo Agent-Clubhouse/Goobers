@@ -85,7 +85,8 @@ func operatorMessagePlanePath(path string) bool {
 type Principal struct {
 	// GeneratedChild is a signed pod-custody claim, never inferred from mutable
 	// journal presence or accepted from a request body.
-	GeneratedChild bool
+	GeneratedChild               bool
+	GeneratedChildContractDigest string
 	// WorkflowParent identifies a contained parent pod. Its run/attempt authority
 	// is checked independently of generated-child lineage.
 	WorkflowParent               bool

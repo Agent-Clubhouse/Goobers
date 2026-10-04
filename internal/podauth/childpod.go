@@ -17,13 +17,17 @@ const workflowParentPodMACDomain = "workflow-parent-pod/v1:"
 
 // MintChildPod binds generated custody into the signed identity. Its MAC domain
 // prevents removing the marker to obtain an ordinary pod's shared blob access.
-func (s *SignedKey) MintChildPod(runID string, ttl time.Duration) (string, error) {
-	return s.mintCustodyPod(runID, ttl, childPodTokenPrefix, childPodMACDomain)
+func (s *SignedKey) MintChildPod(runID, contractDigest string, ttl time.Duration) (string, error) {
+	return s.mintContractPod(runID, contractDigest, ttl, childPodTokenPrefix, childPodMACDomain)
 }
 
 // MintWorkflowParentPod binds one physical parent execution contract to its
 // own authority domain, distinct from generated and ordinary shared custody.
 func (s *SignedKey) MintWorkflowParentPod(runID, contractDigest string, ttl time.Duration) (string, error) {
+	return s.mintContractPod(runID, contractDigest, ttl, workflowParentPodPrefix, workflowParentPodMACDomain)
+}
+
+func (s *SignedKey) mintContractPod(runID, contractDigest string, ttl time.Duration, prefix, domain string) (string, error) {
 	if !blobstore.ValidDigest(contractDigest) {
 		return "", ErrMalformedToken
 	}
@@ -32,14 +36,6 @@ func (s *SignedKey) MintWorkflowParentPod(runID, contractDigest string, ttl time
 		return "", err
 	}
 	payload += "." + base64.RawURLEncoding.EncodeToString([]byte(contractDigest))
-	return workflowParentPodPrefix + payload + "." + s.sign(workflowParentPodMACDomain+payload), nil
-}
-
-func (s *SignedKey) mintCustodyPod(runID string, ttl time.Duration, prefix, domain string) (string, error) {
-	payload, err := s.custodyPayload(runID, ttl)
-	if err != nil {
-		return "", err
-	}
 	return prefix + payload + "." + s.sign(domain+payload), nil
 }
 
@@ -53,12 +49,14 @@ func (s *SignedKey) custodyPayload(runID string, ttl time.Duration) (string, err
 	return payload, nil
 }
 
-func (s *SignedKey) verifyChildPod(token string) (string, error) {
-	return s.verifyCustodyPod(token, childPodTokenPrefix, childPodMACDomain)
+func (s *SignedKey) verifyChildPod(token string) (string, string, error) {
+	return s.verifyContractPod(token, childPodTokenPrefix, childPodMACDomain)
 }
-
 func (s *SignedKey) verifyWorkflowParentPod(token string) (string, string, error) {
-	payload, err := s.verifyCustodyMAC(token, workflowParentPodPrefix, workflowParentPodMACDomain)
+	return s.verifyContractPod(token, workflowParentPodPrefix, workflowParentPodMACDomain)
+}
+func (s *SignedKey) verifyContractPod(token, prefix, domain string) (string, string, error) {
+	payload, err := s.verifyCustodyMAC(token, prefix, domain)
 	if err != nil {
 		return "", "", err
 	}
@@ -72,14 +70,6 @@ func (s *SignedKey) verifyWorkflowParentPod(token string) (string, string, error
 	}
 	runID, err := s.parseCustodyPayload(payload[:idx])
 	return runID, string(digest), err
-}
-
-func (s *SignedKey) verifyCustodyPod(token, prefix, domain string) (string, error) {
-	payload, err := s.verifyCustodyMAC(token, prefix, domain)
-	if err != nil {
-		return "", err
-	}
-	return s.parseCustodyPayload(payload)
 }
 
 func (s *SignedKey) verifyCustodyMAC(token, prefix, domain string) (string, error) {
@@ -121,13 +111,15 @@ func (a *Authenticator) authenticateWorkflowParentPod(token string) (*httpapi.Pr
 }
 
 func (a *Authenticator) authenticateChildPod(token string) (*httpapi.Principal, error) {
-	verifier, ok := a.verifier.(interface{ verifyChildPod(string) (string, error) })
+	verifier, ok := a.verifier.(interface {
+		verifyChildPod(string) (string, string, error)
+	})
 	if !ok {
 		return nil, ErrUnknownToken
 	}
-	runID, err := verifier.verifyChildPod(token)
+	runID, digest, err := verifier.verifyChildPod(token)
 	if err != nil {
 		return nil, err
 	}
-	return &httpapi.Principal{Subject: "run:" + runID, Issuer: httpapi.PodPrincipalIssuer, GeneratedChild: true}, nil
+	return &httpapi.Principal{Subject: "run:" + runID, Issuer: httpapi.PodPrincipalIssuer, GeneratedChild: true, GeneratedChildContractDigest: digest}, nil
 }

@@ -17,7 +17,7 @@ import (
 )
 
 func (s *daemonCredentialService) childBlobPlane(base blobstore.Store) blobstore.Store {
-	return parentBlobPlane{base: childpod.BlobOverlay{Base: base, Queue: s.childQueue, Scope: s.childBlobScope}, service: s}
+	return parentBlobPlane{base: generatedBlobPlane{base: childpod.BlobOverlay{Base: base, Queue: s.childQueue, Scope: s.childBlobScope}, service: s}, service: s}
 }
 
 func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqueue.ChildIdentity, bool, error) {

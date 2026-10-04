@@ -15,7 +15,7 @@ func TestChildPodTokenCannotBeDowngradedToOrdinaryCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := key.MintChildPod("child-run", time.Hour)
+	token, err := key.MintChildPod("child-run", "sha256:"+strings.Repeat("a", 64), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestChildPodTokenCannotBeDowngradedToOrdinaryCustody(t *testing.T) {
 	request := httptest.NewRequest("GET", "/", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	p, err := auth.Authenticate(request)
-	if err != nil || !p.GeneratedChild || p.Subject != "run:child-run" || !httpapi.IsPodPrincipal(*p) {
+	if err != nil || !p.GeneratedChild || p.GeneratedChildContractDigest != "sha256:"+strings.Repeat("a", 64) || p.Subject != "run:child-run" || !httpapi.IsPodPrincipal(*p) {
 		t.Fatal("signed child identity lost", p, err)
 	}
 	request.Header.Set("Authorization", "Bearer "+strings.Replace(token, childPodTokenPrefix, tokenPrefix, 1))

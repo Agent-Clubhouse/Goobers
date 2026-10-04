@@ -1,6 +1,7 @@
 package triggerqueue
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -40,46 +41,56 @@ func (s *Store) KeepChildBlob(ctx context.Context, id ChildIdentity, digest stri
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	child, err := scanChild(tx.QueryRowContext(ctx, "SELECT "+childColumns+childFrom+childWhere, childArgs(id)...))
-	if err != nil {
-		return err
-	}
-	if child.ProposalDigest == "" || !child.TombstonedAt.IsZero() {
-		return ErrChildBlobUnavailable
-	}
-	var exists int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM child_blobs WHERE child_id=? AND digest=?`, child.ChildID, digest).Scan(&exists); err != nil {
-		return err
-	}
-	if exists != 0 {
-		return tx.Commit()
-	}
-	if !child.AcknowledgedAt.IsZero() {
-		return ErrTransition
-	}
-	var count, used int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(length(data)+1024),0) FROM child_blobs WHERE child_id=?`, child.ChildID).Scan(&count, &used); err != nil {
-		return err
-	}
-	additional := len(data) + 1024
-	if count >= MaxChildBlobs || used+additional > MaxChildBlobCustodyBytes {
-		return ErrFull
-	}
-	if count == 0 {
-		if err = childByteCapacity(ctx, tx, MaxChildBlobCustodyBytes); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE child_lineages SET reserved_bytes=reserved_bytes+? WHERE child_id=?`, MaxChildBlobCustodyBytes, child.ChildID); err != nil {
-			return err
-		}
-	}
-	if err = consumeChildStorage(ctx, tx, child.ChildID, additional, additional); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO child_blobs(child_id,digest,data) VALUES(?,?,?)`, child.ChildID, digest, data); err != nil {
+	if _, err = keepChildBlob(ctx, tx, id, digest, data); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func keepChildBlob(ctx context.Context, tx *sql.Tx, id ChildIdentity, digest string, data []byte) (ChildRecord, error) {
+	child, err := scanChild(tx.QueryRowContext(ctx, "SELECT "+childColumns+childFrom+childWhere, childArgs(id)...))
+	if err != nil {
+		return ChildRecord{}, err
+	}
+	if child.ProposalDigest == "" || !child.TombstonedAt.IsZero() {
+		return ChildRecord{}, ErrChildBlobUnavailable
+	}
+	var existing []byte
+	if err = tx.QueryRowContext(ctx, `SELECT data FROM child_blobs WHERE child_id=? AND digest=? AND length(data)<=25165824`, child.ChildID, digest).Scan(&existing); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ChildRecord{}, err
+	}
+	if err == nil {
+		if !bytes.Equal(existing, data) {
+			return ChildRecord{}, ErrChildBlobUnavailable
+		}
+		return child, nil
+	}
+	if !child.AcknowledgedAt.IsZero() {
+		return ChildRecord{}, ErrTransition
+	}
+	var count, used int
+	if err = tx.QueryRowContext(ctx, childBlobUsageSQL, child.ChildID, child.ChildID, child.ChildID, child.ChildID).Scan(&count, &used); err != nil {
+		return ChildRecord{}, err
+	}
+	additional := len(data) + 1024
+	if count >= MaxChildBlobs || used+additional > MaxChildBlobCustodyBytes {
+		return ChildRecord{}, ErrFull
+	}
+	if count == 0 {
+		if err = childByteCapacity(ctx, tx, MaxChildBlobCustodyBytes); err != nil {
+			return ChildRecord{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE child_lineages SET reserved_bytes=reserved_bytes+? WHERE child_id=?`, MaxChildBlobCustodyBytes, child.ChildID); err != nil {
+			return ChildRecord{}, err
+		}
+	}
+	if err = consumeChildStorage(ctx, tx, child.ChildID, additional, additional); err != nil {
+		return ChildRecord{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO child_blobs(child_id,digest,data) VALUES(?,?,?)`, child.ChildID, digest, data); err != nil {
+		return ChildRecord{}, err
+	}
+	return child, nil
 }
 
 // ChildBlob verifies data under an exact owner; no global digest lookup exists.

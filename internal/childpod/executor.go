@@ -48,13 +48,13 @@ func (e *Executor) Execute(ctx context.Context, request Request) (out dispatcher
 	if err != nil {
 		return out, report, err
 	}
-	if request.ParentOrigin != nil {
-		binder, ok := e.Blobs.(interface {
-			BindContract(context.Context, string) error
-		})
-		if !ok {
-			return out, report, fmt.Errorf("parent contract custody binding unavailable")
-		}
+	binder, canBind := e.Blobs.(interface {
+		BindContract(context.Context, string) error
+	})
+	if !canBind && request.ParentOrigin != nil {
+		return out, report, fmt.Errorf("parent contract custody binding unavailable")
+	}
+	if canBind {
 		if err = binder.BindContract(ctx, digest); err != nil {
 			return out, report, err
 		}

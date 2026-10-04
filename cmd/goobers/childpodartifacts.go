@@ -78,6 +78,10 @@ func copyContainedPodContext(ctx context.Context, reader *journal.Reader, runID 
 }
 
 func adoptContainedPodOutputs(ctx context.Context, recorder runner.ArtifactRecorder, blobs blobstore.Store, out *dispatcher.SurrenderedResult) error {
+	if out.Result.Integrity != "" && !out.Result.Integrity.Valid() {
+		return errors.New("child output has invalid integrity")
+	}
+	out.Result.Integrity = containedOutputIntegrity(out.Result.Integrity)
 	if len(out.Mutations) != 0 || len(out.MutationIssues) != 0 || out.Result.WorkspaceRevision != nil {
 		return errors.New("child surrendered unsupported provider or revision control effects")
 	}
@@ -111,11 +115,25 @@ func adoptContainedPodArtifact(ctx context.Context, recorder runner.ArtifactReco
 	if err := pointer.Validate(); err != nil {
 		return err
 	}
-	data, err := blobs.Get(ctx, pointer.Digest)
+	bounded, ok := blobs.(blobstore.BoundedReader)
+	if !ok {
+		return errors.New("contained output requires bounded blob custody")
+	}
+	data, err := bounded.GetBounded(ctx, pointer.Digest, triggerqueue.MaxChildBlobBytes)
 	if err != nil {
 		return err
 	}
-	ref, err := recorder.RecordArtifact("contained-outputs/"+pointer.Digest[7:], data)
+	if int64(len(data)) != pointer.Size {
+		return errors.New("child output size differs from declared pointer")
+	}
+	pointer.Integrity = containedOutputIntegrity(pointer.Integrity)
+	graded, ok := recorder.(interface {
+		RecordArtifactWithIntegrity(string, []byte, apiv1.Integrity) (journal.Ref, error)
+	})
+	if !ok {
+		return errors.New("contained output requires provenance-aware recorder")
+	}
+	ref, err := graded.RecordArtifactWithIntegrity("contained-outputs/"+pointer.Digest[7:], data, pointer.Integrity)
 	if err != nil {
 		return err
 	}
@@ -124,4 +142,12 @@ func adoptContainedPodArtifact(ctx context.Context, recorder runner.ArtifactReco
 	}
 	pointer.Path, pointer.Size = ref.Path, ref.Size
 	return nil
+}
+
+// Pod-authored data cannot acquire source/config provenance at the host boundary.
+func containedOutputIntegrity(grade apiv1.Integrity) apiv1.Integrity {
+	if grade == apiv1.IntegrityUnapproved {
+		return grade
+	}
+	return apiv1.IntegrityDerived
 }
