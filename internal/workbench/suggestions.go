@@ -42,8 +42,10 @@ type SuggestionEndpoint struct {
 // SuggestionEvidence pins what the agent claims it read. Acceptance must compare
 // it with an authorized fresh source observation; parser success is not proof.
 type SuggestionEvidence struct {
-	SourceTargetDigest string                        `json:"sourceTargetDigest" yaml:"sourceTargetDigest"`
-	NativeRevision     string                        `json:"nativeRevision,omitempty" yaml:"nativeRevision,omitempty"`
+	SourceTargetDigest string `json:"sourceTargetDigest" yaml:"sourceTargetDigest"`
+	NativeRevision     string `json:"nativeRevision,omitempty" yaml:"nativeRevision,omitempty"`
+	// NativeLocator is a lookup hint, never an identity. Reads must verify Ref.SourceID.
+	NativeLocator      string                        `json:"nativeLocator,omitempty" yaml:"nativeLocator,omitempty"`
 	Path               string                        `json:"path,omitempty" yaml:"path,omitempty"`
 	RepositoryRevision *SuggestionRepositoryRevision `json:"repositoryRevision,omitempty" yaml:"repositoryRevision,omitempty"`
 }

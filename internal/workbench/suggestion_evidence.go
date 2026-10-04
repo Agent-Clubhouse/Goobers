@@ -1,6 +1,9 @@
 package workbench
 
-import "slices"
+import (
+	"slices"
+	"strconv"
+)
 
 func suggestionEndpointRef(set SourceSet, endpoint SuggestionEndpoint) (NodeRef, error) {
 	if endpoint.Creation != nil {
@@ -45,14 +48,14 @@ func validateSuggestionEvidence(scope Scope, source BoundSource, ref NodeRef, va
 		if ref.Kind != "work-item" && ref.Kind != "milestone" && ref.Kind != "pull-request" {
 			return ErrSuggestion
 		}
-		if !textValue(value.NativeRevision, 512) || value.Path != "" || value.RepositoryRevision != nil {
+		if !textValue(value.NativeRevision, 512) || value.Path != "" || value.RepositoryRevision != nil || (value.NativeLocator != "" && !validSuggestionLocator(value.NativeLocator)) {
 			return ErrSuggestion
 		}
 	case "documents":
 		if ref.Kind != "document" && ref.Kind != "objective-document" {
 			return ErrSuggestion
 		}
-		if value.NativeRevision != "" || value.RepositoryRevision == nil || !slices.Contains(source.Spec.Paths, value.Path) {
+		if value.NativeRevision != "" || value.NativeLocator != "" || value.RepositoryRevision == nil || !slices.Contains(source.Spec.Paths, value.Path) {
 			return ErrSuggestion
 		}
 		pins := value.RepositoryRevision
@@ -63,4 +66,12 @@ func validateSuggestionEvidence(scope Scope, source BoundSource, ref NodeRef, va
 		return ErrSuggestion
 	}
 	return nil
+}
+
+func validSuggestionLocator(value string) bool {
+	if len(value) > 19 {
+		return false
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && n > 0 && strconv.FormatInt(n, 10) == value
 }

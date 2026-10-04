@@ -70,6 +70,10 @@ func TestSuggestionsRejectUnboundedForgedAndStaleArtifacts(t *testing.T) {
 		"missing native revision":  func(v *RelationshipSuggestion) { v.From.Evidence.NativeRevision = "" },
 		"native repository pins":   func(v *RelationshipSuggestion) { v.From.Evidence.RepositoryRevision = v.To.Evidence.RepositoryRevision },
 		"document native revision": func(v *RelationshipSuggestion) { v.To.Evidence.NativeRevision = "42" },
+		"document native locator":  func(v *RelationshipSuggestion) { v.To.Evidence.NativeLocator = "42" },
+		"negative native locator":  func(v *RelationshipSuggestion) { v.From.Evidence.NativeLocator = "-1" },
+		"noncanonical locator":     func(v *RelationshipSuggestion) { v.From.Evidence.NativeLocator = "01" },
+		"oversized locator":        func(v *RelationshipSuggestion) { v.From.Evidence.NativeLocator = "9223372036854775808" },
 		"undeclared path":          func(v *RelationshipSuggestion) { v.To.Evidence.Path = "secret.md" },
 		"invalid blob":             func(v *RelationshipSuggestion) { v.To.Evidence.RepositoryRevision.BlobID = "not-a-blob" },
 		"wrong source kind":        func(v *RelationshipSuggestion) { v.To.Ref.Kind = "work-item" },
@@ -165,5 +169,30 @@ func TestSuggestionsProvisionalIdentityNeedsExactCreationReceipt(t *testing.T) {
 	bound[0].Proposal.Kind = "references"
 	if _, _, err := MaterializeSuggestion(set, bound[0], []SuggestionCreationResolution{receipt}); err == nil {
 		t.Fatal("changed relationship accepted with prior key")
+	}
+}
+
+func TestSuggestionNativeLocatorNeverReplacesStableIdentity(t *testing.T) {
+	set, value := suggestionFixture(t)
+	value.From.Evidence.NativeLocator = "7"
+	raw := suggestionBytes(t, value)
+	bound, err := BindSuggestions(raw, set, suggestionOrigin(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge, evidence, err := MaterializeSuggestion(set, bound[0], nil)
+	if err != nil || edge.From.SourceID != "123" || evidence[0].NativeLocator != "7" {
+		t.Fatal(edge, evidence, err)
+	}
+	// The locator participates in evidence identity, not native node identity.
+	value.From.Evidence.NativeLocator = "8"
+	raw = suggestionBytes(t, value)
+	changed, err := BindSuggestions(raw, set, suggestionOrigin(raw))
+	if err != nil || changed[0].Key == bound[0].Key {
+		t.Fatal(changed, err)
+	}
+	other, _, err := MaterializeSuggestion(set, changed[0], nil)
+	if err != nil || other.From != edge.From || other.EdgeID != edge.EdgeID {
+		t.Fatal(other, err)
 	}
 }

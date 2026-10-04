@@ -51,6 +51,12 @@
                       "minLength": 1,
                       "maxLength": 512,
                       "description": "Observed native source revision, independent of the object identity."
+                    },
+                    "nativeLocator": {
+                      "description": "Optional native lookup number; never a stable identity. Acceptance verifies the returned stable source ID and revision. GitHub work items require this hint.",
+                      "type": "string",
+                      "pattern": "^[1-9][0-9]*$",
+                      "maxLength": 19
                     }
                   },
                   "required": [
