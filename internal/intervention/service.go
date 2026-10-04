@@ -667,26 +667,9 @@ func (s *Service) resolveRun(runID string, inspection bool) (resolvedInterventio
 			http.StatusInternalServerError, "runner_unavailable", "run owner is unavailable", nil,
 		)
 	}
-	phase, err := reader.Phase()
+	phase, events, terminalSeq, err := readInterventionRunState(reader)
 	if err != nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(
-			http.StatusInternalServerError, "run_read_failed", "run phase could not be read", err,
-		)
-	}
-	events, err := reader.Events()
-	if err != nil {
-		return resolvedInterventionRun{}, httpapi.NewInterventionError(
-			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
-		)
-	}
-	terminalSeq := uint64(0)
-	if phase == journal.PhaseEscalated || phase == journal.PhaseFailed {
-		terminalSeq = latestTerminalSequence(events)
-		if terminalSeq == 0 {
-			return resolvedInterventionRun{}, httpapi.NewInterventionError(
-				http.StatusInternalServerError, "run_read_failed", "terminal run has no run.finished event", nil,
-			)
-		}
+		return resolvedInterventionRun{}, err
 	}
 	return resolvedInterventionRun{
 		runID:        runID,
@@ -1303,4 +1286,29 @@ func interventionExecutionError(action string, err error) error {
 		action+" failed while advancing the run",
 		err,
 	)
+}
+
+func readInterventionRunState(reader *journal.Reader) (journal.RunPhase, []journal.Event, uint64, error) {
+	phase, err := reader.Phase()
+	if err != nil {
+		return "", nil, 0, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "run phase could not be read", err,
+		)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return "", nil, 0, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
+		)
+	}
+	terminalSeq := uint64(0)
+	if phase == journal.PhaseEscalated || phase == journal.PhaseFailed {
+		terminalSeq = latestTerminalSequence(events)
+		if terminalSeq == 0 {
+			return "", nil, 0, httpapi.NewInterventionError(
+				http.StatusInternalServerError, "run_read_failed", "terminal run has no run.finished event", nil,
+			)
+		}
+	}
+	return phase, events, terminalSeq, nil
 }
