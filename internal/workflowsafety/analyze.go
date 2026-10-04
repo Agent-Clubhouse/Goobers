@@ -244,7 +244,7 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	e := c.apply(CommandEffects(t))
 	// An assertion supplies its named effect, not knowledge of every other
 	// effect a custom command may have.
-	f.unknown = f.unknown || !e.Known || e.ConditionalRebind
+	f.unknown = f.unknown || !e.Known
 	if t.Type == apiv1.TaskDeterministic && !e.Known && !c.assertsEffects() {
 		a.add(CoverageCode, t.Name, f.path, "custom command or agent effects are unknown",
 			"Evidence production, subject changes and publication by this stage are not proven.",
@@ -291,6 +291,18 @@ func (a *analyzer) task(f frame, t apiv1.Task) {
 	f.cycleUnknown = f.cycleUnknown || !e.Known
 	f.visited = addSorted(f.visited, t.Name)
 	f.lastTask, f.state = t.Name, t.Next
+	if e.ConditionalRebind {
+		managed := f
+		managed.path = appendPath(f.path, "managed subject workspaceBranch")
+		managed.rebound = true
+		a.walk(managed)
+
+		advisory := f
+		advisory.path = appendPath(f.path, "advisoryMode=true without workspaceBranch")
+		advisory.rebound = false
+		a.walk(advisory)
+		return
+	}
 	a.walk(f)
 }
 
