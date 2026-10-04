@@ -722,6 +722,11 @@
           "type": "string",
           "examples": ["8Gi", "4Gi"]
         },
+        "podTmpfsSize": {
+          "description": "Size of the memory-backed /tmp tmpfs on a Linux stage pod whose runner class carries tmp:ephemeral, as a Kubernetes quantity. Unset keeps the dispatcher default of 512Mi. The size is added to the container memory limit, so raise it only as far as the stages' real temp needs. Go build caches (GOCACHE) are placed on disk-backed pod storage, not here.",
+          "type": "string",
+          "examples": ["1Gi"]
+        },
         "livenessTimeout": {
           "description": "Maximum age of the scheduler tick heartbeat before the daemon reports itself unhealthy. Empty defaults to 2 minutes; values below 2 seconds are rejected.",
           "$ref": "#/$defs/duration",

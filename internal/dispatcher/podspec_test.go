@@ -322,8 +322,13 @@ func TestRenderPodStampsDurableGoCache(t *testing.T) {
 			if env["GOMODCACHE"] != tc.path {
 				t.Fatalf("GOMODCACHE = %q, want %q", env["GOMODCACHE"], tc.path)
 			}
-			if _, ok := env["GOCACHE"]; ok {
-				t.Fatalf("GOCACHE was stamped onto the durable cache volume at %q; it must remain under tmp:ephemeral", env["GOCACHE"])
+			// GOCACHE is neither on the durable claim nor under the tmpfs.
+			wantGoCache := LinuxGoBuildCachePath
+			if tc.name == "windows" {
+				wantGoCache = WindowsGoBuildCachePath
+			}
+			if env["GOCACHE"] != wantGoCache || env["GOCACHE"] == tc.path {
+				t.Fatalf("GOCACHE = %q, want the dedicated disk-backed %q", env["GOCACHE"], wantGoCache)
 			}
 		})
 	}
@@ -348,12 +353,15 @@ func TestRenderFromTemplateStampsDurableGoCache(t *testing.T) {
 	if env["GOMODCACHE"] != LinuxGoCachePath {
 		t.Fatalf("template GOMODCACHE = %q, want %q", env["GOMODCACHE"], LinuxGoCachePath)
 	}
-	if _, ok := env["GOCACHE"]; ok {
-		t.Fatalf("template GOCACHE was stamped onto the durable cache volume; it must remain under tmp:ephemeral")
+	if env["GOCACHE"] != LinuxGoBuildCachePath {
+		t.Fatalf("template GOCACHE = %q, want %q", env["GOCACHE"], LinuxGoBuildCachePath)
 	}
 	var allow []string
 	if err := json.Unmarshal([]byte(env[EnvStageEnvAllow]), &allow); err != nil {
 		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	if !slices.Contains(allow, "GOCACHE") {
+		t.Fatalf("env:default-deny allowlist = %v, missing GOCACHE", allow)
 	}
 	if !slices.Contains(allow, "GOMODCACHE") {
 		t.Fatalf("env:default-deny allowlist = %v, missing GOMODCACHE", allow)

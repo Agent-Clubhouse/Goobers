@@ -406,6 +406,13 @@ type RunnerConfig struct {
 	// which one is in force at startup rather than letting a green config
 	// imply a protection that is not there.
 	StageMemoryLimit string `json:"stageMemoryLimit,omitempty" yaml:"stageMemoryLimit,omitempty"`
+	// PodTmpfsSize sizes the memory-backed /tmp tmpfs of a Linux stage pod
+	// whose runner class carries tmp:ephemeral, as a Kubernetes quantity
+	// ("1Gi"). Empty keeps the dispatcher default (512Mi). The size is added to
+	// the container's memory limit (dispatcher design section 5), so raise it
+	// only as far as the stages' real temp needs. Go build caches no longer
+	// live there; see dispatcher.LinuxGoBuildCachePath.
+	PodTmpfsSize string `json:"podTmpfsSize,omitempty" yaml:"podTmpfsSize,omitempty"`
 	// HarnessCommand overrides the base CLI invocation (argv[0..]) launched for
 	// a harness, keyed by harness name ("copilot", "claude-code"). Unset keys
 	// keep the built-in default (["copilot"] / ["claude"]). Whatever the
