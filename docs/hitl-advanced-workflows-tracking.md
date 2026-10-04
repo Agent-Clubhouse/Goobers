@@ -286,7 +286,10 @@ command receipts. Shared sessions now expose installed typed needs-human inspect
 resolution and receipt tools under actual initiating-human authority. The host checks
 the current label-edit policy, inspected source revision, dependency coverage and
 verified evidence, then retains the assessment and one-attempt marker-removal receipt.
-The portal entry control and PR repair remain follow-up delivery. The installed human restart
+The backlog portal now opens this assessment in a new or existing shared session,
+retains separate creation/message retry keys, and shows actual agent responses.
+Current access and exact source identity fence every browser scope change. PR repair
+remains follow-up delivery. The installed human restart
 adapters cover affected-stage fresh allowances, queued capacity and sealed-child
 continuation; live worker qualification remains outstanding. Saved guidance alone is
 explicitly labeled as saved; it is not described as delivered or resumed.
