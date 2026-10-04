@@ -1,3 +1,6 @@
+import { Tab, TabList } from "../ui/Tabs";
+import { PageHeading } from "../ui/Heading";
+import { Action } from "../ui/Action";
 import { useState } from "react";
 import type { DaemonClient, Gaggle, Goober } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
@@ -22,7 +25,9 @@ export function GoobersPage({
     return <DaemonLoadingState standalone={standalone} />;
   }
   if (query.state.status === "error") {
-    return <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />;
+    return (
+      <DaemonErrorState error={query.state.error} retry={query.retry} standalone={standalone} />
+    );
   }
   if (query.state.status !== "ready" && query.state.status !== "stale") {
     return null;
@@ -67,21 +72,21 @@ function GooberRoster({
 
   return (
     <>
-      <header className="page-heading">
-        <div>
-          <h1>Goobers</h1>
-          <p>
-            {filteredGaggle
-              ? `Configured personas owned by ${filteredGaggle.displayName}.`
-              : "Goobers are the agent personas that do the actual work."}
-          </p>
-          {filteredGaggle && (
-            <a className="text-link" href={routeHash({ page: "goobers" })}>
-              View all gaggles
-            </a>
-          )}
-        </div>
-      </header>
+      <PageHeading
+        title="Goobers"
+        className=""
+        description={
+          filteredGaggle
+            ? `Configured personas owned by ${filteredGaggle.displayName}.`
+            : "Goobers are the agent personas that do the actual work."
+        }
+      >
+        {filteredGaggle && (
+          <a className="text-link" href={routeHash({ page: "goobers" })}>
+            View all gaggles
+          </a>
+        )}
+      </PageHeading>
 
       {inventoryError && entries.length === 0 ? (
         <div className="run-stale-state run-stale-state-error" role="alert">
@@ -89,9 +94,9 @@ function GooberRoster({
             <strong>Goober inventory is unavailable</strong>
             <small>{inventoryError.message}</small>
           </span>
-          <button className="text-button" onClick={retry} type="button">
+          <Action variant="text" className="text-button" onClick={retry} type="button">
             Retry
-          </button>
+          </Action>
         </div>
       ) : snapshot.loadingSections?.inventory && entries.length === 0 ? (
         <div className="inline-empty section-loading" role="status">
@@ -102,7 +107,9 @@ function GooberRoster({
           <img alt="" src="/goober-mascot.png" />
           <div>
             <h2>No goobers configured</h2>
-            <p>No goobers are provisioned in this instance yet. Initialize the instance to begin.</p>
+            <p>
+              No goobers are provisioned in this instance yet. Initialize the instance to begin.
+            </p>
             <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
@@ -117,11 +124,7 @@ function GooberRoster({
   );
 }
 
-function GooberGroup({
-  inventory,
-}: {
-  inventory: OperationalSnapshot["inventories"][number];
-}) {
+function GooberGroup({ inventory }: { inventory: OperationalSnapshot["inventories"][number] }) {
   const [expanded, setExpanded] = useCompactRecordDisclosure();
   const contentId = `goober-group-${inventory.gaggle.name}`;
 
@@ -188,10 +191,18 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
         type="button"
       >
         <span className="goober-card-toggle-label">
-          <h4 id={headingId} title={goober.displayName}>{goober.displayName}</h4>
-          <span aria-hidden="true" className="goober-title-separator">/</span>
-          <span className="goober-role" title={goober.role}>{goober.role}</span>
-          <span aria-hidden="true" className="goober-title-separator">/</span>
+          <h4 id={headingId} title={goober.displayName}>
+            {goober.displayName}
+          </h4>
+          <span aria-hidden="true" className="goober-title-separator">
+            /
+          </span>
+          <span className="goober-role" title={goober.role}>
+            {goober.role}
+          </span>
+          <span aria-hidden="true" className="goober-title-separator">
+            /
+          </span>
           <code className="goober-identity" title={`${gaggle.name}/${goober.name}`}>
             {gaggle.name}/{goober.name}
           </code>
@@ -215,9 +226,13 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
             <dd>
               {goober.skills.length > 0 ? (
                 <ul className="goober-field-list">
-                  {goober.skills.map((skill) => <li key={skill}>{skill}</li>)}
+                  {goober.skills.map((skill) => (
+                    <li key={skill}>{skill}</li>
+                  ))}
                 </ul>
-              ) : "None declared"}
+              ) : (
+                "None declared"
+              )}
             </dd>
           </div>
         </dl>
@@ -251,8 +266,12 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
 
       {expanded && (
         <div aria-labelledby={headingId} className="goober-detail definition-panel" id={detailId}>
-          <div aria-label={`${goober.displayName} config view`} className="definition-view-toggle" role="tablist">
-            <button
+          <TabList
+            aria-label={`${goober.displayName} config view`}
+            className="definition-view-toggle"
+            role="tablist"
+          >
+            <Tab
               aria-selected={view === "fields"}
               className={view === "fields" ? "active" : undefined}
               onClick={() => setView("fields")}
@@ -260,8 +279,8 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
               type="button"
             >
               Fields
-            </button>
-            <button
+            </Tab>
+            <Tab
               aria-selected={view === "yaml"}
               className={view === "yaml" ? "active" : undefined}
               onClick={() => setView("yaml")}
@@ -269,8 +288,8 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
               type="button"
             >
               Raw YAML
-            </button>
-          </div>
+            </Tab>
+          </TabList>
           {view === "fields" ? (
             <dl className="property-list">
               <div>
@@ -282,7 +301,9 @@ function GooberRosterCard({ gaggle, goober }: RosterEntry) {
                         <li key={capability}>{capability}</li>
                       ))}
                     </ul>
-                  ) : "None declared"}
+                  ) : (
+                    "None declared"
+                  )}
                 </dd>
               </div>
               <div>

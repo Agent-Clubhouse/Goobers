@@ -1,3 +1,5 @@
+import { SectionHeading } from "./Heading";
+
 interface GraphFrameProps {
   action?: React.ReactNode;
   children: React.ReactNode;
@@ -15,13 +17,12 @@ export function GraphFrame({
 }: GraphFrameProps) {
   return (
     <div className={`graph-panel ${className}`.trim()}>
-      <div className="panel-heading-row">
-        <div>
-          {eyebrow && <p className="section-kicker">{eyebrow}</p>}
-          <h2>{title}</h2>
-        </div>
-        {action}
-      </div>
+      <SectionHeading
+        actions={action}
+        className="panel-heading-row"
+        eyebrow={eyebrow}
+        title={title}
+      />
       {children}
     </div>
   );

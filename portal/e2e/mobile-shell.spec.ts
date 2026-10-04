@@ -4,6 +4,9 @@ const phoneLayouts = [
   { name: "320x568", width: 320, height: 568 },
   { name: "390x844", width: 390, height: 844 },
   { name: "430x932", width: 430, height: 932 },
+  { name: "600x900", width: 600, height: 900 },
+  { name: "760x900", width: 760, height: 900 },
+  { name: "820x900", width: 820, height: 900 },
   { name: "844x390 landscape", width: 844, height: 390 },
   { name: "200% zoom reflow", width: 195, height: 422 },
 ] as const;
@@ -36,6 +39,10 @@ for (const layout of phoneLayouts) {
     const navigationBox = await navigation.boundingBox();
     expect(navigationBox).not.toBeNull();
     expect(navigationBox!.height).toBeLessThanOrEqual(64);
+    expect(navigationBox!.y).toBeLessThanOrEqual(8);
+    await expect(page.locator(".sidebar")).toBeHidden();
+    await expect(page.locator(".topbar")).toHaveCSS("height", "56px");
+    await expect(navigation.getByRole("button", { name: "Open navigation menu" })).toHaveText("Overview");
     for (const button of await navigation.getByRole("button").all()) {
       await expectTouchTarget(button);
     }
@@ -54,24 +61,25 @@ test("reaches primary and secondary destinations without losing scope", async ({
   await expect(page).toHaveURL(/#\/runs\?gaggle=core&window=24h$/);
 
   const navigation = page.getByRole("navigation", { name: "Mobile primary" });
-  await navigation.getByRole("button", { name: "Workflows" }).click();
+  const more = navigation.getByRole("button", { name: "Open navigation menu" });
+  await more.click();
+  await page.getByRole("dialog").getByRole("button", { name: "Workflows", exact: true }).click();
   await expect(page).toHaveURL(/#\/workflows$/);
   await expect(page.getByRole("heading", { name: "Workflows", exact: true })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/#\/runs\?gaggle=core&window=24h$/);
 
-  const more = navigation.getByRole("button", { name: "More" });
   await more.click();
   const dialog = page.getByRole("dialog", { name: "Goobers" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Insight" }).click();
   await expect(page).toHaveURL(/#\/insight\?gaggle=core&window=24h$/);
   await expect(page.getByRole("heading", { name: "Insight", exact: true })).toBeVisible();
-  await expect(more).toHaveAttribute("aria-current", "page");
+  await expect(more).toHaveText("Insight");
 
   await more.click();
   await expect(dialog.getByRole("link", { name: "Open gaggle Core product" })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: /Use (dark|light) theme/ })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: /Use (dark|light) theme/ })).toHaveCount(0);
   await expect(dialog.getByLabel("Portal details")).toContainText("e2e-fixture");
   await page.keyboard.press("Escape");
 
@@ -87,10 +95,14 @@ test("dismisses the menu with Escape and browser Back and restores focus", async
 
   const more = page
     .getByRole("navigation", { name: "Mobile primary" })
-    .getByRole("button", { name: "More" });
+    .getByRole("button", { name: "Open navigation menu" });
   await more.focus();
   await more.press("Enter");
   await expect(page.getByRole("dialog", { name: "Goobers" })).toBeVisible();
+  await expect(page.locator(".mobile-menu-content")).toHaveCSS("border-top-left-radius", "16px");
+  await expect(page.locator(".mobile-menu-content")).toHaveCSS("border-top-right-radius", "16px");
+  await expect(page.locator(".mobile-menu-content")).toHaveCSS("overflow", "hidden");
+  await expect(page.locator(".mobile-menu-scroll")).toHaveCSS("overflow-y", "auto");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Goobers" })).toBeHidden();
   await expect(more).toBeFocused();
@@ -109,7 +121,7 @@ test("contains focus within the menu and keeps focused controls visible above a 
 
   await page
     .getByRole("navigation", { name: "Mobile primary" })
-    .getByRole("button", { name: "More" })
+    .getByRole("button", { name: "Open navigation menu" })
     .click();
   const dialog = page.getByRole("dialog", { name: "Goobers" });
   const focusable = dialog.locator(
@@ -146,12 +158,13 @@ test("consumes the menu history entry when leaving compact mode", async ({ page 
   await page.goto("/#/overview");
   await page
     .getByRole("navigation", { name: "Mobile primary" })
-    .getByRole("button", { name: "Runs" })
+    .getByRole("button", { name: "Open navigation menu" })
     .click();
+  await page.getByRole("dialog").getByRole("button", { name: "Runs", exact: true }).click();
   await expect(page).toHaveURL(/#\/runs$/);
   await page
     .getByRole("navigation", { name: "Mobile primary" })
-    .getByRole("button", { name: "More" })
+    .getByRole("button", { name: "Open navigation menu" })
     .click();
 
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -178,19 +191,20 @@ for (const layout of phoneLayouts.slice(0, 2)) {
   });
 }
 
-test("keeps navigation functional in an embedding host without duplication", async ({ page }) => {
+test("keeps compact navigation functional in an embedding host without duplication", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/?host=fleet&hostNavigation=true#/overview");
+  await page.goto("/?host=fleet#/overview");
 
   const navigation = page.getByRole("navigation", { name: "Mobile primary" });
   await expect(navigation).toHaveCount(1);
   await expect(page.locator(".mobile-primary-nav")).toHaveCount(1);
 
-  await navigation.getByRole("button", { name: "Runs" }).click();
+  await navigation.getByRole("button", { name: "Open navigation menu" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Runs", exact: true }).click();
   await expect(page).toHaveURL(/#\/runs$/);
   await expect(page.getByRole("heading", { name: "Runs", exact: true })).toBeVisible();
 
-  await navigation.getByRole("button", { name: "More" }).click();
+  await navigation.getByRole("button", { name: "Open navigation menu" }).click();
   const dialog = page.getByRole("dialog", { name: "Goobers" });
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Work Items" }).click();
