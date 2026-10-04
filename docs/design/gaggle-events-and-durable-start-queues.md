@@ -486,9 +486,9 @@ The remaining source adapters are explicit follow-up work:
 
 | Existing source | Current path and remaining normalization |
 | --- | --- |
-| Standalone `goobers run` / detached one-shot worker | Owns the instance lock and calls the scheduler directly; must enqueue and drain one pinned intent before execution. |
+| Standalone `goobers run` / detached one-shot worker | Delivered below: owns the instance lock, queues one pinned intent, and attempts only its own receipt. |
 | Direct `engine-start` | Starts Temporal directly under its existing explicit bypass semantics; needs a reviewed queue-backed compatibility path. |
-| Plain scheduled starts | Delivered below: pinned coalesced worker start and cursor committed together. Demand-sized scheduled polls remain a follow-up. |
+| Scheduled starts | Delivered below: pinned coalesced worker start/cursor and retained demand-sized obligations. |
 | Backlog polling | Delivered below: bounded count observations become queued worker ordinals, preserving in-workflow item selection and claims. Item-addressed sources separately use eligibility episodes. |
 | Desired-concurrency refill | Delivered below: live and queued occupancy bounds missing-capacity worker starts; normal admission and in-workflow claims remain. |
 | Direct webhook/signal delivery | Delivered below: authenticated delivery/caller keys freeze the pinned recipient set before acknowledgement. |
@@ -539,7 +539,7 @@ reserved run IDs, current eligibility and archived execution path as manual star
 Acceptance tests exercise actual webhook handlers, exact archive compilation,
 scheduler admission, Runner journals, and CLI key replay. Store tests cover
 transaction rollback, queue-full cursor preservation, legacy transfer uncertainty,
-and no-match/recipient freezing. Standalone manual and direct engine adapters keep HAW-EVT-002 in progress.
+and no-match/recipient freezing. The direct engine adapter keeps HAW-EVT-002 in progress.
 Demand-sized schedule custody is described below.
 
 
@@ -609,8 +609,29 @@ do not launch under another workflow or lose pins through an age-based timeout.
 Tests cover count preservation across database reopen and configuration change,
 no-work/fallback decisions, concurrent ordinal transfers, rollback, queue-full
 cursor preservation, failed pin capture, and actual archived Runner execution.
-Standalone manual/detached and direct engine starts remain follow-up adapters;
-HAW-EVT-002 remains in progress.
+The direct engine adapter remains follow-up work; HAW-EVT-002 remains in progress.
+
+### Delivered standalone manual and detached starts
+
+`goobers run` without a live daemon and its detached worker accept the same pinned
+ordinary intent into the shared ledger before normal scheduler admission. They
+retain the existing instance lock, claim recovery, current targeted-PR validation,
+force rules, trace handle, terminal exit codes and cleanup. The one-shot adapter
+attempts only its own receipt; it never executes unrelated accepted starts.
+
+`--request-id` now carries an exact retry identity through local and detached
+submission. Exact replay observes the original receipt, source pins and run ID;
+changed options under that key refuse. If current capacity holds the start, the
+command prints its durable receipt and request ID and returns the existing
+nonzero admission result. `goobers up` or a same-key retry can subsequently
+dispatch it. Standalone `--no-wait` still returns after run admission; daemon API
+submission-only behavior remains durable acceptance before dispatch.
+
+Queue/archive failures cannot fall back to direct execution. A previously
+uncertain publication is reconciled against the matching durable run journal
+while holding the instance lock. Tests cover real CLI and detached-worker replay,
+an unrelated pending receipt, archived execution after capacity release, queue
+failure, current provider validation and original run/terminal output.
 
 
 ### Delivered scoped read-cache foundation (HAW-EVT-008)

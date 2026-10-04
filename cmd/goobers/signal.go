@@ -124,7 +124,7 @@ func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 		return 1
 	}
 
-	queue, err := installSignalQueue(l, setup)
+	queue, err := installOneShotStartQueue(l, setup)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

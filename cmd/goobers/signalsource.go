@@ -14,7 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/triggerqueue"
 )
 
-func installSignalQueue(layout instance.Layout, setup *schedulerSetup) (*durableTriggerService, error) {
+func installOneShotStartQueue(layout instance.Layout, setup *schedulerSetup) (*durableTriggerService, error) {
 	service, err := newDurableTriggerService(filepath.Join(layout.SchedulerDir(), "accepted-triggers.db"), newDaemonTriggerService())
 	if err != nil {
 		return nil, err
