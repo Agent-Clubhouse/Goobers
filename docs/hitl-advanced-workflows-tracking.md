@@ -302,7 +302,9 @@ authority. Cancellation, drain and observation follow the current child epoch an
 refuse late results from the original run. Queued epoch cancellation retains its
 own result. The common human admission adapter now queues and restarts the exact affected
 child stage, with saved guidance, current authority, cancellation and capacity
-fences. Publication from later child epochs remains explicit follow-up work.
+fences. The first publication may now originate in a human child epoch; the publication
+keeps its emitting run identity. Revising an already accepted branch/PR intent
+from a subsequent epoch remains a separate capability.
 
 Shared provider reads now have an explicit gaggle/binding/generation partition,
 full request-representation isolation, bounded body capture, and an ADO GET
