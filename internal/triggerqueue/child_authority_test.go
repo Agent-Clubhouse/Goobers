@@ -16,6 +16,27 @@ func childAuthorityFixture(req ChildAcceptance) ChildAuthority {
 		PolicyDigest: "sha256:" + strings.Repeat("b", 64), ExpiresAt: childTestTime.Add(time.Hour)}
 }
 
+func TestChildGaggleRevocationDoesNotCrossScope(t *testing.T) {
+	s := openTestStore(t, filepath.Join(t.TempDir(), "starts.db"))
+	a := childAuthorityFixture(childRequest("parent", "stage", "call"))
+	b := a
+	b.Gaggle = "other"
+	for _, authority := range []ChildAuthority{a, b} {
+		if err := s.BindChildAuthority(t.Context(), authority, "", childTestTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RevokeChildGaggleAuthorities(t.Context(), a.Gaggle); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CheckChildAuthority(t.Context(), a, childTestTime); !errors.Is(err, ErrChildAuthorityChanged) {
+		t.Fatalf("affected gaggle still authorized: %v", err)
+	}
+	if err := s.CheckChildAuthority(t.Context(), b, childTestTime); err != nil {
+		t.Fatalf("other gaggle revoked: %v", err)
+	}
+}
+
 func TestChildAuthoritySupersessionAndReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "starts.db")
 	s := openTestStore(t, path)

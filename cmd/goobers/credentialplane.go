@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/childworkflow"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/externaltelemetry"
@@ -113,7 +114,8 @@ type daemonCredentialService struct {
 	// grants signs and admits stage credential-refresh grants (Goobers#6120,
 	// credentialrefresh.go). Nil disables mid-stage refresh: no grant is
 	// minted and the refresh route answers 503.
-	grants *stageGrantIssuer
+	grants   *stageGrantIssuer
+	children *childworkflow.Runtime
 
 	// buildSources overrides gaggle credential-source construction in tests;
 	// nil uses buildCredentials — the same composition the runner wiring uses.
