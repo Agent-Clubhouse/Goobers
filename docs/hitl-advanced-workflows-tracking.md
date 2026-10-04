@@ -201,8 +201,11 @@ remains until isolated branch forks and fan-in are implemented.
   The queue now retains up to eight human execution epochs per accepted child,
   with immutable prior results and an active-execution pointer. Concurrent
   restart/cancel/disposition races, exact replay, retained-byte limits and family
-  cleanup are covered. Runtime admission and interactive credential binding
-  still gate enabling sealed-child restart.
+  cleanup are covered. The credential broker now selects current human bindings
+  for a verified child epoch, keeps model pods restricted to model credentials,
+  and cancels operations during policy reload without reversing lock order.
+  Runtime admission, full worker lifetime leases and portal epoch history still
+  gate enabling sealed-child restart.
 - Keep recursion deferred as agreed; one unresolved child per stage occurrence,
   including distinct parallel occurrences, remains the required v1 scope.
 
