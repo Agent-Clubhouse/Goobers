@@ -77,6 +77,7 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 | `codex/haw-contained-launcher` | `codex/haw-parent-authority` | Install contained child factories and recover parent secret delivery |
 | `codex/haw-contained-recovery` | `codex/haw-contained-launcher` | Contained serial parent routing, exact child attempt authority, and durable replacement refusal |
 | `codex/haw-event-subscriptions` | `codex/haw-contained-recovery` | Pin bounded subscriptions and transactionally route debounce groups into durable starts |
+| `codex/haw-worker-reconciliation` | `codex/haw-event-subscriptions` | Retain exact worker attempts, rejoin without launch, and replay the original workspace application plan |
 
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
@@ -127,7 +128,9 @@ a live Kubernetes or model qualification. Remaining delivery gates:
   planes through the existing Temporal transport. Parent writer start/join
   evidence and its original fork snapshot preserve a managed checkout after an
   uncertain dispatch; retry, Resume and Rerun refuse a replacement until custody
-  is recovered. Late teardown and verified worker reconciliation are next. See
+  is recovered. Bounded late parent teardown and the shared exact-worker
+  reconciliation engine are implemented; production recovery sweep wiring is
+  next. See
   [contained attempt contract](reference/contained-workflow-attempts.md).
 - Verify explicit PR publication delegation against the actual credential surface,
   including ambient credentials and model credentials that also authorize GitHub.

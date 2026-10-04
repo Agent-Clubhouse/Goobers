@@ -4,7 +4,8 @@ Generated child workflow execution and a parent task that can delegate require
 an isolated worker pod. The first connected parent lane supports serial opted-in repository agents with
 explicit Linux image placement and configured worker transport. Unsupported
 workflow shapes are refused. Recovery of an uncertain physical worker remains
-in progress; such an attempt is retained and blocks replacement execution.
+in progress at the host integration boundary; the shared executor can now
+reconcile a retained worker without launching a replacement.
 
 ## Parent task authority
 
@@ -48,6 +49,12 @@ observations bind to the exact active stage and logical attempt. Journal keys
 and transcript captures are namespaced by physical contract. Inline artifact
 publication, span reads and artifact-reference adoption all use the request's
 scoped store, including bounded reads; none fall back to shared blob storage.
+
+An exact host-started, unjoined parent contract retains bounded teardown custody
+after its stage stops. Credentials and new-child grants still require active
+authority. Once the run journal is terminal, fresh direct observations remain
+refused; final transcript and workspace artifacts can still be uploaded and
+surrendered for host recovery. A joined or replaced worker loses this custody.
 
 Parent completion records must name the same run, stage and physical attempt.
 The output carrier must match the retained contract. Returned artifact pointers
@@ -97,6 +104,15 @@ host fork beside its exact contract. Only host-authored writer-start/join record
 can release that custody. Retry, Resume and Rerun inspect it before replacement
 journal effects. An uncertain worker preserves the checkout; a terminal run
 record alone does not prove that worker stopped or returned its edits.
+
+The shared reconciliation engine retains the original dispatch binding and host
+snapshot before launch. Recovery addresses the existing Temporal workflow ID,
+stops/joins it and verifies its exact payload binding; it never submits another
+start. Returned edits require both stopped-writer evidence and a matching output
+carrier. Workspace application records the exact plan before effects, so a crash
+replays that plan instead of adopting a later checkout as a new merge baseline.
+Conflicting intervening edits retain custody and require resolution. Connecting
+this engine to parent/child host recovery and nonterminal resumption is ongoing.
 
 The completion boundary checks both inline outputs and reviewer evidence against
 bounded attempt custody. It rejects claimed source-trust grades, inconsistent
