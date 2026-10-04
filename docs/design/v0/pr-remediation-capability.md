@@ -110,11 +110,13 @@ therefore write files; only scalars used for *gate routing* go through `inputsFr
 #### D1.1 — `remediation-brief.json` versioned contract
 
 The closed schema is
-`api/schemas/remediation-brief-v3.schema.json`; its wire identifier is
-`goobers.dev/remediation-brief/v3`. V3 adds the aggregate weakest-source
-integrity grade and preserves grades on provider-authored comments, reviews,
-and issue text. V2 added inline review diff hunks, original lines, and explicit
-resolved/outdated state. The v1 and v2 schemas remain embedded and unchanged.
+`api/schemas/remediation-brief-v4.schema.json`; its wire identifier is
+`goobers.dev/remediation-brief/v4`. V4 adds the optional `feedbackSnapshot`
+(`goobers.dev/pr-feedback-snapshot/v1`, see D1.2). V3 added the aggregate
+weakest-source integrity grade and preserves grades on provider-authored
+comments, reviews, and issue text. V2 added inline review diff hunks, original
+lines, and explicit resolved/outdated state. The v1, v2 and v3 schemas remain
+embedded and unchanged, and every reader still accepts them.
 Unknown fields are rejected. Any shape change, including an additive field,
 publishes a new schema version rather than silently widening an existing
 version. Writers emit one version and readers select support by the wire
@@ -146,6 +148,109 @@ Only `selectedNumber`, `head`, `base`, `hasSubstantiveFindings`, and
 `hasFailingCI` continue through `inputsFrom`. `workspaceBranch` remains the
 runner-interpreted branch-rebinding output. The full verdict, comments, and every
 optional section travel only in the journal-lifted brief artifact.
+
+#### D1.2 — Revision and feedback continuity (#6128, #6126)
+
+A run works on one PR at one revision, answering one set of human feedback.
+Both can move while it runs, so both are pinned and re-checked.
+
+- **Revision.** The expected head is the `gatherPrContext.headSha` that
+  `gather-pr-context` selected, read back from its own journal artifact. Only a
+  new selection or this run's own lease-verified push advances it: a
+  `push-remediated` publication, or `rebase-pr`'s clean-rebase push on a
+  cycle that continues into the agentic chain (adopted only when it leased
+  against the head the run already expected).
+  Every `pr-claim` guard and `push-remediated` compare the live head with it.
+  A different head is a distinct `stale_selection` no-work that releases the
+  claim, so the next cycle re-selects the PR at its new head. It is never an
+  escalation and never an in-run adoption. A missing or malformed head fails
+  closed (`pr_revision_unverifiable`).
+- **Feedback.** `gather-review-threads` pins the review threads, non-empty
+  review bodies and general PR comments it hands the agent in the brief's
+  `feedbackSnapshot`. The same read refreshes `gatherPrContext.comments`, so
+  the agent sees exactly what the snapshot pins. `pr-claim --verify-feedback`
+  (guard-before-push) and `resolve-review-threads` (before and around every
+  mutation) re-read and compare that feedback. New, changed or missing
+  feedback, or a thread whose state someone else changed, reports a typed
+  `staleInput`. The feedback gates route it back to `gather-review-threads`.
+  That re-entry is charged to the run's repass budget, and only an exhausted
+  budget parks (`park-stale-feedback`). A post-publication head move ends the
+  run as a `stale_head` no-work. A push that the provider has not yet surfaced
+  is a retryable `published_head_not_visible`.
+- **No-change feedback.** New feedback often needs no code change (a
+  "thanks", a question the thread reply answers). After a re-gather,
+  `classify-feedback-repass` (`pr-claim --classify-feedback-repass`) compares
+  the workspace head with the head the stale check recorded: the head that
+  had already passed review and local CI (guard-before-push records it as
+  `localHead`) or this run's published head. When the agent left it
+  unchanged, `feedbackNoop=true` skips review and local CI and returns to
+  guard-before-push. The reviewer's identical-diff guard never sees the
+  unchanged head, so it cannot escalate it as `UNCHANGED_REPASS`, and no
+  remediation-checkpoint budget is charged. After publication,
+  `push-remediated` acknowledges a branch still at this run's own published
+  head ("feedback acknowledged, no change needed") instead of refusing it as
+  nothing to publish. `resolve-review-threads` then answers the fresh
+  feedback. A first pass that produced no commit is still refused.
+- **Canonicalization.** Identity is the provider's stable id, and items are
+  ordered by id. Bodies are compared by the sha256 of their normalized text.
+  Excluded: bodies carrying a Goobers hidden marker, bot-authored general
+  comments, empty review bodies, review state and the outdated flag. The
+  digest includes the head and collection completeness.
+
+#### D1.3 — Review-thread publication receipts (#6131)
+
+`resolve-review-threads`' result file is a versioned receipt,
+`goobers.dev/review-thread-publication/v1`
+(`api/schemas/review-thread-publication-v1.schema.json`). It names the pull
+request, the published head, the feedback snapshot digest, an overall
+`status` (`in_progress`, `complete`, `partial`, `failed`, `stale`), and one
+entry per answered thread with its disposition, `replyState`,
+`resolutionState`, the provider's reply id and the last error. The scalar
+outputs the workflow routes on (`selectedNumber`, `publishedHeadSha`,
+`unresolvedThreadCount`, `staleInput`) are unchanged.
+
+- **Incremental.** The receipt is written atomically before the first
+  mutation and again after every verified reply and every verified
+  resolution. Every exit, including errors and stale input, rewrites it with
+  the outcome. The executor journals the result file on every exit as the
+  stage's `<stage>/result` artifact. That journal record is what survives a
+  stage retry, a daemon restart or a crash-resume. The scratch workspace does
+  not.
+- **Reconciliation.** A new attempt loads the newest receipt its own run
+  journal holds for the same pull request, published head and feedback
+  snapshot. A receipt for another head or snapshot belongs to an earlier pass
+  and is not resumed. Before any mutation, the head and feedback checks run
+  first, then the threads are re-read and the receipt is reconciled with that
+  read. Provider state is authoritative. A verified entry the provider still
+  shows is `receipt_confirmed`. A mutation the provider shows (this run's
+  reply marker, or the resolution) that no receipt recorded is
+  `provider_adopted`, as after an attempt interrupted between the mutation and
+  the receipt write. Neither is published again.
+- **Divergence.** A verified entry the provider no longer shows (this run's
+  reply was deleted, or a thread it resolved was reopened) is someone else's
+  mutation. It is never silently redone. Publication stops as
+  `staleInput=changed_thread_state` naming the thread, and the feedback gate
+  re-gathers.
+- **Repeated passes.** A no-change feedback repass after publication runs the
+  stage again in the same run, at the same published head, against a new
+  snapshot and new responses. That pass is a new transaction: an earlier
+  pass's receipt is never resumed and never blocks it. Reply markers carry
+  the pass's snapshot key, so an earlier pass's reply never passes for this
+  one's. The one exception is a reply that already says the same thing. If
+  an earlier pass answered the same thread content with the same disposition
+  at this head, left the thread unresolved, and the reply is still visible,
+  it is reused (`earlier_pass`) instead of repeated. New human input on a
+  thread, a changed disposition, or a thread reopened after an earlier pass
+  resolved it gets this pass's own reply.
+- **Completion.** `complete` is written only after a final read shows every
+  intended reply and every addressed thread's resolution. A receipt never
+  stands in for that read.
+- **No restoration.** `restoration` is always `unsupported`. Published replies
+  are human-visible and are never deleted on a generic failure, so a partial
+  publication is preserved and reported as `partial` with the typed error.
+- **Providers.** The contract is provider-neutral. GitHub and Azure DevOps
+  publish through it. Gitea cannot reply to or resolve review threads, so the
+  stage refuses before any receipt is written.
 
 ### D2 — Remediation policy declared in the DSL, not compiled into Go
 

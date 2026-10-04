@@ -460,6 +460,8 @@ complete -c goobers -n '__fish_seen_subcommand_from gather-sibling-context' -l n
 complete -c goobers -n '__fish_seen_subcommand_from apply-verdict' -l gate -r -d 'Gate name whose verdict to apply'
 complete -c goobers -n '__fish_seen_subcommand_from elect-lander' -l gate -r -d 'Gate name whose verdict to read'
 complete -c goobers -n '__fish_seen_subcommand_from pr-claim' -l release -d 'Release the remediation claim'
+complete -c goobers -n '__fish_seen_subcommand_from pr-claim' -l verify-feedback -d 'Also compare live PR feedback with the recorded snapshot'
+complete -c goobers -n '__fish_seen_subcommand_from pr-claim' -l classify-feedback-repass -d 'Report whether a stale-feedback repass changed nothing'
 complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l budget -r -d 'Per-PR repass-cycle budget before escalating'
 complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l escalate -r -d 'Escalate unconditionally with this reason'
 complete -c goobers -n '__fish_seen_subcommand_from remediation-checkpoint' -l escalation-outcome -r -d 'Recorded escalation outcome'
