@@ -87,6 +87,27 @@ response reservation. Existing and new databases apply this as an additive
 migration after their source-start tables. Journal/schema, actual Runner.Start,
 parallel message ordering, byte bounds and tamper tests cover these contracts.
 
-These primitives do not yet enable the daemon runtime; session availability
-remains false until the coordinator, human model driver and daemon lifecycle
-have been installed.
+The coordinator is implemented below. Session availability remains false until
+the human model driver and daemon lifecycle have been installed.
+
+
+## Turn coordinator and execution capacity
+
+The coordinator serializes each session's turns, observes only exact matching run
+journals, and publishes a run link after that observation succeeds. A completed
+journal does not alone release execution capacity: every writer must have joined.
+Closing a session requests cancellation and waits for this evidence. Uncertain
+writers retain capacity and FIFO ownership across daemon restarts. Only startup
+reconciliation can retry a dispatch whose journal is strongly proven absent.
+
+A reserved scheduler operation bucket admits at most four executing turns per
+gaggle while sharing the instance's global/resource limits. It is not a fake
+catalog workflow and does not inherit automation polling cadence. Ordinary
+watchdogs cannot release unjoined session custody. Startup must restore the entire
+unsettled inventory before allowing new admission. Bounded sweeps reconcile old
+turns and prune only settled, closed session records.
+
+Composed tests cover browser disconnect, queued turn ordering, current-policy
+revocation, close/cancel/join, unknown writers, startup custody restoration, exact
+provenance and concurrent per-gaggle/global limits. Native daemon installation is
+still the next slice; these internals do not advertise execution on their own.
