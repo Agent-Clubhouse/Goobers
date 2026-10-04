@@ -46,3 +46,30 @@ func TestChildPodTokenCannotBeDowngradedToOrdinaryCustody(t *testing.T) {
 		t.Fatal("expired child bearer authenticated")
 	}
 }
+
+func TestWorkflowParentPodHasIndependentSignedCustody(t *testing.T) {
+	key, err := NewSignedKey([]byte(strings.Repeat("p", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := key.MintWorkflowParentPod("parent-run", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := NewAuthenticator(key, httpapi.DenyAllAuthenticator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	p, err := auth.Authenticate(request)
+	if err != nil || !p.WorkflowParent || p.GeneratedChild || p.Subject != "run:parent-run" {
+		t.Fatal(p, err)
+	}
+	for _, prefix := range []string{tokenPrefix, childPodTokenPrefix} {
+		request.Header.Set("Authorization", "Bearer "+strings.Replace(token, workflowParentPodPrefix, prefix, 1))
+		if _, err := auth.Authenticate(request); err == nil {
+			t.Fatal("parent custody domain relabeled")
+		}
+	}
+}

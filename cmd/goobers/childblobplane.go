@@ -28,6 +28,9 @@ func (s *daemonCredentialService) childBlobScope(ctx context.Context) (triggerqu
 	if !httpapi.IsPodPrincipal(principal) {
 		return triggerqueue.ChildIdentity{}, false, nil
 	}
+	if principal.WorkflowParent {
+		return triggerqueue.ChildIdentity{}, false, errors.New("contained parent blob custody requires its authority adapter")
+	}
 	runID, ok := strings.CutPrefix(principal.Subject, "run:")
 	if !ok || !apiv1.ValidRunID(runID) || s.childQueue == nil {
 		return triggerqueue.ChildIdentity{}, false, errors.New("blob custody run identity unavailable")

@@ -86,6 +86,9 @@ type Principal struct {
 	// GeneratedChild is a signed pod-custody claim, never inferred from mutable
 	// journal presence or accepted from a request body.
 	GeneratedChild bool
+	// WorkflowParent identifies a contained parent pod. Its run/attempt authority
+	// is checked independently of generated-child lineage.
+	WorkflowParent bool
 	// ChildWorkflow is populated only by the stage-grant authenticator.
 	ChildWorkflow *ChildWorkflowPrincipal
 	Subject       string
