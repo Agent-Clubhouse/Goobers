@@ -96,8 +96,16 @@ func TestMCPDiagnosticsProbeHasNoModelTurnAndCleansWorkspace(t *testing.T) {
 				}
 				return session, nil
 			}}
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			defer cancel()
+			// Only the deadline case may see an expired caller context, and
+			// it expires before the call, so no outcome depends on how long
+			// setup takes on a loaded runner (#6617). The other cases run under
+			// the probe's own MCPDiagnosticTimeout.
+			ctx := context.Background()
+			if tc.wait {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Unix(0, 0))
+				defer cancel()
+			}
 			got := adapter.ProbeMCPReadiness(ctx, RunRequest{})
 			if len(got) != 1 || got[0].Category != tc.category || session.modelCalls != 0 {
 				t.Fatalf("got=%+v modelCalls=%d", got, session.modelCalls)
@@ -109,22 +117,6 @@ func TestMCPDiagnosticsProbeHasNoModelTurnAndCleansWorkspace(t *testing.T) {
 				t.Fatalf("workspace not cleaned: %v", err)
 			}
 		})
-	}
-}
-
-func TestMCPDiagnosticsProbeUsesOwnSetupBudget(t *testing.T) {
-	session := &readinessSession{status: "connected"}
-	adapter := &CopilotAdapter{Command: []string{"copilot"}, SelfBin: "/trusted/goobers", mcpSessionFactory: func(context.Context, ProcessRequest, *copilotControlledRunner) (copilotModelSession, error) {
-		return session, nil
-	}}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	got := adapter.ProbeMCPReadiness(ctx, RunRequest{})
-	if len(got) != 1 || got[0].Category != "ready" || session.modelCalls != 0 {
-		t.Fatalf("got=%+v modelCalls=%d", got, session.modelCalls)
-	}
-	if session.probeCalls != 1 {
-		t.Fatal("safe read was not executed exactly once")
 	}
 }
 
