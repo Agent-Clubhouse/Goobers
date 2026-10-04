@@ -27,8 +27,9 @@
 | [`goobers up`](#goobers-up) | run the daemon (scheduler + runner + loopback HTTP API) |
 | [`goobers validate`](#goobers-validate) | validate an instance or checked-in config source tree |
 | [`goobers version`](#goobers-version) | print build version, commit, and date (--json for structured output) |
-| [`goobers workflow`](#goobers-workflow) | inspect workflows |
+| [`goobers workflow`](#goobers-workflow) | inspect workflows and validate child proposals |
 | [`goobers workflow show`](#goobers-workflow-show) | show a workflow as a text DAG |
+| [`goobers workflow validate-child`](#goobers-workflow-validate-child) | validate a child proposal against its configured parent |
 
 ## Advanced operator commands
 
@@ -5427,12 +5428,12 @@ $ goobers worker --task-queue goobers-engine --drain-timeout 60s
 
 ## `goobers workflow`
 
-inspect workflows
+inspect workflows and validate child proposals
 
 ~~~text
-Usage: goobers workflow show [flags] <name> [path]
+Usage: goobers workflow <show | validate-child> [flags]
 
-Show the named workflow as a text DAG or Graphviz DOT (default path ".").
+Show a workflow DAG or validate a generated child proposal against its configured parent.
 
 Workflow
 
@@ -5456,6 +5457,32 @@ kinds, and transition targets as a text DAG or Graphviz DOT
 ~~~console
 $ goobers workflow show default-implement
 $ goobers workflow show default-implement --dot
+~~~
+
+## `goobers workflow validate-child`
+
+validate a child proposal against its configured parent
+
+~~~text
+Usage: goobers workflow validate-child --gaggle <name> --parent <workflow> --stage <stage> [--backend runner|engine] [--json] <proposal.yaml> [path]
+
+Validate one generated child Workflow against an opted-in parent stage in
+the instance's current active config/ tree (default path "."). The parent
+supplies policy; child grants are also bounded by the parent's stage capabilities.
+The proposal must pin DSL 3.1 and declare only a plain manual trigger.
+
+This is advisory current-config validation, not durable run admission. It
+does not start or queue work, resolve credentials, invoke a model, or refresh
+workflowSource. --backend selects the validation target (default runner).
+Config digests identify declarative validation inputs, not an execution archive.
+--json emits child-workflow-validation/v1 diagnostics and digests.
+Exit codes: 0 = valid, 1 = invalid proposal/configuration, 2 = usage/IO error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers workflow validate-child --gaggle example --parent implementation --stage plan --json child.yaml
 ~~~
 
 ## `goobers workspace`

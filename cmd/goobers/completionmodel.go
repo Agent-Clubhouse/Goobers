@@ -405,6 +405,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},
 	},
+	"workflow validate-child": {
+		{name: "gaggle", takesArg: true, desc: "Configured parent gaggle"},
+		{name: "parent", takesArg: true, valueKind: "workflows", desc: "Configured parent workflow"},
+		{name: "stage", takesArg: true, desc: "Configured parent agentic stage"},
+		{name: "backend", takesArg: true, desc: "Advisory validation target: runner or engine"},
+		{name: "json", desc: "Emit structured diagnostics and digests"},
+	},
 	"runs list": {
 		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 		{name: "json", desc: "Emit JSON"},

@@ -15,6 +15,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+	yaml "gopkg.in/yaml.v3"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/bootstrap"
@@ -25,12 +28,12 @@ import (
 	"github.com/goobers/goobers/internal/strictyaml"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
-	"github.com/santhosh-tekuri/jsonschema/v5"
-	yaml "gopkg.in/yaml.v3"
 )
 
 const (
-	MaxProposalBytes  = 1 << 20
+	// MaxProposalBytes bounds one submitted Workflow before YAML parsing.
+	MaxProposalBytes = 1 << 20
+	// MaxProposalStates bounds the total task, gate, and parallel state count.
 	MaxProposalStates = 128
 )
 
@@ -38,7 +41,9 @@ const (
 type Backend string
 
 const (
+	// BackendRunner selects the local runner's executable placement surface.
 	BackendRunner Backend = "runner"
+	// BackendEngine selects engine placement and its supported-feature checks.
 	BackendEngine Backend = "engine"
 )
 
@@ -70,6 +75,7 @@ type Diagnostic struct {
 	Message string `json:"message"`
 }
 
+// ValidationError contains the typed reasons a proposal was refused.
 type ValidationError struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
@@ -102,6 +108,7 @@ type Validator struct {
 	schema  *validate.Validator
 }
 
+// NewValidator snapshots trusted inputs for side-effect-free proposal checks.
 func NewValidator(input AdmissionContext) (*Validator, error) {
 	if input.Config == nil || input.Gaggle.Name == "" || input.ConfigDigest == "" {
 		return nil, errors.New("child validation requires pinned config, gaggle, and config digest")
@@ -152,15 +159,47 @@ func refusal(code, stage, field, message string) error {
 // Workflow declares exactly one plain manual trigger; it must never be added to
 // the scheduler catalog. Only the parent's future child-start path may admit it.
 func (v *Validator) Validate(source []byte) (*Proposal, error) {
+	wf, canonical, err := v.parseProposal(source)
+	if err != nil {
+		return nil, err
+	}
+	if err := v.checkScope(wf); err != nil {
+		return nil, err
+	}
+	if err := v.checkAuthority(wf); err != nil {
+		return nil, err
+	}
+	goobers := make(map[string]apiv1.GooberSpec)
+	for _, name := range v.context.ParentTask.ChildWorkflows.AllowedGoobers {
+		goobers[name] = v.context.Goobers[name]
+	}
+	machine, err := v.compileProposal(wf, goobers)
+	if err != nil {
+		return nil, err
+	}
+	pins, err := v.pinProposal(wf, machine.Def, goobers)
+	if err != nil {
+		return nil, err
+	}
+	policyBytes, _ := json.Marshal(struct {
+		Policy      *apiv1.ChildWorkflowPolicy
+		Grants      []string
+		Publication bool
+	}{v.context.ParentTask.ChildWorkflows, v.context.GrantedCapabilities, v.context.AllowPRPublication})
+	return &Proposal{Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
+		ConfigDigest: v.context.ConfigDigest, PolicyDigest: digest(policyBytes), Workflow: wf, Machine: machine, Placements: pins}, nil
+}
+
+func (v *Validator) parseProposal(source []byte) (apiv1.Workflow, []byte, error) {
 	if len(source) == 0 || len(source) > MaxProposalBytes {
-		return nil, refusal("size", "", "", "proposal must contain 1 to 1048576 bytes")
+		return apiv1.Workflow{}, nil, refusal("size", "", "", "proposal must contain 1 to 1048576 bytes")
 	}
 	if err := singleDocument(source); err != nil {
-		return nil, err
+		return apiv1.Workflow{}, nil, err
 	}
 	raw, err := strictyaml.YAMLToJSON(source)
 	if err != nil {
-		return nil, refusal("syntax", "", "", "invalid YAML or duplicate mapping key")
+		return apiv1.Workflow{}, nil, refusal("syntax", "", "", "invalid YAML or duplicate mapping key")
 	}
 	// Inspect control fields before schema validation so recursion has a stable
 	// diagnostic even on binaries whose schema does not yet admit the opt-in.
@@ -168,26 +207,26 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber() // identity must not round integers through float64
 	if err := decoder.Decode(&object); err != nil {
-		return nil, refusal("syntax", "", "", "expected one Workflow object")
+		return apiv1.Workflow{}, nil, refusal("syntax", "", "", "expected one Workflow object")
 	}
 	spec, _ := object["spec"].(map[string]any)
 	tasks, _ := spec["tasks"].([]any)
 	for _, value := range tasks {
 		task, _ := value.(map[string]any)
 		if _, present := task["childWorkflows"]; present {
-			return nil, refusal("recursion", "", "spec.tasks.childWorkflows", "a generated child cannot opt into child workflows")
+			return apiv1.Workflow{}, nil, refusal("recursion", "", "spec.tasks.childWorkflows", "a generated child cannot opt into child workflows")
 		}
 	}
 	if object["dslVersion"] != supportmatrix.V31DSLVersion {
-		return nil, refusal("dsl_version", "", "dslVersion", "a child must explicitly pin DSL 3.1")
+		return apiv1.Workflow{}, nil, refusal("dsl_version", "", "dslVersion", "a child must explicitly pin DSL 3.1")
 	}
 	triggers, _ := spec["triggers"].([]any)
 	if len(triggers) != 1 {
-		return nil, refusal("trigger", "", "spec.triggers", "a child requires exactly one plain manual trigger")
+		return apiv1.Workflow{}, nil, refusal("trigger", "", "spec.triggers", "a child requires exactly one plain manual trigger")
 	}
 	trigger, _ := triggers[0].(map[string]any)
 	if len(trigger) != 1 || trigger["type"] != "manual" {
-		return nil, refusal("trigger", "", "spec.triggers", "a child requires exactly one manual trigger with no other fields")
+		return apiv1.Workflow{}, nil, refusal("trigger", "", "spec.triggers", "a child requires exactly one manual trigger with no other fields")
 	}
 	if err := v.schema.ValidateJSON("workflow.schema.json", raw); err != nil {
 		// Schema errors may quote arbitrary authored values. Return the boundary
@@ -200,37 +239,39 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 			}
 			field = problem.InstanceLocation
 		}
-		return nil, refusal("schema", "", field, "proposal does not satisfy the canonical Workflow schema")
+		return apiv1.Workflow{}, nil, refusal("schema", "", field, "proposal does not satisfy the canonical Workflow schema")
 	}
 	var wf apiv1.Workflow
 	if err := json.Unmarshal(raw, &wf); err != nil {
-		return nil, refusal("schema", "", "", "cannot decode Workflow")
+		return apiv1.Workflow{}, nil, refusal("schema", "", "", "cannot decode Workflow")
 	}
+	canonical, _ := json.Marshal(object) // map keys sorted; authored omissions preserved
+	return wf, canonical, nil
+}
+
+func (v *Validator) checkScope(wf apiv1.Workflow) error {
 	if len(wf.Spec.Tasks)+len(wf.Spec.Gates)+len(wf.Spec.Parallels) > MaxProposalStates {
-		return nil, refusal("states", "", "spec", "a child may declare at most 128 states")
+		return refusal("states", "", "spec", "a child may declare at most 128 states")
 	}
 	if wf.Spec.Gaggle != v.context.Gaggle.Name || (wf.Namespace != "" && wf.Namespace != v.context.Gaggle.Namespace) {
-		return nil, refusal("scope", "", "spec.gaggle", "child must belong to the pinned parent gaggle and namespace")
+		return refusal("scope", "", "spec.gaggle", "child must belong to the pinned parent gaggle and namespace")
 	}
 	if wf.Spec.OutboxMirrorPath != "" || wf.Spec.TutorScope != nil {
-		return nil, refusal("scope", "", "spec", "child cannot choose a host outbox path or configuration-repository tutor scope")
+		return refusal("scope", "", "spec", "child cannot choose a host outbox path or configuration-repository tutor scope")
 	}
 	if workflow.PreviewFeaturesEnabled(wf.Annotations) && !v.context.AllowPreviewFeatures {
-		return nil, refusal("preview", "", "metadata.annotations", "proposal cannot enable preview features beyond the pinned policy")
+		return refusal("preview", "", "metadata.annotations", "proposal cannot enable preview features beyond the pinned policy")
 	}
-	if err := v.checkAuthority(wf); err != nil {
-		return nil, err
-	}
+	return nil
+}
+
+func (v *Validator) compileProposal(wf apiv1.Workflow, goobers map[string]apiv1.GooberSpec) (*workflow.Machine, error) {
 	def := workflow.Definition{Name: wf.Name, Version: 1, DSLVersion: wf.DSLVersion, Spec: wf.Spec, Annotations: wf.Annotations}
 	if problems := workflow.CheckProviderStageInputs(def); len(problems) != 0 {
 		return nil, refusal("provider_inputs", "", "spec.tasks.inputs", bounded(strings.Join(problems, "; ")))
 	}
 	// Non-nil empty catalogs are significant: a nil registry disables some
 	// normal compiler admission checks. Supply every catalog explicitly.
-	goobers := make(map[string]apiv1.GooberSpec)
-	for _, name := range v.context.ParentTask.ChildWorkflows.AllowedGoobers {
-		goobers[name] = v.context.Goobers[name]
-	}
 	machine, err := workflow.Compile(def,
 		workflow.WithGoobers(goobers),
 		workflow.WithKnownChecks(append([]string{}, v.context.KnownChecks...)),
@@ -257,6 +298,10 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 			return nil, refusal(check.code, "", "spec", bounded(strings.Join(problems, "; ")))
 		}
 	}
+	return machine, nil
+}
+
+func (v *Validator) pinProposal(wf apiv1.Workflow, def workflow.Definition, goobers map[string]apiv1.GooberSpec) ([]engine.PinnedPlacement, error) {
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{v.context.Gaggle}, Workflows: []apiv1.Workflow{wf}}
 	for name, goober := range goobers {
 		g := apiv1.Goober{Spec: goober}
@@ -297,14 +342,7 @@ func (v *Validator) Validate(source []byte) (*Proposal, error) {
 	if err := json.Unmarshal(pinBytes, &independentPins); err != nil {
 		return nil, err
 	}
-	canonical, _ := json.Marshal(object) // map keys sorted; authored omissions preserved
-	policyBytes, _ := json.Marshal(struct {
-		Policy      *apiv1.ChildWorkflowPolicy
-		Grants      []string
-		Publication bool
-	}{v.context.ParentTask.ChildWorkflows, v.context.GrantedCapabilities, v.context.AllowPRPublication})
-	return &Proposal{Source: slices.Clone(source), SourceDigest: digest(source), CanonicalDigest: digest(canonical),
-		ConfigDigest: v.context.ConfigDigest, PolicyDigest: digest(policyBytes), Workflow: wf, Machine: machine, Placements: independentPins}, nil
+	return independentPins, nil
 }
 
 func (v *Validator) checkAuthority(wf apiv1.Workflow) error {
@@ -401,7 +439,7 @@ func singleDocument(source []byte) error {
 		return refusal("syntax", "", "", "YAML aliases are not accepted in child proposals")
 	}
 	var extra yaml.Node
-	if err := decoder.Decode(&extra); err != io.EOF {
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return refusal("documents", "", "", "exactly one Workflow document is required")
 	}
 	return nil
