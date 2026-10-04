@@ -1,8 +1,9 @@
+import { useLayoutEffect } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DaemonAuthError } from "../api/errors";
 import { FixtureDaemonClient } from "../api/fixtureClient";
-import type { BacklogEditCommand, BacklogItem, BacklogWriteCapabilities } from "../api/types";
+import type { BacklogEditCommand, BacklogItem, BacklogWriteCapabilities, DaemonClient } from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 import { WorkbenchItemEditor } from "./WorkbenchItemEditor";
 import { WorkbenchItemDetail } from "./WorkbenchItemDetail";
@@ -124,4 +125,30 @@ describe("WorkbenchItemEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Check same command" })); await screen.findByText("Outcome uncertain");
     expect(vi.mocked(client.patchWorkbenchItem).mock.calls[1].slice(0, 5)).toEqual(first.slice(0, 5));
   });
+  it("removes old command controls before layout effects when the client changes", async () => {
+    const first = new FixtureDaemonClient(populatedDaemonFixtures());
+    const next = new FixtureDaemonClient(populatedDaemonFixtures());
+    vi.spyOn(first, "getWorkbenchWriteCapabilities").mockResolvedValue(capabilities);
+    vi.spyOn(first, "patchWorkbenchItem").mockRejectedValue(new Error("lost reply"));
+    vi.spyOn(next, "getWorkbenchWriteCapabilities").mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(next, "patchWorkbenchItem").mockResolvedValue(receipt());
+    let oldControlVisible = false;
+    function Host({ client }: { client: DaemonClient }) {
+      useLayoutEffect(() => {
+        if (client !== next) return;
+        const oldControl = screen.queryByRole("button", { name: "Check same command" });
+        oldControlVisible = !!oldControl;
+        oldControl?.click();
+      }, [client]);
+      return <WorkbenchItemEditor client={client} item={item} refreshed={vi.fn()} />;
+    }
+    const view = render(<Host client={first} />);
+    await editTitle(); await screen.findByText(/No reliable reply/);
+    view.rerender(<Host client={next} />);
+    expect(oldControlVisible).toBe(false);
+    expect(next.patchWorkbenchItem).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Edit backlog item")).not.toBeInTheDocument();
+    expect(screen.getByText("Checking editing access…")).toBeInTheDocument();
+  });
+
 });

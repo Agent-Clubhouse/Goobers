@@ -5,7 +5,20 @@ import { WorkbenchCommandReceipt } from "./WorkbenchCommandReceipt";
 import { controlLabel, editFields, editInput, fieldText, sameCommand, sameItem } from "./workbenchEditing";
 
 interface PendingEdit { key: string; input: BacklogPatchInput }
-export function WorkbenchItemEditor({ client, item, refreshed }: { client: DaemonClient; item: BacklogItem; refreshed: (item: BacklogItem) => void }) {
+interface EditorProps { client: DaemonClient; item: BacklogItem; refreshed: (item: BacklogItem) => void }
+export function WorkbenchItemEditor(props: EditorProps) {
+  const { client, item } = props;
+  const identity = JSON.stringify([item.ref.gaggleId, item.ref.sourceBindingId, item.ref.sourceId]);
+  const [scope, setScope] = useState({ client, identity, version: 0 });
+  // Reset before committing the new scope. A passive effect is too late: an old
+  // pending command must never render with another client's callbacks.
+  if (scope.client !== client || scope.identity !== identity) {
+    setScope({ client, identity, version: scope.version + 1 });
+    return <p role="status">Checking editing access…</p>;
+  }
+  return <ScopedWorkbenchItemEditor key={scope.version} {...props} />;
+}
+function ScopedWorkbenchItemEditor({ client, item, refreshed }: EditorProps) {
   const [capabilities, setCapabilities] = useState<BacklogWriteCapabilities>();
   const [basis, setBasis] = useState(item);
   const [field, setField] = useState<BacklogWriteField>("title");
