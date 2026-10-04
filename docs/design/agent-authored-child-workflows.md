@@ -328,16 +328,20 @@ run observation/ref-touched records identify the exact parent/child stage.
 
 A lost push reply is reconciled against the exact retained commit and remote
 reference. A lost PR reply can confirm the same head/base PR; if none can be
-observed, it remains uncertain and cannot issue another creation request. This
-initial slice does not automatically resolve an uncertain publication after the
-child stage/run has settled. Publication recovery must preserve that receipt
-until a subsequent authorized reconciliation can observe the provider effect.
+observed, it remains uncertain and cannot issue another creation request. The
+read-only reconciliation service can inspect an exact pending intent and confirm
+its observed branch/PR after the child has settled or the parent was cancelled.
+It changes neither the child result nor execution state; absent or changed
+provider evidence remains actionable human attention. The human bridge checks
+current `run.intervene` and `repository.read` together, constructs the observer
+for the verified immutable repository target, and owns the command audit. It
+never receives credentials or target overrides from authored intent bodies.
 
 Follow-on **HAW-CHD-007-PUB-REVISIONS** adds bounded revisions of the same owned
-branch/PR after review or repass. **HAW-CHD-007-PUB-RECOVERY** adds an operator
-reconciliation path for settled children and explicit decisions when no provider
-effect can be observed. Neither permits multiple PR destinations or replaces an
-unknown outcome with a fresh identity.
+branch/PR after review or repass. **HAW-CHD-007-PUB-RECOVERY** connects that
+read-only reconciliation service to the operator command ledger and portal, and
+adds explicit decisions when no provider effect can be observed. Neither permits
+multiple PR destinations or replaces an unknown outcome with a fresh identity.
 
 ## 9. Bounds and operational evidence
 

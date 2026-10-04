@@ -197,7 +197,7 @@ func (p Publisher) OpenPR(ctx context.Context, t Target, title, body string, dra
 	if err != nil {
 		return zero, err
 	}
-	if result.ID == "" || result.URL == "" || len(result.ID) > 1024 || len(result.URL) > 4096 {
+	if !validObservedPR(result) {
 		return zero, fmt.Errorf("child provider returned invalid PR receipt")
 	}
 	data, err = json.Marshal(result)
