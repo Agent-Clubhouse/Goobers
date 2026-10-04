@@ -2,7 +2,6 @@ package main
 
 import (
 	"maps"
-	"strings"
 	"testing"
 )
 
@@ -28,12 +27,14 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 	if aggregate.If != "${{ always() && github.event_name != 'push' && !"+ciMetadataEdit+" }}" || aggregate.ContinueOnError || len(aggregate.Needs) == 0 {
 		t.Fatal("manual CI must require the full fail-closed aggregate")
 	}
+	ctx := map[string]any{"github": map[string]any{"event_name": "workflow_dispatch", "event": map[string]any{}}}
+	ran := simulateCIJobs(t, w, ctx)
 	for _, id := range aggregate.Needs {
 		job, exists := w.Jobs[id]
 		if !exists {
 			t.Fatalf("required job %s is undefined", id)
 		}
-		if job.If != "" && job.If != "${{ github.event_name != 'push' }}" && job.If != ciCodeGate {
+		if !ran[id] {
 			t.Errorf("required job %s has a condition not guaranteed to run on dispatch: %s", id, job.If)
 		}
 		if job.ContinueOnError || len(job.Permissions) != 0 {
@@ -48,7 +49,7 @@ func TestCIManualDispatchPreservesFullGate(t *testing.T) {
 		}
 	}
 	gate := aggregate.step(t, "Verify required gates")
-	if gate.If != "" || gate.ContinueOnError || !strings.Contains(gate.Run, `if [ "$2" != "success" ]; then`) {
+	if gate.If != "" || gate.ContinueOnError || gate.Run != "go run ./test/cipolicy gate" {
 		t.Fatal("manual aggregate must reject missing, skipped, cancelled, and failed gates")
 	}
 }
