@@ -365,3 +365,22 @@ This slice provides the artifact contract and pure binding/materialization helpe
 Workflow ingestion, retained review decisions, portal accept/reject and source
 command submission remain separate installation work. Suggestions are not input
 to the authoritative graph projector and grant no source permission.
+
+## Dedicated needs-human resolution custody
+
+Provider adapters now inspect one exact GitHub/ADO item with bounded comments and
+known dependency coverage, and can remove only the canonical needs-human marker.
+They retain unrelated labels and control markers. ADO uses an atomic revision
+test; GitHub's revision check remains a preflight condition.
+
+Dedicated operational custody records the actual session/human origin, immutable
+observation, rationale and evidence before claiming one marker effect. It shares
+the native command capacity and byte budget. Lost responses remain uncertain,
+even if a later read sees the marker gone. Complete source and learned-dependency
+coverage is required; unresolved or unknown blockers prevent acceptance.
+
+This provider/ledger slice does not install a portal action by itself. The live
+session resolver, host learned-record lock and portal entry point follow next.
+It neither approves a gate nor restarts a run or publishes a PR. Settled receipt
+retention follows the same 30-day detail plus 30-day tombstone policy; unresolved
+custody never expires automatically.
