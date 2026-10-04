@@ -487,5 +487,25 @@ only a review decision. Receipt inspection remains available under current sourc
 read authority. The supported acceptance shapes are `references` and
 `contributes-to` between existing native work items and objective documents.
 Provisional creation references, native hierarchy changes and other endpoint
-kinds remain explicit unsupported cases. The service is implemented; portal/API
-installation follows as a separate review slice.
+kinds remain explicit unsupported cases. The service, authenticated API, and
+portal review surface are installed together with governed source proposals.
+
+In the gaggle's **Backlog and objectives** panel, open **Review agent relationship
+suggestions**, enter a retained run ID, and select the artifact to inspect. The
+portal shows only candidates visible under the current source permissions.
+Select a supported candidate, preview its exact source diff, and confirm review
+before accepting. Rejection records a review decision without a provider write.
+Suggestions and operational review receipts never become graph source data.
+
+An uncertain decision response can be retried using the same retained selection
+and reviewed content. An accepted decision opens or returns its existing
+metadata proposal receipt. **Check retained provider state** observes an
+uncertain phase; **Continue this retained proposal** is a separate explicit
+command after an earlier phase is proven. Neither action substitutes another
+branch, PR, target, or suggestion.
+
+Artifact inventory is explicitly requested and paged in windows of 32. Evidence
+verification reads at most 16 MiB and 32,768 committed journal events; selected
+artifact bodies are bounded to 256 KiB. Larger or missing provenance is refused.
+Provider effect behavior is covered with bounded local adapters and fixtures;
+this surface has not been qualified against live GitHub or Azure DevOps tenants.
