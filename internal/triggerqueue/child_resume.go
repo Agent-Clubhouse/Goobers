@@ -50,6 +50,9 @@ func (s *Store) withChildExecutionResume(ctx context.Context, identity ChildIden
 	if child.ExecutionEpoch == 0 && state != Dispatching && state != Dispatched {
 		return ErrTransition
 	}
+	if err = initialChildStartOpen(ctx, tx, child); err != nil {
+		return err
+	}
 	if err = ready(); err != nil {
 		return err
 	}

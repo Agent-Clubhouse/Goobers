@@ -15,6 +15,10 @@ import (
 // queue drain is the bounded retry sweep; capacity or policy refusal leaves the
 // same accepted child pending instead of allocating a new run or permit.
 func (l *queuedChildLauncher) resumeOwnedChild(ctx context.Context, ref childExecutionRef) error {
+	if cancelled, err := l.queue.ChildInitialStartCancelled(ctx, ref.Child); err != nil || cancelled {
+		return err
+	}
+
 	if l.build == nil || l.dispatch == nil || l.runners == nil {
 		return childworkflow.ErrAuthorityUnavailable
 	}

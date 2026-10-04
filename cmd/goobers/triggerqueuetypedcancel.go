@@ -14,7 +14,11 @@ func (s *durableTriggerService) cancelTypedQueueStart(ctx context.Context, c tri
 		observation, err := s.sessions.CancelQueuedTurn(ctx, c.Scope.Gaggle, c.Record.ID)
 		return observation, true, err
 	}
-	if c.Scope.Source == "child" || c.Scope.Source == "session" {
+	if c.Scope.Source == "child" {
+		observation, err := s.cancelChildQueueStart(ctx, c)
+		return observation, true, err
+	}
+	if c.Scope.Source == "session" {
 		return startcontrol.CancellationObservation{State: startcontrol.CancellationRequested}, true, nil
 	}
 	return startcontrol.CancellationObservation{}, false, nil

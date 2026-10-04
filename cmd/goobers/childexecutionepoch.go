@@ -45,10 +45,7 @@ func retainedChildExecutionRef(ctx context.Context, queue *triggerqueue.Store, i
 		return childExecutionRef{}, childworkflow.ErrAuthorityUnavailable
 	}
 	if requireCurrent {
-		if ref.Child.ActiveRunID() != id.RunID || ref.Child.CancellationRequested || ref.Child.State.Terminal() {
-			return childExecutionRef{}, childworkflow.ErrAuthorityChanged
-		}
-		if err = queue.CheckChildParentOpen(ctx, identity.ChildParent); err != nil {
+		if err = requireCurrentChildExecution(ctx, queue, ref, id.RunID); err != nil {
 			return childExecutionRef{}, err
 		}
 	}
@@ -82,4 +79,16 @@ func (ref childExecutionRef) executionIdentity(gooberDigest string) journal.RunI
 		id.ContinuedFromRunID, id.SourceTerminalSeq, id.Operator, id.RequestedTarget = ref.Execution.SourceRunID, ref.Execution.SourceTerminalSeq, ref.Execution.Actor, ref.Execution.Stage
 	}
 	return id
+}
+
+func requireCurrentChildExecution(ctx context.Context, queue *triggerqueue.Store, ref childExecutionRef, runID string) error {
+	if ref.Child.ActiveRunID() != runID || ref.Child.CancellationRequested || ref.Child.State.Terminal() {
+		return childworkflow.ErrAuthorityChanged
+	}
+	if cancelled, err := queue.ChildInitialStartCancelled(ctx, ref.Child); err != nil {
+		return err
+	} else if cancelled {
+		return childworkflow.ErrAuthorityChanged
+	}
+	return queue.CheckChildParentOpen(ctx, ref.Child.Identity.ChildParent)
 }

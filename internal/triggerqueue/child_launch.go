@@ -78,6 +78,9 @@ func (s *Store) WithChildLaunch(ctx context.Context, identity ChildIdentity, pub
 	if state != Dispatching {
 		return ErrTransition
 	}
+	if err = initialChildStartOpen(ctx, tx, child); err != nil {
+		return err
+	}
 	if err = publish(); err != nil {
 		return err
 	}

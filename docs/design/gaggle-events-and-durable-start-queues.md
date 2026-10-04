@@ -916,8 +916,8 @@ Unconfirmed cancellation requests retain both receipt and generation pins.
 Confirmed cancellation observations retain the normal replay window before
 rebuildable history can be pruned.
 
-Typed child/session pre-start settlement must be composed with its source adapter
-before rollout; the isolated host branch keeps their fallback request-only.
+Typed child/session pre-start settlement is composed with its source ledger in
+the same transaction, preserving parent result and shared-turn custody.
 Attempted direct-engine cancellation remains request-only pending an exact pinned
 Temporal cancellation adapter; it never uses the local journal adapter. Original
 human restart commands cancelled or expired before execution return that terminal
@@ -957,5 +957,27 @@ Confirmation requires the source observer to verify the exact retained turn,
 actual journal terminal time and joined writers. A natural completion is shown
 as already terminal, and unknown writers keep their execution/capacity custody.
 A joined owner with verified absence can settle a cancellation before journal
-publication without inventing a run. Parent/child attempted cancellation remains
-an independently installed source adapter.
+publication without inventing a run.
+
+
+### Installed initial-child cancellation adapter
+
+A queue cancellation targets the initial generated child run named by the
+acceptance. Its publication and recovery barriers check the retained cancellation
+in the same transaction before releasing stage effects. Normal recovery and
+credential issuance also refuse a cancelled initial execution. Parent-family
+cancellation stays separate; this command does not fence siblings or the parent.
+
+The adapter signals the exact live runner and observes completion through an
+independent path that never resumes execution or reenters human policy. It
+requires the accepted child lineage, exclusive runner custody, bounded journal
+history, a journal ownership lock, and reconciliation of contained worker
+custody. An abort after the request confirms cancellation; natural completion
+returns already terminal. A missing owner with nonterminal history or unknown
+worker custody stays requested and fenced. It cannot authorize another launch.
+
+The original queue control never retargets a later human child epoch. Inspection
+of an older sealed escalation requires its original retained result and matching
+journal evidence. Cancellation observation does not capture a result against the
+new epoch, acknowledge the parent slot, or discard workspace custody; ordinary
+child result capture and parent disposition continue to own those transitions.
