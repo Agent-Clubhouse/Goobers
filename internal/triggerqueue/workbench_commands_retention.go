@@ -6,7 +6,7 @@ import (
 )
 
 // PruneWorkbenchCommands performs at most limit bounded row transitions. Only
-// confirmed/not-applied results become compact tombstones after 30 days; the
+// confirmed/observed/not-applied results become compact tombstones after 30 days; the
 // tombstone then denies reexecution for another 30 days. After this explicit
 // 60-day guarantee, a new request must pass current target, identity and revision
 // preflight. Accepted, attempting and unknown custody never ages out or yields
@@ -15,6 +15,25 @@ func (s *Store) PruneWorkbenchCommands(ctx context.Context, now time.Time, limit
 	if now.IsZero() || limit < 1 || limit > 100 {
 		return 0, ErrTransition
 	}
+	pruners := []func(context.Context, time.Time, int) (int, error){s.pruneNativeWorkbenchCommands, s.PruneWorkbenchProposals, s.PruneNeedsHumanCommands}
+	count := 0
+	for i, prune := range pruners {
+		remaining := limit - count
+		if remaining == 0 {
+			return count, nil
+		}
+		// Each kind gets a share before a busy earlier kind can consume the budget.
+		allowance := (remaining + len(pruners) - i - 1) / (len(pruners) - i)
+		n, err := prune(ctx, now, allowance)
+		count += n
+		if err != nil {
+			return count, err
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) pruneNativeWorkbenchCommands(ctx context.Context, now time.Time, limit int) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err

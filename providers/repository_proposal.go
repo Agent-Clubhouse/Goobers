@@ -63,6 +63,16 @@ type RepositoryProposalObservation struct {
 // provider evidence. Callers must retain attempted effects as uncertain.
 var ErrRepositoryProposal = errors.New("provider: repository proposal is invalid or unverifiable")
 
+// ValidateRepositoryProposal checks a retained source intent without credentials
+// or I/O. It grants no source authority and supplies no phase receipt pins.
+func ValidateRepositoryProposal(proposal RepositoryProposal) error {
+	phase := "tree"
+	if proposal.Repository.Provider == ProviderADO {
+		phase = "branch"
+	}
+	return validateRepositoryProposal(RepositoryProposalPhaseInput{Phase: phase, Proposal: proposal}, proposal.Repository.Provider)
+}
+
 // RepositoryProposalBranch derives one immutable branch from command identity.
 // It returns empty for an invalid ID, never a configurable/default branch.
 func RepositoryProposalBranch(commandID string) string {
