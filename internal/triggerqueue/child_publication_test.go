@@ -127,6 +127,10 @@ func TestChildPublicationPendingPinsTerminalCancelledFamilyUntilObservation(t *t
 	if err = s.BeginChildPublicationEffect(t.Context(), intent); err != nil {
 		t.Fatal(err)
 	}
+	intent, err = s.ChildPublication(t.Context(), c.Identity, "pr")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = s.BeginChildPublicationEffect(t.Context(), intent); err != nil {
 		t.Fatal(err)
 	}

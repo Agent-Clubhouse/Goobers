@@ -160,6 +160,8 @@ func (s *Store) ChildPublication(ctx context.Context, id ChildIdentity, action s
 
 // BeginChildPublicationEffect follows a verified preflight. A pending effect is
 // uncertainty: callers must reconcile its exact target, never allocate another.
+// The observed state is compared atomically; only one prepared caller can admit
+// the first effect. A safe pending retry must explicitly reload pending custody.
 func (s *Store) BeginChildPublicationEffect(ctx context.Context, expected ChildPublication) error {
 	return s.changeChildPublication(ctx, expected, nil)
 }
@@ -199,7 +201,7 @@ func (s *Store) changeChildPublication(ctx context.Context, expected ChildPublic
 		if err = publicationParentOpen(ctx, tx, child); err != nil {
 			return err
 		}
-		if current.State != "prepared" && current.State != "effect_pending" {
+		if (current.State != "prepared" && current.State != "effect_pending") || current.State != expected.State {
 			return ErrTransition
 		}
 		if current.State == "prepared" {

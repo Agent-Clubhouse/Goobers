@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -187,5 +188,45 @@ func TestPublicationPRRefusesForeignPRAndChangedHead(t *testing.T) {
 				t.Fatal("unsafe native effect")
 			}
 		})
+	}
+}
+
+type concurrentPublicationPR struct {
+	arrived chan struct{}
+	release chan struct{}
+	creates atomic.Int32
+}
+
+func (p *concurrentPublicationPR) FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error) {
+	p.arrived <- struct{}{}
+	<-p.release
+	return providers.PullRequestResult{}, false, nil
+}
+func (p *concurrentPublicationPR) OpenPullRequest(context.Context, providers.PullRequestRequest) (providers.PullRequestResult, error) {
+	p.creates.Add(1)
+	return providers.PullRequestResult{ID: "7", Number: 7, URL: "https://github.com/acme/web/pull/7"}, nil
+}
+func TestPublicationConcurrentPreparedPRAdmitsOneCreate(t *testing.T) {
+	q, target, _ := publicationFixture(t)
+	sha := confirmedPublicationBranch(t, q, target)
+	native := &concurrentPublicationPR{arrived: make(chan struct{}, 2), release: make(chan struct{})}
+	p := Publisher{Queue: q, Git: publicationGitFake{sha: sha}, PRs: native}
+	results := make(chan error, 2)
+	for range 2 {
+		go func() { _, err := p.OpenPR(t.Context(), target, "child title", "same body", true); results <- err }()
+	}
+	<-native.arrived
+	<-native.arrived
+	close(native.release)
+	first, second := <-results, <-results
+	if native.creates.Load() != 1 {
+		t.Fatal("concurrent prepared intents repeated provider POST", native.creates.Load(), first, second)
+	}
+	if (first == nil) == (second == nil) {
+		t.Fatal("exactly one prepared effect admission must win", first, second)
+	}
+	record, err := q.ChildPublication(t.Context(), target.Child.Identity, "pr")
+	if err != nil || record.State != "confirmed" {
+		t.Fatal(record, err)
 	}
 }
