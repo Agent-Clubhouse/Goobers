@@ -153,3 +153,19 @@ this surface. Responses are not cached and expose neither generated source nor
 workspace paths, credentials or result bodies. Revoked access clears previously
 shown family data on the next refresh. Queue transitions currently require manual
 refresh; existing run detail updates do not promise live child state.
+
+## Parallel wait accounting groundwork
+
+Journal projection now tracks each branch's exact wait independently. A declared
+but unstarted sibling remains runnable; a waiting branch cannot release that
+sibling's whole-run capacity. The whole-run execution clock excludes only periods
+when every remaining branch waits, while a branch clock excludes its own waits.
+
+The parallel coordinator serializes wait/continued/finished publication with
+whole-run scheduler suspension and reacquisition. A final runnable sibling ending
+can release the parent's slot; one ready branch reacquires it once before its
+continued marker. Failed durable publication stops the coordinator for recovery.
+Old branch wait handles cannot resume a later wait. Real scheduler race tests
+cover these boundaries and unchanged start allowances. Branch lane scheduling,
+contained branch factories and writable fork/join integration are still required
+before parallel child delegation is enabled; the current shape gate remains.

@@ -88,6 +88,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-child-portal` | `codex/haw-event-host-routing` | Browse authorized child state, result acknowledgement and verified run links |
 
+| `codex/haw-parallel-child-projection` | `codex/haw-child-portal` | Project independent branch waits and coordinate whole-run scheduler capacity |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -145,9 +147,10 @@ a live Kubernetes or model qualification. Remaining delivery gates:
   including ambient credentials and model credentials that also authorize GitHub.
 - Allow safe disposal after execution policy narrows and changing a conflicted
   merge request before application effects begin; preserve immutable applied plans.
-- Support a child from each concurrent parent stage without releasing a live
-  sibling's capacity; remove temporary serial/repository-only restrictions after
-  tests cover branch workspaces, scratch work and join behavior.
+- Branch-aware wait projection, execution clocks and the aggregate capacity
+  coordinator now pass real scheduler race tests. Finish per-branch lane scheduling,
+  contained factories and writable fork/join behavior before removing the temporary
+  serial parent restriction. Queued siblings must retain the whole-run slot.
 - Complete child workspace family holds through crash reaping and terminal
   disposition; active or unresolved families must survive unbounded waits.
 - Check enclosing run/stage deadlines, revocation, human escalation and continuation
