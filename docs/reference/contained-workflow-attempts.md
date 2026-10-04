@@ -83,8 +83,8 @@ HTTP saved guidance, fresh retry allowance, recovery and current-policy refusal;
 its model process and provider transport are simulated.
 
 Live Kubernetes, Temporal and model execution are not claimed by those tests.
-Parallel parent stages, PR publication delegation, portal child visibility and
-shared human intervention on sealed child results remain delivery work. Recursion
+Parallel parent stages, PR publication delegation and shared human intervention
+on sealed child results remain delivery work. Recursion
 is deferred as agreed.
 
 ## Generated child attempts and retained parent work
@@ -137,3 +137,19 @@ A terminal parent remains terminal during custody recovery. Its existing
 authorized continuation must reopen it before the pending child wait is restored;
 parent cancellation still prevents continuation. A terminal child result remains
 deliverable even when its original grant has expired or been revoked.
+
+## Portal child monitoring
+
+The run page displays up to 50 child records at a time, with explicit next-page
+and refresh controls. It shows queue state, cancellation requests, acknowledgement
+and expired detail retention. A child run link appears only after its actual
+journal identity matches the accepted lineage; reserving a RunID does not imply
+execution has started. Child runs also show their parent workflow link.
+
+`GET /api/v1/runs/{run}/children` requires verified human view access and applies
+the current gaggle viewer policy. If interactive policy is absent, authorized
+instance viewers retain read-only monitoring. Internal pod identities cannot use
+this surface. Responses are not cached and expose neither generated source nor
+workspace paths, credentials or result bodies. Revoked access clears previously
+shown family data on the next refresh. Queue transitions currently require manual
+refresh; existing run detail updates do not promise live child state.

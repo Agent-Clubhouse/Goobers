@@ -86,6 +86,8 @@ forked from main at `04198152b63d228a9714ae2f92a7dca079ba5213`.
 
 | `codex/haw-event-host-routing` | `codex/haw-accepted-child-recovery` | Dispatch and recover pinned event consumers through ordinary scheduler ownership |
 
+| `codex/haw-child-portal` | `codex/haw-event-host-routing` | Browse authorized child state, result acknowledgement and verified run links |
+
 These are local branches, not published PRs. Publication is currently blocked by
 the session's remote-write approval policy. Prepared PR descriptions preserve the
 intended bases. Add actual URLs here only after creation and attachment.
@@ -152,7 +154,8 @@ a live Kubernetes or model qualification. Remaining delivery gates:
   together. A wait must not consume retry/repass allowance.
 - Extend the current safe application boundary for file/directory replacements and
   case-only path renames, currently refused before filesystem effects.
-- Add parent/child portal visibility and the common HITL intervention path.
+- Parent/child read-only portal visibility is delivered with bounded pagination
+  and explicit refresh. Complete the common HITL intervention path.
 - Keep recursion deferred as agreed; one unresolved child per stage occurrence,
   including distinct parallel occurrences, remains the required v1 scope.
 
