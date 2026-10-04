@@ -82,7 +82,7 @@ func (r *BacklogReader) ref(kind, id string) workbench.NodeRef {
 }
 
 func component(value string) bool {
-	return value != "" && len(value) <= 253 && strings.TrimSpace(value) == value && utf8.ValidString(value) && !strings.ContainsAny(value, "/\\?#") && strings.IndexFunc(value, unicode.IsControl) < 0
+	return value != "" && value != "." && value != ".." && len(value) <= 253 && strings.TrimSpace(value) == value && utf8.ValidString(value) && !strings.ContainsAny(value, "/\\?#%:") && strings.IndexFunc(value, unicode.IsControl) < 0
 }
 
 func (r *BacklogReader) githubItemURL(raw, id string) bool {
