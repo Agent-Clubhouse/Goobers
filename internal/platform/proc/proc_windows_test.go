@@ -4,6 +4,7 @@ package proc
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -337,8 +339,32 @@ func TestKillTerminatesEscapedDescendants(t *testing.T) {
 		t.Fatal("escaped descendants exited before tree termination")
 	}
 
+	originalOpenProcess := openProcessForTerminate
+	originalTerminateJob := terminateTreeJob
+	jobTerminated := false
+	deniedOpens := 0
+	openProcessForTerminate = func(access uint32, inheritHandle bool, pid uint32) (windows.Handle, error) {
+		if jobTerminated {
+			deniedOpens++
+			return 0, windows.ERROR_ACCESS_DENIED
+		}
+		return originalOpenProcess(access, inheritHandle, pid)
+	}
+	terminateTreeJob = func(job windows.Handle, exitCode uint32) error {
+		err := originalTerminateJob(job, exitCode)
+		jobTerminated = true
+		return err
+	}
+	defer func() {
+		openProcessForTerminate = originalOpenProcess
+		terminateTreeJob = originalTerminateJob
+	}()
+
 	if err := tree.Kill(); err != nil {
 		t.Fatalf("Kill: %v", err)
+	}
+	if deniedOpens == 0 {
+		t.Fatal("Kill did not exercise the post-job access-denied path")
 	}
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("parent unexpectedly exited successfully after Kill")
@@ -446,27 +472,39 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 		t.Fatal("WSL launcher did not retain a host or guest descendant")
 	}
 
-	// Terminating the job alone must not be enough: WSL can broker a host
-	// descendant outside the job, which Tree.Kill must clean up separately.
-	if err := windows.TerminateJobObject(tree.job, 1); err != nil {
-		t.Fatalf("terminate WSL job: %v", err)
-	}
 	var brokeredDescendant processIdentity
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	for brokeredDescendant.pid == 0 && time.Now().Before(deadline) {
+		var snapshotErr error
+		guestDescendants, snapshotErr = snapshotDescendants(wslPID)
+		if snapshotErr != nil {
+			t.Fatalf("snapshot WSL descendants: %v", snapshotErr)
+		}
 		for _, descendant := range guestDescendants {
-			if Alive(descendant.pid) {
+			inJob, membershipErr := processInJob(descendant.pid, tree.job)
+			if membershipErr != nil {
+				state := identityStateForPID(descendant.pid, descendant.startTime)
+				if state == identityGone {
+					continue
+				}
+				t.Fatalf(
+					"query WSL descendant %d job membership: recorded start %s, identity %s: %v",
+					descendant.pid, descendant.startTime.Format(time.RFC3339Nano), state, membershipErr,
+				)
+			}
+			if !inJob {
 				brokeredDescendant = descendant
 				break
 			}
 		}
-		if brokeredDescendant.pid != 0 {
-			break
+		if brokeredDescendant.pid == 0 {
+			if !Alive(wslPID) {
+				t.Fatalf("WSL process %d exited before retaining a brokered descendant", wslPID)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	if brokeredDescendant.pid == 0 {
-		t.Fatal("WSL host descendant did not survive job termination")
+		t.Fatal("WSL launcher did not retain a brokered descendant outside the job")
 	}
 
 	if err := tree.Kill(); err != nil {
@@ -482,7 +520,35 @@ func TestKillTerminatesWSLDescendants(t *testing.T) {
 	if Alive(wslPID) {
 		t.Fatalf("WSL process %d survived tree termination", wslPID)
 	}
-	if Alive(brokeredDescendant.pid) {
-		t.Fatalf("WSL host descendant %d survived tree termination", brokeredDescendant.pid)
+	var brokeredState identityState
+	for brokeredState = identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime); brokeredState != identityGone && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		brokeredState = identityStateForPID(brokeredDescendant.pid, brokeredDescendant.startTime)
 	}
+	if brokeredState != identityGone {
+		t.Fatalf(
+			"WSL host descendant %d did not reach gone after tree termination: recorded start %s, identity %s",
+			brokeredDescendant.pid, brokeredDescendant.startTime.Format(time.RFC3339Nano), brokeredState,
+		)
+	}
+}
+
+func processInJob(pid int, job windows.Handle) (bool, error) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = windows.CloseHandle(process) }()
+
+	var result int32
+	isProcessInJob := windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+	ok, _, callErr := isProcessInJob.Call(
+		uintptr(process),
+		uintptr(job),
+		uintptr(unsafe.Pointer(&result)),
+	)
+	if ok == 0 {
+		return false, fmt.Errorf("IsProcessInJob: %w", callErr)
+	}
+	return result != 0, nil
 }
