@@ -247,6 +247,7 @@ type journalAppender interface {
 
 type executionJournal interface {
 	journalAppender
+	AppendPublicationStageStarted(journal.Event, bool) error
 	AppendChildStageStarted(journal.Event, bool) (uint64, *apiv1.ChildWorkflowOrigin, error)
 	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 	AppendBatchIfAbsent(context.Context, []journal.Event, func(journal.Event) string) (int, error)

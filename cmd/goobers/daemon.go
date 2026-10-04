@@ -44,16 +44,18 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
-	ChildRuntime childRuntimeBuilder
-	EventRuntime eventRuntimeBuilder
-	observation  *schedulerObservation
-	runtime      *schedulerRuntime
-	Generations  *configgeneration.Retainer
-	Root         string
-	Runner       *runner.Runner
-	Runners      map[string]*runner.Runner
-	LegacyRunner *runner.Runner
-	Telemetry    *telemetry.Client
+	ChildRuntime   childRuntimeBuilder
+	EventRuntime   eventRuntimeBuilder
+	EventCatalog   eventPublicationSnapshot
+	EventPublisher *daemonEventPublisher
+	observation    *schedulerObservation
+	runtime        *schedulerRuntime
+	Generations    *configgeneration.Retainer
+	Root           string
+	Runner         *runner.Runner
+	Runners        map[string]*runner.Runner
+	LegacyRunner   *runner.Runner
+	Telemetry      *telemetry.Client
 	// Shared only by this setup's trace, journal, and diagnostic exporters.
 	TelemetryReplayStart <-chan struct{}
 	RollupDB             *rollup.DB
@@ -187,6 +189,7 @@ func logTelemetryOTLPUnavailable(log *journal.InstanceLog, cause error) {
 }
 
 type schedulerDefinitions struct {
+	EventCatalog       eventPublicationSnapshot
 	ChildRuntime       childRuntimeBuilder
 	EventRuntime       eventRuntimeBuilder
 	GenerationResolver executionGenerationResolver
@@ -367,6 +370,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		runtime:                  runtime,
 		ChildRuntime:             definitions.ChildRuntime,
 		EventRuntime:             definitions.EventRuntime,
+		EventCatalog:             definitions.EventCatalog,
 		Generations:              runtime.generations,
 		Root:                     l.Root,
 		Runner:                   definitions.Runner,
@@ -864,8 +868,13 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
 	buildGeneration := schedulerGenerationBuilder(input)
 	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
+	eventCatalog, err := buildEventPublicationSnapshot(input.Definitions, generation, machines, gooberDigests)
+	if err != nil {
+		return nil, err
+	}
 	return &schedulerDefinitions{
 		GenerationResolver: resolveGeneration,
+		EventCatalog:       eventCatalog,
 		ChildRuntime:       childRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), input.Config, buildGeneration),
 		EventRuntime:       eventRuntimeBuilderFor(l, firstGenerationRetainer(input.Generations), buildGeneration),
 		Set:                input.Definitions,

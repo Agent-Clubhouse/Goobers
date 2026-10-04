@@ -56,7 +56,8 @@
               "ado:packaging:read",
               "telemetry:read",
               "journal:read",
-              "agent:model"
+              "agent:model",
+              "event:publish"
             ]
           }
         },
@@ -267,7 +268,8 @@
             "ado:packaging:read",
             "telemetry:read",
             "journal:read",
-            "agent:model"
+            "agent:model",
+            "event:publish"
           ]
         },
         "kind": {

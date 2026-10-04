@@ -126,6 +126,9 @@ func unsupportedEngineFeatures(spec apiv1.WorkflowSpec) []*UnsupportedFeatureErr
 		out = append(out, &UnsupportedFeatureError{Feature: "spec.parallels", Err: ErrParallelsUnsupported})
 	}
 	for _, t := range spec.Tasks {
+		if t.Inputs["kind"] == "publish-event" {
+			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "publish-event", Err: errors.New("publish-event requires the local daemon runner; engine transport is unavailable")})
+		}
 		if t.ChildWorkflows != nil {
 			out = append(out, &UnsupportedFeatureError{Stage: t.Name, Feature: "task.childWorkflows", Err: wf.ErrChildWorkflowExecutionUnsupported})
 		}

@@ -716,7 +716,8 @@
             "ado:packaging:read",
             "telemetry:read",
             "journal:read",
-            "agent:model"
+            "agent:model",
+            "event:publish"
           ],
           "description": "Canonical capability this token backs, overriding the repository-token default for that capability alone. `agent:model` is the agent harness credential; github:pr:review needs a DIFFERENT identity from the one authoring pull requests, because an author cannot approve its own. Runner-owned capabilities are not grantable here — configrepo:read comes from workflowSource.token."
         },

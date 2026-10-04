@@ -27,6 +27,10 @@ func (tf *taskFrame) recordTaskStarted(attempt int, class journal.AttemptClass) 
 		}
 		started.Runner["artifactVisit"] = tf.artifactVisit
 	}
+	if tf.t.Type == apiv1.TaskDeterministic && tf.t.Inputs["kind"] == "publish-event" {
+		continuation := attempt > 1 || class == journal.AttemptHuman || class == journal.AttemptInfra
+		return tf.jr.AppendPublicationStageStarted(started, continuation)
+	}
 	return tf.jr.Append(started)
 }
 

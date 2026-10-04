@@ -38,13 +38,18 @@ type eventHostFixture struct {
 	wg         sync.WaitGroup
 }
 
-func eventHost(t *testing.T) *eventHostFixture {
+func eventHost(t *testing.T) *eventHostFixture { return eventHostConfigured(t, nil) }
+
+func eventHostConfigured(t *testing.T, configure func(*eventHostFixture, string) string) *eventHostFixture {
 	t.Helper()
 	f := &eventHostFixture{layout: instance.NewLayout(initDeterministicDemo(t)), now: time.Now().UTC()}
 	f.source = filepath.Join(f.layout.ConfigDir(), "gaggles/example/workflows/default-implement.yaml")
 	source := strings.Replace(deterministicWorkflowYAML, `dslVersion: "2.0"`, `dslVersion: "3.1"`, 1)
 	source = strings.Replace(source, "  name: default-implement", "  name: default-implement\n  annotations: {goobers.dev/allow-preview-features: \"true\"}", 1)
 	source = strings.Replace(source, "      type: deterministic", "      type: deterministic\n      workspace: scratch", 1)
+	if configure != nil {
+		source = configure(f, source)
+	}
 	writeFileContent(t, f.source, source)
 	cfg, err := instance.LoadConfig(f.layout.ConfigFile())
 	if err != nil {
@@ -52,7 +57,7 @@ func eventHost(t *testing.T) *eventHostFixture {
 	}
 	set, report, err := loadConfigDirectory(f.layout.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal(err, report)
 	}
 	retainer, err := newExecutionGenerationRetainer(f.layout)
 	if err != nil {
@@ -69,19 +74,34 @@ func eventHost(t *testing.T) *eventHostFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(defs.Entries) != 1 {
+	if len(defs.Entries) < 1 {
 		t.Fatalf("entries=%d", len(defs.Entries))
 	}
 	f.entry = defs.Entries[0]
+	for _, entry := range defs.Entries {
+		if entry.Workflow == "default-implement" {
+			f.entry = entry
+		}
+	}
 	f.entry.Readiness = apiv1.ReadinessConditions{MaxConcurrentRuns: 1, MaxRunsPerHour: 3}
-	f.sched = localscheduler.New([]localscheduler.WorkflowEntry{f.entry}, log)
+	for i := range defs.Entries {
+		if defs.Entries[i].Workflow == f.entry.Workflow {
+			defs.Entries[i] = f.entry
+		}
+	}
+	f.sched = localscheduler.New(defs.Entries, log)
 	f.service = acceptedService(t, filepath.Join(f.layout.SchedulerDir(), "accepted-triggers.db"), newDaemonTriggerService())
 	f.service.dispatch.now = func() time.Time { return f.now }
 	f.service.dispatch.AttachScheduler(f.sched)
-	f.setup = &schedulerSetup{RunnerRegistry: registry, EventRuntime: defs.EventRuntime}
+	f.setup = &schedulerSetup{RunnerRegistry: registry, EventRuntime: defs.EventRuntime, EventCatalog: defs.EventCatalog, Generations: retainer, SharedRegistry: journal.NewRegistryScrubber()}
 	if err = f.setup.installQueuedEvents(f.layout, f.service); err != nil {
 		t.Fatal(err)
 	}
+	if err = f.setup.installEventPublication(f.layout, f.service); err != nil {
+		t.Fatal(err)
+	}
+	f.setup.EventPublisher.service.Now = func() time.Time { return f.now }
+	t.Cleanup(f.setup.unregisterEventPublication)
 	// Capture gives the same immutable identity retained by normal construction.
 	owner, err := f.layout.EnsureIdentity(t.Context())
 	if err != nil {

@@ -40,6 +40,11 @@ func (j *branchJournal) Append(ev journal.Event) error {
 	return j.run.Append(ev)
 }
 
+func (j *branchJournal) AppendPublicationStageStarted(ev journal.Event, continuation bool) error {
+	ev.Branch = j.branch
+	return j.run.AppendPublicationStageStarted(ev, continuation)
+}
+
 func (j *branchJournal) AppendChildStageStarted(ev journal.Event, continuation bool) (uint64, *apiv1.ChildWorkflowOrigin, error) {
 	if ev.Branch == 0 {
 		ev.Branch = j.branch

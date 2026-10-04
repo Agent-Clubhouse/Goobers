@@ -3,6 +3,14 @@ package v1alpha1
 // GaggleEvents defines local consumer subscriptions. Publication authorization
 // and durable start admission are separate from these matching declarations.
 type GaggleEvents struct {
+	// Publishers explicitly allow named workflows to publish exact event types.
+	// Omission disables workflow publication.
+	// +optional
+	// +kubebuilder:validation:MaxItems=128
+	// +listType=map
+	// +listMapKey=workflow
+	Publishers []EventPublisher `json:"publishers,omitempty" yaml:"publishers,omitempty"`
+
 	// Subscriptions names workflows in this gaggle only.
 	// +optional
 	// +kubebuilder:validation:MaxItems=128
@@ -92,4 +100,17 @@ type EventDebounce struct {
 	// +optional
 	// +kubebuilder:validation:Enum=all;latest
 	InputMode string `json:"inputMode,omitempty" yaml:"inputMode,omitempty"`
+}
+
+// EventPublisher is an explicit workflow and event-type publication ceiling.
+type EventPublisher struct {
+	// Workflow names a workflow in this gaggle only.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	Workflow string `json:"workflow" yaml:"workflow"`
+	// AllowedTypes are literal CloudEvents types; wildcards are not interpreted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	AllowedTypes []string `json:"allowedTypes" yaml:"allowedTypes"`
 }

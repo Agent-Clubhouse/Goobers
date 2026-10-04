@@ -29,7 +29,7 @@ func (s *Store) PruneEvents(ctx context.Context, now time.Time, limit int) (Even
 	defer func() { _ = tx.Rollback() }()
 	fail := func(err error) (EventPruneResult, error) { return EventPruneResult{}, err }
 	deleted, err := tx.ExecContext(ctx, `DELETE FROM event_receipts WHERE id IN (
- SELECT id FROM event_receipts WHERE tombstoned_ns<=? ORDER BY tombstoned_ns,id LIMIT ?)`, now.Add(-EventTombstoneRetention).UnixNano(), limit)
+ SELECT id FROM event_receipts WHERE tombstoned_ns<=? AND NOT EXISTS(SELECT 1 FROM event_outbox o WHERE o.receipt_id=event_receipts.id) ORDER BY tombstoned_ns,id LIMIT ?)`, now.Add(-EventTombstoneRetention).UnixNano(), limit)
 	if err != nil {
 		return fail(err)
 	}
@@ -50,6 +50,7 @@ func (s *Store) PruneEvents(ctx context.Context, now time.Time, limit int) (Even
 	result.Expired = int(count)
 	// Recheck the scope quota for each bounded row; one batch must not exceed it.
 	ids, err := childPruneIDs(ctx, tx, `SELECT r.id FROM event_receipts r WHERE r.tombstoned_ns IS NULL AND r.finished_ns<=?
+ AND NOT EXISTS(SELECT 1 FROM event_outbox o WHERE o.receipt_id=r.id OR (o.gaggle=r.gaggle AND o.id=r.event_id))
  AND NOT EXISTS(SELECT 1 FROM event_deliveries d JOIN event_groups g ON g.id=d.group_id WHERE d.receipt_id=r.id AND (g.settled_ns IS NULL OR g.settled_ns>?))
  AND (SELECT COUNT(*) FROM event_receipts e WHERE e.gaggle=r.gaggle AND e.tombstoned_ns IS NOT NULL)<?
  ORDER BY r.finished_ns,r.id LIMIT ?`, now.Add(-EventRetention).UnixNano(), now.Add(-EventRetention).UnixNano(), MaxEventTombstones, limit-result.Deleted-result.Expired)

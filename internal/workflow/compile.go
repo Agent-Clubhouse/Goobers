@@ -412,6 +412,9 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	for _, opt := range opts {
 		opt(&config)
 	}
+	if problems := eventPublicationProblems(def); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
 	if problems := childWorkflowProblems(def, config.goobers, config.goobersSet); len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}

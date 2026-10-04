@@ -367,3 +367,63 @@ Use synthetic providers and fault-injected local/Temporal fixtures; production m
 Before implementation, ratify configuration field names, numeric defaults, and whether explicit schedule `all` catch-up is needed in v1.
 Resolve the shared capacity reservation storage seam with the child design; do not release parent execution capacity by falsifying run completion.
 Keep initial filters small; temporal joins, arbitrary scripts, external event brokers, and cross-gaggle routing are outside this design.
+
+### Delivered local publication slice (HAW-EVT-006)
+
+The local daemon runner now supports the deterministic `inputs.kind: publish-event`
+built-in in opted-in DSL 3.1 workflows. A task must declare `event:publish`, and its
+gaggle must explicitly list its workflow and literal event types under
+`spec.events.publishers`. Both the retained generation and the current applied
+policy must allow publication. Engine execution, remote dispatch, child ancestry,
+human continuations and same-workflow self-subscriptions explicitly refuse until
+those transports and ancestry/opt-in contracts are qualified.
+
+```yaml
+# Gaggle spec
+ events:
+   publishers:
+     - workflow: produce
+       allowedTypes: [com.example.build.finished]
+   subscriptions:
+     - name: inspect-build
+       workflow: inspect
+       filter:
+         all: [{attribute: type, equals: com.example.build.finished}]
+```
+
+```yaml
+# Deterministic task in the produce workflow
+- name: announce
+  type: deterministic
+  workspace: scratch
+  goal: Publish the completed build notification
+  capabilities: [event:publish]
+  inputs:
+    kind: publish-event
+    type: com.example.build.finished
+    occurrenceKey: build-completed
+    data: '{"build":42}'
+  run:
+    command: ["true"] # Required DSL field; this typed kind launches no shell.
+```
+
+`subject` is optional. `data` is a JSON string because deterministic DSL inputs
+are strings; the structured envelope is limited to 16 KiB. No caller-supplied
+source, ID, actor, run, branch, root or destination gaggle is accepted. The host
+binds the emission to its committed stage occurrence and branch. Retries retain
+that occurrence and `occurrenceKey`; an intended new emission must use a distinct
+logical visit/key. Payload changes under the same identity conflict.
+
+A bounded durable outbox intent precedes receipt admission and pins the original
+routing plan. Lost acceptance replies recover the same receipt, even after a
+catalog change. Success includes `accepted_unmatched`, and task outputs contain
+`receiptId`, `eventId` and receipt `state`; consumer completion is separate. Event
+consumer publication verifies the retained consumer journal and carries every
+original causal root forward. Current permission revocation refuses publication
+before new outbox custody.
+
+Completed outboxes currently retain producer journals, source and consumer
+configuration generations, and receipt deduplication. The 10,000-intent per-gaggle
+bound and shared store byte quota fail intake closed. A terminal-producer release
+fence is required before this conservative retention can support sustained
+production throughput; this slice does not claim that lifecycle complete.

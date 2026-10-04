@@ -14,6 +14,11 @@ func (ix *index) checkEventSubscriptions(r *Report) {
 		if policy == nil {
 			continue
 		}
+		for _, publisher := range policy.Publishers {
+			if _, found := ix.workflows[workflowIdentity{gaggle: name, name: publisher.Workflow}]; !found {
+				ix.referenceNotFound(r, errorEventSubscriptions, ix.gaggleFile[name], "Gaggle", name, "spec.events publisher names workflow %q, but no workflow with that name exists in this gaggle", publisher.Workflow)
+			}
+		}
 		for _, subscription := range policy.Subscriptions {
 			if _, found := ix.workflows[workflowIdentity{gaggle: name, name: subscription.Workflow}]; !found {
 				ix.referenceNotFound(r, errorEventSubscriptions, ix.gaggleFile[name], "Gaggle", name,

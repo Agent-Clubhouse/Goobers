@@ -1066,6 +1066,10 @@ func (u *upSession) configureAPI() int {
 	if err := u.setup.installQueuedEvents(u.l, u.durableTriggers); err != nil {
 		return reportDaemonStartupError(u.stderr, "initialize queued event execution", err)
 	}
+	if err := u.setup.installEventPublication(u.l, u.durableTriggers); err != nil {
+		return reportDaemonStartupError(u.stderr, "initialize workflow event publication", err)
+	}
+	defer u.setup.unregisterEventPublication()
 	defer func() { _ = u.cancelPlane.receipts.Close() }()
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at

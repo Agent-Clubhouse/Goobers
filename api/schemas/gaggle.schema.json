@@ -18,9 +18,43 @@
       "properties": {
         "events": {
           "type": "object",
-          "description": "Gaggle-local consumer subscriptions. These declarations do not grant publication authority.",
+          "description": "Gaggle-local subscriptions and explicit workflow publication permissions.",
           "additionalProperties": false,
           "properties": {
+            "publishers": {
+              "type": "array",
+              "description": "Explicit publication permissions for workflows in this gaggle.",
+              "maxItems": 128,
+              "items": {
+                "type": "object",
+                "description": "A workflow and its exact event type ceiling.",
+                "additionalProperties": false,
+                "required": [
+                  "workflow",
+                  "allowedTypes"
+                ],
+                "properties": {
+                  "workflow": {
+                    "type": "string",
+                    "description": "An existing workflow in this gaggle.",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "allowedTypes": {
+                    "type": "array",
+                    "description": "Literal event types; wildcards are not interpreted.",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  }
+                }
+              }
+            },
             "subscriptions": {
               "type": "array",
               "description": "Consumers whose matching configuration is pinned at event acceptance.",

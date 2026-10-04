@@ -59,6 +59,9 @@ func CompileConfiguredCatalog(gaggle, generation string, policy *apiv1.GaggleEve
 // ValidateConfiguration checks authoring semantics without resolving digests.
 // Local target existence is checked by the calling configuration loader.
 func ValidateConfiguration(policy *apiv1.GaggleEvents) error {
+	if err := ValidatePublishers(policy); err != nil {
+		return err
+	}
 	_, err := CompileConfiguredCatalog("validation", "validation", policy, func(string) (TargetPins, error) {
 		return TargetPins{WorkflowDigest: "validation", GooberDigest: "validation"}, nil
 	})

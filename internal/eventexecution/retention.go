@@ -43,6 +43,23 @@ func RetainedDependencies(ctx context.Context, queue *triggerqueue.Store) (Depen
 			break
 		}
 	}
+	for after := ""; ; {
+		page, err := queue.EventPublicationPage(ctx, after, 100)
+		if err != nil {
+			return Dependencies{}, err
+		}
+		for _, pin := range page {
+			result.Generations[pin.ConfigGeneration] = true
+			result.Runs[RunRef{Gaggle: pin.Acceptance.Producer.Gaggle, RunID: pin.Acceptance.Producer.RunID}] = true
+			for _, route := range pin.Acceptance.Plan.Routes {
+				result.Generations[route.ConfigGeneration] = true
+			}
+			after = pin.ID
+		}
+		if len(page) < 100 {
+			break
+		}
+	}
 	for after := (triggerqueue.EventRootDependency{}); ; {
 		page, err := queue.EventRootDependencyPage(ctx, after, 100)
 		if err != nil {

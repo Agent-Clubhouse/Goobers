@@ -281,6 +281,37 @@ spec:
                   Events configures subscriptions confined to this gaggle. Omission means
                   no event consumers; it does not affect existing workflow triggers.
                 properties:
+                  publishers:
+                    description: |-
+                      Publishers explicitly allow named workflows to publish exact event types.
+                      Omission disables workflow publication.
+                    items:
+                      description: EventPublisher is an explicit workflow and event-type
+                        publication ceiling.
+                      properties:
+                        allowedTypes:
+                          description: AllowedTypes are literal CloudEvents types;
+                            wildcards are not interpreted.
+                          items:
+                            type: string
+                          maxItems: 32
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        workflow:
+                          description: Workflow names a workflow in this gaggle only.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - allowedTypes
+                      - workflow
+                      type: object
+                    maxItems: 128
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - workflow
+                    x-kubernetes-list-type: map
                   subscriptions:
                     description: Subscriptions names workflows in this gaggle only.
                     items:

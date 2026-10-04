@@ -56,3 +56,21 @@ func TestEventSubscriptionSchemaAndDeepCopy(t *testing.T) {
 		t.Fatal("client-supplied target gaggle accepted")
 	}
 }
+
+func TestEventPublisherScopeAndDeepCopy(t *testing.T) {
+	ix := newIndex()
+	policy := &apiv1.GaggleEvents{Publishers: []apiv1.EventPublisher{{Workflow: "produce", AllowedTypes: []string{"build.finished"}}}}
+	ix.gaggles["own"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{Events: policy}}
+	ix.workflows[workflowIdentity{gaggle: "other", name: "produce"}] = indexedWorkflow{}
+	report := &Report{}
+	ix.checkEventSubscriptions(report)
+	ix.flushReferenceIssues(report)
+	if len(report.Issues) != 1 || !strings.Contains(report.Issues[0].Message, "this gaggle") {
+		t.Fatal(report.Issues)
+	}
+	copy := policy.DeepCopy()
+	copy.Publishers[0].AllowedTypes[0] = "other"
+	if policy.Publishers[0].AllowedTypes[0] != "build.finished" {
+		t.Fatal("publisher policy aliases snapshot")
+	}
+}
