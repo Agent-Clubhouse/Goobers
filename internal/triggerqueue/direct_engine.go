@@ -44,7 +44,7 @@ func (s *Store) AcceptDirectEngine(ctx context.Context, key, actor string, paylo
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='')", now.Add(-ReplayRetention).UnixNano()); err != nil {
+	if _, err = tx.ExecContext(ctx, "DELETE FROM triggers WHERE finished_ns IS NOT NULL AND finished_ns < ? AND NOT EXISTS(SELECT 1 FROM interactive_turns st WHERE st.acceptance_id=triggers.id) AND NOT EXISTS(SELECT 1 FROM start_controls sc WHERE sc.acceptance_id=triggers.id AND sc.cancel_ns IS NOT NULL AND sc.disposition='' AND sc.cancel_outcome='') AND NOT EXISTS(SELECT 1 FROM human_restart_plans h JOIN start_controls hc ON hc.acceptance_id=h.acceptance_id WHERE h.acceptance_id=triggers.id AND hc.disposition IN ('cancelled','expired'))", now.Add(-ReplayRetention).UnixNano()); err != nil {
 		return Record{}, false, err
 	}
 	if err = triggerSlotCapacity(ctx, tx, 1); err != nil {

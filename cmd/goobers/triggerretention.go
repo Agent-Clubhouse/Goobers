@@ -58,6 +58,9 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 	if err := protectEventJournal(ctx, queue, candidate); err != nil {
 		return err
 	}
+	if err := markRestartSourcePruning(ctx, queue, candidate, now); err != nil {
+		return err
+	}
 	record, err := queue.ForRun(ctx, candidate.RunID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

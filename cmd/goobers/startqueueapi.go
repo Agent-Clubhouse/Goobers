@@ -13,6 +13,7 @@ func (u *upSession) configureStartQueue() {
 	service := &startcontrol.Service{Controls: u.durableTriggers.startControls, Access: u.setup.InteractiveAccess, Scrubber: journal.Chain(u.setup.SharedRegistry, journal.NewPatternScrubber())}
 	service.Stop = u.cancelControlledStart
 	u.durableTriggers.startControls.Cancellation = service.ReconcileCancellation
+	u.durableTriggers.startControls.Maintenance = u.restartReplayMaintenance()
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithStartQueue(service))
 	u.setup.InteractiveAccess.SetQueueCancellationAvailable(true)
 }

@@ -21,6 +21,7 @@ type Archive func(context.Context, Metadata) (*apiv1.Gaggle, error)
 // bounded maintenance progress; they never own acceptance or execution custody.
 type Coordinator struct {
 	Cancellation func(context.Context, triggerqueue.StartControl) error
+	Maintenance  func(context.Context) error
 	Queue        *triggerqueue.Store
 	Archive      Archive
 	Now          func() time.Time
@@ -108,6 +109,9 @@ func (c *Coordinator) Sweep(ctx context.Context) error {
 	}
 	if len(records) < 50 {
 		c.cursor = ""
+	}
+	if c.Maintenance != nil {
+		failures = append(failures, c.Maintenance(ctx))
 	}
 	return errors.Join(failures...)
 }

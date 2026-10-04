@@ -51,7 +51,7 @@ func (s *Store) AcceptHumanRestart(ctx context.Context, r HumanRestartAcceptance
 		return Record{}, false, err
 	}
 	var occupied bool
-	err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM human_restart_plans WHERE epoch=? OR (gaggle=? AND source_run=? AND terminal_seq=? AND stage=?))", r.Epoch, r.Gaggle, r.SourceRun, r.TerminalSequence, r.Stage).Scan(&occupied)
+	err = tx.QueryRowContext(ctx, humanRestartOccurrenceOccupied, r.Epoch, r.Gaggle, r.SourceRun, r.TerminalSequence, r.Stage).Scan(&occupied)
 	if err != nil {
 		return Record{}, false, err
 	}

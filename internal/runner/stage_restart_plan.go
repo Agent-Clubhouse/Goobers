@@ -99,3 +99,17 @@ func MatchesStageRestartRequest(plan StageRestartPlan, request StageRestartReque
 	}
 	return manifest.EpochID == request.EpochID && manifest.Stage == request.Stage && manifest.Actor == request.PrincipalRef && manifest.SourceTerminalSeq == request.ExpectedTerminalSeq && manifest.Rationale == request.Rationale && slices.Equal(manifest.GuidanceIDs, request.GuidanceIDs)
 }
+
+// RetainedStageRestartRequest extracts the exact accepted command for compact
+// no-effect replay. It grants no execution or source custody.
+func RetainedStageRestartRequest(plan StageRestartPlan) (StageRestartRequest, error) {
+	var manifest stageRestartManifest
+	if err := json.Unmarshal(plan.Continuation.Inputs[StageRestartInputName], &manifest); err != nil {
+		return StageRestartRequest{}, err
+	}
+	request := StageRestartRequest{EpochID: manifest.EpochID, Stage: manifest.Stage, PrincipalRef: manifest.Actor, ExpectedTerminalSeq: manifest.SourceTerminalSeq, GuidanceIDs: slices.Clone(manifest.GuidanceIDs), Rationale: manifest.Rationale}
+	if !MatchesStageRestartRequest(plan, request) || manifest.EpochID != plan.Continuation.RunID || manifest.SourceRunID != plan.Source.RunID {
+		return StageRestartRequest{}, errors.New("runner: retained restart command differs")
+	}
+	return request, nil
+}

@@ -92,6 +92,21 @@ func (s *interactiveStageRestart) LookupStageRestart(ctx context.Context, p http
 		if err != nil {
 			return err
 		}
+		compact, err := s.queued.Queue.HumanRestartReplay(ctx, record.ID)
+		if err != nil {
+			return err
+		}
+		if len(compact.Replay) != 0 {
+			if err = restartintent.MatchRejectedReplay(compact, p.Issuer, p.Subject, gaggle, source, request); err != nil {
+				if errors.Is(err, triggerqueue.ErrConflict) {
+					return restartRefusal("idempotency_key_reused", "This restart key belongs to a different command.")
+				}
+				return err
+			}
+			accepted = intervention.StageRestartAcceptance{RunID: compact.Epoch, Duplicate: true, Disposition: compact.Disposition}
+			found = true
+			return nil
+		}
 		plan, err := s.queued.Load(ctx, record)
 		if err != nil {
 			return err

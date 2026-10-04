@@ -921,10 +921,30 @@ before rollout; the isolated host branch keeps their fallback request-only.
 Attempted direct-engine cancellation remains request-only pending an exact pinned
 Temporal cancellation adapter; it never uses the local journal adapter. Original
 human restart commands cancelled or expired before execution return that terminal
-receipt and no continuation link. Releasing their source-occurrence slot for an
-explicit new restart is a separate required follow-up; the original key must never
-revive a cancelled acceptance.
+receipt and no continuation link.
 
+### Explicit restart after an unattempted cancellation
+
+A cancelled or expired human restart releases its source-occurrence slot only
+when its retained control proves that the exact epoch was rejected before any
+execution attempt. A fresh command key prepares a new epoch through current
+human authorization, source ownership and selected guidance validation. An
+attempted or uncertain start continues to occupy its slot, even after a confirmed
+stop. Reusing the original command returns its original terminal disposition and
+never revives that acceptance.
+
+After the seven-day replay window, bounded maintenance replaces the cancelled
+restart's large execution context with a compact command and verified-principal
+digest. The original key, epoch, source scope and terminal control stay in the
+same ledger and count against its shared limits. Generic receipt pruning cannot
+delete this tombstone while the source journal remains actionable.
+
+The existing source-journal prune guard durably marks eligible tombstones before
+retiring their source. Cleanup then requires exclusive source custody, run-root
+maintenance locks, and a successful inventory proving the source is absent from
+both live and staged journals. A rolled-back prune, held lock, unreadable
+inventory or remaining staged source preserves the key. No age-only deletion or
+missing-journal shortcut authorizes another restart.
 
 ### Installed shared-turn cancellation adapter
 
