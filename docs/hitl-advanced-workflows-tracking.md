@@ -174,7 +174,12 @@ remains until isolated branch forks and fan-in are implemented.
   reconcile the exact branch/base. Pending external effects pin the family after
   acknowledgement and cancellation. Real Git production runner tests, native
   GitHub/ADO fake HTTP tests, queue/credential races and lint pass. Complete the
-  human observation surface and validate on live provider/worker deployments.
+  live provider/worker validation. The portal now shows publication states and
+  checks uncertain effects using the gaggle’s explicit interactive identity.
+  Checks require current run intervention and repository read access, exclusive
+  stopped-run journal custody, exact retained provenance and bounded provider
+  reads. Attributed audit records replay the same result after a lost response;
+  confirmation neither restarts the child nor changes its immutable result.
 - Owned discard now survives narrower workspace policy without importing or
   recapturing parent files. An unplanned conflict can use a revision-bound changed
   choice; already published plans remain immutable and require reconciliation.
