@@ -5,6 +5,13 @@ Program: [HITL and advanced workflows](hitl-advanced-workflows-program.md)
 Baseline: `04198152b63d228a9714ae2f92a7dca079ba5213` (2026-10-03)
 Task prefix: `HAW-EVT`; task identifiers are stable planning identifiers, not GitHub issues.
 
+Implementation checkpoint: the internal JSON envelope, immutable gaggle/binding
+receipt, pinned matched-route snapshot, shared storage reservations and production
+retention sweep are implemented in the local stack. See
+[receipt profile and limits](../reference/gaggle-event-receipts.md). This foundation
+does not yet enable public ingress, workflow publication, consumer routing,
+debouncing, or normalization of all workflow start sources.
+
 ## 1. Intent and confirmed boundaries
 
 Every workflow start enters a durable queue: manual, schedule, backlog, event, and child workflow starts.

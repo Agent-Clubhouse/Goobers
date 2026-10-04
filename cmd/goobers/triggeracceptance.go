@@ -144,6 +144,10 @@ func (s *durableTriggerService) Drain(ctx context.Context) error {
 	pruneCtx, cancelPrune := context.WithTimeout(ctx, 250*time.Millisecond)
 	_, pruneErr := s.queue.PruneChildren(pruneCtx, s.dispatch.now(), 100)
 	cancelPrune()
+	eventPruneCtx, cancelEventPrune := context.WithTimeout(ctx, 50*time.Millisecond)
+	_, eventPruneErr := s.queue.PruneEvents(eventPruneCtx, s.dispatch.now(), 100)
+	cancelEventPrune()
+	pruneErr = errors.Join(pruneErr, eventPruneErr)
 	if s.childFamilies != nil {
 		pruneErr = errors.Join(pruneErr, s.childFamilies.Sweep(ctx))
 	}

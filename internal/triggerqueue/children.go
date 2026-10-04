@@ -369,7 +369,9 @@ func childIntakeCapacity(ctx context.Context, tx *sql.Tx, gaggle string, proposa
 
 func childByteCapacity(ctx context.Context, tx *sql.Tx, additionalBytes int) error {
 	var reserved int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(reserved_bytes),0) FROM child_lineages WHERE tombstoned_ns IS NULL AND acknowledged_ns IS NULL`).Scan(&reserved); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT
+ (SELECT COALESCE(SUM(reserved_bytes),0) FROM child_lineages WHERE tombstoned_ns IS NULL AND acknowledged_ns IS NULL)+
+ (SELECT COALESCE(SUM(reserved_bytes),0) FROM event_receipts WHERE state='routing_pending')`).Scan(&reserved); err != nil {
 		return err
 	}
 	var pages, freePages, pageSize int64
