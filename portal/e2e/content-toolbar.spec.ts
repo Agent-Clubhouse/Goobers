@@ -60,6 +60,27 @@ test("aligns scope and time-window fields in the shared control group", async ({
 });
 
 for (const viewport of mobileViewports) {
+  test(`places compact mobile filters below scope and above the table at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    for (const route of ["runs", "work-items"]) {
+      await page.goto(`/#/${route}`);
+      const filters = page.getByRole("button", { name: "Filters", exact: true });
+      const scope = page.getByRole("button", { name: "Scope", exact: true });
+      const table = page.locator(".content-section .data-table").first();
+      await expect(filters).toBeVisible();
+      await expect(scope).toBeVisible();
+      await expect(table).toBeVisible();
+      const filterBox = await filters.boundingBox();
+      const scopeBox = await scope.boundingBox();
+      const tableBox = await table.boundingBox();
+      if (!filterBox || !scopeBox || !tableBox) throw new Error("Expected filters, scope, and table.");
+      expect(filterBox.height).toBe(44);
+      expect(filterBox.y).toBeGreaterThanOrEqual(scopeBox.y + scopeBox.height);
+      expect(tableBox.y).toBeGreaterThanOrEqual(filterBox.y + filterBox.height);
+      expect(tableBox.y - filterBox.y - filterBox.height).toBeLessThanOrEqual(17);
+    }
+  });
+
   test(`keeps content controls compact at ${viewport.width}x${viewport.height}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     await page.goto("/#/work-items");

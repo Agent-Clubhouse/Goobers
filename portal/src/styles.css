@@ -382,10 +382,6 @@ summary:focus-visible {
   overflow-y: auto;
 }
 
-.mobile-navigation-button {
-  display: none;
-}
-
 .mobile-primary-nav,
 .mobile-live-status {
   display: none;
@@ -4543,20 +4539,6 @@ a.telemetry-error-latest:hover {
 .error-group-meta strong {
   color: var(--ink);
   font-size: var(--font-meta);
-}
-
-.telemetry-error-expand {
-  background: var(--surface);
-  border: 0;
-  border-top: 1px solid var(--line);
-  color: var(--accent-ink);
-  cursor: pointer;
-  font-size: var(--font-meta);
-  font-weight: 680;
-  min-height: 32px;
-  padding: 6px 13px;
-  text-align: left;
-  width: 100%;
 }
 
 .telemetry-error-occurrences {
@@ -9654,30 +9636,12 @@ code,
     margin: 0;
   }
 
-  .mobile-navigation-button {
-    align-items: center;
-    align-self: center;
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    cursor: pointer;
-    display: inline-flex;
-    font-size: var(--font-meta);
-    gap: 5px;
-    min-height: 36px;
-    padding: 5px 9px;
-  }
-
   .sidebar-secondary {
     border-top: 1px solid var(--line);
     display: none;
     gap: 8px;
     grid-column: 1 / -1;
     padding-top: 8px;
-  }
-
-  .sidebar-secondary-open {
-    display: grid;
   }
 
   .sidebar-gaggle-nav {

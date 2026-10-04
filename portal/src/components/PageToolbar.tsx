@@ -152,7 +152,9 @@ export function PageToolbar({
         className={`page-toolbar-actions${search && !inlineSearch ? "" : " page-toolbar-actions-empty"}`}
       >
         {!inlineSearch && search}
-        <button
+        <Action
+          variant="primary"
+          size="touch"
           aria-label="Filters"
           aria-expanded={open}
           aria-haspopup="dialog"
@@ -168,7 +170,7 @@ export function PageToolbar({
               {activeFilters.length}
             </span>
           )}
-        </button>
+        </Action>
       </div>
       {scope && (
         <ControlGroup className="page-toolbar-scope" label={`${title} scope`}>
