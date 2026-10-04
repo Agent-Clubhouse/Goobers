@@ -74,6 +74,9 @@ const AgentToolkitManifest = "agent-toolkit-manifest.schema.json"
 // GaggleBundle is the sanitized portable gaggle export/import contract.
 const GaggleBundle = "gaggle-bundle.schema.json"
 
+// GaggleHealth is the versioned health read, finding, event, and history contract.
+const GaggleHealth = "gaggle-health-v1alpha1.schema.json"
+
 // StageArtifactManifest is the workspace-relative artifact staging contract.
 const StageArtifactManifest = "stage-artifact-manifest.schema.json"
 
