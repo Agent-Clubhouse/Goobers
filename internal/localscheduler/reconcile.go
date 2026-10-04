@@ -44,21 +44,21 @@ func ActiveRunCountsByWorkflowDirsContext(ctx context.Context, runsDirs []string
 	return counts, err
 }
 
-func activeRuns(runsDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+func activeRuns(runsDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
 	return activeRunsContext(context.Background(), runsDirs)
 }
 
-func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
 	counts := map[WorkflowIdentity]int{}
-	runs := map[string]WorkflowIdentity{}
+	runs := map[string]reconciledRun{}
 	for _, runsDir := range runsDirs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
 		err := visitActiveRunsContext(ctx, runsDir, func(id journal.RunIdentity) {
-			identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-			counts[identity]++
-			runs[id.RunID] = identity
+			run := reconciledRunFor(id)
+			counts[run.identity]++
+			runs[id.RunID] = run
 		})
 		if err != nil {
 			return nil, nil, err
@@ -67,9 +67,9 @@ func activeRunsContext(ctx context.Context, runsDirs []string) (map[WorkflowIden
 	return counts, runs, nil
 }
 
-func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]WorkflowIdentity, error) {
+func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowIdentity]int, map[string]reconciledRun, error) {
 	counts := map[WorkflowIdentity]int{}
-	runs := map[string]WorkflowIdentity{}
+	runs := map[string]reconciledRun{}
 	for _, runDir := range runDirs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -92,9 +92,9 @@ func activeRunsFromRunDirs(ctx context.Context, runDirs []string) (map[WorkflowI
 		if err != nil {
 			continue
 		}
-		identity := WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-		counts[identity]++
-		runs[id.RunID] = identity
+		run := reconciledRunFor(id)
+		counts[run.identity]++
+		runs[id.RunID] = run
 	}
 	return counts, runs, nil
 }
