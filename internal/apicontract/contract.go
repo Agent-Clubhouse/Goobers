@@ -275,6 +275,7 @@ const (
 	ChildWorkflowStartPath    = childworkflowwire.StartPath
 	ChildWorkflowStatusPath   = childworkflowwire.StatusPath
 	ChildWorkflowResolvePath  = childworkflowwire.ResolvePath
+	ChildWorkflowAccessPath   = RunsPath + "/{run}/child-workflow-access"
 )
 
 // DigestHeader names the content address of the body RunArtifactPath served.
@@ -388,6 +389,8 @@ const (
 	RouteChildWorkflowStart            RouteID = "childWorkflowStart"
 	RouteChildWorkflowStatus           RouteID = "childWorkflowStatus"
 	RouteChildWorkflowResolve          RouteID = "childWorkflowResolve"
+	RouteChildWorkflowAccessAcquire    RouteID = "childWorkflowAccessAcquire"
+	RouteChildWorkflowAccessRevoke     RouteID = "childWorkflowAccessRevoke"
 	RouteInteractiveRun                RouteID = "interactiveRun"
 	RouteInteractiveRunCommand         RouteID = "interactiveRunCommand"
 	RouteGaggleInteractiveCapabilities RouteID = "gaggleInteractiveCapabilities"
@@ -649,6 +652,8 @@ var v1Routes = []Route{
 	{ID: RouteChildWorkflowStart, Method: http.MethodPost, Path: ChildWorkflowStartPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowStatus, Method: http.MethodPost, Path: ChildWorkflowStatusPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteChildWorkflowResolve, Method: http.MethodPost, Path: ChildWorkflowResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowAccessAcquire, Method: http.MethodPost, Path: ChildWorkflowAccessPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteChildWorkflowAccessRevoke, Method: http.MethodDelete, Path: ChildWorkflowAccessPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 var initialRemoteReadRouteIDs = map[RouteID]struct{}{
