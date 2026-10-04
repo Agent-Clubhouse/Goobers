@@ -3,13 +3,14 @@ import { DaemonApiError, DaemonAuthError } from "../api/errors";
 import type { DaemonClient, MetadataChangeRequest, MetadataPreview, MetadataProposalCommand, SourceView, WorkbenchDocumentFile } from "../api/types";
 import { MetadataProposalLookup } from "./MetadataProposalLookup";
 import { MetadataProposalReceipt } from "./MetadataProposalReceipt";
+import { MetadataAliasInput } from "./MetadataAliasInput";
 import { MetadataRelationshipInput } from "./MetadataRelationshipInput";
-import { editableEdges, metadataFieldText, metadataModes, refText, sameMetadataCommand, sameMetadataPreview, type EditableEdge, type MetadataEditMode } from "./workbenchMetadataEditing";
+import { editableEdges, metadataFieldText, metadataModes, refText, sameMetadataCommand, sameMetadataPreview, type EditableAlias, type EditableEdge, type MetadataEditMode } from "./workbenchMetadataEditing";
 
 interface EditorProps { client: DaemonClient; gaggle: string; source: SourceView; sources: SourceView[]; file: WorkbenchDocumentFile }
 interface ReviewedChange { request: MetadataChangeRequest; preview: MetadataPreview }
 interface PendingProposal extends ReviewedChange { key: string }
-const labels: Record<MetadataEditMode, string> = { title: "Objective title", description: "Document body", "relationship-add": "Add relationship", "relationship-remove": "Remove relationship" };
+const labels: Record<MetadataEditMode, string> = { title: "Objective title", description: "Document body", "relationship-add": "Add relationship", "relationship-remove": "Remove relationship", "assign-objective": "Assign objective identity", "alias-add": "Add alias", "alias-remove": "Remove alias" };
 
 export function MetadataProposalEditor(props: EditorProps) {
   const identity = JSON.stringify([props.gaggle, props.source, props.sources, props.file.path, props.file.provenance]);
@@ -26,6 +27,10 @@ function ScopedMetadataEditor({ client, gaggle, source, sources, file }: EditorP
   const [mode, setMode] = useState(modes[0]);
   const [text, setText] = useState(metadataFieldText(file, modes[0]));
   const [edge, setEdge] = useState<EditableEdge>(() => ({ edgeId: `edge-${crypto.randomUUID()}`, kind: source.writeRelationships?.includes("references") ? "references" : "contributes-to", from: file.ref ?? { gaggleId: gaggle, sourceBindingId: "", kind: "work-item", sourceId: "" }, to: { gaggleId: gaggle, sourceBindingId: "", kind: "objective-document", sourceId: "" } }));
+  const [objectiveId] = useState(() => `obj-${crypto.randomUUID()}`);
+  const [alias, setAlias] = useState<EditableAlias>({ name: "", target: { gaggleId: gaggle, sourceBindingId: "", kind: "objective-document", sourceId: "" } });
+  const aliases = file.manifest?.aliases ?? [];
+  const [removeAlias, setRemoveAlias] = useState(aliases[0]?.name ?? "");
   const edges = editableEdges(source, file);
   const [removeId, setRemoveId] = useState(edges[0]?.edgeId ?? "");
   const [allowed, setAllowed] = useState<boolean>();
@@ -49,6 +54,12 @@ function ScopedMetadataEditor({ client, gaggle, source, sources, file }: EditorP
   function request(): MetadataChangeRequest {
     const expected = file.provenance!;
     const base = { path: file.path, expected: { commit: expected.commit, blobId: expected.blobId, contentDigest: expected.contentDigest } };
+    if (mode === "assign-objective") return { ...base, objective: { objectiveId, title: text } };
+    if (mode === "alias-add" || mode === "alias-remove") {
+      const selected = mode === "alias-add" ? alias : aliases.find((item) => item.name === removeAlias);
+      if (!selected) throw new Error("Select an observed alias");
+      return { ...base, alias: { action: mode === "alias-add" ? "add" : "remove", alias: selected } };
+    }
     if (mode === "title" || mode === "description") return { ...base, field: mode, value: text };
     const selected = mode === "relationship-remove" ? edges.find((item) => item.edgeId === removeId) : edge;
     if (!selected) throw new Error("Select an observed relationship");
@@ -97,7 +108,10 @@ function ScopedMetadataEditor({ client, gaggle, source, sources, file }: EditorP
     <form onSubmit={(event) => { event.preventDefault(); if (!pending) void action("preview"); }}>
       <fieldset disabled={busy || !!pending}>
         <label>Change<select value={mode} onChange={(event) => { const chosen = event.target.value as MetadataEditMode; setMode(chosen); setText(metadataFieldText(file, chosen)); changed(); }}>{modes.map((value) => <option key={value} value={value}>{labels[value]}</option>)}</select></label>
-        {(mode === "title" || mode === "description") && <label>Proposed {mode === "title" ? "title" : "body"}<textarea value={text} required={mode === "title"} maxLength={mode === "title" ? 512 : 1024 * 1024} rows={mode === "title" ? 2 : 8} onChange={(event) => { setText(event.target.value); changed(); }} /></label>}
+        {(mode === "title" || mode === "description" || mode === "assign-objective") && <label>Proposed {mode === "description" ? "body" : "title"}<textarea value={text} required={mode !== "description"} maxLength={mode === "description" ? 1024 * 1024 : 512} rows={mode === "description" ? 8 : 2} onChange={(event) => { setText(event.target.value); changed(); }} /></label>}
+        {mode === "assign-objective" && <p>New source-owned objective ID: <code>{objectiveId}</code>. The PR assigns this immutable identity to the existing file.</p>}
+        {mode === "alias-add" && <MetadataAliasInput gaggle={gaggle} sources={sources} alias={alias} change={(value) => { setAlias(value); changed(); }} />}
+        {mode === "alias-remove" && <label>Observed alias<select value={removeAlias} onChange={(event) => { setRemoveAlias(event.target.value); changed(); }}>{aliases.map((item) => <option key={item.name} value={item.name}>{item.name}: {refText(item.target)}</option>)}</select></label>}
         {mode === "relationship-add" && <MetadataRelationshipInput gaggle={gaggle} source={source} sources={sources} file={file} edge={edge} change={(value) => { setEdge(value); changed(); }} />}
         {mode === "relationship-remove" && <label>Observed relationship<select value={removeId} onChange={(event) => { setRemoveId(event.target.value); changed(); }}>{edges.map((item) => <option key={item.edgeId} value={item.edgeId}>{item.kind}: {refText(item.from)} → {refText(item.to)} · {item.edgeId}</option>)}</select></label>}
         <p>Expected branch commit: <code>{file.provenance!.commit}</code></p><button type="submit">Preview source change</button>

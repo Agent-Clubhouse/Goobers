@@ -4,11 +4,18 @@ export interface MetadataRevision { commit: string; blobId: string; contentDiges
 export type MetadataChangeRequest = {
   path: string;
   expected: MetadataRevision;
-} & ({ field: "title" | "description"; value: string; relationship?: never } | {
+} & ({ field: "title" | "description"; value: string; relationship?: never; objective?: never; alias?: never } | {
   relationship: { action: "add" | "remove"; edge: WorkbenchEdge & { kind: "references" | "contributes-to" } };
-  field?: never;
-  value?: never;
+  field?: never; value?: never; objective?: never; alias?: never;
+} | {
+  objective: { objectiveId: string; title: string };
+  field?: never; value?: never; relationship?: never; alias?: never;
+} | {
+  alias: { action: "add" | "remove"; alias: { name: string; target: WorkbenchEdge["to"] } };
+  field?: never; value?: never; relationship?: never; objective?: never;
 });
+export type MetadataObjectiveRequest = Extract<MetadataChangeRequest, { objective: unknown }>;
+export type MetadataAliasRequest = Extract<MetadataChangeRequest, { alias: unknown }>;
 export interface MetadataPreview {
   path: string;
   expected: MetadataRevision;

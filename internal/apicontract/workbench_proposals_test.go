@@ -54,3 +54,41 @@ func TestWorkbenchProposalClosedSchemasAndRoutes(t *testing.T) {
 		t.Fatal("missing proposal routes", count)
 	}
 }
+
+func TestWorkbenchMetadataIdentitySchemasMatchWireAndRejectCombinedOperations(t *testing.T) {
+	schemas := openAPIInteractiveSchemas()
+	encoded, _ := json.Marshal(map[string]any{"components": map[string]any{"schemas": schemas}})
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("identity.json", bytes.NewReader(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile("identity.json#/components/schemas/MetadataChangeRequest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := newWireFixtures()
+	for _, fixture := range []MetadataChangeRequest{fixtures.MetadataObjective, fixtures.MetadataAlias} {
+		raw, _ := json.Marshal(fixture)
+		var value map[string]any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(value); err != nil {
+			t.Fatal(err)
+		}
+		value["field"], value["value"] = "description", "body"
+		if schema.Validate(value) == nil {
+			t.Fatal("combined metadata operations accepted")
+		}
+		delete(value, "field")
+		delete(value, "value")
+		key := "objective"
+		if fixture.Alias != nil {
+			key = "alias"
+		}
+		value[key].(map[string]any)["credentialRef"] = "automation"
+		if schema.Validate(value) == nil {
+			t.Fatal("nested authority injection accepted")
+		}
+	}
+}

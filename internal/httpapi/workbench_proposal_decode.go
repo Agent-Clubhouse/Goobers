@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/goobers/goobers/internal/workbench"
-	"github.com/goobers/goobers/providers"
 )
 
 const maxMetadataRequestBytes = 2 << 20
@@ -21,15 +20,11 @@ func decodeMetadataChange(r *http.Request) (workbench.MetadataChangeRequest, err
 	if err != nil || len(raw) > maxMetadataRequestBytes || !utf8.Valid(raw) {
 		return workbench.MetadataChangeRequest{}, invalid
 	}
-	fields, ok := metadataJSONObject(raw, []string{"path", "expected", "field", "value", "relationship"}, []string{"path", "expected"})
+	fields, ok := metadataJSONObject(raw, []string{"path", "expected", "field", "value", "relationship", "objective", "alias"}, []string{"path", "expected"})
 	if !ok || !closedMetadataExpected(fields["expected"]) {
 		return workbench.MetadataChangeRequest{}, invalid
 	}
-	if edge, exists := fields["relationship"]; exists {
-		if fields["field"] != nil || fields["value"] != nil || !closedMetadataRelationship(edge) {
-			return workbench.MetadataChangeRequest{}, invalid
-		}
-	} else if fields["field"] == nil || fields["value"] == nil {
+	if !closedMetadataOperations(fields) {
 		return workbench.MetadataChangeRequest{}, invalid
 	}
 	var request workbench.MetadataChangeRequest
@@ -39,39 +34,42 @@ func decodeMetadataChange(r *http.Request) (workbench.MetadataChangeRequest, err
 	return request, nil
 }
 func validMetadataShape(r *http.Request, input workbench.MetadataChangeRequest) bool {
-	if !providers.ValidRepositorySourcePath(input.Path) || !providers.ValidSourceCommit(input.Expected.Commit) || !providers.ValidSourceCommit(input.Expected.BlobID) || !metadataDigestText(input.Expected.ContentDigest) {
-		return false
-	}
+	bindings := map[string]bool{r.PathValue("source"): true}
 	if input.Relationship != nil {
-		edit := input.Relationship
-		if (edit.Action != "add" && edit.Action != "remove") || (edit.Edge.Kind != "references" && edit.Edge.Kind != "contributes-to") {
-			return false
-		}
-		scope := workbench.Scope{GaggleID: r.PathValue("gaggle"), Bindings: map[string]bool{r.PathValue("source"): true, edit.Edge.From.SourceBindingID: true, edit.Edge.To.SourceBindingID: true}}
-		return scope.ValidateEdge(edit.Edge) == nil
+		bindings[input.Relationship.Edge.From.SourceBindingID] = true
+		bindings[input.Relationship.Edge.To.SourceBindingID] = true
 	}
-	if input.Value == nil {
-		return false
+	if input.Alias != nil {
+		bindings[input.Alias.Alias.Target.SourceBindingID] = true
 	}
-	switch input.Field {
-	case "title":
-		return sessionText(*input.Value, 512, true)
-	case "description":
-		return len(*input.Value) <= workbench.MaxSourceBytes
-	default:
-		return false
-	}
+	return workbench.ValidateMetadataChangeRequest(workbench.Scope{GaggleID: r.PathValue("gaggle"), Bindings: bindings}, r.PathValue("source"), input) == nil
 }
-func metadataDigestText(value string) bool {
-	if len(value) != 64 {
-		return false
-	}
-	for _, ch := range value {
-		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+func closedMetadataOperations(fields map[string]json.RawMessage) bool {
+	for _, entry := range []struct {
+		name     string
+		validate func([]byte) bool
+	}{{"relationship", closedMetadataRelationship}, {"objective", closedMetadataObjective}, {"alias", closedMetadataAlias}} {
+		if raw, ok := fields[entry.name]; ok && !entry.validate(raw) {
 			return false
 		}
 	}
 	return true
+}
+func closedMetadataObjective(raw []byte) bool {
+	_, ok := metadataJSONObject(raw, []string{"objectiveId", "title"}, []string{"objectiveId", "title"})
+	return ok
+}
+func closedMetadataAlias(raw []byte) bool {
+	edit, ok := metadataJSONObject(raw, []string{"action", "alias"}, []string{"action", "alias"})
+	if !ok {
+		return false
+	}
+	alias, ok := metadataJSONObject(edit["alias"], []string{"name", "target"}, []string{"name", "target"})
+	if !ok {
+		return false
+	}
+	_, ok = metadataJSONObject(alias["target"], []string{"gaggleId", "sourceBindingId", "kind", "sourceId"}, []string{"gaggleId", "sourceBindingId", "kind", "sourceId"})
+	return ok
 }
 func closedMetadataExpected(raw []byte) bool {
 	_, ok := metadataJSONObject(raw, []string{"commit", "blobId", "contentDigest"}, []string{"commit", "blobId", "contentDigest"})

@@ -2212,3 +2212,5 @@ export interface SessionMessagePage { items: SessionMessage[]; nextCursor?: numb
 
 export type { GaggleEventEnvelope, GaggleEventReceipt, GaggleEventDelivery } from "./eventTypes";
 export type { MetadataRevision, MetadataChangeRequest, MetadataPreview, MetadataProposalPR, MetadataProposalPhase, MetadataProposalObservation, MetadataProposalCommand } from "./workbenchProposalTypes";
+
+export type { MetadataObjectiveRequest, MetadataAliasRequest } from "./workbenchProposalTypes";

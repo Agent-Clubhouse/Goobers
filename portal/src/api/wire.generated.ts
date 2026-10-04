@@ -4,6 +4,8 @@ import type {
   GaggleEventEnvelope,
   GaggleEventReceipt,
   MetadataChangeRequest,
+  MetadataObjectiveRequest,
+  MetadataAliasRequest,
   MetadataPreview,
   MetadataProposalCommand,
   WorkbenchDocumentPage,
@@ -74,6 +76,8 @@ export interface GoWireFixtures {
   gaggleEventEnvelope: GaggleEventEnvelope;
   gaggleEventReceipt: GaggleEventReceipt;
   metadataChange: MetadataChangeRequest;
+  metadataObjective: MetadataObjectiveRequest;
+  metadataAlias: MetadataAliasRequest;
   metadataPreview: MetadataPreview;
   metadataProposal: MetadataProposalCommand;
   workbenchDocuments: WorkbenchDocumentPage;
@@ -173,6 +177,38 @@ export const goWireFixtures = {
     },
     "field": "description",
     "value": "# Revised strategy\n"
+  },
+  "metadataObjective": {
+    "path": "plan.md",
+    "expected": {
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contentDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "objective": {
+      "objectiveId": "obj-00000000-0000-0000-0000-000000000001",
+      "title": "Assigned objective"
+    }
+  },
+  "metadataAlias": {
+    "path": "relationships.yaml",
+    "expected": {
+      "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "blobId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "contentDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "alias": {
+      "action": "add",
+      "alias": {
+        "name": "delivery",
+        "target": {
+          "gaggleId": "web",
+          "sourceBindingId": "strategy",
+          "kind": "objective-document",
+          "sourceId": "obj-00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
   },
   "metadataPreview": {
     "path": "plan.md",

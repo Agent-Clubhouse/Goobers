@@ -21,6 +21,8 @@ type wireFixtures struct {
 	GaggleEventEnvelope        GaggleEventEnvelope      `json:"gaggleEventEnvelope"`
 	GaggleEventReceipt         GaggleEventReceipt       `json:"gaggleEventReceipt"`
 	MetadataChange             MetadataChangeRequest    `json:"metadataChange"`
+	MetadataObjective          MetadataChangeRequest    `json:"metadataObjective"`
+	MetadataAlias              MetadataChangeRequest    `json:"metadataAlias"`
 	MetadataPreview            MetadataPreview          `json:"metadataPreview"`
 	MetadataProposal           MetadataProposalCommand  `json:"metadataProposal"`
 	WorkbenchGraph             WorkbenchGraph           `json:"workbenchGraph"`
@@ -95,6 +97,8 @@ var wireFixtureTypes = []struct {
 	{name: "gaggleEventEnvelope", scriptType: "GaggleEventEnvelope"},
 	{name: "gaggleEventReceipt", scriptType: "GaggleEventReceipt"},
 	{name: "metadataChange", scriptType: "MetadataChangeRequest"},
+	{name: "metadataObjective", scriptType: "MetadataObjectiveRequest"},
+	{name: "metadataAlias", scriptType: "MetadataAliasRequest"},
 	{name: "metadataPreview", scriptType: "MetadataPreview"},
 	{name: "metadataProposal", scriptType: "MetadataProposalCommand"},
 	{name: "workbenchDocuments", scriptType: "WorkbenchDocumentPage"},

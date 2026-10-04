@@ -5,13 +5,13 @@ export function MetadataRelationshipInput({ gaggle, source, sources, file, edge,
   const kinds = ["references", "contributes-to"].filter((kind) => source.writeRelationships?.includes(kind));
   return <>
     <label>Relationship kind<select value={edge.kind} onChange={(event) => change({ ...edge, kind: event.target.value as EditableEdge["kind"] })}>{kinds.map((kind) => <option key={kind}>{kind}</option>)}</select></label>
-    {file.ref ? <p>From objective: <code>{file.ref.sourceId}</code></p> : <NodeInput label="From" gaggle={gaggle} sources={sources.filter((item) => item.kind === "backlog")} value={edge.from} change={(from) => change({ ...edge, from })} workItemOnly />}
-    <NodeInput label="To" gaggle={gaggle} sources={sources.filter((item) => item.kind !== "relationships")} value={edge.to} change={(to) => change({ ...edge, to })} />
+    {file.ref ? <p>From objective: <code>{file.ref.sourceId}</code></p> : <MetadataNodeInput label="From" gaggle={gaggle} sources={sources.filter((item) => item.kind === "backlog")} value={edge.from} change={(from) => change({ ...edge, from })} workItemOnly />}
+    <MetadataNodeInput label="To" gaggle={gaggle} sources={sources.filter((item) => item.kind !== "relationships")} value={edge.to} change={(to) => change({ ...edge, to })} />
     <label>Relationship rationale<textarea maxLength={4096} value={edge.rationale ?? ""} onChange={(event) => { const next = { ...edge }; if (event.target.value) next.rationale = event.target.value; else delete next.rationale; change(next); }} /></label>
     <p>Use the stable source ID shown in the browser. Source references do not grant access to their targets. Native parent, blocker, milestone and PR links use their native source operations.</p>
   </>;
 }
-function NodeInput({ label, gaggle, sources, value, change, workItemOnly }: { label: string; gaggle: string; sources: SourceView[]; value: WorkbenchNodeRef; change: (ref: WorkbenchNodeRef) => void; workItemOnly?: boolean }) {
+export function MetadataNodeInput({ label, gaggle, sources, value, change, workItemOnly }: { label: string; gaggle: string; sources: SourceView[]; value: WorkbenchNodeRef; change: (ref: WorkbenchNodeRef) => void; workItemOnly?: boolean }) {
   const selected = sources.find((source) => source.bindingId === value.sourceBindingId);
   const kinds = selected?.kind === "documents" ? ["objective-document", "document"] : workItemOnly ? ["work-item"] : ["work-item", "milestone", "pull-request"];
   return <>

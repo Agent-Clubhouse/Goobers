@@ -139,3 +139,45 @@ func TestWorkbenchProposalHumanTransportAndFiniteResponses(t *testing.T) {
 		t.Fatal("oversized response", out.Code)
 	}
 }
+
+func TestWorkbenchProposalObjectiveAndAliasOperationsAreClosedAndExclusive(t *testing.T) {
+	stub := &proposalStub{}
+	handler := proposalRouteHandler(t, stub, &Principal{Issuer: "https://identity.example", Subject: "alice", Roles: []Role{RoleOperate}})
+	var base workbench.MetadataChangeRequest
+	if err := json.Unmarshal([]byte(proposalBody()), &base); err != nil {
+		t.Fatal(err)
+	}
+	base.Field, base.Value = "", nil
+	objective := base
+	objective.Objective = &workbench.MetadataObjectiveAssignment{ObjectiveID: "obj-11111111-1111-1111-1111-111111111111", Title: "Assigned objective"}
+	alias := base
+	alias.Alias = &workbench.MetadataAliasEdit{Action: "remove", Alias: workbench.Alias{Name: "delivery", Target: workbench.NodeRef{GaggleID: "team", SourceBindingID: "strategy", Kind: "objective-document", SourceID: objective.Objective.ObjectiveID}}}
+	for _, input := range []workbench.MetadataChangeRequest{objective, alias} {
+		raw, _ := json.Marshal(input)
+		if out := nativeWriteRequest(handler, "POST", proposalBase+"/proposal-preview", string(raw), ""); out.Code != 200 {
+			t.Fatal(out.Code, out.Body)
+		}
+		validCalls := stub.calls
+		for _, malformed := range []string{
+			strings.TrimSuffix(string(raw), "}") + `,"field":"description","value":"body"}`,
+			strings.Replace(string(raw), `"objectiveId":`, `"ObjectiveId":`, 1),
+			strings.Replace(string(raw), `"title":`, `"credentialRef":"automation","title":`, 1),
+			strings.Replace(string(raw), `"target":{`, `"target":{"actor":"another",`, 1),
+			strings.Replace(string(raw), `"gaggleId":"team"`, `"gaggleId":"foreign"`, 1),
+			strings.Replace(string(raw), `"name":"delivery"`, `"name":"delivery","name":"other"`, 1),
+		} {
+			if malformed == string(raw) {
+				continue
+			}
+			if out := nativeWriteRequest(handler, "POST", proposalBase+"/proposals", malformed, "one"); out.Code != 400 {
+				t.Fatalf("accepted invalid metadata %d %s", out.Code, malformed)
+			}
+		}
+		if stub.calls != validCalls {
+			t.Fatal("invalid operation reached authorized service")
+		}
+	}
+	if stub.request.Alias == nil || stub.request.Alias.Alias != alias.Alias.Alias {
+		t.Fatal("lost exact alias observation")
+	}
+}

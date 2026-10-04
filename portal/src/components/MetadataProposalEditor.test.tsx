@@ -151,6 +151,54 @@ describe("governed metadata proposal editor", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Preview source change" }));
     await screen.findByText(/source or editing policy changed/); expect(screen.queryByText("private")).not.toBeInTheDocument(); expect(client.submitMetadataProposal).not.toHaveBeenCalled();
   });
+  it("assigns one stable objective identity to existing plain Markdown through reviewed submission", async () => {
+    const client = clientFixture();
+    const plain = { ...file, objective: undefined, ref: undefined };
+    const declared = { ...source, writeFields: [], writeRelationships: [], writeMetadata: ["assign-objective"] };
+    render(<MetadataProposalEditor client={client} gaggle={gaggle} source={declared} sources={[declared, backlog]} file={plain} />);
+    fireEvent.change(await screen.findByLabelText("Proposed title"), { target: { value: "Assigned title" } });
+    expect(screen.getByLabelText("Change")).toHaveValue("assign-objective");
+    fireEvent.click(screen.getByRole("button", { name: "Preview source change" }));
+    await screen.findByRole("button", { name: "Create draft PR" });
+    const first = vi.mocked(client.previewMetadataChange as DaemonClient["previewMetadataChange"]).mock.calls[0][2];
+    expect(first).toEqual({ path: file.path, expected, objective: { objectiveId: expect.stringMatching(/^obj-[a-f0-9-]{36}$/), title: "Assigned title" } });
+    fireEvent.change(screen.getByLabelText("Proposed title"), { target: { value: "Adjusted title" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview source change" }));
+    await screen.findByRole("button", { name: "Create draft PR" });
+    const second = vi.mocked(client.previewMetadataChange as DaemonClient["previewMetadataChange"]).mock.calls[1][2];
+    expect(second.objective?.objectiveId).toBe(first.objective?.objectiveId);
+    expect(client.submitMetadataProposal).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Create draft PR" }));
+    await screen.findByText("Draft PR confirmed");
+    expect(client.submitMetadataProposal).toHaveBeenCalledWith(gaggle, source.bindingId, expect.any(String), second, expect.anything());
+  });
+  it("does not offer identity reassignment or metadata writes from ordinary field grants", async () => {
+    const client = clientFixture();
+    const { rerender } = render(<MetadataProposalEditor client={client} gaggle={gaggle} source={{ ...source, writeMetadata: ["assign-objective"] }} sources={sources} file={file} />);
+    await screen.findByLabelText("Change");
+    expect(screen.queryByRole("option", { name: "Assign objective identity" })).not.toBeInTheDocument();
+    rerender(<MetadataProposalEditor client={client} gaggle={gaggle} source={source} sources={sources} file={{ ...file, objective: undefined, ref: undefined }} />);
+    await screen.findByLabelText("Change");
+    expect(screen.queryByRole("option", { name: "Assign objective identity" })).not.toBeInTheDocument();
+  });
+  it("adds and removes exact source aliases only with the metadata declaration", async () => {
+    const client = clientFixture(); const alias = { name: "delivery", target: file.ref! };
+    const declared = { ...source, bindingId: "links", kind: "relationships", paths: ["links.yaml"], writeFields: [], writeRelationships: [], writeMetadata: ["aliases"] };
+    const manifest: WorkbenchDocumentFile = { path: "links.yaml", status: "available", provenance: expected, manifest: { schemaVersion: "relationships/v1", edges: [], aliases: [alias] } };
+    vi.mocked(client.previewMetadataChange).mockResolvedValue({ ...preview, path: "links.yaml" });
+    render(<MetadataProposalEditor client={client} gaggle={gaggle} source={declared} sources={[...sources, declared]} file={manifest} />);
+    fireEvent.change(await screen.findByLabelText("Alias name"), { target: { value: "new-name" } });
+    fireEvent.change(screen.getByLabelText("Alias target source"), { target: { value: "strategy" } });
+    fireEvent.change(screen.getByLabelText("Alias target stable source ID"), { target: { value: file.ref!.sourceId } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview source change" }));
+    await screen.findByRole("button", { name: "Create draft PR" });
+    expect(client.previewMetadataChange).toHaveBeenLastCalledWith(gaggle, "links", { path: "links.yaml", expected, alias: { action: "add", alias: { name: "new-name", target: file.ref } } }, expect.anything());
+    fireEvent.change(screen.getByLabelText("Change"), { target: { value: "alias-remove" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview source change" }));
+    await screen.findByRole("button", { name: "Create draft PR" });
+    expect(client.previewMetadataChange).toHaveBeenLastCalledWith(gaggle, "links", { path: "links.yaml", expected, alias: { action: "remove", alias } }, expect.anything());
+    expect(client.submitMetadataProposal).not.toHaveBeenCalled();
+  });
   it("loads exact retained custody after a refresh without the original edit or a new submission", async () => {
     const client = clientFixture();
     vi.mocked(client.getMetadataProposal).mockResolvedValueOnce({ ...receipt, state: "prepared" });
