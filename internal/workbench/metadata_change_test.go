@@ -184,3 +184,28 @@ func TestMetadataManifestPreservesAliasesCommentsAndUnaffectedEdge(t *testing.T)
 		t.Fatal("remove altered unrelated metadata", parsed)
 	}
 }
+
+func TestMetadataPreviewBoundsEncodedEscapingAndObservationTarget(t *testing.T) {
+	set := metadataFixture(t)
+	file := metadataFile("objectives/payments.md", []byte(strings.Repeat("\x01", MaxSourceBytes/2)))
+	request := metadataRequest(file)
+	body := string(file.Content) + "x"
+	request.Field, request.Value = "description", &body
+	if _, err := PreviewMetadataChange(set, "strategy", file, request); !errors.Is(err, ErrMetadataPreview) {
+		t.Fatal("unbounded escaped preview", err)
+	}
+	target, err := MetadataTargetDigest(set, "strategy", file.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set.Sources[1].Spec.Writes = nil
+	after, err := MetadataTargetDigest(set, "strategy", file.Path)
+	if err != nil || target != after {
+		t.Fatal("read target depends on write grant", err)
+	}
+	set.Sources[1].Repository.Branch = "other"
+	moved, err := MetadataTargetDigest(set, "strategy", file.Path)
+	if err != nil || moved == target {
+		t.Fatal("retarget unbound", err)
+	}
+}

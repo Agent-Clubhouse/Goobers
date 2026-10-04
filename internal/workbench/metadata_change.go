@@ -45,6 +45,9 @@ type MetadataRelationshipEdit struct {
 	Edge   Edge   `json:"edge"`
 }
 
+// MaxMetadataPreviewBytes bounds the complete encoded JSON preview, including escaping.
+const MaxMetadataPreviewBytes = 4 << 20
+
 // MetadataPreview contains bounded candidate source for a human-reviewed PR.
 // Before and After each fit MaxSourceBytes. Formatting may normalize only when
 // YAML changes; body-only edits preserve existing frontmatter bytes.
@@ -60,6 +63,8 @@ type MetadataPreview struct {
 }
 
 var (
+	// ErrMetadataPreview refuses an encoded diff exceeding the preview transport bound.
+	ErrMetadataPreview = errors.New("workbench: encoded metadata preview exceeds byte bound")
 	// ErrMetadataRevision refuses a stale or unverifiable immutable source pin.
 	ErrMetadataRevision = errors.New("workbench: metadata source revision changed")
 	// ErrMetadataEdit refuses operations outside the supported source allowlist.
@@ -95,9 +100,14 @@ func PreviewMetadataChange(set SourceSet, binding string, current MetadataFile, 
 		return MetadataPreview{}, errors.New("workbench: proposed source exceeds byte bound")
 	}
 	target, operation := metadataOperationDigests(set.Scope, source, request)
-	return MetadataPreview{Path: request.Path, Expected: request.Expected, TargetDigest: target,
+	preview := MetadataPreview{Path: request.Path, Expected: request.Expected, TargetDigest: target,
 		OperationDigest: operation, ProposedContentDigest: metadataContentDigest(after),
-		Changed: string(current.Content) != string(after), Before: string(current.Content), After: string(after)}, nil
+		Changed: string(current.Content) != string(after), Before: string(current.Content), After: string(after)}
+	encoded, err := json.Marshal(preview)
+	if err != nil || len(encoded) > MaxMetadataPreviewBytes {
+		return MetadataPreview{}, ErrMetadataPreview
+	}
+	return preview, nil
 }
 
 // MetadataOperationDigest validates the current declaration and request shape
@@ -247,4 +257,15 @@ func metadataHex(value string, size int) bool {
 		}
 	}
 	return true
+}
+
+// MetadataTargetDigest binds the currently declared physical source and path
+// without granting an edit. Receipt observation remains possible after a write
+// allowlist is removed, but cannot cross a source retarget, branch or file move.
+func MetadataTargetDigest(set SourceSet, binding, path string) (string, error) {
+	source, err := metadataSource(set, binding, path)
+	if err != nil {
+		return "", err
+	}
+	return metadataTargetDigest(set.Scope, source, path), nil
 }
