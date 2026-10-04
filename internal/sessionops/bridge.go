@@ -36,16 +36,18 @@ type Recorder interface {
 // Invocation is trusted host binding, never accepted from a tool request.
 // StageSequence names the actual committed stage.started event.
 type Invocation struct {
-	Identity       journal.RunIdentity
-	Actor          sessioning.Actor
-	StageSequence  uint64
-	Attempt        int
-	Lease          *interactiveaccess.ExecutionLease
-	Reader         BacklogReader
-	Writer         BacklogWriter
-	WriteBindings  []string
-	SourceBindings []string
-	Recorder       Recorder
+	Identity        journal.RunIdentity
+	Actor           sessioning.Actor
+	StageSequence   uint64
+	Attempt         int
+	Lease           *interactiveaccess.ExecutionLease
+	Reader          BacklogReader
+	Writer          BacklogWriter
+	Resolver        BacklogResolver
+	ResolveBindings []string
+	WriteBindings   []string
+	SourceBindings  []string
+	Recorder        Recorder
 }
 
 // Bridge keeps only live native invocation grants. A restart destroys them;
@@ -78,7 +80,7 @@ var ErrLimit = errors.New("session operation limit reached")
 // Open binds a fresh opaque credential to verified live host custody. close
 // first revokes it and then joins any bounded operation before returning.
 func (b *Bridge) Open(inv Invocation) (*mcpio.SessionOperationAccess, func(), error) {
-	if b == nil || b.Scrubber == nil || b.Secrets == nil || b.Now == nil || inv.Lease == nil || (inv.Reader == nil && inv.Writer == nil) || inv.Recorder == nil || inv.Identity.ValidateSessionLineage() != nil || inv.Identity.Session == nil || inv.Actor.Issuer == "" || inv.Actor.Subject == "" || inv.StageSequence == 0 || inv.Attempt < 1 || inv.Lease.Context().Err() != nil {
+	if b == nil || b.Scrubber == nil || b.Secrets == nil || b.Now == nil || inv.Lease == nil || (inv.Reader == nil && inv.Writer == nil && inv.Resolver == nil) || inv.Recorder == nil || inv.Identity.ValidateSessionLineage() != nil || inv.Identity.Session == nil || inv.Actor.Issuer == "" || inv.Actor.Subject == "" || inv.StageSequence == 0 || inv.Attempt < 1 || inv.Lease.Context().Err() != nil {
 		return nil, nil, ErrDenied
 	}
 	if err := inv.Lease.RequireSessionScope(inv.Identity.Gaggle, inv.Actor.Issuer, inv.Actor.Subject); err != nil {
@@ -91,7 +93,7 @@ func (b *Bridge) Open(inv Invocation) (*mcpio.SessionOperationAccess, func(), er
 		return nil, nil, err
 	}
 	token := sessioning.OperationTokenPrefix + hex.EncodeToString(entropy)
-	access := &mcpio.SessionOperationAccess{Endpoint: b.Endpoint, BearerToken: token, BacklogSources: append([]string(nil), inv.SourceBindings...), BacklogWriteSources: append([]string(nil), inv.WriteBindings...), BacklogReadDisabled: inv.Reader == nil}
+	access := &mcpio.SessionOperationAccess{Endpoint: b.Endpoint, BearerToken: token, BacklogSources: append([]string(nil), inv.SourceBindings...), BacklogWriteSources: append([]string(nil), inv.WriteBindings...), BacklogResolveSources: append([]string(nil), inv.ResolveBindings...), BacklogReadDisabled: inv.Reader == nil}
 	if err := access.Validate(inv.Identity.RunID); err != nil {
 		return nil, nil, err
 	}

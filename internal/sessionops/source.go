@@ -36,3 +36,14 @@ type BacklogWriter interface {
 // WriterFactory returns nil when no native edit is permitted for this turn.
 // It uses the existing execution lease and must not reacquire policy locking.
 type WriterFactory func(context.Context, SourceContext) (BacklogWriter, error)
+
+// BacklogResolver is the dedicated inspected marker operation. It cannot be
+// substituted by an ordinary labels field editor or generic provider client.
+type BacklogResolver interface {
+	Inspect(context.Context, string, workbench.BacklogItemRequest) (workbench.NeedsHumanObservation, error)
+	Resolve(context.Context, string, string, workbench.NeedsHumanResolutionRequest) (workbench.NeedsHumanResolutionCommand, error)
+	Command(context.Context, string, string) (workbench.NeedsHumanResolutionCommand, error)
+}
+
+// ResolverFactory binds an actual accepted session turn and its current lease.
+type ResolverFactory func(context.Context, SourceContext) (BacklogResolver, error)

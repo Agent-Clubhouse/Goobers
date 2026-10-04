@@ -406,6 +406,9 @@ const (
 	RouteSessionBacklogEditCapabilities RouteID = "sessionBacklogEditCapabilities"
 	RouteSessionBacklogEdit             RouteID = "sessionBacklogEdit"
 	RouteSessionBacklogReceipt          RouteID = "sessionBacklogReceipt"
+	RouteSessionNeedsHumanInspect       RouteID = "sessionNeedsHumanInspect"
+	RouteSessionNeedsHumanResolve       RouteID = "sessionNeedsHumanResolve"
+	RouteSessionNeedsHumanReceipt       RouteID = "sessionNeedsHumanReceipt"
 	RouteSessionList                    RouteID = "sessionList"
 	RouteSessionCreate                  RouteID = "sessionCreate"
 	RouteSessionGet                     RouteID = "sessionGet"
@@ -674,6 +677,9 @@ var v1Routes = []Route{
 	{ID: RouteSessionBacklogEditCapabilities, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_capabilities", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogEdit, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/edit_backlog_item", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteSessionBacklogReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_backlog_edit_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionNeedsHumanInspect, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/inspect_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionNeedsHumanResolve, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/resolve_needs_human", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteSessionNeedsHumanReceipt, Method: http.MethodPost, Path: "/api/v1/runs/{run}/session-operations/get_needs_human_receipt", ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchWriteCapabilities, Method: http.MethodGet, Path: WorkbenchWriteCapabilitiesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteWorkbenchPatch, Method: http.MethodPatch, Path: WorkbenchItemPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteWorkbenchCommand, Method: http.MethodGet, Path: WorkbenchCommandPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},

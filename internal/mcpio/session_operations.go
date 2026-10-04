@@ -24,9 +24,10 @@ type SessionOperationAccess struct {
 	Endpoint    string `json:"endpoint"`
 	BearerToken string `json:"bearerToken"`
 	// BacklogSources are discovery hints only; the host still authorizes each call.
-	BacklogSources      []string `json:"backlogSources,omitempty"`
-	BacklogWriteSources []string `json:"backlogWriteSources,omitempty"`
-	BacklogReadDisabled bool     `json:"backlogReadDisabled,omitempty"`
+	BacklogSources        []string `json:"backlogSources,omitempty"`
+	BacklogWriteSources   []string `json:"backlogWriteSources,omitempty"`
+	BacklogResolveSources []string `json:"backlogResolveSources,omitempty"`
+	BacklogReadDisabled   bool     `json:"backlogReadDisabled,omitempty"`
 }
 
 func (SessionOperationAccess) String() string { return "[session operation access redacted]" }
@@ -36,10 +37,10 @@ func (a SessionOperationAccess) GoString() string { return a.String() }
 
 // Validate checks private launch configuration without echoing its secret.
 func (a SessionOperationAccess) Validate(run string) error {
-	if len(a.BacklogSources) > 32 || len(a.BacklogWriteSources) > 32 {
+	if len(a.BacklogSources) > 32 || len(a.BacklogWriteSources) > 32 || len(a.BacklogResolveSources) > 32 {
 		return errors.New("mcpio: too many session source hints")
 	}
-	for _, sources := range [][]string{a.BacklogSources, a.BacklogWriteSources} {
+	for _, sources := range [][]string{a.BacklogSources, a.BacklogWriteSources, a.BacklogResolveSources} {
 		seen := map[string]bool{}
 		for _, source := range sources {
 			if sessioning.ValidateBacklogList(sessioning.BacklogListRequest{SourceBindingID: source}) != nil || seen[source] {
@@ -73,11 +74,14 @@ func SessionOperationToolNames(a *SessionOperationAccess, run string) []string {
 	if len(a.BacklogWriteSources) > 0 {
 		names = append(names, "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt")
 	}
+	if len(a.BacklogResolveSources) > 0 {
+		names = append(names, "inspect_needs_human", "resolve_needs_human", "get_needs_human_receipt")
+	}
 	return names
 }
 func isSessionOperationTool(name string) bool {
 	switch name {
-	case "get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt":
+	case "inspect_needs_human", "resolve_needs_human", "get_needs_human_receipt", "get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt":
 		return true
 	}
 	return false
@@ -127,6 +131,12 @@ func (s *Server) callSessionOperation(name string, raw json.RawMessage) (map[str
 func validateSessionOperationArguments(name string, raw json.RawMessage) error {
 	var err error
 	switch name {
+	case "inspect_needs_human":
+		_, err = sessioning.DecodeNeedsHumanInspect(raw)
+	case "resolve_needs_human":
+		_, err = sessioning.DecodeNeedsHumanResolution(raw)
+	case "get_needs_human_receipt":
+		_, err = sessioning.DecodeNeedsHumanReceipt(raw)
 	case "get_backlog_item":
 		_, err = sessioning.DecodeBacklogRead(raw)
 	case "list_backlog_items":

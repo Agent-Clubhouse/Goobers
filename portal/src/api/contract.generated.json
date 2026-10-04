@@ -830,6 +830,39 @@
       "recoverySafe": false
     },
     {
+      "id": "sessionNeedsHumanInspect",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/inspect_needs_human",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionNeedsHumanResolve",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/resolve_needs_human",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
+      "id": "sessionNeedsHumanReceipt",
+      "method": "POST",
+      "path": "/api/v1/runs/{run}/session-operations/get_needs_human_receipt",
+      "actionClass": "workflow-execution",
+      "remoteInvocable": false,
+      "cost": "mutation",
+      "budgetMs": 8000,
+      "streaming": false,
+      "recoverySafe": false
+    },
+    {
       "id": "workbenchWriteCapabilities",
       "method": "GET",
       "path": "/api/v1/gaggles/{gaggle}/workbench/sources/{source}/write-capabilities",

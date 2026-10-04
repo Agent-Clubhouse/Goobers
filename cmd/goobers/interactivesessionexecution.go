@@ -55,7 +55,7 @@ func (r *daemonSessionRuntime) prepare(e *interactiveRestartExecution, t trigger
 		if !ok {
 			return nil, errors.New("interactive session host journal writer missing")
 		}
-		return sessionGoober{Goober: delegate, writer: writer, identity: e.source, actor: *t.Message.Actor, operations: r.operations, readers: r.setup.SessionBacklogReader, writers: r.setup.SessionBacklogWriter, directory: filepath.Join(e.layout.RunsDir(), e.source.RunID)}, nil
+		return sessionGoober{Goober: delegate, writer: writer, identity: e.source, actor: *t.Message.Actor, operations: r.operations, readers: r.setup.SessionBacklogReader, writers: r.setup.SessionBacklogWriter, resolvers: r.setup.SessionBacklogResolver, directory: filepath.Join(e.layout.RunsDir(), e.source.RunID)}, nil
 	}
 	driver, err := base.ForSessionExecution(e.source, factory)
 	if err != nil {
@@ -93,6 +93,7 @@ type sessionGoober struct {
 	operations *sessionops.Bridge
 	readers    sessionops.ReaderFactory
 	writers    sessionops.WriterFactory
+	resolvers  sessionops.ResolverFactory
 }
 
 func (g sessionGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {

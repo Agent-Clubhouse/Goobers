@@ -18,7 +18,7 @@ type SessionWriteOperations interface {
 
 func sessionOperationName(name string) bool {
 	switch name {
-	case "get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt":
+	case "inspect_needs_human", "resolve_needs_human", "get_needs_human_receipt", "get_backlog_item", "list_backlog_items", "get_backlog_edit_capabilities", "edit_backlog_item", "get_backlog_edit_receipt":
 		return true
 	}
 	return false

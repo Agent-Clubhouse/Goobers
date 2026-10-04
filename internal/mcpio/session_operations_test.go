@@ -120,3 +120,39 @@ func TestSessionMCPNativeWritePreservesEmptySetAndDoesNotRetry(t *testing.T) {
 		t.Fatal("ungranted write sent")
 	}
 }
+
+func TestNeedsHumanToolsRequireDedicatedPrivateHints(t *testing.T) {
+	tools := sessionToolset(t)
+	tools.cfg.SessionOperations.BacklogReadDisabled = true
+	tools.cfg.SessionOperations.BacklogWriteSources = []string{"items"}
+	server := NewServer(tools)
+	args := json.RawMessage(`{"sourceBindingId":"items","id":"42","expectedSourceId":"987654"}`)
+	if _, err := server.callSessionOperation("inspect_needs_human", args); err == nil {
+		t.Fatal("generic native writer inherited resolver")
+	}
+	tools.cfg.SessionOperations.BacklogWriteSources = nil
+	tools.cfg.SessionOperations.BacklogResolveSources = []string{"items"}
+	calls := 0
+	tools.sessionTransport = sessionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if !strings.HasSuffix(r.URL.Path, "/inspect_needs_human") {
+			t.Fatal(r.URL)
+		}
+		return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	count := 0
+	for _, def := range server.toolDefs() {
+		if isSessionOperationTool(def.Name) {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatal("wrong private operation subset", count)
+	}
+	if _, err := server.callSessionOperation("inspect_needs_human", args); err == nil || calls != 1 {
+		t.Fatal(err, calls)
+	}
+	if _, err := server.callSessionOperation("inspect_needs_human", json.RawMessage(`{"sourceBindingId":"items","id":"42","expectedSourceId":"987654","actor":"forged"}`)); err == nil || calls != 1 {
+		t.Fatal("authority escaped", err, calls)
+	}
+}

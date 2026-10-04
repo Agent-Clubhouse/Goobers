@@ -46,25 +46,26 @@ const legacyRuntimeMigrationNote = "legacy flat runtime migrated to per-gaggle l
 // Observation and runtime own resource cleanup; the remaining fields are views
 // used by scheduler, reload and API wiring. Shutdown drains them in order.
 type schedulerSetup struct {
-	SessionBacklogReader sessionops.ReaderFactory
-	SessionBacklogWriter sessionops.WriterFactory
-	SessionGeneration    string
-	SessionRuntime       *daemonSessionRuntime
-	OrdinaryRuntime      ordinaryRuntimeBuilder
-	OrdinaryCatalog      *ordinaryStartCatalog
-	SourceStarts         localscheduler.SourceQueue
-	ChildRuntime         childRuntimeBuilder
-	EventRuntime         eventRuntimeBuilder
-	EventCatalog         eventPublicationSnapshot
-	EventPublisher       *daemonEventPublisher
-	observation          *schedulerObservation
-	runtime              *schedulerRuntime
-	Generations          *configgeneration.Retainer
-	Root                 string
-	Runner               *runner.Runner
-	Runners              map[string]*runner.Runner
-	LegacyRunner         *runner.Runner
-	Telemetry            *telemetry.Client
+	SessionBacklogReader   sessionops.ReaderFactory
+	SessionBacklogWriter   sessionops.WriterFactory
+	SessionBacklogResolver sessionops.ResolverFactory
+	SessionGeneration      string
+	SessionRuntime         *daemonSessionRuntime
+	OrdinaryRuntime        ordinaryRuntimeBuilder
+	OrdinaryCatalog        *ordinaryStartCatalog
+	SourceStarts           localscheduler.SourceQueue
+	ChildRuntime           childRuntimeBuilder
+	EventRuntime           eventRuntimeBuilder
+	EventCatalog           eventPublicationSnapshot
+	EventPublisher         *daemonEventPublisher
+	observation            *schedulerObservation
+	runtime                *schedulerRuntime
+	Generations            *configgeneration.Retainer
+	Root                   string
+	Runner                 *runner.Runner
+	Runners                map[string]*runner.Runner
+	LegacyRunner           *runner.Runner
+	Telemetry              *telemetry.Client
 	// Shared only by this setup's trace, journal, and diagnostic exporters.
 	TelemetryReplayStart <-chan struct{}
 	RollupDB             *rollup.DB

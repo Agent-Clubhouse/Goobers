@@ -6,6 +6,9 @@ import (
 )
 
 func sessionOperationRoute(id RouteID) bool {
+	if resolutionOperationRoute(id) {
+		return true
+	}
 	switch id {
 	case RouteSessionBacklogRead, RouteSessionBacklogList, RouteSessionBacklogEditCapabilities, RouteSessionBacklogEdit, RouteSessionBacklogReceipt:
 		return true
@@ -13,6 +16,9 @@ func sessionOperationRoute(id RouteID) bool {
 	return false
 }
 func sessionOperationBody(id RouteID) map[string]any {
+	if resolutionOperationRoute(id) {
+		return sessionResolutionBody(id)
+	}
 	if id != RouteSessionBacklogRead && id != RouteSessionBacklogList {
 		return sessionWriteBody(id)
 	}
@@ -34,6 +40,10 @@ func sessionOperationResponses(id RouteID) map[string]any {
 		name = "BacklogPage"
 	}
 	switch id {
+	case RouteSessionNeedsHumanInspect:
+		name = "NeedsHumanObservation"
+	case RouteSessionNeedsHumanResolve, RouteSessionNeedsHumanReceipt:
+		name = "NeedsHumanResolutionCommand"
 	case RouteSessionBacklogEditCapabilities:
 		name = "BacklogWriteCapabilities"
 	case RouteSessionBacklogEdit, RouteSessionBacklogReceipt:

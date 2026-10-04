@@ -64,7 +64,7 @@ func (b *Bridge) writeCall(ctx context.Context, token, run, operation, binding s
 	if err = b.active(g, run); err != nil {
 		return err
 	}
-	if g.invocation.Writer == nil {
+	if !invocationOperationOwner(g.invocation, operation) {
 		return ErrDenied
 	}
 	// Reserve enough evidence budget before any possible external effect.
@@ -126,6 +126,13 @@ func (b *Bridge) recordWriteEvidence(g *grant, note journal.Event, binding strin
 			note.Runner["operationDigest"] = command.OperationDigest
 			note.Runner["commandRequestDigest"] = command.RequestDigest
 		}
+		if command, ok := value.(workbench.NeedsHumanResolutionCommand); ok {
+			note.Runner["commandId"] = command.ID
+			note.Runner["outcome"] = command.State
+			note.Runner["operationDigest"] = command.OperationDigest
+			note.Runner["commandRequestDigest"] = command.RequestDigest
+		}
+
 	} else if callErr == nil {
 		err = ErrDenied
 	}
@@ -150,6 +157,6 @@ func validWriteResult(value any, inv Invocation, binding string) error {
 		}
 		return nil
 	default:
-		return ErrDenied
+		return validResolutionResult(value, inv, binding)
 	}
 }
