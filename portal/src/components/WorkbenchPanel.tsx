@@ -34,7 +34,7 @@ function WorkbenchSources({ client, gaggle, goobers = [] }: { client: DaemonClie
       {source && <>
         <p className="workbench-source">{source.owner}{source.project ? ` / ${source.project}` : ""}{source.repository ? ` / ${source.repository}` : ""}{source.branch ? ` · ${source.branch}` : ""}</p>
         {(source.paths?.length ?? 0) > 0 && <p>Configured paths: {source.paths?.join(", ")}</p>}
-        {source.kind === "backlog" ? <WorkbenchBrowser key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} goobers={goobers} refresh={() => setRevision((value) => value + 1)} /> : source.kind === "documents" || source.kind === "relationships" ? <WorkbenchDocuments key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} refresh={() => setRevision((value) => value + 1)} /> : <p>This source kind is not supported in this view.</p>}
+        {source.kind === "backlog" ? <WorkbenchBrowser key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} goobers={goobers} refresh={() => setRevision((value) => value + 1)} /> : source.kind === "documents" || source.kind === "relationships" ? <WorkbenchDocuments key={`${page.generation}:${source.bindingId}:${revision}`} client={client} gaggle={gaggle} source={source} sources={page.items} refresh={() => setRevision((value) => value + 1)} /> : <p>This source kind is not supported in this view.</p>}
       </>}
     </>}
   </section>;

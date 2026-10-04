@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { DaemonApiError } from "../api/errors";
 import type { DaemonClient, SourceView, WorkbenchDocumentPage } from "../api/types";
+import { MetadataProposalEditor } from "./MetadataProposalEditor";
 import { WorkbenchDocumentDetail } from "./WorkbenchDocumentDetail";
 
 const windowSize = 8;
-export function WorkbenchDocuments({ client, gaggle, source, refresh }: { client: DaemonClient; gaggle: string; source: SourceView; refresh: () => void }) {
+export function WorkbenchDocuments({ client, gaggle, source, sources, refresh }: { client: DaemonClient; gaggle: string; source: SourceView; sources: SourceView[]; refresh: () => void }) {
   const [cursor, setCursor] = useState<string>();
   const [loaded, setLoaded] = useState<{ client: DaemonClient; source: SourceView; gaggle: string; cursor?: string; page: WorkbenchDocumentPage }>();
   const [selectedPath, setSelectedPath] = useState<string>();
@@ -46,7 +47,7 @@ export function WorkbenchDocuments({ client, gaggle, source, refresh }: { client
           <ul>{page.files.map((file) => <li key={file.path}><button type="button" aria-pressed={selectedPath === file.path} onClick={() => setSelectedPath(file.path)}><strong>{file.path}</strong><span>{documentStatus(file.status)}</span></button></li>)}</ul>
           {page.nextCursor && <button type="button" onClick={next}>Next files</button>}
         </nav>
-        {selected ? <WorkbenchDocumentDetail key={`${page.commit}:${selected.path}`} file={selected} /> : <p>Select a configured file to read its content and source metadata.</p>}
+        {selected ? <div key={`${page.commit}:${selected.path}`}><WorkbenchDocumentDetail file={selected} /><MetadataProposalEditor client={client} gaggle={gaggle} source={source} sources={sources} file={selected} /></div> : <p>Select a configured file to read its content and source metadata.</p>}
       </div>
     </>}
   </section>;
