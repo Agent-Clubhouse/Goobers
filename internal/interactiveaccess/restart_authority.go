@@ -57,9 +57,25 @@ func (a RestartAuthority) Principal() httpapi.Principal {
 }
 
 func (a RestartAuthority) validate() error {
-	if a.Version != 1 || !apiv1.ValidRunID(a.EpochID) || !apiv1.ValidRunID(a.SourceRunID) || a.EpochID == a.SourceRunID || a.SourceTerminalSeq == 0 || !validText(a.Gaggle, 256) || !validText(a.Stage, 256) || !validText(a.WorkflowDigest, 128) || !validText(a.GooberDigest, 128) || !validText(a.Issuer, 2048) || !validText(a.Subject, 512) || !human(a.Principal()) || !a.Principal().HasRole(httpapi.RoleOperate) {
-		return errors.New("invalid retained restart authority")
+	if a.Version != 1 || !apiv1.ValidRunID(a.EpochID) || !apiv1.ValidRunID(a.SourceRunID) || a.EpochID == a.SourceRunID || a.SourceTerminalSeq == 0 {
+		return errors.New("invalid retained restart execution identity")
 	}
+	for _, field := range []struct {
+		value string
+		limit int
+	}{{a.Gaggle, 256}, {a.Stage, 256}, {a.WorkflowDigest, 128}, {a.GooberDigest, 128}, {a.Issuer, 2048}, {a.Subject, 512}} {
+		if !validText(field.value, field.limit) {
+			return errors.New("invalid retained restart authority")
+		}
+	}
+	principal := a.Principal()
+	if !human(principal) || !principal.HasRole(httpapi.RoleOperate) {
+		return errors.New("restart requires retained human operator authority")
+	}
+	return a.validateClaims()
+}
+
+func (a RestartAuthority) validateClaims() error {
 	if len(a.Roles) > 3 || len(a.Groups) > 128 || !slices.IsSorted(a.Roles) || !slices.IsSorted(a.Groups) {
 		return errors.New("restart authority claims are not bounded and canonical")
 	}

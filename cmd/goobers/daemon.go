@@ -124,6 +124,7 @@ type schedulerSetup struct {
 	InteractiveAccess *interactiveaccess.Service
 	// Installed only when the dedicated human execution builder is available.
 	InteractiveRestartExecution func(context.Context, runner.StageRestartPlan) (intervention.Execution, error)
+	InteractiveRestartRecovery  func(context.Context, journal.RunIdentity) (intervention.Execution, error)
 	// SecretStores resolves store-backed token refs (#683). Built once per
 	// setup from cfg.SecretStores so every consumer shares one TTL cache;
 	// never nil — an instance with no declared stores gets a registry that

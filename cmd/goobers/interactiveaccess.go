@@ -14,6 +14,9 @@ func (u *upSession) configureInteractiveAccess() error {
 		return err
 	}
 	u.setup.InteractiveAccess = service
+	if u.setup.InteractiveRestartRecovery != nil && u.setup.RunnerRegistry != nil {
+		u.setup.RunnerRegistry.setInteractiveGenerationResolver(interactiveGenerationResolver(u.l, u.setup, u.setup.InteractiveRestartRecovery))
+	}
 	u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithInteractivePermissions(service))
 	return nil
 }

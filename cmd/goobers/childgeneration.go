@@ -90,10 +90,10 @@ func resolveInterruptedRuntime(ctx context.Context, id journal.RunIdentity, in i
 	identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
 	machine, known := in.machines[identity]
 	runtime := executionGenerationRuntime{runner: in.runner, machine: machine, gooberDigest: in.gooberDigests[identity], repoRef: in.repoRefs[identity]}
-	if id.ConfigGeneration != "" {
+	if id.ConfigGeneration != "" || runner.IsStageRestart(id) {
 		pinned, err := in.registry.executionGeneration(ctx, id)
 		if err != nil {
-			if !deferChildGenerationRecovery(ctx, in.log, id) {
+			if !deferChildGenerationRecovery(ctx, in.log, id) && !deferInteractiveGenerationRecovery(ctx, in.log, id) {
 				return executionGenerationRuntime{}, false, fmt.Errorf("resolve run %q execution generation: %w", id.RunID, err)
 			}
 			in.release(id.RunID, id.Workflow)

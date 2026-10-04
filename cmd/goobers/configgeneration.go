@@ -177,7 +177,9 @@ func (r *daemonRunnerRegistry) executionGeneration(ctx context.Context, identity
 	}
 	r.mu.RLock()
 	resolve := r.resolveGeneration
-	if identity.Child != nil {
+	if runner.IsStageRestart(identity) {
+		resolve = r.resolveInteractiveGeneration
+	} else if identity.Child != nil {
 		resolve = r.resolveChildGeneration
 	}
 	r.mu.RUnlock()
