@@ -452,9 +452,12 @@ type Config struct {
 	// ChildWorkflowRecoveryAdmission verifies host-owned physical custody before
 	// retry, resume or human replacement can mutate the parent journal.
 	ChildWorkflowRecoveryAdmission func(*journal.Reader) error
-	ChildHandoff                   ChildHandoff
-	ChildParentCapacity            ChildParentCapacity
-	SelfExecutionDenied            bool
+	// ChildWorkflowStageCustodyAdmission scopes live-attempt refusal to one
+	// branch. Whole-run recovery still requires every physical writer joined.
+	ChildWorkflowStageCustodyAdmission func(*journal.Reader, int) error
+	ChildHandoff                       ChildHandoff
+	ChildParentCapacity                ChildParentCapacity
+	SelfExecutionDenied                bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -3438,7 +3441,7 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	}
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
-		if err := r.taskCustodyReady(tf); err != nil {
+		if err := r.taskCustodyReady(tf, branch); err != nil {
 			return apiv1.ResultEnvelope{}, nil, err
 		}
 		if _, ok := stalledRequestFromContext(ctx); ok {

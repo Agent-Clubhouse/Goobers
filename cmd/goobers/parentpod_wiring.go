@@ -15,6 +15,7 @@ type parentExecutorProvider func(runner.ArtifactRecorder, runner.SecretRegistrar
 
 func withContainedParentExecutor(cfg runner.Config, root string, instanceConfig *instance.Config, definitions *instance.ConfigSet) runner.Config {
 	cfg.ChildWorkflowRecoveryAdmission = verifyParentPodCustody
+	cfg.ChildWorkflowStageCustodyAdmission = verifyParentPodBranchCustody
 	base := cfg.NewAgentic
 	cfg.NewAgentic = func(name string, rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Goober, error) {
 		ordinary, err := base(name, rec, reg)

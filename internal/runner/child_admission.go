@@ -46,9 +46,16 @@ func (r *Runner) verifyChildWorkflowCustody(dir string) error {
 func (r *Runner) localTaskDenied(tf taskFrame) bool {
 	return r.cfg.SelfExecutionDenied && !r.containedParentTask(tf)
 }
-func (r *Runner) taskCustodyReady(tf taskFrame) error {
+func (r *Runner) taskCustodyReady(tf taskFrame, branch int) error {
 	if tf.t.ChildWorkflows == nil {
 		return nil
+	}
+	if r.cfg.ChildWorkflowStageCustodyAdmission != nil {
+		reader, err := journal.OpenReadOnly(tf.jr.Dir())
+		if err != nil {
+			return err
+		}
+		return r.cfg.ChildWorkflowStageCustodyAdmission(reader, branch)
 	}
 	return r.verifyChildWorkflowCustody(tf.jr.Dir())
 }

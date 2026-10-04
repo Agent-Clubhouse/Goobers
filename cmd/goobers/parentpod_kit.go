@@ -71,10 +71,10 @@ func writeParentKit(ctx context.Context, service *daemonCredentialService, snaps
 	return digest, nil
 }
 
-func parentJournal(rec runner.ArtifactRecorder) (*journal.Run, journal.RunIdentity, error) {
-	jr, ok := rec.(*journal.Run)
-	if !ok {
-		return nil, journal.RunIdentity{}, errors.New("contained parent requires its owned journal writer")
+func parentJournal(rec runner.ArtifactRecorder) (runner.OwnedJournalRecorder, journal.RunIdentity, error) {
+	jr, _, err := runner.OwnedJournalScope(rec)
+	if err != nil {
+		return nil, journal.RunIdentity{}, err
 	}
 	reader, err := journal.OpenReadOnly(jr.Dir())
 	if err != nil {

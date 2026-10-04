@@ -38,7 +38,7 @@ func (s *daemonCredentialService) installParentPodFactories(client childpod.Temp
 
 type parentStagePod struct {
 	service    *daemonCredentialService
-	journal    *journal.Run
+	journal    runner.OwnedJournalRecorder
 	identity   journal.RunIdentity
 	client     childpod.TemporalClient
 	surrenders dispatcher.SurrenderPlane
@@ -118,7 +118,7 @@ func (p *parentStagePod) admission(env apiv1.InvocationEnvelope) func(context.Co
 type parentInvocationBlobs struct {
 	childpod.ParentBlobs
 	contractDigest string
-	recorder       *journal.Run
+	recorder       runner.OwnedJournalRecorder
 	contract       childpod.Contract
 	retainedRef    journal.Ref
 	retained       childpod.RetainedAttempt
@@ -153,15 +153,19 @@ func (p *parentStagePod) prepare(ctx context.Context, env apiv1.InvocationEnvelo
 	if err != nil {
 		return request, pin, nil, nil, nil, err
 	}
-	if err = verifyParentPodCustody(reader); err != nil {
-		return request, pin, nil, nil, nil, err
-	}
 	_, started, err := childworkflow.VerifyActiveStage(ctx, reader, p.identity.RunID, *env.ChildWorkflowOrigin)
 	if err != nil {
 		return request, pin, nil, nil, nil, err
 	}
 	if started.Seq == 0 || started.Seq > 1<<31-1 || started.Time.IsZero() || started.Attempt != int(env.Attempt) || env.TaskID != p.identity.RunID+":"+started.Stage {
 		return request, pin, nil, nil, nil, errors.New("parent invocation has no exact physical attempt")
+	}
+	_, branch, err := runner.OwnedJournalScope(p.journal)
+	if err != nil || branch != started.Branch {
+		return request, pin, nil, nil, nil, errors.Join(errors.New("parent writer differs from the active branch"), err)
+	}
+	if err = verifyParentPodBranchCustody(reader, branch); err != nil {
+		return request, pin, nil, nil, nil, err
 	}
 	snapshot, release, err := p.snapshot(ctx)
 	if err != nil {

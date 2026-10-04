@@ -24,12 +24,22 @@ func (b *parentInvocationBlobs) record(kind string) error {
 // observation allowlist. Unknown dispatched custody blocks journal replacement;
 // neither terminal state nor a later attempt can acknowledge an older pod.
 func verifyParentPodCustody(reader *journal.Reader) error {
+	return verifyParentPodSelectedCustody(reader, nil)
+}
+
+func verifyParentPodBranchCustody(reader *journal.Reader, branch int) error {
+	return verifyParentPodSelectedCustody(reader, &branch)
+}
+
+func verifyParentPodSelectedCustody(reader *journal.Reader, branch *int) error {
 	pending, _, err := pendingParentPodScopes(reader)
 	if err != nil {
 		return err
 	}
-	if len(pending) > 0 {
-		return fmt.Errorf("%w: contained parent worker custody requires reconciliation before retry or resume", invoke.ErrWorkspaceNotQuiescent)
+	for _, scope := range pending {
+		if branch == nil || scope.Event.Branch == *branch {
+			return fmt.Errorf("%w: contained parent worker custody requires reconciliation before retry or resume", invoke.ErrWorkspaceNotQuiescent)
+		}
 	}
 	return nil
 }

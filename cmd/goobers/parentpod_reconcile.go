@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/goobers/goobers/internal/childpod"
@@ -63,10 +64,12 @@ func (p *parentStagePod) reconcile(ctx context.Context) error {
 	if err != nil || len(pending) == 0 {
 		return err
 	}
-	if len(pending) != 1 {
-		return errors.New("parallel parent reconciliation is not yet supported")
+	digests, err := orderedParentRecoveries(pending, events)
+	if err != nil {
+		return err
 	}
-	for digest, scope := range pending {
+	for _, digest := range digests {
+		scope := pending[digest]
 		allowed, err := parentPodCustodyPending(reader, digest)
 		if err != nil || !allowed {
 			return errors.Join(invoke.ErrWorkspaceNotQuiescent, err)
@@ -90,9 +93,35 @@ func (p *parentStagePod) reconcile(ctx context.Context) error {
 		}
 		err = p.importRecovery(ctx, reader, writer, scope, retained, digest, workspace, report)
 		closeErr := writer.Close()
-		return errors.Join(err, closeErr)
+		if err := errors.Join(err, closeErr); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func orderedParentRecoveries(pending map[string]parentPodScope, events []journal.Event) ([]string, error) {
+	if len(pending) > 128 {
+		return nil, errors.New("parent recovery exceeds branch bound")
+	}
+	digests := make([]string, 0, len(pending))
+	workspaces := map[string]bool{}
+	for digest, scope := range pending {
+		custody, err := parentHeldReceipt(events, scope)
+		if err != nil {
+			return nil, err
+		}
+		key := custody.Workspace.RepositoryDigest + "/" + custody.Workspace.WorkspaceID
+		if workspaces[key] {
+			return nil, errors.New("parallel parent scopes share workspace custody")
+		}
+		workspaces[key] = true
+		digests = append(digests, digest)
+	}
+	slices.SortFunc(digests, func(a, b string) int {
+		return pending[a].Contract.PodAttempt - pending[b].Contract.PodAttempt
+	})
+	return digests, nil
 }
 
 func retainedParentAttempt(reader *journal.Reader, scope parentPodScope, digest string) (childpod.RetainedAttempt, error) {
@@ -185,13 +214,17 @@ func (p *parentStagePod) importRecovery(ctx context.Context, reader *journal.Rea
 	c := scope.Contract
 	store := childpod.ParentBlobs{RunDir: reader.Dir(), Identity: c.Identity}
 	scoped := childpod.ParentAttemptBlobs{Store: store, ContractDigest: digest}
+	recorder, err := runner.OwnedBranchRecorder(writer, scope.Event.Branch)
+	if err != nil {
+		return err
+	}
 	request := childpod.Request{ParentOrigin: c.ParentOrigin, Identity: c.Identity, Attempt: retained.Input.Attempt, Eligible: retained.Input.Eligible, Workspace: &childpod.WorkspaceInput{Path: workspace.Path}, Ceiling: c.Ceiling, StartedAt: c.StartedAt}
-	executor := childpod.Executor{Blobs: scoped, Surrenders: p.surrenders, Recorder: writer, RecoveryReader: reader}
+	executor := childpod.Executor{Blobs: scoped, Surrenders: p.surrenders, Recorder: recorder, RecoveryReader: reader}
 	out, err := executor.Reconcile(ctx, request, retained, report)
 	if err != nil {
 		return err
 	}
-	if err = adoptContainedPodOutputs(ctx, writer, scoped, &out); err != nil {
+	if err = adoptContainedPodOutputs(ctx, recorder, scoped, &out); err != nil {
 		return err
 	}
 	events, err := reader.Events()
@@ -208,6 +241,6 @@ func (p *parentStagePod) importRecovery(ctx context.Context, reader *journal.Rea
 	if err = p.recoverAcceptedWait(ctx, writer, *retained.Input.Attempt.Envelope); err != nil {
 		return err
 	}
-	b := &parentInvocationBlobs{ParentBlobs: store, contract: c, contractDigest: digest, recorder: writer}
+	b := &parentInvocationBlobs{ParentBlobs: store, contract: c, contractDigest: digest, recorder: recorder}
 	return b.record(parentPodWriterJoined)
 }
