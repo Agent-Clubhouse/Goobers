@@ -37,3 +37,20 @@ func (s *Service) WithSourceWrite(ctx context.Context, p httpapi.Principal, gagg
 		return s.restartCredential(ctx, p, g, "backlog.edit", target)
 	})
 }
+
+// AuthorizeSourceWrite checks availability inside an already-held session lease.
+// It never reacquires policy locking or resolves a token. Each first provider
+// attempt must still use Credential with this same action and selected target.
+func (l *ExecutionLease) AuthorizeSourceWrite(action apiv1.InteractiveAction) error {
+	if l == nil || action != "backlog.edit" {
+		return ErrDenied
+	}
+	if err := l.ctx.Err(); err != nil {
+		return err
+	}
+	if err := authorize(l.principal, l.gaggle, action); err != nil {
+		return err
+	}
+	_, err := selectSource(l.gaggle, l.service.sources, Target{Kind: "backlog"})
+	return err
+}

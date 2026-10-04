@@ -43,27 +43,8 @@ func (s *WriterService) Patch(ctx context.Context, p httpapi.Principal, gaggle, 
 	request = copyWriteRequest(request)
 	var view workbench.BacklogEditCommand
 	err := s.withWrite(ctx, p, gaggle, binding, func(ctx context.Context, bound ReadBinding, load interactiveaccess.SourceCredentialLoader) error {
-		operation, err := workbenchprovider.BacklogOperationDigest(bound.Scope, bound.Source, request)
-		if err != nil {
-			return err
-		}
-		target, err := workbench.BacklogMutationTargetDigest(bound.Scope, bound.Source)
-		if err != nil {
-			return err
-		}
-		input := triggerqueue.WorkbenchCommandInput{Scope: writeScope(p, gaggle, binding), RequestID: key, TargetDigest: target, OperationDigest: operation, Request: request}
-		record, duplicate, err := s.Queue.AcceptWorkbenchCommand(ctx, input, s.now())
-		if err != nil {
-			return err
-		}
-		record, claimed, err := s.Queue.ClaimWorkbenchCommand(ctx, input.Scope, record.ID, record.RequestDigest, s.now())
-		if err != nil {
-			return err
-		}
-		if claimed {
-			record, err = s.execute(ctx, bound, load, record)
-		}
-		view = commandView(record, duplicate)
+		var err error
+		view, err = s.patch(ctx, writeScope(p, gaggle, binding), bound, load, key, request)
 		return err
 	})
 	return view, writeError(err)
@@ -74,24 +55,54 @@ func (s *WriterService) Patch(ctx context.Context, p httpapi.Principal, gaggle, 
 func (s *WriterService) Command(ctx context.Context, p httpapi.Principal, gaggle, binding, id string) (workbench.BacklogEditCommand, error) {
 	var view workbench.BacklogEditCommand
 	err := s.withWrite(ctx, p, gaggle, binding, func(ctx context.Context, bound ReadBinding, _ interactiveaccess.SourceCredentialLoader) error {
-		record, err := s.Queue.WorkbenchCommand(ctx, writeScope(p, gaggle, binding), id)
-		if err != nil && !errors.Is(err, triggerqueue.ErrWorkbenchCommandExpired) {
-			return err
-		}
-		target, targetErr := workbench.BacklogMutationTargetDigest(bound.Scope, bound.Source)
-		if targetErr != nil || target != record.Input.TargetDigest {
-			return interactiveaccess.ErrDenied
-		}
-		if err != nil {
-			return err
-		}
-		if !slices.Contains(workbenchprovider.BacklogCapabilities(bound.Source).Fields, record.Input.Request.Field) {
-			return interactiveaccess.ErrDenied
-		}
-		view = commandView(record, false)
-		return nil
+		var err error
+		view, err = s.command(ctx, writeScope(p, gaggle, binding), bound, id)
+		return err
 	})
 	return view, writeError(err)
+}
+
+// patch and command receive authority only from a held human callback or a
+// live session lease. They never acquire the policy lock themselves.
+func (s *WriterService) patch(ctx context.Context, scope triggerqueue.WorkbenchCommandScope, bound ReadBinding, load interactiveaccess.SourceCredentialLoader, key string, request workbench.BacklogPatchRequest) (workbench.BacklogEditCommand, error) {
+	operation, err := workbenchprovider.BacklogOperationDigest(bound.Scope, bound.Source, request)
+	if err != nil {
+		return workbench.BacklogEditCommand{}, err
+	}
+	target, err := workbench.BacklogMutationTargetDigest(bound.Scope, bound.Source)
+	if err != nil {
+		return workbench.BacklogEditCommand{}, err
+	}
+	input := triggerqueue.WorkbenchCommandInput{Scope: scope, RequestID: key, TargetDigest: target, OperationDigest: operation, Request: request}
+	record, duplicate, err := s.Queue.AcceptWorkbenchCommand(ctx, input, s.now())
+	if err != nil {
+		return workbench.BacklogEditCommand{}, err
+	}
+	record, claimed, err := s.Queue.ClaimWorkbenchCommand(ctx, input.Scope, record.ID, record.RequestDigest, s.now())
+	if err != nil {
+		return workbench.BacklogEditCommand{}, err
+	}
+	if claimed {
+		record, err = s.execute(ctx, bound, load, record)
+	}
+	return commandView(record, duplicate), err
+}
+func (s *WriterService) command(ctx context.Context, scope triggerqueue.WorkbenchCommandScope, bound ReadBinding, id string) (workbench.BacklogEditCommand, error) {
+	record, err := s.Queue.WorkbenchCommand(ctx, scope, id)
+	if err != nil && !errors.Is(err, triggerqueue.ErrWorkbenchCommandExpired) {
+		return workbench.BacklogEditCommand{}, err
+	}
+	target, targetErr := workbench.BacklogMutationTargetDigest(bound.Scope, bound.Source)
+	if targetErr != nil || target != record.Input.TargetDigest {
+		return workbench.BacklogEditCommand{}, interactiveaccess.ErrDenied
+	}
+	if err != nil {
+		return workbench.BacklogEditCommand{}, err
+	}
+	if !slices.Contains(workbenchprovider.BacklogCapabilities(bound.Source).Fields, record.Input.Request.Field) {
+		return workbench.BacklogEditCommand{}, interactiveaccess.ErrDenied
+	}
+	return commandView(record, false), nil
 }
 func (s *WriterService) withWrite(ctx context.Context, p httpapi.Principal, gaggle, binding string, use func(context.Context, ReadBinding, interactiveaccess.SourceCredentialLoader) error) error {
 	if s == nil || s.ReadService == nil || s.ReadService.Permissions == nil || s.ReadService.Backlog == nil || s.Queue == nil {
