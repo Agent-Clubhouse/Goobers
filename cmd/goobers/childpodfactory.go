@@ -26,6 +26,7 @@ func (s *daemonCredentialService) installChildPodFactories(client childpod.Tempo
 	if client == nil || s.config == nil || s.config.API.PodTokenKeyFile == "" || surrenders == nil {
 		return
 	}
+	s.installParentPodFactories(client, surrenders)
 	s.childExecutors = func(_ context.Context, start childExecutionStart, runtime preparedChildRuntime) (runner.ChildExecutionFactories, error) {
 		if err := admitChildPodPlan(start); err != nil {
 			return runner.ChildExecutionFactories{}, err

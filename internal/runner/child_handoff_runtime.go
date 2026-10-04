@@ -36,7 +36,7 @@ var errChildWaitDrain = errors.New("runner: child wait retained during shutdown"
 // invokeWithChildHandoff is the actual invocation owner. A durable request
 // cancels the runtime, then waits for its return and every writer's independent
 // acknowledgement. An MCP response never supplies that acknowledgement.
-func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invocation *gooberInvocation, env apiv1.InvocationEnvelope, workspace *stageWorkspace) (apiv1.ResultEnvelope, error) {
+func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invocation *gooberInvocation, env apiv1.InvocationEnvelope, workspace *stageWorkspace) (result apiv1.ResultEnvelope, retErr error) {
 	if tf.in.Child != nil {
 		return invokeChildAgent(ctx, tf, invocation, env)
 	}
@@ -46,6 +46,11 @@ func (r *Runner) invokeWithChildHandoff(ctx context.Context, tf taskFrame, invoc
 	if len(tf.in.Machine.Def.Spec.Parallels) != 0 || tf.in.pinnedWorkspace != nil || workspace.worktree == nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("runner: child handoff currently requires a serial parent with a managed repository workspace")
 	}
+	releaseHold, err := r.holdContainedParentWorkspace(ctx, tf, workspace, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	defer func() { retErr = errors.Join(retErr, releaseHold()) }()
 	owned, cancel := context.WithCancel(ctx)
 	defer cancel()
 	owned, proof := invoke.WithWorkspaceQuiescence(owned)

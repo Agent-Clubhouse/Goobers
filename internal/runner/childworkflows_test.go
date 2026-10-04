@@ -100,3 +100,63 @@ func snapshotChildRunFiles(t *testing.T, root string) map[string]string {
 	}
 	return files
 }
+
+func TestChildWorkflowHostAdmissionRequiresCustodyAndCapacity(t *testing.T) {
+	machine := childEnabledMachine(t)
+	host := &dispositionWaitFixture{}
+	calls := 0
+	r := &Runner{cfg: Config{ChildWorkflowAdmission: func(*workflow.Machine) error { calls++; return nil }, ChildWorkflowRecoveryAdmission: func(*journal.Reader) error { return nil }}}
+	for _, missing := range []string{"both", "capacity", "custody"} {
+		switch missing {
+		case "capacity":
+			r.cfg.ChildHandoff = host
+			r.cfg.ChildParentCapacity = nil
+		case "custody":
+			r.cfg.ChildHandoff = nil
+			r.cfg.ChildParentCapacity = host
+		}
+		if err := r.admitChildWorkflows(machine); !errors.Is(err, workflow.ErrChildWorkflowExecutionUnsupported) {
+			t.Fatal(missing, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatal("host admission ran before custody services were available")
+	}
+	r.cfg.ChildHandoff = host
+	r.cfg.ChildParentCapacity = host
+	if err := r.admitChildWorkflows(machine); err != nil || calls != 1 {
+		t.Fatal(err, calls)
+	}
+	denied := errors.New("unsupported parent topology")
+	r.cfg.ChildWorkflowAdmission = func(*workflow.Machine) error { return denied }
+	if err := r.admitChildWorkflows(machine); !errors.Is(err, denied) {
+		t.Fatal(err)
+	}
+}
+
+func TestChildRecoveryCustodyRefusesBeforeJournalMutation(t *testing.T) {
+	machine := childEnabledMachine(t)
+	runs := t.TempDir()
+	newPinnedDefinitionRun(t, runs, "pinned", machine)
+	dir := filepath.Join(runs, "pinned")
+	before := snapshotChildRunFiles(t, dir)
+	host := &dispositionWaitFixture{}
+	refusal := errors.New("physical parent custody unresolved")
+	r := &Runner{cfg: Config{RunsDir: runs, ChildHandoff: host, ChildParentCapacity: host, ChildWorkflowAdmission: func(*workflow.Machine) error { return nil }, ChildWorkflowRecoveryAdmission: func(*journal.Reader) error { return refusal }}}
+	for _, call := range []func() (Result, error){
+		func() (Result, error) { return r.Resume(t.Context(), ResumeInput{RunID: "pinned", Machine: machine}) },
+		func() (Result, error) {
+			return r.ResumeFromTerminal(t.Context(), ResumeFromTerminalInput{RunID: "pinned", Machine: machine, Target: "implement", Actor: "human", ExpectedTerminalSeq: 1})
+		},
+		func() (Result, error) {
+			return r.RerunStage(t.Context(), RerunStageInput{RunID: "pinned", Machine: machine, Stage: "implement", Actor: "human", InstructionAddendum: "new guidance", ExpectedTerminalSeq: 1})
+		},
+	} {
+		if _, err := call(); !errors.Is(err, refusal) {
+			t.Fatal(err)
+		}
+		if after := snapshotChildRunFiles(t, dir); !reflect.DeepEqual(before, after) {
+			t.Fatal("unresolved custody changed durable journal")
+		}
+	}
+}

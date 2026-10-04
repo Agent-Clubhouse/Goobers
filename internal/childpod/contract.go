@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"slices"
 	"time"
 
@@ -134,7 +133,7 @@ func DecodeOutput(data []byte, digest, contractDigest string, c Contract) (Outpu
 		if err := out.Workspace.Validate(); err != nil {
 			return out, err
 		}
-		if out.Workspace.Snapshot.Record.RepositoryKey != c.Workspace.Snapshot.Record.RepositoryKey || !reflect.DeepEqual(out.Workspace.Snapshot.Policy, c.Workspace.Snapshot.Policy) {
+		if out.Workspace.Snapshot.Record.RepositoryKey != c.Workspace.Snapshot.Record.RepositoryKey || !slices.Equal(out.Workspace.Snapshot.Policy.ExcludedPaths, c.Workspace.Snapshot.Policy.ExcludedPaths) {
 			return out, fmt.Errorf("child output workspace policy mismatch")
 		}
 	}

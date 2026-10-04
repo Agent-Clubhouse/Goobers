@@ -23,6 +23,9 @@ import (
 type engineSelection struct {
 	// UseEngine is the decision.
 	UseEngine bool
+	// ContainedParent keeps the durable runner walk while every agentic stage
+	// dispatches through the independently verified worker containment backend.
+	ContainedParent bool
 	// FallbackReason names, in operator language, why the lane stayed on the
 	// runner. Empty when UseEngine is true.
 	FallbackReason string
@@ -47,7 +50,7 @@ type engineSelection struct {
 // A missing selection or any local fallback retains the original host check.
 // The tracked starter separately keeps the complete host-preflight requirement.
 func (selection engineSelection) schedulerSelfCapabilities(required []string) []string {
-	if selection.UseEngine {
+	if selection.UseEngine || selection.ContainedParent {
 		return nil
 	}
 	return required
@@ -223,6 +226,15 @@ func engineSelections(
 	}
 	for identity, machine := range machines {
 		if machine == nil {
+			continue
+		}
+		if hasChildParent(machine.Def.Spec) {
+			_, err := containedParentPlacements(cfg, set, machine)
+			if err != nil {
+				out[identity] = engineSelection{PlacementDeclared: true, ReasonClass: "contained_parent_unavailable", FallbackReason: err.Error(), Refusal: err}
+			} else {
+				out[identity] = engineSelection{ContainedParent: true, PlacementDeclared: true, ReasonClass: "contained_parent", FallbackReason: "runner coordinates contained worker stages and durable child waits"}
+			}
 			continue
 		}
 		placements, err := bootstrap.PinStagePlacements(cfg, set, identity.Gaggle, machine.Def)

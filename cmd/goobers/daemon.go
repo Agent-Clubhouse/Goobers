@@ -616,6 +616,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		reportStartupProgress(input.StartupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
 		rn, manager, hooks, err := buildRuntimeRunner(runtimeRunnerInput{
+			Definitions:                  input.Definitions,
 			Layout:                       scoped,
 			Config:                       input.Config,
 			Goobers:                      resolvedGoobers,
@@ -772,7 +773,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		// dispatch against the runner's advertised set (schedule-time), and the
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
-		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
+		requiredCaps := selections[identity].starterCapabilities(instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf))
 		// Shared with `goobers engine-start` so the two starters cannot pin
 		// different budgets for the same workflow (#3820).
 		controls, err := resolveWorkflowRunControls(input.Config, repoRefs[identity], gagglesByName[wf.Spec.Gaggle], *wf)
@@ -847,7 +848,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			// Engine-selected entries enforce capabilities per pinned stage.
 			RequiredCapabilities: selections[identity].schedulerSelfCapabilities(requiredCaps),
 			DisabledReason:       resolveDisabledReason(gagglesByName[wf.Spec.Gaggle], wf),
-			HarnessRefusal:       harnessRefusals[identity], // Broken harnesses refuse only their dependent workflows (#5163).
+			HarnessRefusal:       selections[identity].localHarnessRefusal(harnessRefusals[identity]), // Broken harnesses refuse only their dependent workflows (#5163).
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
 			// above found this workflow unplaceable on the declared inventory
 			// AND the entry is runner-driven — an engine-selected entry's
@@ -858,14 +859,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 	}
 
 	firstRunner, firstWorktrees := firstGaggleRuntime(input.Definitions, runners, input.WorktreeManagers)
-	buildGeneration := func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
-		pinnedInput := input
-		pinnedInput.Layout = pinned
-		pinnedInput.Definitions = pinnedSet
-		pinnedInput.Validation = pinnedReport
-		pinnedInput.StartupProgress = nil
-		return buildSchedulerDefinitions(pinnedInput)
-	}
+	buildGeneration := schedulerGenerationBuilder(input)
 	resolveGeneration := generationResolverFor(l, firstGenerationRetainer(input.Generations), buildGeneration)
 	return &schedulerDefinitions{
 		GenerationResolver: resolveGeneration,
@@ -885,6 +879,17 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		Worktrees:          firstWorktrees,
 		WorktreesByGaggle:  input.WorktreeManagers,
 	}, nil
+}
+
+func schedulerGenerationBuilder(input schedulerDefinitionsInput) func(instance.Layout, *instance.ConfigSet, *validate.Report) (*schedulerDefinitions, error) {
+	return func(pinned instance.Layout, pinnedSet *instance.ConfigSet, pinnedReport *validate.Report) (*schedulerDefinitions, error) {
+		pinnedInput := input
+		pinnedInput.Layout = pinned
+		pinnedInput.Definitions = pinnedSet
+		pinnedInput.Validation = pinnedReport
+		pinnedInput.StartupProgress = nil
+		return buildSchedulerDefinitions(pinnedInput)
+	}
 }
 
 func preflightSchedulerHarnessesWithProgress(
@@ -1077,6 +1082,7 @@ func buildRetainedLegacyRunner(input retainedLegacyRunnerInput) (*runner.Runner,
 		return nil, nil, err
 	}
 	rn, manager, _, err := buildRuntimeRunner(runtimeRunnerInput{
+		Definitions:          input.Definitions,
 		Layout:               input.Layout,
 		Config:               input.Config,
 		Goobers:              input.Goobers,
@@ -1191,6 +1197,7 @@ func buildRuntimeRunner(input runtimeRunnerInput) (*runner.Runner, *worktree.Man
 	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, input.TerminalNotifier)
 	childHandoff := &daemonChildHandoff{layout: input.Layout, worktrees: manager, repoCloneURL: runnerCfg.RepoCloneURL, project: input.GaggleProject}
 	runnerCfg.ChildHandoff, runnerCfg.ChildParentCapacity = childHandoff, childHandoff
+	runnerCfg = withContainedParentExecutor(runnerCfg, input.Layout.Root, input.Config, input.Definitions)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1887,6 +1894,7 @@ type retainedLegacyRunnerInput struct {
 
 // runtimeRunnerInput names the dependencies for this construction boundary.
 type runtimeRunnerInput struct {
+	Definitions                  *instance.ConfigSet
 	Layout                       instance.Layout
 	Config                       *instance.Config
 	Goobers                      map[string]apiv1.GooberSpec

@@ -144,12 +144,17 @@ func makeContract(ctx context.Context, r Request) (Contract, *recovery.ChildSnap
 	if r.Workspace != nil {
 		// This ancestry check binds the managed checkout to its accepted fork,
 		// independently of whatever commits a prior child stage created.
-		if _, err := recovery.CaptureChildResult(ctx, r.Workspace.Path, r.Identity.RunID, r.Workspace.Fork, r.StartedAt, r.StartedAt.AddDate(0, 0, 30)); err != nil {
-			return c, nil, err
+		if r.ParentOrigin == nil {
+			if _, err := recovery.CaptureChildResult(ctx, r.Workspace.Path, r.Identity.RunID, r.Workspace.Fork, r.StartedAt, r.StartedAt.AddDate(0, 0, 30)); err != nil {
+				return c, nil, err
+			}
 		}
 		carrier, snapshot, err := CaptureCarrier(ctx, r.Workspace.Path, r.Workspace.Fork.Record.RepositoryKey, r.Identity.RunID, r.StartedAt, r.Workspace.Fork.Policy)
 		if err != nil {
 			return c, nil, err
+		}
+		if r.ParentOrigin != nil && (snapshot.Record.SnapshotSHA != r.Workspace.Fork.Record.SnapshotSHA || snapshot.IndexDigest != r.Workspace.Fork.IndexDigest) {
+			return c, nil, recovery.ErrWorkspaceChanged
 		}
 		c.Workspace, expected = &carrier, &snapshot
 	}

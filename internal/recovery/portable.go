@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"time"
 )
@@ -143,7 +143,7 @@ func PreparePortableReturn(ctx context.Context, repository string, expected Chil
 	if err := returned.Validate(); err != nil {
 		return ChildApplyPlan{}, err
 	}
-	if returned.Record.RepositoryKey != expected.Record.RepositoryKey || !reflect.DeepEqual(returned.Policy, expected.Policy) {
+	if returned.Record.RepositoryKey != expected.Record.RepositoryKey || !slices.Equal(returned.Policy.ExcludedPaths, expected.Policy.ExcludedPaths) {
 		return ChildApplyPlan{}, fmt.Errorf("portable workspace changed source or exclusion policy")
 	}
 	if err := verifyPortableObjects(ctx, repository, returned); err != nil {

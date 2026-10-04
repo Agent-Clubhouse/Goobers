@@ -51,7 +51,7 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
 		return Result{}, err
 	}
 	if in.Stage == "" {
@@ -75,6 +75,9 @@ func (r *Runner) RerunStage(ctx context.Context, in RerunStageInput) (Result, er
 	}
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := r.verifyChildWorkflowCustody(dir); err != nil {
+		return Result{}, err
+	}
 	registrar, scrubber := journal.DefaultScrubber()
 	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {

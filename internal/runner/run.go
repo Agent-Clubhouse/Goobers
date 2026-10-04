@@ -443,10 +443,17 @@ type Config struct {
 	StageRestartContext func(context.Context, journal.RunIdentity, SecretRegistrar) (context.Context, func(), error)
 	stageRestartOnly    string
 
-	childExecution      *journal.RunIdentity
-	ChildHandoff        ChildHandoff
-	ChildParentCapacity ChildParentCapacity
-	SelfExecutionDenied bool
+	childExecution *journal.RunIdentity
+	// ChildWorkflowAdmission is a host-only backend admission check. Nil keeps
+	// child-enabled workflows unavailable. It must validate every stage before
+	// any journal or workspace effects, including on resume and human restart.
+	ChildWorkflowAdmission func(*workflow.Machine) error
+	// ChildWorkflowRecoveryAdmission verifies host-owned physical custody before
+	// retry, resume or human replacement can mutate the parent journal.
+	ChildWorkflowRecoveryAdmission func(*journal.Reader) error
+	ChildHandoff                   ChildHandoff
+	ChildParentCapacity            ChildParentCapacity
+	SelfExecutionDenied            bool
 	// SelfExecutionObserved receives true for a refusal, false for actual self work.
 	SelfExecutionObserved func(refused bool)
 	// ConfigGeneration is the immutable config-as-code archive used to construct this runner.
@@ -1043,7 +1050,7 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
 		return Result{}, err
 	}
 	effectiveControls, err := r.resolveRunControls(&in.RunControls)
@@ -1499,7 +1506,7 @@ func (r *Runner) newWalkGateEvaluator(ws *walkState) *gate.Evaluator {
 // gateDiffDigests likewise seeded so non-convergence detection continues
 // (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
-	if err := workflow.RefuseChildWorkflowExecution(ws.in.Machine.Def.Spec); err != nil {
+	if err := r.admitChildWorkflows(ws.in.Machine); err != nil {
 		return Result{}, err
 	}
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
@@ -3345,7 +3352,7 @@ type taskFrame struct {
 }
 
 func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	if r.cfg.SelfExecutionDenied {
+	if r.localTaskDenied(tf) {
 		return r.refuseSelfTask(tf)
 	}
 	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
@@ -3422,6 +3429,9 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 	}
 	nextRetryClass := journal.AttemptPolicy
 	for attempt := startAttempt; attempt <= maxAttempts; attempt++ {
+		if err := r.taskCustodyReady(tf); err != nil {
+			return apiv1.ResultEnvelope{}, nil, err
+		}
 		if _, ok := stalledRequestFromContext(ctx); ok {
 			return apiv1.ResultEnvelope{}, nil, errStalledRun
 		}
@@ -3443,26 +3453,10 @@ func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAtt
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
-		// Placement provenance (goobernetes-architecture.md §7): journal
-		// where this attempt executes, under runner.* — authoritative but
-		// never conformance surface. Modes 1–2 record the self runner; the
-		// mode-3 dispatcher fills node/pod/queue-wait through this same
-		// event shape (#3513), never a second mechanism.
-		//
-		// Emission is GATED on the deployment having declared placement at all
-		// (a runners: inventory, or any GOOBERS_RUNNER_* identity env). §11
-		// item 1 is zero-declaration invariance: an untouched single-host
-		// install must keep producing the same journals it produced before
-		// this feature existed, and an unconditional per-attempt event would
-		// change every one of them. A journal that cannot be written is fatal
-		// (§2.6), same as stage.started above.
-		r.observeSelfExecution(false)
-		if r.recordsPlacement() {
-			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
-				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, err
-			}
+		if err := r.recordTaskPlacement(tf, int(attempt), class); err != nil {
+			err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
+			span.Fail(err)
+			return apiv1.ResultEnvelope{}, nil, err
 		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)

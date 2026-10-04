@@ -77,7 +77,7 @@ func childSnapshotPolicy(workspace, instanceRoot string, cfg *instance.Config) (
 			seen[strings.ToLower(relative)] = relative
 		}
 	}
-	policy := recovery.SnapshotPolicy{ExcludedPaths: make([]string, 0, len(seen))}
+	policy := recovery.SnapshotPolicy{}
 	for _, name := range seen {
 		policy.ExcludedPaths = append(policy.ExcludedPaths, name)
 	}

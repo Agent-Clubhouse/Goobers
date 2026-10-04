@@ -145,7 +145,7 @@ func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	}
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
-	if err := refuseChildWorkflowResume(in.Machine, dir); err != nil {
+	if err := r.refuseChildWorkflowResume(in.Machine, dir); err != nil {
 		return Result{}, err
 	}
 
@@ -178,7 +178,7 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	if in.Machine == nil {
 		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
-	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
 		return Result{}, err
 	}
 	in.Target = strings.TrimSpace(in.Target)
@@ -201,6 +201,9 @@ func (r *Runner) ResumeFromTerminal(ctx context.Context, in ResumeFromTerminalIn
 	in.Rationale = strings.TrimSpace(in.Rationale)
 
 	dir := filepath.Join(r.cfg.RunsDir, in.RunID)
+	if err := r.verifyChildWorkflowCustody(dir); err != nil {
+		return Result{}, err
+	}
 	registrar, scrubber := journal.DefaultScrubber()
 	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), r.journalObserver(ctx))
 	if err != nil {
@@ -363,7 +366,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if res, refused, verr := r.verifyResumePin(jr, &in, rd, id); refused || verr != nil {
 		return res, verr
 	}
-	if err := workflow.RefuseChildWorkflowExecution(in.Machine.Def.Spec); err != nil {
+	if err := r.admitChildWorkflows(in.Machine); err != nil {
 		return Result{}, err
 	}
 	if err := resetRetryBackoffOnResume(jr, events); err != nil {
@@ -2258,9 +2261,12 @@ func resumeItem(rd *journal.Reader, id journal.RunIdentity) (*apiv1.BacklogItem,
 // refuseChildWorkflowResume checks the supplied or pinned definition without
 // repairing the journal or claiming execution. Existing resume code retains
 // ownership of malformed/missing-journal diagnostics and terminalization.
-func refuseChildWorkflowResume(machine *workflow.Machine, dir string) error {
+func (r *Runner) refuseChildWorkflowResume(machine *workflow.Machine, dir string) error {
 	if machine != nil {
-		return workflow.RefuseChildWorkflowExecution(machine.Def.Spec)
+		if err := r.admitChildWorkflows(machine); err != nil {
+			return err
+		}
+		return r.verifyChildWorkflowCustody(dir)
 	}
 	rd, err := journal.OpenRead(dir)
 	if err != nil {
@@ -2274,5 +2280,8 @@ func refuseChildWorkflowResume(machine *workflow.Machine, dir string) error {
 	if err != nil {
 		return nil
 	}
-	return workflow.RefuseChildWorkflowExecution(machine.Def.Spec)
+	if err := r.admitChildWorkflows(machine); err != nil {
+		return err
+	}
+	return r.verifyChildWorkflowCustody(dir)
 }
