@@ -1140,7 +1140,7 @@ func (u *upSession) configureAPI() int {
 		httpapi.WithChildWorkflowService(u.credentialPlane.children.HTTPService()),
 		httpapi.WithBlobService(u.credentialPlane.childBlobPlane(u.blobStore)),
 		httpapi.WithRecoveryService(recoveryDeliveryService{layout: u.l, setup: u.setup}),
-		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithSurrenderService(containedSurrenderPlane{SurrenderDir: surrenderStore, service: u.credentialPlane}),
 		httpapi.WithStateService(statePlane),
 		// The defect-nomination aggregate read (Goobers#4001). Wired
 		// unconditionally, like the containment below: the four aggregates
@@ -1163,7 +1163,7 @@ func (u *upSession) configureAPI() int {
 		// The journal plane (§8): remote stage pods emit their run's journal
 		// events here; the daemon's own in-process emitters use the writer
 		// directly and never pass through HTTP.
-		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithJournalService(u.liveJournals))
+		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithJournalService(containedJournalPlane{JournalService: u.liveJournals, service: u.credentialPlane}))
 	}
 	if instance.IsLoopbackListenAddress(apiListenAddress(u.setup.Config)) {
 		u.apiHandlerOpts = append(u.apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(u.l)))

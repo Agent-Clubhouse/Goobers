@@ -243,7 +243,7 @@ func openAPIRequestBody(route Route) map[string]any {
 func openAPIResponses(route Route) map[string]any {
 	switch route.ID {
 	case RouteChildWorkflowAccessAcquire:
-		return map[string]any{"200": jsonResponse("Secret delivery to an authenticated parent attempt; never cache or persist", closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "writeOnly": true}})), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
+		return map[string]any{"200": jsonResponse("Secret delivery to an authenticated parent attempt; never cache or persist", closedChildObject([]string{"endpoint", "bearerToken"}, map[string]any{"endpoint": stringSchema(), "bearerToken": map[string]any{"type": "string", "format": "password"}})), "default": jsonResponse("Structured API error", schemaRef("ErrorEnvelope"))}
 
 	case RouteOpenAPI:
 		return map[string]any{

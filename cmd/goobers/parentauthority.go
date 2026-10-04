@@ -66,7 +66,7 @@ func (a parentAttemptCustody) active(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if id.RunID != a.contract.Identity.RunID || event.Stage != a.contract.Stage || event.Attempt != a.contract.Attempt {
+	if id.RunID != a.contract.Identity.RunID || event.Stage != a.contract.Stage || event.Attempt != a.contract.Attempt || event.Seq != uint64(a.contract.PodAttempt) || !event.Time.Equal(a.contract.StartedAt) {
 		return childworkflow.ErrAuthorityChanged
 	}
 	return nil
