@@ -136,6 +136,16 @@ func pinDispositionTree(ctx context.Context, repository string, parent ChildSnap
 // It returns no applied outcome; callers cannot mistake preparation for an
 // external effect. A stale parent or a substituted prepared tree is refused.
 func VerifyChildDisposition(ctx context.Context, repository string, prepared PreparedChildDisposition) error {
+	if err := verifyPreparedDisposition(ctx, repository, prepared); err != nil {
+		return err
+	}
+	return CheckChildSnapshotCurrent(ctx, repository, prepared.ExpectedParent)
+}
+
+func verifyPreparedDisposition(ctx context.Context, repository string, prepared PreparedChildDisposition) error {
+	if err := prepared.ExpectedParent.validate(); err != nil {
+		return err
+	}
 	if prepared.Action != ChildMerge && prepared.Action != ChildReplace && prepared.Action != ChildDiscard {
 		return fmt.Errorf("unknown child workspace disposition")
 	}
@@ -155,5 +165,5 @@ func VerifyChildDisposition(ctx context.Context, repository string, prepared Pre
 	if err := verifySnapshotPolicy(ctx, repository, prepared.Prepared.SnapshotSHA, prepared.ExpectedParent.Policy); err != nil {
 		return err
 	}
-	return CheckChildSnapshotCurrent(ctx, repository, prepared.ExpectedParent)
+	return nil
 }

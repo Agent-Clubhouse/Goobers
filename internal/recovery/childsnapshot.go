@@ -78,16 +78,21 @@ func workspaceSnapshotIdentity(ctx context.Context, repository string) (string, 
 	if err != nil {
 		return "", "", err
 	}
+	index, err := workspaceIndexDigest(ctx, repository, nil)
+	return head, index, err
+}
+
+func workspaceIndexDigest(ctx context.Context, repository string, environment []string) (string, error) {
 	hash := sha256.New()
 	output := &archiveBudgetWriter{destination: hash, remaining: maxSnapshotIndexBytes}
-	if err := recoveryGit(ctx, repository, output, "ls-files", "--stage", "-z"); err != nil {
-		return "", "", err
+	if err := recoveryGitWithEnv(ctx, repository, output, environment, "ls-files", "--stage", "-z"); err != nil {
+		return "", err
 	}
 	// Include sparse/assume-unchanged flags as well as logical staged entries.
-	if err := recoveryGit(ctx, repository, output, "ls-files", "-v", "-z"); err != nil {
-		return "", "", err
+	if err := recoveryGitWithEnv(ctx, repository, output, environment, "ls-files", "-v", "-z"); err != nil {
+		return "", err
 	}
-	return head, fmt.Sprintf("sha256:%x", hash.Sum(nil)), nil
+	return fmt.Sprintf("sha256:%x", hash.Sum(nil)), nil
 }
 
 func snapshotObject(ctx context.Context, repository, ref string) (string, error) {

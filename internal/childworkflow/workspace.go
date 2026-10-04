@@ -20,6 +20,27 @@ import (
 
 const childWorkspaceCleanupTimeout = 10 * time.Second
 
+// RetainedFork returns the accepted source policy and original fork identity.
+// Trusted result/adoption callers use this instead of mutable current config.
+func (c *WorkspaceCoordinator) RetainedFork(ctx context.Context, child triggerqueue.ChildRecord, repoURL string) (recovery.ChildSnapshot, error) {
+	if c == nil || c.Queue == nil {
+		return recovery.ChildSnapshot{}, ErrAuthorityUnavailable
+	}
+	current, err := c.Queue.GetChild(ctx, child.Identity)
+	if err != nil {
+		return recovery.ChildSnapshot{}, err
+	}
+	if current.AcceptanceID != child.AcceptanceID || current.ProposalDigest != child.ProposalDigest || current.RunID != child.RunID {
+		return recovery.ChildSnapshot{}, ErrAuthorityUnavailable
+	}
+	stored, err := c.Queue.ChildSnapshot(ctx, child.Identity)
+	if err != nil {
+		return recovery.ChildSnapshot{}, err
+	}
+	receipt, err := decodeChildSnapshot(current, repoURL, stored)
+	return receipt.Snapshot, err
+}
+
 // WorkspaceCoordinator owns the durable captured state for accepted children.
 // The invocation owner, not a tool request, supplies acknowledged exclusive
 // parent custody to Capture. Prepare consumes retained state without reading
