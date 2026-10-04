@@ -8,6 +8,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// Runner metadata keys bind child-workflow authority to durable stage starts.
 const (
 	ChildWorkflowOccurrenceKey = "childWorkflowOccurrence"
 	ChildWorkflowAttemptKey    = "childWorkflowAttemptId"
