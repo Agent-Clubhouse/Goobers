@@ -675,7 +675,11 @@ export function UsageAnalytics({
               cost ? "Retry waste cost" : "Retry waste tokens",
               usage.retryWasteAttempts === 0
                 ? "No retry waste"
-                : formatUsage(cost ? usage.retryWasteCostAIC : usage.retryWasteTokens),
+                : formatRetryWasteMeasurement(
+                  formatUsage(cost ? usage.retryWasteCostAIC : usage.retryWasteTokens),
+                  cost ? usage.retryWasteCostSamples : usage.retryWasteTokenSamples,
+                  usage.retryWasteAttempts,
+                ),
               cost ? undefined : wasteHref,
               `View retry-waste runs behind ${label}`,
             )}
@@ -684,6 +688,19 @@ export function UsageAnalytics({
       </div>
     </div>
   );
+}
+
+// Retry waste is summed over the superseded attempts that carry usage; when
+// only some do, the measured portion is shown with its attempt coverage
+// rather than hiding the total. Daemons that predate partial coverage omit the
+// sample count and only report a total when every attempt was measured.
+function formatRetryWasteMeasurement(value: string, measured: number | undefined, total: number): string {
+  if (measured === undefined || measured >= total) return value;
+  return `${value}, ${formatAttemptCoverage(measured, total)}`;
+}
+
+function formatAttemptCoverage(measured: number, total: number): string {
+  return `${measured.toLocaleString()}/${total.toLocaleString()} attempts measured`;
 }
 
 export function CostTrend({

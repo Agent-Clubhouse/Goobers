@@ -551,8 +551,11 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		t.Fatalf("gaggle cost rollup = %#v", gaggleUsage)
 	}
 	if workflowUsage.RetryWasteAttempts != 3 ||
-		workflowUsage.HasRetryWasteTokens || workflowUsage.HasRetryWasteCost {
-		t.Fatalf("partial workflow retry usage became a total: %#v", workflowUsage)
+		workflowUsage.RetryWasteTokenSamples != 2 || !workflowUsage.HasRetryWasteTokens ||
+		workflowUsage.RetryWasteTokens != 45 ||
+		workflowUsage.RetryWasteCostSamples != 2 || !workflowUsage.HasRetryWasteCost ||
+		workflowUsage.RetryWasteCostUSD != 2.5 {
+		t.Fatalf("partial workflow retry usage = %#v", workflowUsage)
 	}
 
 	agent := byStage["agent"]
@@ -568,8 +571,11 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	if agent.RetryWasteAttempts != 2 || !agent.HasRetryWasteDuration || agent.RetryWasteDurationMs != 60 {
 		t.Fatalf("agent retry waste = %#v", agent)
 	}
-	if agent.HasRetryWasteTokens || agent.HasRetryWasteCost {
-		t.Fatalf("partial retry usage became a total: %#v", agent)
+	if agent.RetryWasteTokenSamples != 1 || !agent.HasRetryWasteTokens ||
+		agent.RetryWasteTokens != 40 ||
+		agent.RetryWasteCostSamples != 1 || !agent.HasRetryWasteCost ||
+		agent.RetryWasteCostUSD != 2 {
+		t.Fatalf("partial retry usage = %#v", agent)
 	}
 
 	retried := byStage["fully-retried"]

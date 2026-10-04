@@ -284,15 +284,17 @@ func populateStageDistributions(stages []StageStats, accums map[stageDistributio
 			stages[i].P95CostUSD = nearestRankFloat64(accum.costs, 0.95)
 		}
 		stages[i].RetryWasteAttempts = accum.wasteAttempts
+		stages[i].RetryWasteTokenSamples = accum.wasteTokensObserved
+		stages[i].RetryWasteCostSamples = accum.wasteCostsObserved
 		if accum.wasteAttempts > 0 && accum.wasteDurationsObserved == accum.wasteAttempts {
 			stages[i].HasRetryWasteDuration = true
 			stages[i].RetryWasteDurationMs = accum.wasteDurationMs
 		}
-		if accum.wasteAttempts > 0 && accum.wasteTokensObserved == accum.wasteAttempts {
+		if accum.wasteTokensObserved > 0 {
 			stages[i].HasRetryWasteTokens = true
 			stages[i].RetryWasteTokens = accum.wasteTokens
 		}
-		if accum.wasteAttempts > 0 && accum.wasteCostsObserved == accum.wasteAttempts {
+		if accum.wasteCostsObserved > 0 {
 			stages[i].HasRetryWasteCost = true
 			stages[i].RetryWasteCostUSD = accum.wasteCostUSD
 		}
@@ -330,21 +332,23 @@ func usageStats(stageAccums map[stageDistributionKey]*stageDistributionAccum, in
 	for _, key := range keys {
 		accum := accums[key]
 		stat := UsageStats{
-			Scope:                 key.scope,
-			Gaggle:                key.gaggle,
-			Workflow:              key.workflow,
-			Stage:                 key.stage,
-			Model:                 key.model,
-			HarnessVersion:        key.harnessVersion,
-			TotalAttempts:         accum.attempts,
-			TokenSamples:          len(accum.tokens),
-			PremiumRequestSamples: len(accum.premiumRequests),
-			CostSamples:           len(accum.costs),
-			RetryWasteAttempts:    accum.wasteAttempts,
-			HasRetryWasteTokens:   accum.wasteAttempts > 0 && accum.wasteTokensObserved == accum.wasteAttempts,
-			HasRetryWasteCost:     accum.wasteAttempts > 0 && accum.wasteCostsObserved == accum.wasteAttempts,
-			RetryWasteTokens:      accum.wasteTokens,
-			RetryWasteCostUSD:     accum.wasteCostUSD,
+			Scope:                  key.scope,
+			Gaggle:                 key.gaggle,
+			Workflow:               key.workflow,
+			Stage:                  key.stage,
+			Model:                  key.model,
+			HarnessVersion:         key.harnessVersion,
+			TotalAttempts:          accum.attempts,
+			TokenSamples:           len(accum.tokens),
+			PremiumRequestSamples:  len(accum.premiumRequests),
+			CostSamples:            len(accum.costs),
+			RetryWasteAttempts:     accum.wasteAttempts,
+			RetryWasteTokenSamples: accum.wasteTokensObserved,
+			RetryWasteCostSamples:  accum.wasteCostsObserved,
+			HasRetryWasteTokens:    accum.wasteTokensObserved > 0,
+			HasRetryWasteCost:      accum.wasteCostsObserved > 0,
+			RetryWasteTokens:       accum.wasteTokens,
+			RetryWasteCostUSD:      accum.wasteCostUSD,
 		}
 		if includeBranch && key.branchKnown {
 			branch := key.branch
