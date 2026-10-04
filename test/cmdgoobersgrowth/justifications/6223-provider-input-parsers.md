@@ -1,14 +1,14 @@
 # #6223: shared bounded provider-input parsing helpers
 
 Growth: +1 non-test file in `cmd/goobers` (`providerinputparse.go`) and about
-+99 non-test lines.
++94 non-test lines.
 
 ## Why the growth belongs in the command package
 
 `providerinputparse.go` holds four small parse-and-validate helpers
 (`parseIntInput`, `parseFloatInput`, `parseDurationInput`, `parseBoolInput`)
-that eight provider-stage commands (`backlog-dedupe`, `backlog-health`,
-`backlog-query`'s policy, re-sweep and staleness readers, `cancel-pending-ci`,
+that seven provider-stage command readers (`backlog-dedupe`, `backlog-health`,
+`backlog-query`'s policy, re-sweep and staleness readers,
 `docs-churn`, `file-issues`) now use instead of hand-rolled
 `strconv` + range-check + error blocks. Each caller keeps its own default,
 range predicate, exact error text and exit code, which is why the call sites
