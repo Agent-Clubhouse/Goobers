@@ -591,10 +591,16 @@ The shared provider GET cache now accepts an explicit gaggle, source/credential
 binding, and configuration or interactive-policy generation. It hashes the
 complete scope, endpoint, credential and representation headers. Missing scope
 bypasses caching; equal credentials alone cannot share bodies across gaggles.
-Stage GitHub reads and snapshot invalidation use their gaggle and pinned
-configuration generation. Legacy stage launches without a generation have an
-explicit automation-only partition and still require a gaggle. Callers must
-authorize each read before invoking the cache; cache custody grants no access.
+Ordinary stage GitHub/ADO reads and snapshot invalidation use an explicit
+executor-owned automation binding and the trusted invocation's pinned generation.
+Gaggle/config environment alone never enables caching. Unknown, unpinned, human
+continuation, and isolated execution paths without an explicit binding bypass
+sharing. The shell launch removes authored/ambient cache-binding overrides;
+ordinary host construction supplies the supported binding. Human CI providers
+remain uncached, and model-only shared sessions do not enter this provider plane.
+An interactive cache requires a separately verified binding and current policy
+generation before it can be enabled. Callers still authorize every read before
+invoking the cache; cache custody grants no access.
 
 The reusable client supports GitHub and ADO GETs, preserves configured transports,
 coalesces list reads within a bounded evaluation snapshot, and retains GitHub
@@ -606,6 +612,13 @@ bounded SQLite retention remain. Snapshot invalidation affects only its scope.
 Concurrent fake-transport tests verify one ADO list request for eight consumers,
 credential/gaggle/generation/representation separation, pagination, large-body
 streaming, and production stage scope/invalidation wiring. These tests require no
-provider service or socket listener. Daemon counter/open-PR callers still need the
-scoped adapter; ADO WIQL read-plan coordination and batch hydration remain follow-up
-work. This slice does not claim every provider read is centralized.
+provider service or socket listener. Daemon backlog/refill/remediation counters
+now receive the generation captured by scheduler construction. Open-PR refreshers
+include gaggle, binding, and generation in both provider-cache and in-memory
+refresher identities, even when two gaggles use the same repository and token.
+Their GitHub and ADO credentials are still resolved/scrubbed on each provider
+operation; quota decorators and conditional refresh behavior remain intact.
+Tests exercise actual configured ADO auth, credential rotation, retained scheduler
+pins, ordinary shell launch, and no cross-gaggle in-memory refresher reuse.
+ADO WIQL read-plan coordination and batch hydration remain follow-up work. This
+slice does not claim every provider read is centralized.

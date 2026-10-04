@@ -428,6 +428,7 @@ func harnessCommandOrDefault(overrides map[string][]string, name string, def []s
 }
 
 type deterministicExecutorInput struct {
+	AutomationReadCache bool
 	Config              *instance.Config
 	Resolver            credentials.Resolver
 	Grants              []credentials.Grant
@@ -473,6 +474,7 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.InstanceRoot = input.InstanceRoot
 	shell.AppliedConfigDigest = input.AppliedConfigDigest
 	shell.ConfigDirectory = input.ConfigDirectory
+	shell.AutomationReadCache = input.AutomationReadCache
 	shell.ScratchDir = input.ScratchDir
 	shell.CredentialGrants = input.CredentialGrants
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough

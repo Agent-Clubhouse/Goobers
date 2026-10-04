@@ -112,6 +112,8 @@ func TestPRSelectAndSiblingContextShareProductionListSnapshot(t *testing.T) {
 	t.Setenv(executor.GaggleEnvVar, "goobers")
 	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
 	t.Setenv(providersnapshot.EnvVar, "tick-1")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-test")
 
 	t.Chdir(t.TempDir())
 	if code, stdout, stderr := runArgs(t, "pr-select", root); code != 0 {
@@ -139,6 +141,8 @@ func TestStageReadCacheUsesGaggleAndPinnedGeneration(t *testing.T) {
 	t.Setenv(providersnapshot.EnvVar, "same-evaluation")
 	t.Setenv(executor.GaggleEnvVar, "one")
 	t.Setenv(executor.ConfigGenerationEnvVar, "generation-1")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-1")
 	calls := 0
 	transport := scopedStageReadTransport(func(*http.Request) (*http.Response, error) {
 		calls++
@@ -165,6 +169,7 @@ func TestStageReadCacheUsesGaggleAndPinnedGeneration(t *testing.T) {
 	t.Setenv(executor.GaggleEnvVar, "two")
 	read()
 	t.Setenv(executor.ConfigGenerationEnvVar, "generation-2")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-2")
 	read()
 	if calls != 3 {
 		t.Fatalf("scope separation: %d requests", calls)
@@ -178,6 +183,8 @@ func TestStageReadCacheUsesGaggleAndPinnedGeneration(t *testing.T) {
 	}
 	t.Setenv(executor.GaggleEnvVar, "one")
 	t.Setenv(executor.ConfigGenerationEnvVar, "generation-1")
+	t.Setenv(executor.ProviderReadBindingEnvVar, "automation")
+	t.Setenv(executor.ProviderReadGenerationEnvVar, "generation-1")
 	read()
 	if calls != 4 {
 		t.Fatalf("other scope invalidated: %d requests", calls)

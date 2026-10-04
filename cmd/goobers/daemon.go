@@ -665,7 +665,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		reportStartupProgress(input.StartupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
-	openPRRefresher, err := buildOpenPRRefresher(input.Config, input.Definitions.Workflows, gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores)
+	openPRRefresher, err := buildOpenPRRefresher(input.Config, input.Definitions.Workflows, gaggleProjects, input.SharedRegistry, branchNamespaces, l.SchedulerDir(), input.CredentialStores, generation)
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +793,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
 		}
-		backlogCounter, err := buildBacklogCounter(input.Config, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(), input.ProviderQuota, l.Root)
+		backlogCounter, err := buildBacklogCounter(input.Config, gagglesByName[wf.Spec.Gaggle], wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(), input.ProviderQuota, l.Root, generation)
 		if err != nil {
 			return nil, err
 		}
@@ -804,9 +804,9 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			repoRefs[identity],
 			credResolver,
 			input.SharedRegistry,
-			l.SchedulerDir(),
-			selfIdentities[wf.Spec.Gaggle],
+			l.SchedulerDir(), selfIdentities[wf.Spec.Gaggle],
 			input.ProviderQuota,
+			generation,
 		)
 		if err != nil {
 			return nil, err
@@ -826,7 +826,7 @@ func buildSchedulerDefinitions(input schedulerDefinitionsInput) (*schedulerDefin
 			RefillDemandCounter: refillDemandCounter,
 			ScheduleDemandCounter: buildScheduleDemandCounter(
 				input.Config, wf, repoRefs[identity], credResolver, input.SharedRegistry, l.SchedulerDir(),
-				branchNamespaces[wf.Spec.Gaggle], input.ProviderQuota,
+				branchNamespaces[wf.Spec.Gaggle], input.ProviderQuota, generation,
 			),
 			// The current provider-backed demand counters use GitHub; charge the
 			// provider actually called rather than a future configured adapter.

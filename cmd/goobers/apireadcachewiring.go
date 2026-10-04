@@ -28,9 +28,5 @@ func invalidateCurrentProviderSnapshot(root string) error {
 }
 
 func stageReadScope() apireadcache.Scope {
-	generation := os.Getenv(executor.ConfigGenerationEnvVar)
-	if generation == "" {
-		generation = "legacy-automation"
-	}
-	return apireadcache.Scope{Gaggle: os.Getenv(executor.GaggleEnvVar), Binding: "automation", Generation: generation}
+	return apireadcache.Scope{Gaggle: os.Getenv(executor.GaggleEnvVar), Binding: os.Getenv(executor.ProviderReadBindingEnvVar), Generation: os.Getenv(executor.ProviderReadGenerationEnvVar)}
 }
