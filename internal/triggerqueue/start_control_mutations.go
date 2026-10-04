@@ -82,19 +82,6 @@ func (s *Store) ExpireStartControl(ctx context.Context, gaggle, id string, now t
 	return c, true, tx.Commit()
 }
 
-// Source-specific settlement extends this exact transaction. Until installed,
-// refusal preserves child/turn ownership instead of orphaning their waiter.
-func settleUnstartedControlledSource(ctx context.Context, tx *sql.Tx, c StartControl, disposition string, now time.Time) error {
-	var typed bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM child_lineages WHERE acceptance_id=?) OR EXISTS(SELECT 1 FROM interactive_turns WHERE acceptance_id=?)`, c.Record.ID, c.Record.ID).Scan(&typed); err != nil {
-		return err
-	}
-	if typed || c.Scope.Source == "child" || c.Scope.Source == "session" {
-		return ErrTypedStartSettlement
-	}
-	return settleControlledReceipt(ctx, tx, c, disposition, now)
-}
-
 func settleControlledReceipt(ctx context.Context, tx *sql.Tx, c StartControl, disposition string, now time.Time) error {
 	if c.Record.State != Accepted || (disposition != "cancelled" && disposition != "expired") {
 		return ErrTransition

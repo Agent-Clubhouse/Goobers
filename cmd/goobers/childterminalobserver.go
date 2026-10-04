@@ -210,8 +210,19 @@ func (l *queuedChildLauncher) rejectedResult(ctx context.Context, ref childExecu
 	if ref.Child.CancellationRequested {
 		state = triggerqueue.ChildCancelled
 	}
+	summary := "Child start rejected before execution"
+	control, err := l.queue.StartControl(ctx, ref.Child.Identity.Gaggle, ref.Child.AcceptanceID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return childExecutionResult{}, err
+	}
+	switch control.Disposition {
+	case "cancelled":
+		state, summary = triggerqueue.ChildCancelled, "Child start cancelled before execution"
+	case "expired":
+		summary = "Child start expired before execution"
+	}
 	coordinator := childworkflow.WorkspaceCoordinator{Queue: l.queue}
-	result, err := coordinator.CaptureResult(ctx, ref.Child, nil, childworkflow.TerminalResultInput{State: state, FinishedAt: at, Summary: "Child start rejected before execution"})
+	result, err := coordinator.CaptureResult(ctx, ref.Child, nil, childworkflow.TerminalResultInput{State: state, FinishedAt: at, Summary: summary})
 	if err != nil {
 		return childExecutionResult{}, err
 	}

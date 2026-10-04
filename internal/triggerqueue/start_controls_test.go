@@ -140,7 +140,7 @@ func TestStartDeadlineExpiresOnlyProvenUnattemptedReceipt(t *testing.T) {
 	}
 }
 
-func TestTypedStartSettlementFailsClosedUntilSourceAdapterInstalled(t *testing.T) {
+func TestTypedStartSettlementRequiresMatchingSourceCustody(t *testing.T) {
 	s := openTestStore(t, filepath.Join(t.TempDir(), "queue.db"))
 	for _, source := range []string{"child", "session"} {
 		c := pinnedControl(t, s, source, source)

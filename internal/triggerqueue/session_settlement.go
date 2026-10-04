@@ -122,22 +122,7 @@ func (s *Store) CompleteSessionTurn(ctx context.Context, acceptance string, resu
 	if err = validSessionCompletion(t, result); err != nil {
 		return err
 	}
-	// The maximum response was reserved at acceptance. Other producers see it
-	// in shared byte admission until this transaction replaces it with bytes.
-	if err = childByteCapacity(ctx, tx, len(result.Text)+8192-sessionResponseAllowance); err != nil {
-		return err
-	}
-	response := fmt.Sprintf("message-%x", randomID())
-	kind := "agent"
-	if result.RunID == "" {
-		kind = "system"
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO interactive_messages(id,session_id,sequence,actor_kind,actor,text,created_ns,turn_id,run_id,outcome) VALUES(?,?,?,?,'null',?,?,?,?,?)`, response, t.Session.ID, t.Session.NextSequence, kind, result.Text, now.UnixNano(), t.ID, result.RunID, result.Outcome)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE interactive_turns SET state='settled',outcome=?,response_id=?,result_digest=?,settled_ns=?,reserved_bytes=0 WHERE id=?`, result.Outcome, response, digest, now.UnixNano(), t.ID)
-	if err != nil {
+	if err = keepSessionCompletion(ctx, tx, t, result, digest, now); err != nil {
 		return err
 	}
 	if result.RunID == "" {
@@ -148,14 +133,35 @@ func (s *Store) CompleteSessionTurn(ctx context.Context, acceptance string, resu
 	if err != nil {
 		return err
 	}
+	return tx.Commit()
+}
+
+// keepSessionCompletion appends the observed response and settles its exact turn.
+// The caller owns the queue transition in the same transaction.
+func keepSessionCompletion(ctx context.Context, tx *sql.Tx, t SessionTurn, result SessionCompletion, digest string, now time.Time) error {
+	// The maximum response was reserved at acceptance. Other producers see it
+	// in shared byte admission until this transaction replaces it with bytes.
+	if err := childByteCapacity(ctx, tx, len(result.Text)+8192-sessionResponseAllowance); err != nil {
+		return err
+	}
+	response := fmt.Sprintf("message-%x", randomID())
+	kind := "agent"
+	if result.RunID == "" {
+		kind = "system"
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO interactive_messages(id,session_id,sequence,actor_kind,actor,text,created_ns,turn_id,run_id,outcome) VALUES(?,?,?,?,'null',?,?,?,?,?)`, response, t.Session.ID, t.Session.NextSequence, kind, result.Text, now.UnixNano(), t.ID, result.RunID, result.Outcome)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE interactive_turns SET state='settled',outcome=?,response_id=?,result_digest=?,settled_ns=?,reserved_bytes=0 WHERE id=?`, result.Outcome, response, digest, now.UnixNano(), t.ID)
+	if err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE interactive_messages SET outcome=? WHERE id=?`, result.Outcome, t.Message.ID)
 	if err != nil {
 		return err
 	}
-	if err = settleSessionOwner(ctx, tx, t, result.Outcome, now); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return settleSessionOwner(ctx, tx, t, result.Outcome, now)
 }
 
 func validSessionOutcome(v string) bool {
@@ -181,6 +187,11 @@ func validSessionCompletion(t SessionTurn, r SessionCompletion) error {
 }
 
 func settleSessionOwner(ctx context.Context, tx *sql.Tx, t SessionTurn, outcome string, now time.Time) error {
+	if t.Session.ActiveTurnID != "" && t.Session.ActiveTurnID != t.ID {
+		// Settling a later queued message must not release the current writer.
+		_, err := tx.ExecContext(ctx, `UPDATE interactive_sessions SET updated_ns=?,next_sequence=next_sequence+1 WHERE id=?`, now.UnixNano(), t.Session.ID)
+		return err
+	}
 	state := sessioning.Idle
 	var closed any
 	if t.Session.State == sessioning.CancelRequested {

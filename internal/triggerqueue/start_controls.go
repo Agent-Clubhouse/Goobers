@@ -28,8 +28,8 @@ CREATE INDEX start_control_gaggle ON start_controls(gaggle,acceptance_id);
 UPDATE event_receipts SET reserved_bytes=reserved_bytes+24576*reserved_starts WHERE state='routing_pending';
 UPDATE event_groups SET reserved_bytes=reserved_bytes+24576*reserved_starts WHERE state='open';`
 
-// ErrTypedStartSettlement refuses source settlement until its atomic adapter is installed.
-var ErrTypedStartSettlement = errors.New("triggerqueue: typed start settlement unavailable")
+// ErrTypedStartSettlement refuses missing, mismatched or attempted typed custody.
+var ErrTypedStartSettlement = errors.New("triggerqueue: typed start custody cannot be settled")
 
 // StartScope is derived by a trusted host from validated accepted bytes and the
 // exact retained generation. No field is accepted from a cancellation body.

@@ -866,8 +866,12 @@ clockless legacy admission refuses deadlines. Expiry never settles attempted
 custody, and child starts have no default deadline in this layer.
 
 This foundation is dormant until host scope pinning, current human policy checks,
-inspection/cancellation routes and deadline configuration are installed. Child
-and session pre-start cancellation/expiry explicitly refuse until their source
-ledger can settle in the same transaction; queue-only rejection is insufficient.
+inspection/cancellation routes and deadline configuration are installed. Typed
+pre-start settlement now validates the exact retained child/session owner. Session
+settlement appends a system response and releases only that queued turn; cancelling
+a later message preserves the active writer and FIFO. Child rejection remains
+owned by the existing result observer: it captures the actual disposition time
+and cancelled/failed result before the parent can acknowledge its slot. A queue
+receipt never fabricates a child execution or result reference.
 Actual execution cancellation and observed terminal acknowledgement remain host
 work, not claims made by storing a cancellation request.
