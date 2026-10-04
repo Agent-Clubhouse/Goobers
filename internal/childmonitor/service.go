@@ -102,6 +102,9 @@ func (s *Service) identity(run string) (journal.RunIdentity, error) {
 
 func (s *Service) summarize(ctx context.Context, child triggerqueue.ChildRecord) (apicontract.ChildWorkflowSummary, error) {
 	view := apicontract.ChildWorkflowSummary{ChildID: child.ChildID, RunID: child.RunID, InvocationKey: s.scrub(child.Identity.InvocationKey), Sequence: child.Sequence, State: string(child.State), CancellationRequested: child.CancellationRequested, Acknowledged: !child.AcknowledgedAt.IsZero(), Expired: !child.TombstonedAt.IsZero(), AcceptedAt: child.AcceptedAt, UpdatedAt: child.UpdatedAt}
+	if child.ExecutionEpoch > 0 {
+		view.OriginalRunID, view.RunID, view.ExecutionEpoch = child.RunID, child.ActiveRunID(), child.ExecutionEpoch
+	}
 	if view.Expired {
 		return view, nil
 	}
@@ -121,9 +124,9 @@ func (s *Service) summarize(ctx context.Context, child triggerqueue.ChildRecord)
 		return view, errors.New("child monitor retained start differs from lineage")
 	}
 	view.Stage, view.Workflow = envelope.ParentStage, envelope.Workflow
-	if id, err := s.identity(child.RunID); err == nil && id.Child != nil {
-		lineage := id.Child
-		view.RunAvailable = id.ValidateChildLineage() == nil && id.Gaggle == child.Identity.Gaggle && lineage.ParentRunID == child.Identity.ParentRunID && lineage.StageOccurrence == child.Identity.StageOccurrence && lineage.InvocationKey == child.Identity.InvocationKey && lineage.AcceptanceID == child.AcceptanceID && lineage.EnvelopeDigest == journal.Digest(start.Payload)
+	if id, err := s.identity(child.ActiveRunID()); err == nil && id.Child != nil {
+		verified, err := s.publicationChild(ctx, id)
+		view.RunAvailable = err == nil && verified.ChildID == child.ChildID
 	}
 	return view, nil
 }

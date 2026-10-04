@@ -86,7 +86,7 @@ func TestChildWorkflowWireMatchesClosedSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixtures := newWireFixtures()
-	for name, value := range map[string]any{"ChildWorkflowSourceRequest": fixtures.ChildWorkflowSource, "ChildWorkflowStatusRequest": fixtures.ChildWorkflowStatus, "ChildWorkflowValidationResponse": fixtures.ChildWorkflowValidation, "ChildWorkflowResponse": fixtures.ChildWorkflow, "ChildWorkflowResolveRequest": fixtures.ChildWorkflowResolve, "ChildWorkflowResolutionResponse": fixtures.ChildWorkflowResolution} {
+	for name, value := range map[string]any{"ChildWorkflowPage": fixtures.ChildWorkflowPage, "ChildPublicationCheckRequest": fixtures.ChildPublicationCheck, "ChildPublicationCheckResult": fixtures.ChildPublicationResult, "ChildWorkflowSourceRequest": fixtures.ChildWorkflowSource, "ChildWorkflowStatusRequest": fixtures.ChildWorkflowStatus, "ChildWorkflowValidationResponse": fixtures.ChildWorkflowValidation, "ChildWorkflowResponse": fixtures.ChildWorkflow, "ChildWorkflowResolveRequest": fixtures.ChildWorkflowResolve, "ChildWorkflowResolutionResponse": fixtures.ChildWorkflowResolution} {
 		compiler := jsonschema.NewCompiler()
 		if err := compiler.AddResource("fixture.json", bytes.NewReader(raw)); err != nil {
 			t.Fatal(err)

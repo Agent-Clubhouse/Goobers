@@ -23,11 +23,15 @@ func openAPIChildWorkflowSchemas() map[string]any {
 	})
 	return map[string]any{
 		"ChildWorkflowPage": closedChildObject([]string{"runId", "gaggle", "children"}, map[string]any{
+			"executionHistory": map[string]any{"type": "array", "maxItems": 9, "items": schemaRef("ChildWorkflowExecution")}, "publicationRunId": stringSchema(),
 			"publications": map[string]any{"type": "array", "maxItems": 2, "items": schemaRef("ChildPublicationSummary")}, "publicationCheckAvailable": map[string]any{"type": "boolean"}, "publicationCheckReason": stringSchema(),
 			"runId": stringSchema(), "gaggle": stringSchema(), "parent": schemaRef("ChildWorkflowParent"), "nextCursor": map[string]any{"type": "string", "maxLength": 128},
 			"children": map[string]any{"type": "array", "maxItems": 50, "items": schemaRef("ChildWorkflowSummary")},
 		}),
 		"ChildWorkflowParent": closedChildObject([]string{"runId", "workflow", "invocationKey"}, map[string]any{"runId": stringSchema(), "workflow": stringSchema(), "invocationKey": stringSchema()}),
+		"ChildWorkflowExecution": closedChildObject([]string{"epoch", "runId", "runAvailable", "current", "state", "acceptedAt", "updatedAt"}, map[string]any{
+			"epoch": map[string]any{"type": "integer", "minimum": 0, "maximum": 8}, "runId": stringSchema(), "runAvailable": map[string]any{"type": "boolean"}, "current": map[string]any{"type": "boolean"}, "state": custody["state"], "sourceRunId": stringSchema(), "actor": stringSchema(), "stage": stringSchema(), "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
+		}),
 		"ChildPublicationSummary": closedChildObject([]string{"action", "intentDigest", "state", "head", "base", "commit", "needsHuman", "createdAt", "updatedAt", "observation"}, map[string]any{
 			"action": map[string]any{"type": "string", "enum": []string{"branch", "pr"}}, "intentDigest": digest,
 			"state": map[string]any{"type": "string", "enum": []string{"prepared", "effect_pending", "confirmed"}}, "head": stringSchema(), "base": stringSchema(), "commit": stringSchema(),
@@ -36,6 +40,7 @@ func openAPIChildWorkflowSchemas() map[string]any {
 		"ChildPublicationCheckRequest": closedChildObject([]string{"action", "expectedIntentDigest"}, map[string]any{"action": map[string]any{"type": "string", "enum": []string{"branch", "pr"}}, "expectedIntentDigest": digest}),
 		"ChildPublicationCheckResult":  closedChildObject([]string{"runId", "requestId", "publication"}, map[string]any{"runId": stringSchema(), "requestId": stringSchema(), "publication": schemaRef("ChildPublicationSummary")}),
 		"ChildWorkflowSummary": closedChildObject([]string{"childId", "runAvailable", "invocationKey", "sequence", "state", "cancellationRequested", "acknowledged", "expired", "acceptedAt", "updatedAt"}, map[string]any{
+			"executionEpoch": map[string]any{"type": "integer", "minimum": 0, "maximum": 8}, "originalRunId": stringSchema(),
 			"publicationNeedsHuman": map[string]any{"type": "boolean"}, "childId": stringSchema(), "runId": stringSchema(), "runAvailable": map[string]any{"type": "boolean"}, "stage": stringSchema(), "workflow": stringSchema(), "invocationKey": stringSchema(),
 			"sequence": map[string]any{"type": "integer", "minimum": 1}, "state": custody["state"], "cancellationRequested": map[string]any{"type": "boolean"}, "acknowledged": map[string]any{"type": "boolean"}, "expired": map[string]any{"type": "boolean"}, "acceptedAt": dateTimeSchema(), "updatedAt": dateTimeSchema(),
 		}),

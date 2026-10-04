@@ -122,22 +122,43 @@ export const goWireFixtures = {
     }
   },
   "childWorkflowPage": {
-    "runId": "parent-run",
-    "gaggle": "web",
-    "children": [
+    "executionHistory": [
       {
-        "childId": "child-one",
-        "runAvailable": false,
-        "invocationKey": "inspect",
-        "sequence": 1,
-        "state": "queued",
-        "cancellationRequested": false,
-        "acknowledged": false,
-        "expired": false,
+        "epoch": 1,
+        "runId": "current-child",
+        "runAvailable": true,
+        "current": true,
+        "state": "running",
+        "sourceRunId": "original-child",
+        "actor": "issuer:alice",
+        "stage": "repair",
         "acceptedAt": "2026-10-04T12:00:00Z",
         "updatedAt": "2026-10-04T12:00:00Z"
       }
-    ]
+    ],
+    "publicationRunId": "original-child",
+    "publications": [
+      {
+        "observation": "not_observed",
+        "action": "pr",
+        "intentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state": "effect_pending",
+        "head": "goobers/children/child-run",
+        "base": "main",
+        "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "needsHuman": true,
+        "createdAt": "2026-10-04T12:00:00Z",
+        "updatedAt": "2026-10-04T12:00:00Z"
+      }
+    ],
+    "runId": "current-child",
+    "gaggle": "web",
+    "parent": {
+      "runId": "parent-run",
+      "workflow": "build",
+      "invocationKey": "inspect"
+    },
+    "children": []
   },
   "interactiveRun": {
     "runId": "0123456789abcdef0123456789abcdef",

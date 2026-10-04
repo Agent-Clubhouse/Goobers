@@ -2063,26 +2063,28 @@ export interface InteractiveActionPermission {
 
 /** Human-only surface; source of authority is the authenticated gaggle policy. */
 export interface ChildPublicationSummary {
- action: "branch" | "pr";
- intentDigest: string;
- state: "prepared" | "effect_pending" | "confirmed";
- head: string;
- base: string;
- commit: string;
- pullRequestUrl?: string;
- pullRequestNumber?: number;
- needsHuman: boolean;
- createdAt: string;
- updatedAt: string;
- checkedAt?: string;
- observation: string;
+  action: "branch" | "pr";
+  intentDigest: string;
+  state: "prepared" | "effect_pending" | "confirmed";
+  head: string;
+  base: string;
+  commit: string;
+  pullRequestUrl?: string;
+  pullRequestNumber?: number;
+  needsHuman: boolean;
+  createdAt: string;
+  updatedAt: string;
+  checkedAt?: string;
+  observation: string;
 }
 export interface ChildPublicationCheckRequest { action: "branch" | "pr"; expectedIntentDigest: string }
 export interface ChildPublicationCheckResult { runId: string; requestId: string; publication: ChildPublicationSummary }
 export interface ChildWorkflowPage {
- publications?: ChildPublicationSummary[];
- publicationCheckAvailable?: boolean;
- publicationCheckReason?: string;
+  executionHistory?: ChildWorkflowExecution[];
+  publicationRunId?: string;
+  publications?: ChildPublicationSummary[];
+  publicationCheckAvailable?: boolean;
+  publicationCheckReason?: string;
   runId: string;
   gaggle: string;
   parent?: { runId: string; workflow: string; invocationKey: string };
@@ -2090,7 +2092,9 @@ export interface ChildWorkflowPage {
   nextCursor?: string;
 }
 export interface ChildWorkflowSummary {
- publicationNeedsHuman?: boolean;
+  executionEpoch?: number;
+  originalRunId?: string;
+  publicationNeedsHuman?: boolean;
   childId: string;
   runId?: string;
   runAvailable: boolean;
@@ -2102,6 +2106,19 @@ export interface ChildWorkflowSummary {
   cancellationRequested: boolean;
   acknowledged: boolean;
   expired: boolean;
+  acceptedAt: string;
+  updatedAt: string;
+}
+
+export interface ChildWorkflowExecution {
+  epoch: number;
+  runId: string;
+  runAvailable: boolean;
+  current: boolean;
+  state: ChildWorkflowSummary["state"];
+  sourceRunId?: string;
+  actor?: string;
+  stage?: string;
   acceptedAt: string;
   updatedAt: string;
 }

@@ -44,6 +44,9 @@ func (s *Service) publications(ctx context.Context, p httpapi.Principal, id jour
 	if !child.TombstonedAt.IsZero() {
 		return nil
 	}
+	if err = s.executionHistory(ctx, child, page); err != nil {
+		return err
+	}
 	statuses, err := childpublication.Inspect(ctx, s.Queue, child.Identity)
 	if err != nil {
 		return err
@@ -54,6 +57,7 @@ func (s *Service) publications(ctx context.Context, p httpapi.Principal, id jour
 	if len(statuses) == 0 {
 		return nil
 	}
+	page.PublicationRunID = child.RunID
 	permissions, err := s.Permissions.InteractiveCapabilities(ctx, p, id.Gaggle)
 	if err != nil {
 		return err
@@ -118,7 +122,7 @@ func (s *Service) CheckChildPublication(ctx context.Context, p httpapi.Principal
 // Bind all public identity fields to the original queue envelope before reading
 // publication details or selecting a repository credential.
 func (s *Service) publicationChild(ctx context.Context, id journal.RunIdentity) (triggerqueue.ChildRecord, error) {
-	child, err := s.Queue.ChildForRun(ctx, id.RunID)
+	child, err := s.Queue.ChildForExecutionRun(ctx, id.RunID)
 	if err != nil {
 		return child, err
 	}
@@ -137,6 +141,13 @@ func (s *Service) publicationChild(ctx context.Context, id journal.RunIdentity) 
 		return child, publicationConflict()
 	}
 	expected := journal.ChildLineage{Gaggle: child.Identity.Gaggle, ParentRunID: child.Identity.ParentRunID, ParentWorkflow: envelope.ParentWorkflow, StageOccurrence: child.Identity.StageOccurrence, InvocationKey: child.Identity.InvocationKey, AcceptanceID: child.AcceptanceID, SourceDigest: child.ProposalDigest, EnvelopeDigest: journal.Digest(start.Payload)}
+	if id.Child.ExecutionEpoch > 0 {
+		execution, err := s.Queue.ChildExecutionMetadata(ctx, child.Identity, id.RunID)
+		if err != nil || execution.Epoch != id.Child.ExecutionEpoch || execution.SourceRunID != id.ContinuedFromRunID || execution.SourceTerminalSeq != id.SourceTerminalSeq || execution.Actor != id.Operator || execution.Stage != id.RequestedTarget {
+			return child, publicationConflict()
+		}
+		expected.ExecutionEpoch, expected.PriorResultRef, expected.RestartDigest = execution.Epoch, execution.SourceResultRef, execution.RequestDigest
+	}
 	if *id.Child != expected || id.Workflow != envelope.Workflow || id.WorkflowDigest != envelope.WorkflowDigest || id.GooberDigest != envelope.ParentGooberDigest || id.ConfigGeneration != envelope.ConfigGeneration {
 		return child, publicationConflict()
 	}
