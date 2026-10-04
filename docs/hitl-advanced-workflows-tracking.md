@@ -297,6 +297,12 @@ Workflow root counters remain retained until
 all producers/descendants can be proven settled. See
 [receipt limits](reference/gaggle-event-receipts.md).
 
+Child inspection now reads retained source pins without acquiring execution
+authority. Cancellation, drain and observation follow the current child epoch and
+refuse late results from the original run. Queued epoch cancellation retains its
+own result. The final common human admission adapter and publication from later
+child epochs remain explicit follow-up work.
+
 ### Backlog — design prepared, implementation pending
 
 The backlog workbench still requires browse/edit surfaces and consistent explicit

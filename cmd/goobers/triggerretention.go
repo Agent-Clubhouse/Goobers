@@ -73,24 +73,8 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 	if err != nil {
 		return err
 	}
-	var header struct {
-		Kind string `json:"kind"`
-	}
-	if err = json.Unmarshal(record.Payload, &header); err != nil {
+	if err = verifyTriggerPruneIdentity(identity, record, candidate.RunID); err != nil {
 		return err
-	}
-	if header.Kind == startintent.Kind {
-		if err = startintent.VerifyIdentity(identity, record); err != nil {
-			return err
-		}
-	} else {
-		var payload acceptedTriggerPayload
-		if err = json.Unmarshal(record.Payload, &payload); err != nil {
-			return err
-		}
-		if identity.RunID != candidate.RunID || identity.Workflow != payload.Request.Workflow || (payload.Request.Gaggle != "" && identity.Gaggle != payload.Request.Gaggle) {
-			return fmt.Errorf("trigger custody for run %s has mismatched journal identity", candidate.RunID)
-		}
 	}
 	err = queue.Finish(ctx, record.ID, triggerqueue.Dispatched, candidate.RunID, "", now)
 	if errors.Is(err, triggerqueue.ErrTransition) {
@@ -101,4 +85,24 @@ func acknowledgeTriggerBeforePrune(ctx context.Context, queue *triggerqueue.Stor
 		}
 	}
 	return err
+}
+
+func verifyTriggerPruneIdentity(identity journal.RunIdentity, record triggerqueue.Record, runID string) error {
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(record.Payload, &header); err != nil {
+		return err
+	}
+	if header.Kind == startintent.Kind {
+		return startintent.VerifyIdentity(identity, record)
+	}
+	var payload acceptedTriggerPayload
+	if err := json.Unmarshal(record.Payload, &payload); err != nil {
+		return err
+	}
+	if identity.RunID != runID || identity.Workflow != payload.Request.Workflow || (payload.Request.Gaggle != "" && identity.Gaggle != payload.Request.Gaggle) {
+		return fmt.Errorf("trigger custody for run %s has mismatched journal identity", runID)
+	}
+	return nil
 }

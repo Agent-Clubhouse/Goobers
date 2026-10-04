@@ -425,3 +425,26 @@ work includes recursive children with depth/budget/ancestry controls, multiple
 concurrent children within one stage, generated runner/Goober definitions, and
 cross-gaggle delegation. Native harness dynamic workflows remain independently
 usable under existing harness policy.
+
+
+### Sealed inspection and current-epoch observation
+
+Read-only intervention inspection resolves the exact accepted child's retained
+configuration and machine without constructing a Runner or reviving an obsolete
+credential generation. Saving guidance and validating its source can therefore
+inspect a superseded execution epoch; execution still requires current authority
+through the human restart admission adapter. Startup binds the inspection callback
+after the credential plane exists.
+
+Child drain and cancellation follow the active execution epoch. Terminal callbacks
+carry their actual run ID; a late original-epoch result cannot settle the current
+child. Cancelling an accepted epoch before its journal exists records that epoch's
+own cancelled result and leaves the original result intact. The original start
+receipt remains attached to its original run. Generated-source recovery resolves
+the sealed child before any ordinary workflow-catalog lookup.
+
+Composed queue/runner tests cover superseded read-only inspection, late result
+fencing, and cancellation before the replacement starts. Public human restart
+admission remains gated until its common queued adapter is installed. Publication
+from later child epochs still needs explicit emitter identity support; an existing
+publication intent keeps its original epoch identity.
