@@ -207,6 +207,7 @@ function Overview({
           {overview.instance.rootIdentity?.identityProblem && <p role="status">{overview.instance.rootIdentity.identityProblem}</p>}
           {overview.instance.rootIdentity?.lifecycleProblem && <p role="alert">{overview.instance.rootIdentity.lifecycleProblem}</p>}
           <h1>
+            Overview -{" "}
             {overview.loadingSections?.inventory || overview.loadingSections?.runs
               ? (
                 <span aria-label="Loading overview" className="overview-loading-title" role="status">
@@ -215,26 +216,12 @@ function Overview({
                   <span aria-hidden="true">.</span>
                 </span>
               )
-              : emptyInstance
-                ? standalone
-                  ? overview.health.ready
-                    ? "Instance is ready — Healthy."
-                    : "Instance is starting."
-                  : starting
-                    ? "Daemon is starting."
-                    : !healthy
-                    ? "Daemon is unhealthy."
-                    : overview.health.ready
-                      ? "Daemon is running — Healthy."
-                      : "Daemon is starting."
-                : starting
-                  ? "Daemon is starting."
-                  : !healthy
-                  ? "Daemon is unhealthy."
-                  : activeAttention.length === 0
-                    ? standalone
-                      ? "Instance is ready — Healthy."
-                      : "Daemon is running — Healthy."
+              : starting
+                ? "Starting"
+                : !healthy
+                  ? "Unhealthy"
+                  : !overview.health.ready
+                    ? "Starting"
                     : attentionHeading(activeAttention.length)}
           </h1>
           {emptyInstance && (
@@ -665,6 +652,20 @@ function InstanceSummaryPanel({
               {overview.instance.counts.activeRuns === 0 ? "None executing" : "Currently executing"}
             </span>
           </div>
+          <div>
+            <dt>Data freshness</dt>
+            <dd className="daemon-freshness-value">
+              {tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}
+              <button aria-label="Refresh instance status" onClick={retry} type="button">
+                <Icon name="refresh" size={18} />
+              </button>
+            </dd>
+            <span>
+              {lastTickAt
+                ? <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>
+                : "Latest scheduler tick unavailable"}
+            </span>
+          </div>
         </dl>
       </div>
 
@@ -679,34 +680,12 @@ function InstanceSummaryPanel({
             <span>
               {diagnosticsRequireAttention
                 ? "Operator attention required"
-                : "Freshness, recovery, and retention"}
+                : "Recovery and retention"}
             </span>
           </span>
           <Icon name="chevron" size={14} />
         </summary>
         <div className="overview-diagnostics-content">
-          <div className="instance-summary-row overview-freshness-row">
-            <div className="instance-summary-kind">
-              <span aria-hidden="true" className="instance-summary-icon">
-                <Icon name="clock" size={20} />
-              </span>
-              <span className="instance-summary-copy">
-                <strong>Data freshness</strong>
-                <span>{lastTickAt ? formatTimestamp(lastTickAt) : "Latest scheduler tick unavailable"}</span>
-              </span>
-            </div>
-            <div className="daemon-last-checked">
-              <span>
-                <span>Last checked</span>
-                <strong>{tickAge === null ? "Unavailable" : `${formatDuration(tickAge)} ago`}</strong>
-                {lastTickAt && <time dateTime={lastTickAt}>{formatTimestamp(lastTickAt)}</time>}
-              </span>
-              <button aria-label="Refresh instance status" onClick={retry} type="button">
-                <Icon name="refresh" size={22} />
-              </button>
-            </div>
-          </div>
-
           {recoveryInventory && <RecoveryInventorySummary inventory={recoveryInventory} />}
 
           {maintenance && <MaintenanceSummary maintenance={maintenance} />}
@@ -798,7 +777,8 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           <span>Durable handoffs for worktree cleanup</span>
         </span>
       </div>
-      <div className="instance-summary-result">
+      <div className="instance-summary-result instance-summary-result-with-actions">
+        <div className="instance-summary-result-copy">
         <strong>
           <span aria-hidden="true" className="result-check">
             <Icon name={elevated ? "alert" : "check"} size={16} />
@@ -829,6 +809,8 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
           <span>Earliest retention deadline {formatTimestamp(inventory.earliestRetainUntil)}</span>
         )}
         {inventory.error && <span>{inventory.error}</span>}
+        </div>
+        <div className="instance-summary-actions">
         <a
           className="instance-warning-link"
           href={RECOVERY_INVENTORY_DOCS}
@@ -844,6 +826,7 @@ function RecoveryInventorySummary({ inventory }: { inventory: RecoveryInventoryS
         >
           View recovery metadata
         </a>
+        </div>
       </div>
     </div>
   );
@@ -914,7 +897,8 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
           <span>Periodic cleanup of run data</span>
         </span>
       </div>
-      <div className="instance-summary-result">
+      <div className="instance-summary-result instance-summary-result-with-actions">
+        <div className="instance-summary-result-copy">
         <strong>
           <span aria-hidden="true" className="result-check">
             <Icon name={state === "failed" ? "alert" : "check"} size={16} />
@@ -940,6 +924,8 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
         {maintenance.lastProgressAt && state === "running" && (
           <span>Last progress {formatDuration(Math.max(0, Date.now() - Date.parse(maintenance.lastProgressAt)))} ago</span>
         )}
+        </div>
+        <div className="instance-summary-actions">
         <a
           className="instance-warning-link"
           data-focus-restore="instance-retention-detail"
@@ -947,6 +933,7 @@ function MaintenanceSummary({ maintenance }: { maintenance: MaintenanceStatus })
         >
           View retention details
         </a>
+        </div>
       </div>
     </div>
   );

@@ -183,12 +183,12 @@ test("keeps Insight and Cost summaries complete across narrow, landscape, zoomed
 
     await page.goto("/#/cost");
     const costHeading = page.getByRole("heading", { name: "Cost", exact: true });
-    const summary = page.locator(".usage-analytics").first();
+    const summary = page.locator(".cost-usage-summary").first();
     await expect(costHeading, `Cost title at ${layout.name}`).toBeVisible();
     await expect(summary, `Cost summary at ${layout.name}`).toBeVisible();
-    await expect(summary.getByText("Total", { exact: true })).toBeVisible();
-    await expect(summary.getByText("P50", { exact: true })).toBeVisible();
-    await expect(summary.getByText("P95", { exact: true })).toBeVisible();
+    await expect(summary.getByText("Total cost", { exact: true })).toBeVisible();
+    await expect(summary.getByText("P50 / stage attempt", { exact: true })).toBeVisible();
+    await expect(summary.getByText("P95 / stage attempt", { exact: true })).toBeVisible();
     const comparison = page.getByRole("region", { name: "Attributed costs comparison" });
     await expect(comparison).toBeVisible();
     await expect(comparison).toHaveAttribute("tabindex", "0");
@@ -870,9 +870,7 @@ test("keeps workflow hierarchy separate from scoped workspace pivots", async ({ 
   await costPivot.click();
   await expect(page).toHaveURL(/#\/cost\?gaggle=core&workflow=implementation$/);
   await expect(page.getByRole("heading", { name: "Cost", exact: true })).toBeVisible();
-  await expect(page.getByLabel("Scope")).toHaveValue(
-    JSON.stringify(["workflow", "core", "implementation"]),
-  );
+  await expect(page.getByLabel("Scope")).toHaveText("Workflow · core / implementation");
 });
 
 test("shows one coherent polling fallback status with diagnostics out of primary copy", async ({

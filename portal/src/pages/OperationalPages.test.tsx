@@ -44,7 +44,7 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is running — Healthy." }),
+      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/No gaggles are configured/)).toBeInTheDocument();
     // The guided walkthrough leads as the recommended newcomer path, with the
@@ -70,10 +70,10 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is unhealthy." }),
+      await screen.findByRole("heading", { name: "Overview - Unhealthy" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
-    expect(screen.getByText("Last checked")).toBeInTheDocument();
+    expect(screen.getByText("Data freshness")).toBeInTheDocument();
     expect(screen.getByText("3m 0s ago")).toBeInTheDocument();
   });
 
@@ -92,7 +92,7 @@ describe("operational overview", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon is starting." }),
+      await screen.findByRole("heading", { name: "Overview - Starting" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon starting")).toBeInTheDocument();
     expect(screen.queryByText("Daemon unhealthy")).not.toBeInTheDocument();
@@ -106,14 +106,14 @@ describe("operational overview", () => {
     try {
       await act(async () => vi.advanceTimersByTimeAsync(0));
       expect(
-        screen.getByRole("heading", { name: "Daemon is running — Healthy." }),
+        screen.getByRole("heading", { name: "Overview - No runs need attention." }),
       ).toBeInTheDocument();
 
       await act(async () => vi.advanceTimersByTimeAsync(60_000));
 
-      expect(screen.getByRole("heading", { name: "Daemon is unhealthy." })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Overview - Unhealthy" })).toBeInTheDocument();
       expect(screen.getByText("Daemon unhealthy")).toBeInTheDocument();
-      expect(screen.getByText("Last checked")).toBeInTheDocument();
+      expect(screen.getByText("Data freshness")).toBeInTheDocument();
       expect(screen.getByText("3m 0s ago")).toBeInTheDocument();
       expect(client.healthRequests).toBe(3);
     } finally {
@@ -268,7 +268,7 @@ describe("operational overview", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
   });
 });
@@ -470,7 +470,7 @@ describe("workflow and gaggle inventory", () => {
 
     await user.click(pivotLink);
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+    expect(screen.getByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
     // The card's own detail link is untouched by the pivot click.

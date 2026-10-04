@@ -9,4 +9,13 @@ describe("compact shell styles", () => {
     expect(styles.split(padding)).toHaveLength(3);
     expect(styles).not.toContain(reversedPadding);
   });
+
+  describe("cost chart styles", () => {
+    it("colors the total bars and gives both legend series a visible key", () => {
+      expect(styles).toMatch(/\.usage-trend-bar\s*\{[^}]*fill:\s*var\(--accent\)/);
+      expect(styles).toMatch(/\.usage-trend-key-total\s*\{[^}]*background:\s*var\(--accent\)/);
+      expect(styles).toMatch(/\.usage-trend-key-p95\s*\{[^}]*border-top:\s*2px solid var\(--accent-ink\)/);
+      expect(styles).toMatch(/\.usage-trend-gridline \.usage-trend-secondary-tick\s*\{[^}]*text-anchor:\s*start/);
+    });
+  });
 });

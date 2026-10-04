@@ -40,7 +40,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
@@ -122,7 +122,7 @@ describe("portal foundation", () => {
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
   });
 
   it("applies cached cobrand colors before React renders", () => {
@@ -153,7 +153,7 @@ describe("portal foundation", () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Instance is ready — Healthy." }),
+      await screen.findByRole("heading", { name: "Overview - No runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     await waitFor(() =>
@@ -195,7 +195,7 @@ describe("portal foundation", () => {
     renderLiveApp();
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Getting Started")).not.toBeInTheDocument();
   });
@@ -268,7 +268,7 @@ describe("portal foundation", () => {
   });
 
   it.each([
-    { hash: "#/overview", heading: "2 runs need attention." },
+    { hash: "#/overview", heading: "Overview - 2 runs need attention." },
     { hash: "#/workflows", heading: "Workflows" },
     { hash: "#/runs", heading: "Runs" },
     { hash: "#/insight", heading: "Insight" },
@@ -319,7 +319,7 @@ describe("portal foundation", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "2 runs need attention." }),
+      await screen.findByRole("heading", { name: "Overview - 2 runs need attention." }),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("Live updates connected"),
@@ -329,7 +329,7 @@ describe("portal foundation", () => {
 
     await user.click(screen.getByRole("button", { name: "Overview" }));
 
-    expect(screen.getByRole("heading", { name: "2 runs need attention." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Overview - 2 runs need attention." })).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connecting to Goobers Instance" }),
     ).not.toBeInTheDocument();

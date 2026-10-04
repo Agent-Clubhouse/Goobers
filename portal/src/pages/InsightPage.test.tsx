@@ -1,10 +1,118 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { DaemonApiError } from "../api/errors";
 import { emptyDaemonFixtures, populatedDaemonFixtures } from "../test/daemonFixtures";
+import { CostTrend } from "./InsightPage";
+import type { TelemetryUsageStats } from "../api/types";
+import { insightScopeFromKey, insightScopeOption } from "../insightScope";
+
+async function selectScope(user: ReturnType<typeof userEvent.setup>, key: string) {
+  const option = insightScopeOption(insightScopeFromKey(key));
+  await user.click(await screen.findByLabelText("Scope"));
+  await user.type(screen.getByLabelText("Find scope"), option.label);
+  await user.click(screen.getByRole("button", { name: option.label }));
+}
+
+describe("daily cost chart", () => {
+  function usage(costAIC: number, p95CostAIC: number): TelemetryUsageStats {
+    return {
+      scope: "instance",
+      totalAttempts: 10,
+      tokenSamples: 10,
+      premiumRequestSamples: 0,
+      costSamples: 10,
+      retryWasteAttempts: 0,
+      costAIC,
+      p50CostAIC: p95CostAIC / 2,
+      p95CostAIC,
+    };
+  }
+
+  function renderTrend(values: (TelemetryUsageStats | undefined)[]) {
+    return render(
+      <CostTrend
+        costTrend={{
+          status: "ready",
+          data: {
+            points: values.map((value, index) => ({
+              since: new Date(Date.UTC(2026, 6, 10 + index)).toISOString(),
+              until: new Date(Date.UTC(2026, 6, 11 + index)).toISOString(),
+              usage: value,
+            })),
+          },
+        }}
+        currentUsage={usage(400, 10)}
+        refreshing={false}
+        retry={vi.fn()}
+        window="7d"
+      />,
+    );
+  }
+
+  it("plots daily totals rather than cumulative spend with independently scaled P95", () => {
+    const { container } = renderTrend([usage(100, 10), usage(300, 5)]);
+    const bars = container.querySelectorAll(".usage-trend-bar");
+    const p95 = container.querySelectorAll(".usage-trend-point-p95");
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toHaveAttribute("aria-label", "Total per day: 100 AIC");
+    expect(bars[1]).toHaveAttribute("aria-label", "Total per day: 300 AIC");
+    expect(Number(bars[0].getAttribute("height")) / Number(bars[1].getAttribute("height"))).toBeCloseTo(1 / 3);
+    expect(Number(bars[1].getAttribute("y"))).toBe(34);
+    expect(Number(p95[0].getAttribute("cy"))).toBe(34);
+    expect(Number(p95[1].getAttribute("cy"))).toBe(116);
+    expect(container.querySelectorAll(".usage-trend-secondary-tick")[0]).toHaveTextContent("10 AIC");
+    expect(container.querySelector(".usage-trend-gridline text")).toHaveTextContent("300 AIC");
+    expect(screen.getByRole("img")).toHaveAccessibleName(/total 100 AIC.*total 300 AIC/);
+    const p50 = container.querySelectorAll(".usage-trend-point-p50");
+    expect(p50).toHaveLength(2);
+    expect(Number(p50[0].getAttribute("cy"))).toBe(116);
+    expect(Number(p50[1].getAttribute("cy"))).toBe(157);
+    expect(screen.getByRole("list", { name: "Cost chart legend" }).children).toHaveLength(3);
+    expect(container.querySelector(".usage-trend-area")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No prior .* to compare/)).not.toBeInTheDocument();
+  });
+
+  it("shows only the day, series, and value in custom mouse and keyboard tooltips", () => {
+    const { container } = renderTrend([usage(100, 10)]);
+    const bar = container.querySelector(".usage-trend-bar");
+    if (!bar) throw new Error("Expected a total bar.");
+    fireEvent.mouseEnter(bar);
+    const tooltip = screen.getByRole("tooltip");
+    const day = new Date("2026-07-10T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    expect(tooltip).toHaveTextContent(`${day}Total per day100 AIC`);
+    expect(tooltip.children).toHaveLength(2);
+    expect(container.querySelector("title, [title]")).not.toBeInTheDocument();
+    fireEvent.mouseLeave(bar);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    const p50 = container.querySelector('[aria-label="P50 per attempt: 5 AIC"]');
+    if (!p50) throw new Error("Expected a P50 point.");
+    fireEvent.focus(p50);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("P50 per attempt5 AIC");
+    fireEvent.keyDown(p50, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("keeps unmeasured days as gaps while preserving measured zero cost", () => {
+    const { container } = renderTrend([
+      usage(100, 10),
+      undefined,
+      { ...usage(100, 10), costSamples: 0 },
+      usage(0, 0),
+    ]);
+    const bars = container.querySelectorAll(".usage-trend-bar");
+    expect(bars).toHaveLength(2);
+    expect(bars[1]).toHaveAttribute("height", "0");
+    expect(container.querySelectorAll(".usage-trend-point-p95")).toHaveLength(2);
+    const path = container.querySelector(".usage-trend-line-p95")?.getAttribute("d");
+    expect(path?.match(/M /g)).toHaveLength(2);
+    expect(path).not.toContain("L ");
+    expect(screen.getByRole("img")).toHaveAccessibleName(/total Unmeasured.*total 0 AIC/);
+  });
+});
 
 beforeEach(() => {
   window.location.hash = "#/insight";
@@ -106,8 +214,7 @@ describe("Insight page", () => {
     expect(screen.getAllByText("P50").length).toBeGreaterThan(0);
     expect(screen.getAllByText("P95").length).toBeGreaterThan(0);
 
-    await user.selectOptions(
-      screen.getByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
     expect(
@@ -154,10 +261,7 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.selectOptions(
-      await screen.findByLabelText("Scope"),
-      screen.getByRole("option", { name: "Workflow · core / implementation" }),
-    );
+    await selectScope(user, JSON.stringify(["workflow", "core", "implementation"]));
     await user.click(
       screen.getByRole("link", { name: "View all runs behind core / implementation: 4" }),
     );
@@ -181,14 +285,14 @@ describe("Insight page", () => {
     );
   });
 
-  it("shows exact cost and token rollups with contributor-specific drill-downs", async () => {
+  it("shows cost rollups without token waste or the measured-attempts badge", async () => {
     window.location.hash = "#/cost";
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const user = userEvent.setup();
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost Summary" }),
+      await screen.findByRole("heading", { name: /^Cost$/ }),
     ).toBeInTheDocument();
     expect(screen.queryByText("AI credits")).not.toBeInTheDocument();
     expect(
@@ -196,41 +300,38 @@ describe("Insight page", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /^View retry-waste runs behind/ })).not.toBeInTheDocument();
-    expect(screen.getByText("12,000 tokens")).toBeInTheDocument();
-    expect(screen.getByText("75 AIC")).toBeInTheDocument();
+    expect(screen.queryByText("Measured attempts only")).not.toBeInTheDocument();
+    expect(screen.queryByText("12,000 tokens")).not.toBeInTheDocument();
+    expect(screen.queryByText("Tokens", { selector: ".usage-waste-values small" })).not.toBeInTheDocument();
+    expect(await screen.findByText("75 AIC")).toBeInTheDocument();
+    expect(screen.getByText("Total runs").nextElementSibling).toHaveTextContent("5");
 
-    await user.selectOptions(
-      screen.getByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["workflow", "core", "implementation"]),
     );
     expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
 
-    await user.selectOptions(
-      screen.getByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["gaggle", "core"]),
     );
     expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
 
-    await user.selectOptions(
-      screen.getByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
     expect(screen.queryByRole("link", { name: /^View AIC runs behind/ })).not.toBeInTheDocument();
 
-    await user.selectOptions(
-      screen.getByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["stage", "tools", "implementation", "implement"]),
     );
 
-    const unmeasuredCost = screen
-      .getByText("AIC", { selector: ".usage-metric-static .usage-metric-heading strong" })
-      .closest<HTMLElement>(".usage-metric-static");
+    const unmeasuredCost = screen.getByText("Total cost").closest<HTMLElement>(".cost-usage-spend");
     if (!unmeasuredCost) throw new Error("Expected a static AI cost metric.");
-    expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(2);
-    expect(within(unmeasuredCost).getByText("0 runs")).toBeInTheDocument();
+    expect(within(unmeasuredCost).getAllByText("Unmeasured")).toHaveLength(3);
+    expect(screen.getByRole("group", { name: /Cost measurements: 0 of/ })).toBeInTheDocument();
     expect(screen.getByText("No retry waste")).toBeInTheDocument();
     expect(within(unmeasuredCost).queryByText("0 AIC")).not.toBeInTheDocument();
-    expect(unmeasuredCost.tagName).toBe("DIV");
+    expect(unmeasuredCost.tagName).toBe("DL");
   });
 
   it("shows provider-native attributed costs, normalized estimates, and coverage", async () => {
@@ -243,12 +344,11 @@ describe("Insight page", () => {
     expect(
       await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Exact recorded usage · Loaded Jul 18, 2026/)).toBeInTheDocument();
+    expect(screen.queryByText(/Exact recorded usage/)).not.toBeInTheDocument();
     const comparison = screen.getByRole("region", { name: "Attributed costs comparison" });
     expect(comparison).toHaveAttribute("tabindex", "0");
-    expect(comparison).toHaveAccessibleDescription(
-      "Scroll sideways to compare every cost column.",
-    );
+    expect(comparison).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByText("Scroll sideways to compare every cost column.")).not.toBeInTheDocument();
     const table = screen.getByRole("table", { name: "Attributed costs" });
     expect(within(table).getAllByRole("columnheader")).toHaveLength(4);
     const pullRequestRow = within(table)
@@ -339,8 +439,8 @@ describe("Insight page", () => {
     const getTelemetryCosts = vi.spyOn(client, "getTelemetryCosts");
     render(<App client={client} />);
 
-    expect(await screen.findByRole("heading", { name: "Cost Summary" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
+    expect(await screen.findByRole("heading", { name: /^Cost$/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Scope")).toHaveTextContent("Workflow · tools / implementation");
     expect(
       await screen.findByRole("heading", { name: "Cost by pull request and issue" }),
     ).toBeInTheDocument();
@@ -362,7 +462,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost Summary" }),
+      await screen.findByRole("heading", { name: /^Cost$/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -383,7 +483,7 @@ describe("Insight page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Cost Summary" }),
+      await screen.findByRole("heading", { name: /^Cost$/ }),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -407,13 +507,14 @@ describe("Insight page", () => {
       await screen.findByRole("heading", { name: "Cost over time" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("img", {
-        name: /Cost trend by bucket.*cumulative.*P95/i,
+      await screen.findByRole("img", {
+        name: /Daily cost: total bars on the left axis, P50 and P95 per-attempt lines on the right axis/i,
       }),
     ).toBeInTheDocument();
     expect(screen.getByRole("list", { name: "Cost chart legend" })).toBeInTheDocument();
-    expect(screen.getByText("Cumulative AIC")).toBeInTheDocument();
-    expect(screen.getByText("P95 run AIC")).toBeInTheDocument();
+    expect(screen.getByText("Total per day (AIC, left axis)")).toBeInTheDocument();
+    expect(screen.getByText("P50 per attempt (AIC, right axis)")).toBeInTheDocument();
+    expect(screen.getByText("P95 per attempt (AIC, right axis)")).toBeInTheDocument();
     expect(screen.getAllByText(/vs\. previous 7 days/)).toHaveLength(2);
 
     await waitFor(() => {
@@ -439,6 +540,51 @@ describe("Insight page", () => {
     expect(
       getTelemetryStats.mock.calls.filter(([request]) => request?.trendBuckets !== undefined),
     ).toHaveLength(trendRequestsBeforeAll);
+  });
+
+  it("requests daily buckets for 30-day and 24-hour cost windows", async () => {
+    window.location.hash = "#/cost";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    await screen.findByRole("heading", { name: "Cost over time" });
+    await user.selectOptions(screen.getByLabelText("Time window"), "30d");
+    await waitFor(() => {
+      expect(getTelemetryStats.mock.calls.some(([request]) => request?.trendBuckets === 60)).toBe(true);
+    });
+    await user.selectOptions(screen.getByLabelText("Time window"), "24h");
+    await waitFor(() => {
+      expect(getTelemetryStats.mock.calls.some(([request]) => request?.trendBuckets === 2)).toBe(true);
+    });
+  });
+
+  it("keeps the heading, filters, metrics footprint, and chart frame while loading", async () => {
+    window.location.hash = "#/cost";
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const original = client.getTelemetryStats.bind(client);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(client, "getTelemetryStats").mockImplementation(async (request, options) => {
+      await pending;
+      return original(request, options);
+    });
+    const { container } = render(<App client={client} />);
+
+    expect(screen.getByRole("heading", { name: /^Cost$/ })).toBeInTheDocument();
+    expect(screen.getByLabelText("Time window")).toBeInTheDocument();
+    expect(screen.getByLabelText("Scope")).toHaveTextContent("Instance");
+    expect(container.querySelector(".cost-summary-placeholder .cost-usage-summary")).toBeInTheDocument();
+    const frame = container.querySelector(".usage-trend");
+    expect(frame?.querySelector(".usage-trend-chart-plot")).toBeInTheDocument();
+    expect(screen.getByText("Loading cost summary…")).toBeInTheDocument();
+
+    await act(async () => { release(); await pending; });
+    await screen.findByRole("img", { name: /Daily cost:/ });
+    expect(container.querySelector(".usage-trend")).toBe(frame);
+    expect(container.querySelector(".cost-summary-placeholder")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading cost summary…")).not.toBeInTheDocument();
   });
 
   it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
@@ -528,18 +674,17 @@ describe("Insight page", () => {
 
     expect(await screen.findByRole("heading", { name: "Cost by gaggle" })).toBeInTheDocument();
     const coreLink = screen.getByRole("link", {
-      name: /View instance cost for gaggle core: total 400 AIC, 8 runs, P50 80 AIC, P95 250 AIC/,
+      name: /View instance cost for gaggle core: total 400 AIC, 8 measured attempts, P50 80 AIC, P95 250 AIC/,
     });
     expect(coreLink).toBeInTheDocument();
     const toolsLink = screen.getByRole("link", {
-      name: /View instance cost for gaggle tools: total 600 AIC, 3 runs, P50 10 AIC, P95 580 AIC/,
+      name: /View instance cost for gaggle tools: total 600 AIC, 3 measured attempts, P50 10 AIC, P95 580 AIC/,
     });
     expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
     // The all-gaggle breakdown is subordinate to the instance scope and leaves
     // the page when the operator narrows to one gaggle.
-    await user.selectOptions(
-      screen.getByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["gaggle", "core"]),
     );
     expect(screen.queryByRole("heading", { name: "Cost by gaggle" })).not.toBeInTheDocument();
@@ -596,7 +741,7 @@ describe("Insight page", () => {
     render(<App client={new FixtureDaemonClient(fixtures)} />);
 
     expect(await screen.findByRole("heading", { name: "Cost" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue("Workflow · implementation");
+    expect(screen.getByLabelText("Scope")).toHaveTextContent("Workflow · core / implementation");
   });
 
   it("drills into every matching run error while keeping the selected filters", async () => {
@@ -605,8 +750,7 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.selectOptions(
-      await screen.findByLabelText("Scope"),
+    await selectScope(user,
       JSON.stringify(["stage", "core", "implementation", "implement"]),
     );
     await user.click(
@@ -679,10 +823,7 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    await user.selectOptions(
-      await screen.findByLabelText("Scope"),
-      screen.getByRole("option", { name: "Workflow · core / implementation" }),
-    );
+    await selectScope(user, JSON.stringify(["workflow", "core", "implementation"]));
 
     const terminal = screen.getByRole("link", {
       name: "View terminal runs behind core / implementation for success rate 50.0%",
@@ -714,10 +855,7 @@ describe("Insight page", () => {
     const user = userEvent.setup();
     render(<App client={client} />);
 
-    await user.selectOptions(
-      await screen.findByLabelText("Scope"),
-      screen.getByRole("option", { name: "Workflow · core / implementation" }),
-    );
+    await selectScope(user, JSON.stringify(["workflow", "core", "implementation"]));
     getTelemetryStats.mockResolvedValueOnce({
       creditAssignment: [],
       causalCredit: null,
@@ -758,7 +896,7 @@ describe("Insight page", () => {
     expect(
       await screen.findByRole("heading", { name: "No telemetry in this window" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Scope")).toHaveDisplayValue(
+    expect(screen.getByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
     expect(screen.queryByText("Gaggle: Instance")).not.toBeInTheDocument();
@@ -792,7 +930,7 @@ describe("Insight page", () => {
     window.location.hash = "#/insight?gaggle=core&workflow=implementation&window=24h";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
-    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+    expect(await screen.findByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
     expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
@@ -826,7 +964,7 @@ describe("Insight page", () => {
     expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
-    expect(await screen.findByLabelText("Scope")).toHaveDisplayValue(
+    expect(await screen.findByLabelText("Scope")).toHaveTextContent(
       "Workflow · core / implementation",
     );
     expect(screen.getByLabelText("Time window")).toHaveDisplayValue("Last 24 hours");

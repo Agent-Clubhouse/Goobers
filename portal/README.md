@@ -110,6 +110,15 @@ clearly if the dashboard is started.
 - **Run detail**: pinned identity, synchronized execution graph, and durable
   event ledger.
 - **Theme**: independently tuned light and dark palettes.
+- **Cost chart**: total AI credits per rolling 24-hour day as bars on the left
+  axis, with P50 and P95 per-stage-attempt cost as lines on an independently scaled right axis.
+  The 24h, 7d, and 30d windows contain 1, 7, and 30 daily buckets respectively.
+  Custom hover and keyboard-focus tooltips show the day, series, and cost.
+- **Scope selection**: Cost and Insight share a searchable nested picker.
+  Select a gaggle or workflow by clicking its name; use its arrow to expand
+  workflows or stages. Run totals and measured stage attempts are reported separately.
+- **Overview**: a fixed page title with an animated loading suffix and resolved
+  operational status. Data freshness and refresh sit beside the active-run count.
 - **Co-branding**: operator-configurable name, logo, accent colors, and support
   links via `instance.yaml`.
 
