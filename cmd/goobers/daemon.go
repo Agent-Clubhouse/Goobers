@@ -1627,23 +1627,18 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			continue
 		}
 
-		identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
-		machine, ok := machines[identity]
-		gooberDigest := gooberDigests[identity]
-		repoRef := repoRefs[identity]
-		if id.ConfigGeneration != "" {
-			pinned, err := runnerRegistry.executionGeneration(ctx, id)
-			if err != nil {
-				return outcome, fmt.Errorf("resolve run %q execution generation: %w", id.RunID, err)
-			}
-			rn, machine, gooberDigest, repoRef = pinned.runner, pinned.machine, pinned.gooberDigest, pinned.repoRef
-			ok = true
+		runtime, available, err := resolveInterruptedRuntime(ctx, id, interruptedRuntimeInput{
+			runner: rn, registry: runnerRegistry, machines: machines, gooberDigests: gooberDigests,
+			repoRefs: repoRefs, log: log, release: release,
+		})
+		if err != nil {
+			return outcome, err
 		}
-		if rn == nil || !ok {
+		if !available {
 			outcome.Warned = append(outcome.Warned, id.RunID)
-			warnUnresolvableResume(log, id, rn == nil)
 			continue
 		}
+		rn, machine, gooberDigest, repoRef := runtime.runner, runtime.machine, runtime.gooberDigest, runtime.repoRef
 		// Never reinterpret a historical run under the current workflow
 		// merely because the name still matches.
 		machine, machineSource := interruptedRunMachine(id, machine)
