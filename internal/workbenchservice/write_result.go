@@ -1,6 +1,7 @@
 package workbenchservice
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -42,6 +43,8 @@ func writeError(err error) error {
 		return public
 	}
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return readError(http.StatusGatewayTimeout, "workbench_write_interrupted", "The bounded command request did not complete. Keep its request key and inspect the receipt before another edit.")
 	case errors.Is(err, triggerqueue.ErrWorkbenchCommandExpired):
 		return readError(http.StatusGone, "workbench_command_expired", "The retained command receipt has expired. This request key remains reserved during its replay window.")
 	case errors.Is(err, triggerqueue.ErrConflict):

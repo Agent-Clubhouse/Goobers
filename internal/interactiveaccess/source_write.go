@@ -16,7 +16,9 @@ func (s *Service) WithSourceWrite(ctx context.Context, p httpapi.Principal, gagg
 	if use == nil || !human(p) || p.ChildWorkflow != nil || p.GeneratedChild || p.WorkflowParent || len(p.Scopes) != 0 {
 		return ErrDenied
 	}
-	s.mu.RLock()
+	if err := s.lockSourceSnapshot(ctx); err != nil {
+		return err
+	}
 	defer s.mu.RUnlock()
 	g := s.gaggles[gaggle]
 	if err := authorize(p, g, "backlog.edit"); err != nil {
