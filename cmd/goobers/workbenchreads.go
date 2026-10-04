@@ -13,7 +13,9 @@ import (
 
 func (u *upSession) configureWorkbenchReads() {
 	factory := workbenchservice.ProviderFactory{SchedulerDirectory: u.l.SchedulerDir(), Registrar: u.setup.SharedRegistry}
-	u.installWorkbenchReads(&workbenchservice.Service{Permissions: u.setup.InteractiveAccess, Backlog: factory.Backlog, Repository: factory.Repository})
+	read := &workbenchservice.Service{Permissions: u.setup.InteractiveAccess, Backlog: factory.Backlog, Repository: factory.Repository}
+	u.installWorkbenchReads(read)
+	u.installWorkbenchProposals(read, factory.RepositoryProposal)
 }
 
 func (u *upSession) installWorkbenchReads(service *workbenchservice.Service) {

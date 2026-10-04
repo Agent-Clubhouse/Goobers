@@ -389,9 +389,11 @@ portal editor. Each command is attempted at most once; lost responses remain
 unknown and can be inspected without resending the write. Settled receipts are
 pruned by bounded daemon maintenance; unresolved custody never expires by age.
 
-Bounded metadata previews and source-bound GitHub/ADO draft-PR phase adapters are
-implemented locally. Their durable custody/service and portal submission path are
-still being installed; provider adapters alone do not publish a portal edit.
+Bounded metadata previews, source-bound GitHub/ADO draft-PR phase adapters and
+durable custody are installed through the daemon API. Every phase checks current
+interactive source authority; receipt reads and explicit observations require read
+authority and cannot repeat a write. Lost replies retain the original command key
+and phase history. The portal editor remains the next integration slice.
 
 The versioned, bounded relationship-suggestion artifact now binds actual producer
 provenance, deduplicates source evidence and holds provisional item references

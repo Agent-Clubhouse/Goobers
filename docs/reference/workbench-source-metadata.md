@@ -414,3 +414,25 @@ pass allocates cleanup across all three kinds within its existing row/time bound
 Uncertain and partially visible proposal effects stay pinned; settled results use
 the existing detail/tombstone retention policy. Custody alone does not install the
 repository submission API or portal controls; those remain the next slice.
+
+### Governed metadata proposal API
+
+Configured document sources support title/body edits and explicit `references` or
+`contributes-to` edges when their source write policy permits them. The configured
+relationship-manifest owner supports those same explicit edge proposals. Other
+native relationship kinds remain unsupported by this proposal editor.
+
+The source's `proposal-preview` route reads the current configured branch and
+returns inert before/after text pinned to its exact commit, blob and content digest.
+An explicit `proposals` submission retains the same reviewed intent and an
+idempotency key, then creates a separate draft PR using the gaggle's interactive
+repository identity. Source write mode defaults to `pull-request` when omitted.
+No proposal edits the configured branch directly or merges its PR.
+
+Keep the returned command ID. Receipt reads remain available with current read
+permission after write permission is revoked. `check` observes an uncertain native
+phase without another mutation. `continue` is an explicit write action that
+rechecks current permission and advances only an unattempted next phase for the
+retained intent. A matching observation never rewrites the original uncertain
+acknowledgement. Changing keys to retry an uncertain write can create another
+proposal; use the original receipt instead.
