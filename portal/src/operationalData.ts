@@ -31,7 +31,7 @@ import {
   type SessionDataCache,
 } from "./dataCache";
 import { useLiveData, type LiveFreshness } from "./liveData";
-import { loadFailureReasons } from "./overviewFailures";
+import { loadFailureReasons, type FailureReasons } from "./overviewFailures";
 
 const PAGE_LIMIT = 100;
 const HEALTH_REFRESH_INTERVAL_MS = 60_000;
@@ -116,6 +116,7 @@ export interface OperationalRunGroups {
   active: RunSummary[];
   attention: RunSummary[];
   recent: RunSummary[];
+  failureReasons?: FailureReasons;
   incomplete?: IncompleteRunPhases;
   attentionCandidatesTruncated?: boolean;
 }
@@ -1742,7 +1743,8 @@ async function loadOverviewRunGroups(
     resolvePhaseRuns(result, OVERVIEW_RUN_PHASES[index], previousRuns),
   );
   const availableRuns = [...running, ...escalated, ...failed, ...completed, ...aborted];
-  const failureReasons = settledValue(failureReasonsResult) ?? new Map();
+  const failureReasons =
+    settledValue(failureReasonsResult) ?? previous?.failureReasons ?? new Map();
   const severity = (run: RunSummary) =>
     attentionSeverity(run, availableRuns, failureReasons.get(run.id));
   const stalled = running.filter((run) => severity(run) !== "warning");
@@ -1758,6 +1760,7 @@ async function loadOverviewRunGroups(
     active: sortRuns(running.filter((run) => severity(run) === "warning")),
     attention: attention.slice(0, ATTENTION_RUN_LIMIT),
     recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
+    ...(failureReasons.size > 0 ? { failureReasons } : {}),
     ...(incomplete ? { incomplete } : {}),
     ...(attentionCandidatesTruncated ? { attentionCandidatesTruncated: true } : {}),
   };

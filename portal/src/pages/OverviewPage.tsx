@@ -30,10 +30,11 @@ import { routeHash } from "../routing";
 import { DataList, DataRow } from "../ui/DataList";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
-import { useFailureReasons, type FailureReasons } from "../overviewFailures";
+import type { FailureReasons } from "../overviewFailures";
 import { configurationWarningKey } from "../configurationWarnings";
 
 const attentionSelectionStorageKey = "goobers-overview-attention-selection";
+const emptyFailureReasons: FailureReasons = new Map();
 
 function readAttentionSelection(): ReadonlySet<string> {
   try {
@@ -58,13 +59,6 @@ export function OverviewPage({
   standalone: boolean;
 }) {
   const query = useOperationalOverview(client);
-  const attentionFailedIds =
-    query.state.status === "ready" || query.state.status === "stale"
-      ? query.state.data.groups.attention
-          .filter((run) => run.phase === "failed")
-          .map((run) => run.id)
-      : [];
-  const failureReasons = useFailureReasons(client, attentionFailedIds);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -81,7 +75,7 @@ export function OverviewPage({
   return (
     <Overview
       configurationWarnings={configurationWarnings}
-      failureReasons={failureReasons}
+      failureReasons={query.state.data.groups.failureReasons ?? emptyFailureReasons}
       overview={query.state.data}
       retry={query.retry}
       standalone={standalone}
