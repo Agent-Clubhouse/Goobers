@@ -15,3 +15,13 @@ describe("shared session transport", () => {
     expect(fetcher).toHaveBeenLastCalledWith("/api/v1/gaggles/team/sessions/session-one/messages?after=12", expect.objectContaining({ method: "GET" }));
   });
 });
+
+
+it("retains the exact human-selected PR as typed message content", async () => {
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(goWireFixtures.sessionAccepted));
+  const client = new HttpDaemonClient({ fetch: fetcher });
+  const repairTarget = { sourceBindingId: "code", repository: { provider: "github" as const, owner: "org", name: "repo" }, repositorySourceId: "100", id: "12", sourceId: "900", expectedHeadSha: "a".repeat(40) };
+  await client.sendSessionMessage("team", "session-one", "same-key", { text: "Repair this", repairTarget });
+  expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ text: "Repair this", repairTarget });
+  expect(new Headers(fetcher.mock.calls[0][1]?.headers).get("Idempotency-Key")).toBe("same-key");
+});

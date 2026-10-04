@@ -89,7 +89,7 @@ func reconstructSessionInput(ctx context.Context, tx *sql.Tx, t SessionTurn) (se
 		return sessioning.ExecutionInputs{}, err
 	}
 	in := sessioning.ExecutionInputs{Version: 1, AcceptanceID: t.Record.ID, Start: envelope, Messages: []sessioning.Message{t.Message}}
-	rows, err := tx.QueryContext(ctx, `SELECT m.id,m.session_id,m.sequence,m.actor_kind,m.actor,m.text,m.created_ns,m.turn_id,m.run_id,m.outcome FROM interactive_messages m JOIN interactive_turns t ON t.id=m.turn_id WHERE t.session_id=? AND t.state='settled' AND t.sequence<? ORDER BY t.sequence DESC,m.sequence DESC LIMIT ?`, t.Session.ID, t.Message.Sequence, sessioning.MaxContextMessages)
+	rows, err := tx.QueryContext(ctx, `SELECT m.id,m.session_id,m.sequence,m.actor_kind,m.actor,m.text,m.created_ns,m.turn_id,m.run_id,m.outcome,m.repair_target FROM interactive_messages m JOIN interactive_turns t ON t.id=m.turn_id WHERE t.session_id=? AND t.state='settled' AND t.sequence<? ORDER BY t.sequence DESC,m.sequence DESC LIMIT ?`, t.Session.ID, t.Message.Sequence, sessioning.MaxContextMessages)
 	if err != nil {
 		return in, err
 	}

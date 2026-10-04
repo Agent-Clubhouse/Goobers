@@ -39,7 +39,7 @@ func (in ExecutionInputs) Validate(runID, gaggle string) ([]byte, error) {
 		return nil, err
 	}
 	last := in.Messages[len(in.Messages)-1]
-	if last.ID != e.MessageID || last.TurnID != e.TurnID || last.SessionID != e.SessionID || last.ActorKind != "human" || last.Actor == nil || last.RunID != "" || last.Outcome != "" || Digest([]byte(last.Text)) != e.MessageDigest {
+	if last.ID != e.MessageID || last.TurnID != e.TurnID || last.SessionID != e.SessionID || last.ActorKind != "human" || last.Actor == nil || last.RunID != "" || last.Outcome != "" || MessageDigest(last.Text, last.RepairTarget) != e.MessageDigest {
 		return nil, errors.New("session current message does not match accepted input")
 	}
 	for _, m := range in.Messages {
@@ -92,14 +92,14 @@ func validStartDigests(e StartEnvelope) error {
 }
 
 func validContextMessage(m Message, session string) bool {
-	if m.SessionID != session || m.ID == "" || m.Sequence == 0 || len(m.Text) > MaxTextBytes {
+	if m.SessionID != session || m.ID == "" || m.Sequence == 0 || len(m.Text) > MaxTextBytes || ValidatePRRepairTarget(m.RepairTarget) != nil {
 		return false
 	}
 	switch m.ActorKind {
 	case "human":
 		return m.Actor != nil && m.Actor.Issuer != "" && m.Actor.Subject != ""
 	case "agent", "system":
-		return m.Actor == nil
+		return m.Actor == nil && m.RepairTarget == nil
 	default:
 		return false
 	}

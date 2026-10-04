@@ -66,6 +66,9 @@ func (s *Service) Messages(ctx context.Context, p httpapi.Principal, gaggle, id 
 			return sessioning.MessagePage{}, err
 		}
 		result.Items[i].Text = text
+		if !s.safeRepairTarget(result.Items[i].RepairTarget) {
+			result.Items[i].RepairTarget = nil
+		}
 	}
 	return result, nil
 }

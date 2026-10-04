@@ -17,6 +17,7 @@ type sessionStub struct {
 	after                              uint64
 	limit                              int
 	refusal                            error
+	repairTarget                       *sessioning.PRRepairTarget
 }
 
 func (s *sessionStub) called(p Principal, gaggle, session string) error {
@@ -47,6 +48,7 @@ func (s *sessionStub) Messages(_ context.Context, p Principal, g, id string, aft
 func (s *sessionStub) SubmitMessage(_ context.Context, p Principal, g, id string, r sessioning.MessageRequest) (sessioning.Acceptance, error) {
 	s.key = r.RequestID
 	s.text = r.Text
+	s.repairTarget = r.RepairTarget
 	return sessioning.Acceptance{}, s.called(p, g, id)
 }
 func (s *sessionStub) Close(_ context.Context, p Principal, g, id string, r sessioning.CloseRequest) (sessioning.Acceptance, error) {

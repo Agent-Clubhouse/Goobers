@@ -16,7 +16,8 @@ type SessionCreateRequest struct {
 // SessionMessageRequest queues human content without authority fields.
 // SessionMessage is an attributed append-only message.
 type SessionMessageRequest struct {
-	Text string `json:"text"`
+	Text         string                     `json:"text"`
+	RepairTarget *sessioning.PRRepairTarget `json:"repairTarget,omitempty"`
 }
 
 // SessionCloseRequest requests intake closure and cancellation.

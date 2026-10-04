@@ -157,10 +157,10 @@ func writeSession(r *http.Request, p Principal, service InteractiveSessionServic
 		return service.Create(r.Context(), p, gaggle, sessioning.CreateRequest{RequestID: key, Title: input.Title, Goober: input.Goober})
 	case apicontract.RouteSessionMessage:
 		var input apicontract.SessionMessageRequest
-		if err := decodeWriteRequestBounded(r, &input, (400<<10)+1); err != nil || !sessionText(input.Text, sessioning.MaxTextBytes, true) {
-			return nil, sessionBadRequest("Provide a message of at most 64 KiB.")
+		if err := decodeWriteRequestBounded(r, &input, (400<<10)+1); err != nil || !sessionText(input.Text, sessioning.MaxTextBytes, true) || sessioning.ValidatePRRepairTarget(input.RepairTarget) != nil {
+			return nil, sessionBadRequest("Provide a message of at most 64 KiB and a valid optional PR selection.")
 		}
-		return service.SubmitMessage(r.Context(), p, gaggle, session, sessioning.MessageRequest{RequestID: key, Text: input.Text})
+		return service.SubmitMessage(r.Context(), p, gaggle, session, sessioning.MessageRequest{RequestID: key, Text: input.Text, RepairTarget: input.RepairTarget})
 	default:
 		var input *apicontract.SessionCloseRequest
 		if err := decodeWriteRequestBounded(r, &input, (400<<10)+1); err != nil || input == nil || !sessionText(input.Reason, 4096, false) {

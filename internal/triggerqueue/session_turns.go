@@ -51,7 +51,7 @@ func readSessionTurn(ctx context.Context, tx *sql.Tx, acceptance string) (Sessio
 	if err != nil {
 		return t, err
 	}
-	expected := sessioning.StartEnvelope{Kind: sessioning.StartKind, Gaggle: t.Session.Gaggle, SessionID: id, TurnID: t.ID, MessageID: message, MessageDigest: "sha256:" + childDigest([]byte(t.Message.Text)), AuthorityDigest: "sha256:" + childDigest(t.Authority), Profile: t.Session.Profile}
+	expected := sessioning.StartEnvelope{Kind: sessioning.StartKind, Gaggle: t.Session.Gaggle, SessionID: id, TurnID: t.ID, MessageID: message, MessageDigest: sessioning.MessageDigest(t.Message.Text, t.Message.RepairTarget), AuthorityDigest: "sha256:" + childDigest(t.Authority), Profile: t.Session.Profile}
 	raw, _ := json.Marshal(expected)
 	if string(raw) != string(t.Record.Payload) || t.Message.ActorKind != "human" || t.Message.Actor == nil {
 		return SessionTurn{}, errors.New("session turn provenance mismatch")

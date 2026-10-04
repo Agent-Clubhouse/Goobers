@@ -31,5 +31,5 @@ func (s *SessionResolver) verifyOrigin(ctx context.Context) (workbench.NeedsHuma
 	if err != nil || sessioning.Digest(raw) != lineage.InputDigest {
 		return workbench.NeedsHumanResolutionOrigin{}, interactiveaccess.ErrDenied
 	}
-	return workbench.NeedsHumanResolutionOrigin{RunID: id.RunID, SessionID: lineage.SessionID, TurnID: lineage.TurnID, MessageID: lineage.MessageID, MessageDigest: strings.TrimPrefix(sessioning.Digest([]byte(turn.Message.Text)), "sha256:"), GooberDigest: id.GooberDigest}, nil
+	return workbench.NeedsHumanResolutionOrigin{RunID: id.RunID, SessionID: lineage.SessionID, TurnID: lineage.TurnID, MessageID: lineage.MessageID, MessageDigest: strings.TrimPrefix(sessioning.MessageDigest(turn.Message.Text, turn.Message.RepairTarget), "sha256:"), GooberDigest: id.GooberDigest}, nil
 }

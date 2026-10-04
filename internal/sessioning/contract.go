@@ -44,8 +44,9 @@ type CreateRequest struct {
 
 // MessageRequest queues ordinary input without interrupting an active turn.
 type MessageRequest struct {
-	RequestID string `json:"requestId"`
-	Text      string `json:"text"`
+	RequestID    string          `json:"requestId"`
+	Text         string          `json:"text"`
+	RepairTarget *PRRepairTarget `json:"repairTarget,omitempty"`
 }
 
 // CloseRequest stops intake and requests cancellation; it is not a stop receipt.
@@ -85,16 +86,17 @@ type Session struct {
 // Message is append-only content. Agent responses name their execution and
 // never inherit the originating human's authorship.
 type Message struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"sessionId"`
-	Sequence  uint64    `json:"sequence"`
-	ActorKind string    `json:"actorKind"`
-	Actor     *Actor    `json:"actor,omitempty"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"createdAt"`
-	TurnID    string    `json:"turnId,omitempty"`
-	RunID     string    `json:"runId,omitempty"`
-	Outcome   string    `json:"outcome,omitempty"`
+	ID           string          `json:"id"`
+	SessionID    string          `json:"sessionId"`
+	Sequence     uint64          `json:"sequence"`
+	ActorKind    string          `json:"actorKind"`
+	Actor        *Actor          `json:"actor,omitempty"`
+	Text         string          `json:"text"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	TurnID       string          `json:"turnId,omitempty"`
+	RunID        string          `json:"runId,omitempty"`
+	Outcome      string          `json:"outcome,omitempty"`
+	RepairTarget *PRRepairTarget `json:"repairTarget,omitempty"`
 }
 
 // Acceptance confirms only durable command custody, not model execution.

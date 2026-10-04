@@ -133,6 +133,10 @@ func (s *Service) SubmitMessage(ctx context.Context, p httpapi.Principal, gaggle
 	if err := s.ready(); err != nil {
 		return result, err
 	}
+	req.RepairTarget = sessioning.CopyPRRepairTarget(req.RepairTarget)
+	if !s.safeRepairTarget(req.RepairTarget) {
+		return result, sessioning.ErrInvalidRequest
+	}
 	c, err := command(p, gaggle, req.RequestID, req)
 	if err != nil {
 		return result, err
@@ -146,7 +150,7 @@ func (s *Service) SubmitMessage(ctx context.Context, p httpapi.Principal, gaggle
 		return result, err
 	}
 	err = s.Permissions.WithAuthorization(ctx, p, gaggle, "session.message", func(ctx context.Context) error {
-		result, err = s.Queue.SubmitSessionMessage(ctx, c, id, req.Text, authority, s.Now())
+		result, err = s.Queue.SubmitSessionInput(ctx, c, id, req, authority, s.Now())
 		return err
 	})
 	return result, mapped(err)

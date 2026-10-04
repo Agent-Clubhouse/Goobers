@@ -2194,7 +2194,12 @@ export interface InteractiveRunCommandResult {
 
 export interface SessionActor { issuer: string; subject: string }
 export interface SessionCreateRequest { title: string; goober: string }
-export interface SessionMessageRequest { text: string }
+export interface SessionPRRepairTarget {
+  sourceBindingId: string;
+  repository: { provider: "github" | "ado"; owner: string; project?: string; name: string };
+  repositorySourceId: string; id: string; sourceId: string; expectedHeadSha: string;
+}
+export interface SessionMessageRequest { text: string; repairTarget?: SessionPRRepairTarget }
 export interface SessionCloseRequest { reason: string }
 export interface InteractiveSession {
   id: string; gaggle: string; title: string; goober: string; configGeneration: string; gooberDigest: string;
@@ -2204,7 +2209,7 @@ export interface InteractiveSession {
 }
 export interface SessionMessage {
   id: string; sessionId: string; sequence: number; actorKind: "human" | "agent" | "system";
-  actor?: SessionActor; text: string; createdAt: string; turnId?: string; runId?: string; outcome?: string;
+  actor?: SessionActor; text: string; repairTarget?: SessionPRRepairTarget; createdAt: string; turnId?: string; runId?: string; outcome?: string;
 }
 export interface SessionAcceptance { session: InteractiveSession; message?: SessionMessage; acceptanceId?: string; duplicate: boolean }
 export interface SessionPage { items: InteractiveSession[]; nextCursor?: string }

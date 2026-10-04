@@ -39,7 +39,7 @@ func (s *SessionResolver) evidenceKnown(ctx context.Context, scope triggerqueue.
 			return false
 		}
 		for _, message := range inputs.Messages {
-			if message.ID == ref.ID && strings.TrimPrefix(sessioning.Digest([]byte(message.Text)), "sha256:") == ref.Digest {
+			if message.ID == ref.ID && strings.TrimPrefix(sessioning.MessageDigest(message.Text, message.RepairTarget), "sha256:") == ref.Digest {
 				return true
 			}
 		}

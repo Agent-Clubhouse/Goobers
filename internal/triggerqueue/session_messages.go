@@ -13,6 +13,19 @@ import (
 // SubmitSessionMessage atomically appends human input and an ordinary queue
 // receipt. The caller's verified authority is retained for dispatch rechecks.
 func (s *Store) SubmitSessionMessage(ctx context.Context, c SessionCommand, id, text string, authority []byte, now time.Time) (sessioning.Acceptance, error) {
+	return s.SubmitSessionInput(ctx, c, id, sessioning.MessageRequest{Text: text}, authority, now)
+}
+
+// SubmitSessionInput retains an optional human-selected PR together with the
+// exact input digest. Selection grants no provider or execution authority.
+func (s *Store) SubmitSessionInput(ctx context.Context, c SessionCommand, id string, input sessioning.MessageRequest, authority []byte, now time.Time) (sessioning.Acceptance, error) {
+	input.RepairTarget = sessioning.CopyPRRepairTarget(input.RepairTarget)
+	text := input.Text
+	target, err := sessioning.MarshalPRRepairTarget(input.RepairTarget)
+	if err != nil {
+		return sessioning.Acceptance{}, ErrTransition
+	}
+
 	if !c.valid() || !validChildText(id, 128, true) || !validSessionText(text) || len(authority) == 0 || len(authority) > 16384 || !json.Valid(authority) || now.IsZero() {
 		return sessioning.Acceptance{}, ErrTransition
 	}
@@ -31,19 +44,19 @@ func (s *Store) SubmitSessionMessage(ctx context.Context, c SessionCommand, id, 
 	if session.State == sessioning.Closed || session.State == sessioning.CancelRequested {
 		return sessioning.Acceptance{}, ErrSessionClosed
 	}
-	if err = sessionMessageCapacity(ctx, tx, c.Gaggle, id, len(text)+len(authority)); err != nil {
+	if err = sessionMessageCapacity(ctx, tx, c.Gaggle, id, len(text)+len(authority)+len(target)); err != nil {
 		return sessioning.Acceptance{}, err
 	}
 	turn := fmt.Sprintf("turn-%x", randomID())
 	message := fmt.Sprintf("message-%x", randomID())
 	acceptance := fmt.Sprintf("trigger-%x", randomID())
-	envelope := sessioning.StartEnvelope{Kind: sessioning.StartKind, Gaggle: c.Gaggle, SessionID: id, TurnID: turn, MessageID: message, MessageDigest: "sha256:" + childDigest([]byte(text)), AuthorityDigest: "sha256:" + childDigest(authority), Profile: session.Profile}
+	envelope := sessioning.StartEnvelope{Kind: sessioning.StartKind, Gaggle: c.Gaggle, SessionID: id, TurnID: turn, MessageID: message, MessageDigest: sessioning.MessageDigest(text, input.RepairTarget), AuthorityDigest: "sha256:" + childDigest(authority), Profile: session.Profile}
 	payload, _ := json.Marshal(envelope)
 	actor, _ := json.Marshal(c.Actor)
 	if len(payload) > MaxPayloadBytes {
 		return sessioning.Acceptance{}, ErrTransition
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO interactive_messages(id,session_id,sequence,actor_kind,actor,text,created_ns,turn_id) VALUES(?,?,?,'human',?,?,?,?)`, message, id, session.NextSequence, actor, text, now.UnixNano(), turn)
+	_, err = tx.ExecContext(ctx, `INSERT INTO interactive_messages(id,session_id,sequence,actor_kind,actor,text,created_ns,turn_id,repair_target) VALUES(?,?,?,'human',?,?,?,?,?)`, message, id, session.NextSequence, actor, text, now.UnixNano(), turn, target)
 	if err != nil {
 		return sessioning.Acceptance{}, err
 	}
@@ -136,12 +149,12 @@ func (s *Store) SessionMessages(ctx context.Context, gaggle, id string, after ui
 		if err != nil {
 			return result, err
 		}
-		if len(result.Items) == limit || size+len(item.Text) > sessioning.MaxMessagePageBytes {
+		if len(result.Items) == limit || size+sessioning.MessageContentBytes(item) > sessioning.MaxMessagePageBytes {
 			result.NextCursor = result.Items[len(result.Items)-1].Sequence
 			break
 		}
 		result.Items = append(result.Items, item)
-		size += len(item.Text)
+		size += sessioning.MessageContentBytes(item)
 	}
 	return result, rows.Err()
 }

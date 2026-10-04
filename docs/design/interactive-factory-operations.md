@@ -290,6 +290,21 @@ Provider edits and compound effect recovery reuse the workbench's mutation servi
 PR repair targets the selected PR and expected head, preserves its owned branch, and
 publishes through the configured provider write path. New code invalidates prior checks
 as required by normal delivery; repair authorization never implies merge authorization.
+The human selects a configured source binding, exact repository identity, native repository
+and PR IDs, locator and inspected head in structured session input. The accepted message
+and immutable execution input bind that selection; prose and earlier turns cannot grant it.
+Any same-repository PR may be selected under current `pr.repair`; forks and active
+agent/worktree custody are refused. An iterative repair may advance only to the confirmed
+descendant in this turn/actor/PR's previous command receipt, retaining the original selection
+and ancestor command ID. Foreign or uncertain head movements require fresh human intent.
+The initial native primitive supports at most 32 regular UTF-8 file additions, edits or
+deletions and 1 MiB of content; executable edits, symlinks, submodules and binary changes
+are explicitly unsupported. GitHub `createCommitOnBranch.expectedHeadOid` and ADO push
+`refUpdates.oldObjectId` provide atomic head comparison. PR-open status is checked before
+that call; neither native primitive atomically compares PR-open status with branch update.
+Provider acknowledgement and a later exact commit observation remain distinct receipt
+facts. These primitives and structured selection alone do not enable repair until the
+shared command ledger, current execution lease, host tools and portal are installed.
 Unsupported delivery, denied access, stale revision, expired wait and budget exhaustion
 have distinct typed results and do not degrade into success-shaped responses.
 

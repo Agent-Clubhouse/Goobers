@@ -25,10 +25,12 @@ func sessionArray(name string) map[string]any {
 
 func openAPISessionSchemas() map[string]any {
 	return map[string]any{
-		"SessionCreateRequest":  closedChildObject([]string{"title", "goober"}, map[string]any{"title": sessionString(sessioning.MaxTitleBytes), "goober": sessionString(128)}),
-		"SessionMessageRequest": closedChildObject([]string{"text"}, map[string]any{"text": sessionString(sessioning.MaxTextBytes)}),
-		"SessionCloseRequest":   closedChildObject([]string{"reason"}, map[string]any{"reason": sessionString(4096)}),
-		"SessionActor":          closedChildObject([]string{"issuer", "subject"}, map[string]any{"issuer": stringSchema(), "subject": stringSchema()}),
+		"SessionCreateRequest":    closedChildObject([]string{"title", "goober"}, map[string]any{"title": sessionString(sessioning.MaxTitleBytes), "goober": sessionString(128)}),
+		"SessionMessageRequest":   closedChildObject([]string{"text"}, map[string]any{"text": sessionString(sessioning.MaxTextBytes), "repairTarget": schemaRef("SessionPRRepairTarget")}),
+		"SessionPRRepairTarget":   sessionRepairTargetSchema(),
+		"SessionRepairRepository": sessionRepairRepositorySchema(),
+		"SessionCloseRequest":     closedChildObject([]string{"reason"}, map[string]any{"reason": sessionString(4096)}),
+		"SessionActor":            closedChildObject([]string{"issuer", "subject"}, map[string]any{"issuer": stringSchema(), "subject": stringSchema()}),
 		"InteractiveSession": closedChildObject([]string{"id", "gaggle", "title", "goober", "configGeneration", "gooberDigest", "state", "createdBy", "createdAt", "updatedAt", "nextSequence"}, map[string]any{
 			"id": stringSchema(), "gaggle": stringSchema(), "title": sessionString(sessioning.MaxTitleBytes), "goober": stringSchema(), "configGeneration": stringSchema(), "gooberDigest": stringSchema(),
 			"state": map[string]any{"type": "string", "enum": []string{"idle", "queued", "running", "cancel-requested", "closed"}}, "createdBy": schemaRef("SessionActor"),
@@ -36,7 +38,7 @@ func openAPISessionSchemas() map[string]any {
 		}),
 		"SessionMessage": closedChildObject([]string{"id", "sessionId", "sequence", "actorKind", "text", "createdAt"}, map[string]any{
 			"id": stringSchema(), "sessionId": stringSchema(), "sequence": map[string]any{"type": "integer", "minimum": 1}, "actorKind": map[string]any{"type": "string", "enum": []string{"human", "agent", "system"}}, "actor": schemaRef("SessionActor"),
-			"text": sessionString(sessioning.MaxTextBytes), "createdAt": dateTimeSchema(), "turnId": stringSchema(), "runId": stringSchema(), "outcome": stringSchema(),
+			"text": sessionString(sessioning.MaxTextBytes), "repairTarget": schemaRef("SessionPRRepairTarget"), "createdAt": dateTimeSchema(), "turnId": stringSchema(), "runId": stringSchema(), "outcome": stringSchema(),
 		}),
 		"SessionAcceptance":  closedChildObject([]string{"session", "duplicate"}, map[string]any{"session": schemaRef("InteractiveSession"), "message": schemaRef("SessionMessage"), "acceptanceId": stringSchema(), "duplicate": map[string]any{"type": "boolean"}}),
 		"SessionPage":        closedChildObject([]string{"items"}, map[string]any{"items": sessionArray("InteractiveSession"), "nextCursor": stringSchema()}),

@@ -22,7 +22,7 @@ var (
 
 const sessionResponseAllowance = sessioning.MaxTextBytes + 16*1024
 const sessionColumns = "id,gaggle,title,profile,state,creator,created_ns,updated_ns,next_sequence,active_turn,last_outcome"
-const sessionMessageColumns = "id,session_id,sequence,actor_kind,actor,text,created_ns,turn_id,run_id,outcome"
+const sessionMessageColumns = "id,session_id,sequence,actor_kind,actor,text,created_ns,turn_id,run_id,outcome,repair_target"
 
 // SessionCommand is trusted host admission metadata; callers authorize Actor
 // against the current gaggle policy and scrub all content before this boundary.
@@ -70,14 +70,18 @@ func scanSession(row scanner) (sessioning.Session, error) {
 }
 func scanSessionMessage(row scanner) (sessioning.Message, error) {
 	var m sessioning.Message
-	var actor []byte
+	var actor, target []byte
 	var created int64
-	err := row.Scan(&m.ID, &m.SessionID, &m.Sequence, &m.ActorKind, &actor, &m.Text, &created, &m.TurnID, &m.RunID, &m.Outcome)
+	err := row.Scan(&m.ID, &m.SessionID, &m.Sequence, &m.ActorKind, &actor, &m.Text, &created, &m.TurnID, &m.RunID, &m.Outcome, &target)
 	if err != nil {
 		return m, err
 	}
 	if err = json.Unmarshal(actor, &m.Actor); err != nil {
 		return m, err
+	}
+	m.RepairTarget, err = sessioning.ParsePRRepairTarget(target)
+	if err != nil || (m.RepairTarget != nil && m.ActorKind != "human") {
+		return m, ErrTransition
 	}
 	m.CreatedAt = time.Unix(0, created).UTC()
 	return m, nil

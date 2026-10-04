@@ -44,6 +44,9 @@ func (s *Service) finishAcceptance(result sessioning.Acceptance, err error) (ses
 	result.Session.Title, err = s.clean(result.Session.Title, sessioning.MaxTitleBytes, false)
 	if err == nil && result.Message != nil {
 		result.Message.Text, err = s.clean(result.Message.Text, sessioning.MaxTextBytes, false)
+		if !s.safeRepairTarget(result.Message.RepairTarget) {
+			result.Message.RepairTarget = nil
+		}
 	}
 	if err != nil {
 		return sessioning.Acceptance{}, apiError(err)
