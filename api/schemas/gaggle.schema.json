@@ -16,6 +16,358 @@
       "additionalProperties": false,
       "required": ["project", "backlog", "isolation"],
       "properties": {
+        "workbench": {
+          "type": "object",
+          "description": "Source-owned backlog/objective workbench. Omission adds no reads or authority. Provider access requires explicit interactive policy.",
+          "additionalProperties": false,
+          "properties": {
+            "schemaVersion": {
+              "const": "sources/v1",
+              "description": "Version of this source configuration."
+            },
+            "sources": {
+              "type": "array",
+              "description": "Bounded sources from this gaggle backlog and configured project/additional repositories.",
+              "maxItems": 32,
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "description": "A configured source within this gaggle. No arbitrary URL, credential, branch or cross-gaggle target is accepted.",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Persistent source binding identity.",
+                    "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "description": "Existing backlog, literal Markdown files, or one relationship manifest.",
+                    "enum": [
+                      "backlog",
+                      "documents",
+                      "relationships"
+                    ]
+                  },
+                  "repository": {
+                    "type": "object",
+                    "description": "Qualified identity of an already configured gaggle code repository.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Supported code provider.",
+                        "enum": [
+                          "github",
+                          "ado"
+                        ]
+                      },
+                      "owner": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "GitHub owner or Azure DevOps organization.",
+                        "maxLength": 256
+                      },
+                      "project": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Azure DevOps project; forbidden for GitHub.",
+                        "maxLength": 256
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact repository name.",
+                        "maxLength": 256
+                      }
+                    },
+                    "required": [
+                      "provider",
+                      "owner",
+                      "name"
+                    ],
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "provider": {
+                              "const": "ado"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "project"
+                          ]
+                        },
+                        "else": {
+                          "not": {
+                            "required": [
+                              "project"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "paths": {
+                    "type": "array",
+                    "description": "Literal repository-relative file paths, never globs or crawl roots.",
+                    "maxItems": 128,
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024,
+                      "description": "One source file path; scope and extension are checked before use."
+                    }
+                  },
+                  "objectives": {
+                    "type": "object",
+                    "description": "Explicit native objective selection. Any listed ID, type or label matches; no title inference.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "ids": {
+                        "type": "array",
+                        "description": "Stable provider object IDs within this backlog.",
+                        "maxItems": 128,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 512,
+                          "description": "One native object identity."
+                        }
+                      },
+                      "types": {
+                        "type": "array",
+                        "description": "Exact provider item types, such as ADO Epic or Feature.",
+                        "maxItems": 32,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "description": "One native type."
+                        }
+                      },
+                      "labels": {
+                        "type": "array",
+                        "description": "Exact provider labels or tags.",
+                        "maxItems": 32,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "description": "One label or tag."
+                        }
+                      }
+                    },
+                    "required": [],
+                    "anyOf": [
+                      {
+                        "required": [
+                          "ids"
+                        ],
+                        "properties": {
+                          "ids": {
+                            "minItems": 1,
+                            "description": "Requires at least one explicitly selected ids."
+                          }
+                        }
+                      },
+                      {
+                        "required": [
+                          "types"
+                        ],
+                        "properties": {
+                          "types": {
+                            "minItems": 1,
+                            "description": "Requires at least one explicitly selected types."
+                          }
+                        }
+                      },
+                      {
+                        "required": [
+                          "labels"
+                        ],
+                        "properties": {
+                          "labels": {
+                            "minItems": 1,
+                            "description": "Requires at least one explicitly selected labels."
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "writes": {
+                    "type": "object",
+                    "description": "Additional source allowlist. Current human policy, credentials and actual operation support remain required.",
+                    "additionalProperties": false,
+                    "properties": {
+                      "fields": {
+                        "type": "array",
+                        "description": "Fields permitted for this source; omission is read-only.",
+                        "maxItems": 5,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "description": "Supported source field. Documents accept only title/description; manifests none.",
+                          "enum": [
+                            "title",
+                            "description",
+                            "state",
+                            "labels",
+                            "assignees"
+                          ]
+                        }
+                      },
+                      "relationships": {
+                        "type": "array",
+                        "description": "Authored relationship kinds permitted for this source.",
+                        "maxItems": 6,
+                        "minItems": 0,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "description": "Canonical authored edge kind; run observations cannot be declared.",
+                          "enum": [
+                            "parent-of",
+                            "blocked-by",
+                            "contributes-to",
+                            "references",
+                            "milestone-member",
+                            "implemented-by"
+                          ]
+                        }
+                      }
+                    },
+                    "required": []
+                  }
+                },
+                "required": [
+                  "name",
+                  "kind"
+                ],
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "backlog"
+                        }
+                      }
+                    },
+                    "then": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "repository"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "paths"
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "else": {
+                      "required": [
+                        "repository",
+                        "paths"
+                      ],
+                      "not": {
+                        "required": [
+                          "objectives"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "relationships"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "paths": {
+                          "maxItems": 1
+                        },
+                        "writes": {
+                          "properties": {
+                            "fields": {
+                              "maxItems": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "documents"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "writes": {
+                          "properties": {
+                            "fields": {
+                              "items": {
+                                "enum": [
+                                  "title",
+                                  "description"
+                                ]
+                              }
+                            },
+                            "relationships": {
+                              "items": {
+                                "enum": [
+                                  "contributes-to",
+                                  "references"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "relationshipManifest": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Declared relationships binding for new edges lacking faithful native or frontmatter representation; does not migrate existing ownership.",
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "sources"
+          ]
+        },
         "events": {
           "type": "object",
           "description": "Gaggle-local subscriptions and explicit workflow publication permissions.",

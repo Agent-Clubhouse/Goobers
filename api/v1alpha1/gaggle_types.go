@@ -11,6 +11,10 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // this worker's RBAC access to it before polling or dispatching any work
 // (#4897). ServiceAccount selects the stage identity; IdentityRef federation is not yet consumed.
 type GaggleSpec struct {
+	// Workbench names source-owned backlog/objective material for interactive
+	// browsing. Omission creates no new provider reads, polling or write authority.
+	// +optional
+	Workbench *GaggleWorkbench `json:"workbench,omitempty" yaml:"workbench,omitempty"`
 	// Events configures subscriptions confined to this gaggle. Omission means
 	// no event consumers; it does not affect existing workflow triggers.
 	// +optional

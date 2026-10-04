@@ -1012,6 +1012,176 @@ spec:
                   - project
                   type: object
                 type: array
+              workbench:
+                description: |-
+                  Workbench names source-owned backlog/objective material for interactive
+                  browsing. Omission creates no new provider reads, polling or write authority.
+                properties:
+                  relationshipManifest:
+                    description: |-
+                      RelationshipManifest selects a declared relationships source for new edges
+                      that have no faithful native or frontmatter representation. Changing this
+                      setting does not migrate existing edge ownership or provide permission fallback.
+                    maxLength: 64
+                    type: string
+                  schemaVersion:
+                    description: SchemaVersion pins this configuration independently
+                      of workflow DSL versions.
+                    enum:
+                    - sources/v1
+                    type: string
+                  sources:
+                    description: Sources names only this gaggle's backlog and configured
+                      repositories.
+                    items:
+                      description: WorkbenchSource names one bounded provider/project
+                        or repository-file scope.
+                      properties:
+                        kind:
+                          description: Kind selects the existing singleton backlog,
+                            Markdown files or a manifest.
+                          enum:
+                          - backlog
+                          - documents
+                          - relationships
+                          type: string
+                        name:
+                          description: |-
+                            Name is a persistent binding identity. Renaming it needs reviewed reference
+                            migration; it is not a display title or credential name.
+                          maxLength: 64
+                          pattern: ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$
+                          type: string
+                        objectives:
+                          description: |-
+                            Objectives explicitly classifies native backlog items as objectives.
+                            Omission infers none. This selector does not narrow ordinary backlog browsing.
+                          properties:
+                            ids:
+                              description: IDs are stable provider object identities
+                                within this configured backlog.
+                              items:
+                                type: string
+                              maxItems: 128
+                              type: array
+                              x-kubernetes-list-type: set
+                            labels:
+                              description: Labels names exact source labels/tags;
+                                a match is explicit configuration.
+                              items:
+                                type: string
+                              maxItems: 32
+                              type: array
+                              x-kubernetes-list-type: set
+                            types:
+                              description: Types names exact provider types such as
+                                ADO Epic or Feature.
+                              items:
+                                type: string
+                              maxItems: 32
+                              type: array
+                              x-kubernetes-list-type: set
+                          type: object
+                        paths:
+                          description: |-
+                            Paths are literal repository-relative files, not globs or crawl roots.
+                            Documents allow up to 128 Markdown files; relationships requires one YAML file.
+                          items:
+                            type: string
+                          maxItems: 128
+                          type: array
+                          x-kubernetes-list-type: set
+                        repository:
+                          description: |-
+                            Repository must match a configured project/additional repository exactly.
+                            Its configured branch is followed; no request can supply a different URL/ref.
+                            Forbidden for backlog sources, whose target is gaggle.spec.backlog.
+                          properties:
+                            name:
+                              description: Name is the repository name.
+                              maxLength: 256
+                              minLength: 1
+                              type: string
+                            owner:
+                              description: Owner is the GitHub owner or Azure DevOps
+                                organization.
+                              maxLength: 256
+                              minLength: 1
+                              type: string
+                            project:
+                              description: Project is required for Azure DevOps and
+                                forbidden for GitHub.
+                              maxLength: 256
+                              minLength: 1
+                              type: string
+                            provider:
+                              description: Provider is GitHub or Azure DevOps.
+                              enum:
+                              - github
+                              - ado
+                              type: string
+                          required:
+                          - name
+                          - owner
+                          - provider
+                          type: object
+                          x-kubernetes-validations:
+                          - message: project is required for ADO and forbidden for
+                              GitHub
+                            rule: 'self.provider == ''ado'' ? has(self.project) :
+                              !has(self.project)'
+                        writes:
+                          description: |-
+                            Writes is an additional field/relationship allowlist. Omission is read-only.
+                            A declared operation also needs current human policy, credentials and actual
+                            provider capability; repository proposals always require a policy-governed PR.
+                          properties:
+                            fields:
+                              description: |-
+                                Fields permits supported edits on this source. Documents support title and
+                                description (body) proposals only; manifests have no node fields.
+                              items:
+                                description: WorkbenchField is a provider-neutral
+                                  editable node field.
+                                enum:
+                                - title
+                                - description
+                                - state
+                                - labels
+                                - assignees
+                                type: string
+                              maxItems: 5
+                              type: array
+                              x-kubernetes-list-type: set
+                            relationships:
+                              description: Relationships permits supported source-owned
+                                edge proposals/mutations.
+                              items:
+                                description: WorkbenchRelationship excludes journal-derived
+                                  execution observations.
+                                enum:
+                                - parent-of
+                                - blocked-by
+                                - contributes-to
+                                - references
+                                - milestone-member
+                                - implemented-by
+                                type: string
+                              maxItems: 6
+                              type: array
+                              x-kubernetes-list-type: set
+                          type: object
+                      required:
+                      - kind
+                      - name
+                      type: object
+                    maxItems: 32
+                    minItems: 1
+                    type: array
+                required:
+                - schemaVersion
+                - sources
+                type: object
               workcopies:
                 description: |-
                   Workcopies overrides the instance-level managed working-copy placement for

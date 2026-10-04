@@ -71,4 +71,65 @@ sets to 200,000. Incomplete scans do not prove deletion or a document move.
 
 These parsers and proposal builders do not grant authorization, execute Markdown,
 follow links, contact providers, mutate repositories or maintain planning state.
-The next slices bind them to the configured source and interactive credentials.
+Provider ingestion and browse/edit routes follow in separate slices.
+
+
+## Explicit gaggle sources
+
+`spec.workbench` configures a bounded source namespace. It grants no human action
+or credential. When `interactiveAccess` is absent, existing run monitoring stays
+available to authorized users; these sources do not activate provider reads.
+
+```yaml
+workbench:
+  schemaVersion: sources/v1
+  relationshipManifest: planning-links
+  sources:
+    - name: backlog
+      kind: backlog
+      objectives:
+        labels: [objective]
+        types: [Epic, Feature]
+      writes:
+        fields: [title, description, labels]
+        relationships: [parent-of, blocked-by, references]
+    - name: strategy
+      kind: documents
+      repository:
+        provider: github
+        owner: example
+        name: strategy-wiki
+      paths: [objectives/reliability.md]
+      writes:
+        fields: [title, description]
+        relationships: [contributes-to, references]
+    - name: planning-links
+      kind: relationships
+      repository:
+        provider: github
+        owner: example
+        name: workflow-definitions
+      paths: [planning/relationships.yaml]
+      writes:
+        relationships: [contributes-to, references]
+```
+
+Every document/manifest repository must already appear in the gaggle's `project`
+or `additionalRepos`; its configured branch is used. Strategy or wiki repos need
+not contain code. Paths are literal files, with no traversal, glob or link crawling.
+Documents allow up to 128 Markdown files per binding; a relationships binding owns
+one YAML file. A file cannot have multiple source owners. Source binding names are
+persistent references; renaming one requires reviewed reference migration.
+
+The single backlog binding uses `spec.backlog`. GitHub binds exact owner/repository;
+ADO binds the configured ADO code project's organization and backlog project. A
+GitHub owner cannot supply an ADO organization. Objective selectors explicitly
+classify matching stable native IDs, types or labels; they do not filter ordinary
+backlog browsing. Omitted selectors infer no objectives.
+
+Omitted `writes` is read-only. Declared fields and relationship kinds are additional
+allowlists: each action still requires current human authorization, independently
+bound interactive credentials and provider support. Repository changes require a
+policy-governed PR. Denial on a native owner never falls back to a manifest. Changing
+`relationshipManifest` selects the location for eligible new edges; it does not
+move existing relationships.
