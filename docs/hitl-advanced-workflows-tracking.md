@@ -148,9 +148,10 @@ The acceptance-before-wait crash window now restores the original attempt
 accounting and accepted child before any continuation worker. Terminal parent
 recovery still requires its existing authorized continuation.
 
-**The contained serial parent lane is connected; unsupported shapes remain refused.**
-The first supported parent consists of opted-in repository agents with explicit
-Linux image placement and a configured worker transport. Actual runner-to-worker
+**The contained parent lane supports seeded writable parallel branches.**
+Supported parents consist of opted-in repository agents with explicit Linux
+image placement and a configured worker transport. A serial repository seed can
+fan out into isolated branch workspaces and continue through a declared join. Actual runner-to-worker
 composition passes with real Git workspaces and a simulated worker. This is not
 a live Kubernetes or model qualification. Remaining delivery gates:
 
@@ -159,8 +160,12 @@ checkout. Successful completion archives the verified final contribution before
 retiring that checkout, and the artifact remains materializable after cleanup.
 Failed, escalated and aborted runs retain their contribution; family settlement
 and journal pruning refuse missing archives or unresolved held workspaces.
-Real Git runner, retirement and retention race tests pass. The parallel gate
-remains until isolated branch forks and fan-in are implemented.
+Real Git runner, retirement and retention race tests pass. Parallel branches now
+fork the seed contribution, retain separate outputs, and apply child results only
+to their owning branch. Join `repoFrom` selects the latest executed eligible
+declared producer; it does not merge every branch. All completed branch outputs
+remain archived for explicit consumption. Starting directly with parallel
+execution remains refused until a common base pin is defined.
 
 - Exercise exact recovery against a live worker deployment. Parent and child host
   recovery now rejoin the retained worker, import its verified output and preserve
@@ -188,8 +193,9 @@ remains until isolated branch forks and fan-in are implemented.
   the branch lane during a child wait, keeps queued siblings runnable, and
   reacquires capacity before continuation. Recovery preserves the occurrence and
   retry allowance; a simulated 24-hour wait is excluded from the branch timeout.
-  Contained factories and writable fork/join behavior remain necessary before
-  removing the temporary serial parent restriction.
+  Contained factories and writable fork/join now pass real Git runner tests at
+  concurrency one and two. Live worker qualification remains outstanding; gates
+  and other unsupported contained shapes remain refused.
 - Complete child workspace family holds through crash reaping and terminal
   disposition; active or unresolved families must survive unbounded waits.
 - Check enclosing run/stage deadlines, revocation, human escalation and continuation

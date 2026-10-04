@@ -1,9 +1,11 @@
 # Contained workflow attempts
 
 Generated child workflow execution and a parent task that can delegate require
-an isolated worker pod. The first connected parent lane supports serial opted-in repository agents with
-explicit Linux image placement and configured worker transport. Unsupported
-workflow shapes are refused. Parent and child host recovery use the shared
+an isolated worker pod. The connected parent lane supports opted-in repository
+agents with explicit Linux image placement and configured worker transport. A
+serial seed can fan out into isolated writable branches and continue through a
+declared join. Starting directly with a parallel stage and unsupported workflow
+shapes are refused. Parent and child host recovery use the shared
 executor to reconcile a retained worker without launching a replacement.
 
 ## Parent task authority
@@ -154,7 +156,7 @@ workspace paths, credentials or result bodies. Revoked access clears previously
 shown family data on the next refresh. Queue transitions currently require manual
 refresh; existing run detail updates do not promise live child state.
 
-## Parallel wait accounting groundwork
+## Parallel workspaces and wait accounting
 
 Journal projection now tracks each branch's exact wait independently. A declared
 but unstarted sibling remains runnable; a waiting branch cannot release that
@@ -166,16 +168,30 @@ whole-run scheduler suspension and reacquisition. A final runnable sibling endin
 can release the parent's slot; one ready branch reacquires it once before its
 continued marker. Failed durable publication stops the coordinator for recovery.
 Old branch wait handles cannot resume a later wait. Real scheduler race tests
-cover these boundaries and unchanged start allowances. Branch lane scheduling,
-contained branch factories and writable fork/join integration are still required
-before parallel child delegation is enabled; the current shape gate remains.
+cover these boundaries and unchanged start allowances. Each branch holds its own
+execution lane. A child wait releases that lane so a queued sibling can start,
+including when the configured branch concurrency is one.
 
 Contained factories now accept only a runner-owned root or branch journal
 recorder. Host writer receipts retain branch attribution, and one branch's join
 cannot release a sibling's writer. Whole-run recovery still requires all pending
 scopes to join, processing distinct held workspaces in physical-attempt order and
-refusing ambiguous shared-workspace recovery receipts. This does not enable the
-unfinished parallel execution lane.
+refusing ambiguous shared-workspace recovery receipts.
+
+A serial repository contribution seeds separate managed branch forks. Fork
+identity includes the actual parallel-start journal sequence and branch name, so
+recovery cannot reuse a workspace from an earlier visit. Tracked edits, new files
+and Git ancestry survive the fork. A child result changes only its owning
+branch. Contributions from every completed branch remain archived after checkout
+retirement.
+
+At a join, `repoFrom` retains the DSL selection rule: select the latest executed
+eligible producer from the declared list. It does not automatically merge every
+branch. Other branch artifacts remain available for explicit later consumption.
+A workflow that starts with parallel execution is refused until a common base
+pin is defined. Gates and other unsupported contained shapes remain refused.
+Actual runner/factory tests exercise real Git with simulated workers; live pod
+and model qualification remains outstanding.
 
 ## Discard after workspace permission changes
 
